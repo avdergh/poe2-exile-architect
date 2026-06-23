@@ -40,7 +40,7 @@ class PayloadParseError(Exception):
 
 
 class RefreshAttemptThrottle:
-    """Thread-safe force-refresh attempt tracking with caller-supplied time."""
+    """Thread-safe refresh-attempt tracking with caller-supplied time."""
 
     def __init__(self) -> None:
         self._lock = Lock()
@@ -333,7 +333,7 @@ def _fallback_result(
     )
 
 
-def _suppressed_force_result(
+def _suppressed_attempt_result(
     envelope: CacheEnvelope | None,
     *,
     now: datetime,
@@ -401,8 +401,8 @@ def run_cached(
     if envelope is not None:
         age = now - envelope.checked_at
         if force_refresh and age < policy.minimum_force_interval:
-            diagnostics.append("force refresh suppressed by minimum interval")
-            return _suppressed_force_result(
+            diagnostics.append("refresh attempt suppressed by minimum interval")
+            return _suppressed_attempt_result(
                 envelope,
                 now=now,
                 policy=policy,
@@ -410,20 +410,6 @@ def run_cached(
             )
         if not force_refresh and age < policy.refresh_after:
             return _fresh_result(envelope, diagnostics)
-
-    if force_refresh and not attempt_throttle.claim(
-        source=source,
-        cache_key=store.cache_key,
-        now=now,
-        minimum_interval=policy.minimum_force_interval,
-    ):
-        diagnostics.append("force refresh suppressed by minimum interval")
-        return _suppressed_force_result(
-            envelope,
-            now=now,
-            policy=policy,
-            diagnostics=diagnostics,
-        )
 
     with refresh_coordinator.flight(source=source, cache_key=store.cache_key) as leader:
         if not leader:
@@ -443,8 +429,8 @@ def run_cached(
         if reloaded is not None:
             age = now - reloaded.checked_at
             if force_refresh and age < policy.minimum_force_interval:
-                diagnostics.append("force refresh suppressed by minimum interval")
-                return _suppressed_force_result(
+                diagnostics.append("refresh attempt suppressed by minimum interval")
+                return _suppressed_attempt_result(
                     reloaded,
                     now=now,
                     policy=policy,
@@ -453,6 +439,20 @@ def run_cached(
             if not force_refresh and age < policy.refresh_after:
                 return _fresh_result(reloaded, diagnostics)
         envelope = reloaded
+
+        if not attempt_throttle.claim(
+            source=source,
+            cache_key=store.cache_key,
+            now=now,
+            minimum_interval=policy.minimum_force_interval,
+        ):
+            diagnostics.append("refresh attempt suppressed by minimum interval")
+            return _suppressed_attempt_result(
+                envelope,
+                now=now,
+                policy=policy,
+                diagnostics=diagnostics,
+            )
 
         request = TransportRequest(
             url=source_url,

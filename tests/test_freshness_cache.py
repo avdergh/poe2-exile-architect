@@ -399,7 +399,7 @@ def test_force_refresh_respects_minimum_interval(tmp_path):
 
     assert result.cache_state is CacheState.FRESH
     assert transport.requests == []
-    assert result.diagnostics == ("force refresh suppressed by minimum interval",)
+    assert result.diagnostics == ("refresh attempt suppressed by minimum interval",)
 
 
 def test_force_refresh_bypasses_refresh_after_once_minimum_interval_elapsed(tmp_path):
@@ -446,7 +446,61 @@ def test_failed_force_refresh_attempt_throttles_next_force_request(tmp_path):
 
     assert first.cache_state is CacheState.FALLBACK
     assert second.cache_state is CacheState.FALLBACK
-    assert second.diagnostics == ("force refresh suppressed by minimum interval",)
+    assert second.diagnostics == ("refresh attempt suppressed by minimum interval",)
+    assert len(transport.requests) == 1
+
+
+def test_failed_expired_refresh_throttles_later_ordinary_call(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    store.save(
+        make_envelope(
+            fetched_at=NOW - timedelta(minutes=20),
+            checked_at=NOW - timedelta(minutes=20),
+        )
+    )
+    throttle = RefreshAttemptThrottle()
+    transport = RecordingTransport(TransportError("offline"))
+
+    first = run(
+        store,
+        transport,
+        now=NOW,
+        attempt_throttle=throttle,
+    )
+    second = run(
+        store,
+        transport,
+        now=NOW + timedelta(seconds=30),
+        attempt_throttle=throttle,
+    )
+
+    assert first.cache_state is CacheState.FALLBACK
+    assert second.cache_state is CacheState.FALLBACK
+    assert second.diagnostics == ("refresh attempt suppressed by minimum interval",)
+    assert len(transport.requests) == 1
+
+
+def test_failed_missing_cache_refresh_throttles_later_ordinary_call(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    throttle = RefreshAttemptThrottle()
+    transport = RecordingTransport(TransportError("offline"))
+
+    first = run(
+        store,
+        transport,
+        now=NOW,
+        attempt_throttle=throttle,
+    )
+    second = run(
+        store,
+        transport,
+        now=NOW + timedelta(seconds=30),
+        attempt_throttle=throttle,
+    )
+
+    assert first.cache_state is CacheState.MISSING
+    assert second.cache_state is CacheState.MISSING
+    assert second.diagnostics == ("refresh attempt suppressed by minimum interval",)
     assert len(transport.requests) == 1
 
 
