@@ -4,6 +4,10 @@ You have a PoE2 toolset with two halves: a **knowledge corpus** (offline game fa
 **Path of Building compute engine** (real build math). Read this once — it's how the tools fit
 together and how to avoid the common mistakes.
 
+Before describing a build as current-season verified, call `get_freshness_report`. Only
+`verified_current` permits that label. `current_unmodelled` requires an explicit calculation
+caveat; every `blocked_*` result requires reporting its blockers instead of guessing.
+
 ## Operating discipline (the rules that matter most)
 
 1. **Never state a build number the engine didn't produce.** DPS, EHP, life/ES, resistances,

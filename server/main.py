@@ -36,6 +36,7 @@ from .live import prices as live_prices
 from .live import update as live_update
 from .live import version as live_version
 from .live import wiki as live_wiki
+from .freshness import service as freshness_service
 
 # Operating guide handed to the LLM client (surfaced as "MCP Server Instructions").
 # Sourced from a bundled markdown file so it's both human-editable and actually delivered;
@@ -957,7 +958,9 @@ def optimize_build(
 def _server_version() -> str:
     """The installed server (code) version, read from the bundled manifest."""
     try:
-        return json.loads((paths.BUNDLE_ROOT / "manifest.json").read_text()).get(
+        # Repository manifests are UTF-8 and contain Unicode punctuation. Relying on the
+        # Windows locale here makes valid installs report "unknown" on GBK systems.
+        return json.loads((paths.BUNDLE_ROOT / "manifest.json").read_text(encoding="utf-8")).get(
             "version", "unknown"
         )
     except (OSError, ValueError):
@@ -1336,9 +1339,28 @@ def lookup_mechanic(topic: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_freshness_report() -> dict[str, Any]:
+    """Return the strict cross-source freshness gate used before claiming a current-season build.
+
+    Missing official patch/tree/league or meta evidence is a blocker, even when the local corpus
+    is the newest validated release. The report includes source-level evidence and reasons.
+    """
+    return freshness_service.get_freshness_report()
+
+
+@mcp.tool()
 def check_data_version() -> dict[str, Any]:
-    """Compare the bundled game-data corpus against upstream and report the current league."""
-    return live_version.check_data_version()
+    """Compatibility wrapper around the strict freshness report plus the legacy corpus probe.
+
+    The RePoE timestamp only describes one corpus input and can never promote the overall result
+    to current-season verified.
+    """
+    freshness = freshness_service.get_freshness_report()
+    return {
+        "recommendation": freshness["decision"],
+        "freshness": freshness,
+        "legacy_corpus_probe": live_version.check_data_version(),
+    }
 
 
 @mcp.tool()

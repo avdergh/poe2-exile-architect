@@ -27,7 +27,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 64
+    assert len(tools) == 65
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -43,6 +43,7 @@ def test_tool_surface_intact():
         "relevant_uniques",
         "optimize_build",
         "craft_item",
+        "get_freshness_report",
     } <= names
 
 
@@ -201,11 +202,24 @@ def test_build_advice_sections():
     assert advice.advise("crit").get("topic")
 
 
-def test_server_version_matches_manifest():
+def test_server_version_reads_utf8_manifest(monkeypatch):
     import json
+    from pathlib import Path
 
     from server import paths
     from server.main import _server_version
 
-    expected = json.loads((paths.BUNDLE_ROOT / "manifest.json").read_text())["version"]
+    manifest = paths.BUNDLE_ROOT / "manifest.json"
+    expected = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+    original_read_text = Path.read_text
+    observed_encoding = None
+
+    def recording_read_text(path, *args, **kwargs):
+        nonlocal observed_encoding
+        if path == manifest:
+            observed_encoding = kwargs.get("encoding") or (args[0] if args else None)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
     assert _server_version() == expected
+    assert observed_encoding == "utf-8"

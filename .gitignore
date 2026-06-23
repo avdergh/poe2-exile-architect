@@ -6,6 +6,8 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.tools/
+.runtime-data/
 
 # Build artifacts / generated data (corpus is a release asset, not source)
 data/corpus.sqlite
