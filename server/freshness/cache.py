@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import hashlib
@@ -9,8 +10,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from threading import Lock
-from typing import Any, Callable, Mapping, Protocol
+from threading import Event, Lock
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 from .provider_models import CachePolicy, CacheState
 
@@ -62,6 +63,38 @@ class RefreshAttemptThrottle:
             # Record before transport so failures and concurrent callers are throttled too.
             self._last_attempts[key] = now
             return True
+
+
+class RefreshCoordinator:
+    """Coordinate one in-flight refresh per source/cache key."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._flights: dict[tuple[str, str], Event] = {}
+
+    @contextmanager
+    def flight(self, *, source: str, cache_key: str) -> Iterator[bool]:
+        key = (source, cache_key)
+        with self._lock:
+            event = self._flights.get(key)
+            leader = event is None
+            if leader:
+                event = Event()
+                self._flights[key] = event
+
+        assert event is not None
+        if not leader:
+            # Waiting never holds the coordinator lock, so unrelated keys remain independent.
+            event.wait()
+            yield False
+            return
+
+        try:
+            yield True
+        finally:
+            with self._lock:
+                self._flights.pop(key, None)
+                event.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +355,29 @@ def _suppressed_force_result(
     )
 
 
+def _load_available_cache(
+    store: FileCacheStore,
+    diagnostics: list[str],
+) -> CacheEnvelope | None:
+    try:
+        return store.load()
+    except CacheError as exc:
+        diagnostics.append(f"cache unavailable: {exc}")
+        return None
+
+
+def _fresh_result(
+    envelope: CacheEnvelope,
+    diagnostics: list[str],
+) -> CacheRunResult:
+    return CacheRunResult(
+        envelope=envelope,
+        cache_state=CacheState.FRESH,
+        hard_stale=False,
+        diagnostics=tuple(diagnostics),
+    )
+
+
 def run_cached(
     *,
     source: str,
@@ -332,18 +388,15 @@ def run_cached(
     transport: Transport,
     parse: Callable[[bytes], Mapping[str, Any]],
     attempt_throttle: RefreshAttemptThrottle,
+    refresh_coordinator: RefreshCoordinator,
     force_refresh: bool = False,
 ) -> CacheRunResult:
     """Run one conditional refresh without owning any concrete network implementation."""
 
     _require_aware(now, "now")
     diagnostics: list[str] = []
-    try:
-        envelope = store.load()
-    except CacheError as exc:
-        # Corrupt or unreadable cache is untrusted input, so refresh as if it did not exist.
-        diagnostics.append(f"cache unavailable: {exc}")
-        envelope = None
+    # Corrupt or unreadable cache is untrusted input, so refresh as if it did not exist.
+    envelope = _load_available_cache(store, diagnostics)
 
     if envelope is not None:
         age = now - envelope.checked_at
@@ -356,12 +409,7 @@ def run_cached(
                 diagnostics=diagnostics,
             )
         if not force_refresh and age < policy.refresh_after:
-            return CacheRunResult(
-                envelope=envelope,
-                cache_state=CacheState.FRESH,
-                hard_stale=False,
-                diagnostics=tuple(diagnostics),
-            )
+            return _fresh_result(envelope, diagnostics)
 
     if force_refresh and not attempt_throttle.claim(
         source=source,
@@ -377,74 +425,103 @@ def run_cached(
             diagnostics=diagnostics,
         )
 
-    request = TransportRequest(
-        url=source_url,
-        headers=_conditional_headers(envelope),
-    )
-    try:
-        response = transport(request)
-    except TransportError as exc:
-        # Only normalized transport failures degrade to cache; programming errors stay visible.
-        diagnostics.append(f"transport failed: {exc}")
-        return _fallback_result(
-            envelope,
-            now=now,
-            policy=policy,
-            diagnostics=diagnostics,
-        )
+    with refresh_coordinator.flight(source=source, cache_key=store.cache_key) as leader:
+        if not leader:
+            reloaded = _load_available_cache(store, diagnostics)
+            if reloaded is not None and now - reloaded.checked_at < policy.refresh_after:
+                return _fresh_result(reloaded, diagnostics)
+            return _fallback_result(
+                reloaded,
+                now=now,
+                policy=policy,
+                diagnostics=diagnostics,
+            )
 
-    if response.status_code == 304:
-        if envelope is None:
-            raise ValueError("transport returned 304 without a cache validator")
-        revalidated = CacheEnvelope.create(
-            source=envelope.source,
-            source_url=envelope.source_url,
-            fetched_at=envelope.fetched_at,
-            checked_at=now,
-            etag=envelope.etag,
-            last_modified=envelope.last_modified,
-            payload=envelope.payload,
+        # Re-read after claiming leadership: a preceding flight may have completed after our
+        # initial stale read but before this flight was registered.
+        reloaded = _load_available_cache(store, diagnostics)
+        if reloaded is not None:
+            age = now - reloaded.checked_at
+            if force_refresh and age < policy.minimum_force_interval:
+                diagnostics.append("force refresh suppressed by minimum interval")
+                return _suppressed_force_result(
+                    reloaded,
+                    now=now,
+                    policy=policy,
+                    diagnostics=diagnostics,
+                )
+            if not force_refresh and age < policy.refresh_after:
+                return _fresh_result(reloaded, diagnostics)
+        envelope = reloaded
+
+        request = TransportRequest(
+            url=source_url,
+            headers=_conditional_headers(envelope),
         )
-        state = CacheState.REVALIDATED
-        refreshed = revalidated
-    elif response.status_code == 200:
         try:
-            payload = parse(response.body)
-        except (UnicodeDecodeError, json.JSONDecodeError, PayloadParseError) as exc:
-            # Providers normalize expected shape changes; arbitrary code errors must still escape.
-            diagnostics.append(f"payload parse failed: {exc}")
+            response = transport(request)
+        except TransportError as exc:
+            # Only normalized transport failures degrade to cache; programming errors stay visible.
+            diagnostics.append(f"transport failed: {exc}")
             return _fallback_result(
                 envelope,
                 now=now,
                 policy=policy,
                 diagnostics=diagnostics,
             )
-        refreshed = CacheEnvelope.create(
-            source=source,
-            source_url=source_url,
-            fetched_at=now,
-            checked_at=now,
-            etag=_response_header(response, "ETag"),
-            last_modified=_response_header(response, "Last-Modified"),
-            payload=payload,
-        )
-        state = CacheState.REFRESHED
-    else:
-        raise ValueError(f"transport returned unsupported status {response.status_code}")
 
-    try:
-        store.save(refreshed)
-    except CacheError as exc:
-        diagnostics.append(f"cache write failed: {exc}")
-        return _fallback_result(
-            envelope,
-            now=now,
-            policy=policy,
-            diagnostics=diagnostics,
+        if response.status_code == 304:
+            if envelope is None:
+                raise ValueError("transport returned 304 without a cache validator")
+            revalidated = CacheEnvelope.create(
+                source=envelope.source,
+                source_url=envelope.source_url,
+                fetched_at=envelope.fetched_at,
+                checked_at=now,
+                etag=envelope.etag,
+                last_modified=envelope.last_modified,
+                payload=envelope.payload,
+            )
+            state = CacheState.REVALIDATED
+            refreshed = revalidated
+        elif response.status_code == 200:
+            try:
+                payload = parse(response.body)
+            except (UnicodeDecodeError, json.JSONDecodeError, PayloadParseError) as exc:
+                # Providers normalize expected shape changes; arbitrary code errors must escape.
+                diagnostics.append(f"payload parse failed: {exc}")
+                return _fallback_result(
+                    envelope,
+                    now=now,
+                    policy=policy,
+                    diagnostics=diagnostics,
+                )
+            refreshed = CacheEnvelope.create(
+                source=source,
+                source_url=source_url,
+                fetched_at=now,
+                checked_at=now,
+                etag=_response_header(response, "ETag"),
+                last_modified=_response_header(response, "Last-Modified"),
+                payload=payload,
+            )
+            state = CacheState.REFRESHED
+        else:
+            raise ValueError(f"transport returned unsupported status {response.status_code}")
+
+        try:
+            store.save(refreshed)
+        except CacheError as exc:
+            diagnostics.append(f"cache write failed: {exc}")
+            return _fallback_result(
+                envelope,
+                now=now,
+                policy=policy,
+                diagnostics=diagnostics,
+            )
+        return CacheRunResult(
+            envelope=refreshed,
+            cache_state=state,
+            hard_stale=False,
+            diagnostics=tuple(diagnostics),
         )
-    return CacheRunResult(
-        envelope=refreshed,
-        cache_state=state,
-        hard_stale=False,
-        diagnostics=tuple(diagnostics),
-    )

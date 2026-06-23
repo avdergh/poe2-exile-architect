@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
-from threading import Barrier
+from threading import Barrier, Event, Lock
 
 import pytest
 
@@ -16,6 +16,7 @@ from server.freshness.cache import (
     CacheIOError,
     FileCacheStore,
     RefreshAttemptThrottle,
+    RefreshCoordinator,
     TransportError,
     TransportRequest,
     TransportResponse,
@@ -71,6 +72,7 @@ def run(
     now: datetime = NOW,
     force_refresh: bool = False,
     attempt_throttle: RefreshAttemptThrottle | None = None,
+    refresh_coordinator: RefreshCoordinator | None = None,
 ):
     return run_cached(
         source="ggg-patch",
@@ -82,6 +84,7 @@ def run(
         parse=parse_json_object,
         force_refresh=force_refresh,
         attempt_throttle=attempt_throttle or RefreshAttemptThrottle(),
+        refresh_coordinator=refresh_coordinator or RefreshCoordinator(),
     )
 
 
@@ -494,3 +497,106 @@ def test_refresh_attempt_throttle_allows_only_one_concurrent_claim():
         claims = list(executor.map(lambda _: claim(), range(8)))
 
     assert claims.count(True) == 1
+
+
+class BlockingRevalidationTransport:
+    def __init__(self) -> None:
+        self.requests: list[TransportRequest] = []
+        self.first_started = Event()
+        self.second_started = Event()
+        self.release = Event()
+        self._lock = Lock()
+
+    def __call__(self, request: TransportRequest) -> TransportResponse:
+        with self._lock:
+            self.requests.append(request)
+            call_count = len(self.requests)
+            if call_count == 1:
+                self.first_started.set()
+            else:
+                self.second_started.set()
+        assert self.release.wait(timeout=2)
+        return TransportResponse(status_code=304)
+
+
+def test_expired_refresh_is_single_flight_and_waiter_reloads_cache(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    store.save(
+        make_envelope(
+            fetched_at=NOW - timedelta(hours=1),
+            checked_at=NOW - timedelta(minutes=20),
+        )
+    )
+    coordinator = RefreshCoordinator()
+    transport = BlockingRevalidationTransport()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        leader = executor.submit(
+            run,
+            store,
+            transport,
+            now=NOW,
+            refresh_coordinator=coordinator,
+        )
+        assert transport.first_started.wait(timeout=2)
+        waiter = executor.submit(
+            run,
+            store,
+            transport,
+            now=NOW,
+            refresh_coordinator=coordinator,
+        )
+        duplicate_started = transport.second_started.wait(timeout=0.25)
+        transport.release.set()
+        results = (leader.result(timeout=2), waiter.result(timeout=2))
+
+    assert duplicate_started is False
+    assert len(transport.requests) == 1
+    assert {result.cache_state for result in results} == {
+        CacheState.FRESH,
+        CacheState.REVALIDATED,
+    }
+    assert all(result.envelope is not None for result in results)
+    assert all(result.envelope.checked_at == NOW for result in results if result.envelope)
+
+
+class ParallelRevalidationTransport:
+    def __init__(self) -> None:
+        self.barrier = Barrier(2)
+        self.requests: list[TransportRequest] = []
+        self._lock = Lock()
+
+    def __call__(self, request: TransportRequest) -> TransportResponse:
+        with self._lock:
+            self.requests.append(request)
+        self.barrier.wait(timeout=2)
+        return TransportResponse(status_code=304)
+
+
+def test_expired_refreshes_for_different_cache_keys_run_in_parallel(tmp_path):
+    first_store = FileCacheStore(tmp_path / "first.json")
+    second_store = FileCacheStore(tmp_path / "second.json")
+    expired = make_envelope(
+        fetched_at=NOW - timedelta(hours=1),
+        checked_at=NOW - timedelta(minutes=20),
+    )
+    first_store.save(expired)
+    second_store.save(expired)
+    coordinator = RefreshCoordinator()
+    transport = ParallelRevalidationTransport()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(
+            executor.map(
+                lambda store: run(
+                    store,
+                    transport,
+                    now=NOW,
+                    refresh_coordinator=coordinator,
+                ),
+                (first_store, second_store),
+            )
+        )
+
+    assert len(transport.requests) == 2
+    assert all(result.cache_state is CacheState.REVALIDATED for result in results)
