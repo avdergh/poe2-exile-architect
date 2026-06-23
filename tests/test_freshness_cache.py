@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
+from threading import Barrier
 
 import pytest
 
@@ -13,6 +15,7 @@ from server.freshness.cache import (
     CacheFormatError,
     CacheIOError,
     FileCacheStore,
+    RefreshAttemptThrottle,
     TransportError,
     TransportRequest,
     TransportResponse,
@@ -67,6 +70,7 @@ def run(
     *,
     now: datetime = NOW,
     force_refresh: bool = False,
+    attempt_throttle: RefreshAttemptThrottle | None = None,
 ):
     return run_cached(
         source="ggg-patch",
@@ -77,6 +81,7 @@ def run(
         transport=transport,
         parse=parse_json_object,
         force_refresh=force_refresh,
+        attempt_throttle=attempt_throttle or RefreshAttemptThrottle(),
     )
 
 
@@ -297,6 +302,23 @@ def test_response_json_error_uses_fallback_without_replacing_cache(tmp_path):
     assert result.diagnostics and result.diagnostics[0].startswith("payload parse failed:")
 
 
+def test_response_invalid_utf8_uses_fallback_without_replacing_cache(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    old = make_envelope(
+        fetched_at=NOW - timedelta(hours=1),
+        checked_at=NOW - timedelta(minutes=20),
+    )
+    store.save(old)
+    transport = RecordingTransport(TransportResponse(status_code=200, body=b"\xff"))
+
+    result = run(store, transport)
+
+    assert result.cache_state is CacheState.FALLBACK
+    assert result.envelope == old
+    assert store.load() == old
+    assert result.diagnostics and result.diagnostics[0].startswith("payload parse failed:")
+
+
 def test_corrupt_cache_behaves_as_missing_and_is_replaced(tmp_path):
     path = tmp_path / "ggg-patch.json"
     path.write_text("{broken", encoding="utf-8")
@@ -318,6 +340,19 @@ def test_corrupt_cache_behaves_as_missing_and_is_replaced(tmp_path):
         )
     ]
     assert result.diagnostics and result.diagnostics[0].startswith("cache unavailable:")
+
+
+def test_invalid_utf8_cache_behaves_as_missing(tmp_path):
+    path = tmp_path / "ggg-patch.json"
+    path.write_bytes(b"\xff")
+    store = FileCacheStore(path)
+    transport = RecordingTransport(TransportError("offline"))
+
+    result = run(store, transport)
+
+    assert result.cache_state is CacheState.MISSING
+    assert result.envelope is None
+    assert result.diagnostics[0].startswith("cache unavailable:")
 
 
 def test_cache_with_invalid_field_type_behaves_as_missing(tmp_path):
@@ -378,3 +413,84 @@ def test_force_refresh_bypasses_refresh_after_once_minimum_interval_elapsed(tmp_
 
     assert result.cache_state is CacheState.REVALIDATED
     assert len(transport.requests) == 1
+
+
+def test_failed_force_refresh_attempt_throttles_next_force_request(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    store.save(
+        make_envelope(
+            fetched_at=NOW - timedelta(minutes=20),
+            checked_at=NOW - timedelta(minutes=20),
+        )
+    )
+    throttle = RefreshAttemptThrottle()
+    transport = RecordingTransport(TransportError("offline"))
+
+    first = run(
+        store,
+        transport,
+        now=NOW,
+        force_refresh=True,
+        attempt_throttle=throttle,
+    )
+    second = run(
+        store,
+        transport,
+        now=NOW + timedelta(seconds=30),
+        force_refresh=True,
+        attempt_throttle=throttle,
+    )
+
+    assert first.cache_state is CacheState.FALLBACK
+    assert second.cache_state is CacheState.FALLBACK
+    assert second.diagnostics == ("force refresh suppressed by minimum interval",)
+    assert len(transport.requests) == 1
+
+
+def test_refresh_attempt_throttle_isolates_cache_and_source_keys():
+    throttle = RefreshAttemptThrottle()
+    interval = timedelta(seconds=60)
+
+    assert throttle.claim(
+        source="ggg-patch",
+        cache_key="cache-a",
+        now=NOW,
+        minimum_interval=interval,
+    )
+    assert not throttle.claim(
+        source="ggg-patch",
+        cache_key="cache-a",
+        now=NOW + timedelta(seconds=30),
+        minimum_interval=interval,
+    )
+    assert throttle.claim(
+        source="ggg-patch",
+        cache_key="cache-b",
+        now=NOW + timedelta(seconds=30),
+        minimum_interval=interval,
+    )
+    assert throttle.claim(
+        source="ggg-tree",
+        cache_key="cache-a",
+        now=NOW + timedelta(seconds=30),
+        minimum_interval=interval,
+    )
+
+
+def test_refresh_attempt_throttle_allows_only_one_concurrent_claim():
+    throttle = RefreshAttemptThrottle()
+    barrier = Barrier(8)
+
+    def claim() -> bool:
+        barrier.wait()
+        return throttle.claim(
+            source="ggg-patch",
+            cache_key="cache-a",
+            now=NOW,
+            minimum_interval=timedelta(seconds=60),
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        claims = list(executor.map(lambda _: claim(), range(8)))
+
+    assert claims.count(True) == 1

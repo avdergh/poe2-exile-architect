@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
+from threading import Lock
 from typing import Any, Callable, Mapping, Protocol
 
 from .provider_models import CachePolicy, CacheState
@@ -35,6 +36,32 @@ class TransportError(Exception):
 
 class PayloadParseError(Exception):
     """A normalized failure caused by an upstream response shape change."""
+
+
+class RefreshAttemptThrottle:
+    """Thread-safe force-refresh attempt tracking with caller-supplied time."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._last_attempts: dict[tuple[str, str], datetime] = {}
+
+    def claim(
+        self,
+        *,
+        source: str,
+        cache_key: str,
+        now: datetime,
+        minimum_interval: timedelta,
+    ) -> bool:
+        _require_aware(now, "now")
+        key = (source, cache_key)
+        with self._lock:
+            previous = self._last_attempts.get(key)
+            if previous is not None and now - previous < minimum_interval:
+                return False
+            # Record before transport so failures and concurrent callers are throttled too.
+            self._last_attempts[key] = now
+            return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,12 +205,16 @@ class FileCacheStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
+    @property
+    def cache_key(self) -> str:
+        return os.path.normcase(str(self.path.resolve()))
+
     def load(self) -> CacheEnvelope | None:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except json.JSONDecodeError as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CacheFormatError(f"invalid cache JSON: {exc}") from exc
         except OSError as exc:
             raise CacheIOError(f"unable to read cache {self.path}: {exc}") from exc
@@ -269,6 +300,28 @@ def _fallback_result(
     )
 
 
+def _suppressed_force_result(
+    envelope: CacheEnvelope | None,
+    *,
+    now: datetime,
+    policy: CachePolicy,
+    diagnostics: list[str],
+) -> CacheRunResult:
+    if envelope is not None and now - envelope.checked_at < policy.refresh_after:
+        return CacheRunResult(
+            envelope=envelope,
+            cache_state=CacheState.FRESH,
+            hard_stale=False,
+            diagnostics=tuple(diagnostics),
+        )
+    return _fallback_result(
+        envelope,
+        now=now,
+        policy=policy,
+        diagnostics=diagnostics,
+    )
+
+
 def run_cached(
     *,
     source: str,
@@ -278,6 +331,7 @@ def run_cached(
     store: FileCacheStore,
     transport: Transport,
     parse: Callable[[bytes], Mapping[str, Any]],
+    attempt_throttle: RefreshAttemptThrottle,
     force_refresh: bool = False,
 ) -> CacheRunResult:
     """Run one conditional refresh without owning any concrete network implementation."""
@@ -295,11 +349,11 @@ def run_cached(
         age = now - envelope.checked_at
         if force_refresh and age < policy.minimum_force_interval:
             diagnostics.append("force refresh suppressed by minimum interval")
-            return CacheRunResult(
-                envelope=envelope,
-                cache_state=CacheState.FRESH,
-                hard_stale=False,
-                diagnostics=tuple(diagnostics),
+            return _suppressed_force_result(
+                envelope,
+                now=now,
+                policy=policy,
+                diagnostics=diagnostics,
             )
         if not force_refresh and age < policy.refresh_after:
             return CacheRunResult(
@@ -308,6 +362,20 @@ def run_cached(
                 hard_stale=False,
                 diagnostics=tuple(diagnostics),
             )
+
+    if force_refresh and not attempt_throttle.claim(
+        source=source,
+        cache_key=store.cache_key,
+        now=now,
+        minimum_interval=policy.minimum_force_interval,
+    ):
+        diagnostics.append("force refresh suppressed by minimum interval")
+        return _suppressed_force_result(
+            envelope,
+            now=now,
+            policy=policy,
+            diagnostics=diagnostics,
+        )
 
     request = TransportRequest(
         url=source_url,
@@ -342,7 +410,7 @@ def run_cached(
     elif response.status_code == 200:
         try:
             payload = parse(response.body)
-        except (json.JSONDecodeError, PayloadParseError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, PayloadParseError) as exc:
             # Providers normalize expected shape changes; arbitrary code errors must still escape.
             diagnostics.append(f"payload parse failed: {exc}")
             return _fallback_result(
