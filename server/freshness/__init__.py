@@ -1,5 +1,20 @@
 """Public freshness-domain API."""
 
+from .cache import (
+    CacheEnvelope,
+    CacheError,
+    CacheFormatError,
+    CacheIOError,
+    CacheRunResult,
+    FileCacheStore,
+    PayloadParseError,
+    Transport,
+    TransportError,
+    TransportRequest,
+    TransportResponse,
+    canonical_payload_sha256,
+    run_cached,
+)
 from .evaluator import evaluate_freshness
 from .models import (
     ClaimDimension,
@@ -11,15 +26,38 @@ from .models import (
     SourceStatus,
     VersionClaim,
 )
+from .provider_models import (
+    CachePolicy,
+    CacheState,
+    EvidenceProvider,
+    ProviderResult,
+)
 
 __all__ = [
+    "CacheEnvelope",
+    "CacheError",
+    "CacheFormatError",
+    "CacheIOError",
+    "CachePolicy",
+    "CacheRunResult",
+    "CacheState",
     "Component",
     "ClaimDimension",
+    "EvidenceProvider",
     "FreshnessDecision",
     "FreshnessEvidence",
     "FreshnessManifest",
     "FreshnessReport",
+    "FileCacheStore",
+    "PayloadParseError",
+    "ProviderResult",
     "SourceStatus",
+    "Transport",
+    "TransportError",
+    "TransportRequest",
+    "TransportResponse",
     "VersionClaim",
+    "canonical_payload_sha256",
     "evaluate_freshness",
+    "run_cached",
 ]
