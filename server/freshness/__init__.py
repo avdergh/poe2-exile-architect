@@ -1,6 +1,7 @@
 """Public freshness-domain API."""
 
 from .cache import (
+    DEFAULT_REFRESH_WAIT_TIMEOUT_SECONDS,
     CacheEnvelope,
     CacheError,
     CacheFormatError,
@@ -45,6 +46,7 @@ __all__ = [
     "CacheState",
     "Component",
     "ClaimDimension",
+    "DEFAULT_REFRESH_WAIT_TIMEOUT_SECONDS",
     "EvidenceProvider",
     "FreshnessDecision",
     "FreshnessEvidence",
