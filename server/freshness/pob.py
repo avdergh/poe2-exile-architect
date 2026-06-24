@@ -165,6 +165,8 @@ def resolve_compatibility(
     commit = local_commit.strip().lower()
     if any(character not in string.hexdigits for character in commit):
         raise PobParseError("local PoB commit is not hexadecimal")
+    if len(commit) > 40:
+        raise PobParseError("local PoB commit is longer than a full hash")
 
     exact = [entry for entry in manifest.entries if entry.commit == commit]
     if exact:
@@ -348,13 +350,17 @@ class PobProvider:
         remote_release: PobRelease | None = None
         observed_at = now
         if cache_result.envelope is not None:
-            observed_at = cache_result.envelope.checked_at
-            try:
-                remote_release = _release_from_payload(cache_result.envelope.payload)
-            except PobParseError as exc:
-                diagnostics.append(f"cached payload invalid: {exc}")
-        if cache_result.hard_stale:
-            diagnostics.append("remote PoB release cache exceeded reject_after")
+            if cache_result.hard_stale:
+                diagnostics.append(
+                    "hard-stale remote PoB release cache exceeded reject_after; "
+                    "ignoring cached remote release"
+                )
+            else:
+                observed_at = cache_result.envelope.checked_at
+                try:
+                    remote_release = _release_from_payload(cache_result.envelope.payload)
+                except PobParseError as exc:
+                    diagnostics.append(f"cached payload invalid: {exc}")
 
         try:
             metadata = self._local_metadata()
@@ -368,9 +374,13 @@ class PobProvider:
         compatibility_error: str | None = None
         try:
             manifest = load_compatibility_manifest(self._manifest_path)
-            compatibility = resolve_compatibility(local_commit, manifest)
         except PobParseError as exc:
             compatibility_error = f"compatibility manifest invalid: {exc}"
+        else:
+            try:
+                compatibility = resolve_compatibility(local_commit, manifest)
+            except PobParseError as exc:
+                compatibility_error = f"local PoB commit invalid: {exc}"
 
         return shape_pob_evidence(
             local_commit=local_commit,

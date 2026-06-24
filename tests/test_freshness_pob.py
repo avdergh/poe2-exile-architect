@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from datetime import timedelta
 import json
 from pathlib import Path
 from typing import Any
@@ -358,6 +359,69 @@ def test_remote_fetch_failure_with_no_cache_emits_unknown_without_crash(tmp_path
     assert all(evidence.status is SourceStatus.UNKNOWN for evidence in result.evidence)
     assert all(evidence.claims == () for evidence in result.evidence)
     assert any("offline" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_hard_stale_remote_cache_with_transport_failure_does_not_mark_unknown_manifest_commit_stale(
+    tmp_path,
+):
+    provider, transport = make_provider(
+        tmp_path,
+        manifest_entries=[],
+        local_metadata={"version": "v0.1.39", "pob_commit": LOCAL_PIN},
+    )
+    provider.collect(now=NOW)
+    transport.outcomes[POB_RELEASE_API_URL] = TransportError("offline")
+
+    result = provider.collect(now=NOW + timedelta(hours=7))
+
+    assert result.cache_state is CacheState.FALLBACK
+    assert all(evidence.status is SourceStatus.UNKNOWN for evidence in result.evidence)
+    assert all(evidence.claims == () for evidence in result.evidence)
+    assert all(evidence.source_url == POB_RELEASE_API_URL for evidence in result.evidence)
+    assert any("hard-stale" in diagnostic or "reject_after" in diagnostic for diagnostic in result.diagnostics)
+    assert any("remote" in diagnostic and "cache" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_hard_stale_remote_cache_with_transport_failure_keeps_manifest_claims_without_remote_url(
+    tmp_path,
+):
+    provider, transport = make_provider(
+        tmp_path,
+        manifest_entries=[compatibility_entry()],
+        local_metadata={"version": "v0.21.1", "pob_commit": VERIFIED_COMMIT},
+    )
+    provider.collect(now=NOW)
+    transport.outcomes[POB_RELEASE_API_URL] = TransportError("offline")
+
+    result = provider.collect(now=NOW + timedelta(hours=7))
+
+    assert result.cache_state is CacheState.FALLBACK
+    for evidence in result.evidence:
+        assert evidence.status is SourceStatus.CURRENT
+        assert evidence.source_url == POB_RELEASE_API_URL
+        assert claim_pairs(evidence) == [
+            (ClaimDimension.GAME_PATCH, "0.5.3"),
+            (ClaimDimension.PASSIVE_TREE, "0_5"),
+        ]
+    assert any("hard-stale" in diagnostic or "reject_after" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_overlong_hex_local_commit_emits_unknown_without_claims(tmp_path):
+    overlong_commit = "a" * 41
+    provider, _transport = make_provider(
+        tmp_path,
+        manifest_entries=[compatibility_entry(commit="a" * 40)],
+        local_metadata={"version": "v0.21.1", "pob_commit": overlong_commit},
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert all(evidence.status is SourceStatus.UNKNOWN for evidence in result.evidence)
+    assert all(evidence.claims == () for evidence in result.evidence)
+    assert any(
+        "longer than full hash" in diagnostic or "longer than a full hash" in diagnostic
+        for diagnostic in result.diagnostics
+    )
 
 
 def test_initial_repository_manifest_does_not_pre_authorize_current_pin():
