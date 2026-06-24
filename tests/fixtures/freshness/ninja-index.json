@@ -1,0 +1,73 @@
+{
+  "buildLeagues": [
+    {
+      "name": "Runes of Aldur",
+      "displayName": "Runes of Aldur",
+      "url": "runes-of-aldur"
+    },
+    {
+      "name": "HC Runes of Aldur",
+      "displayName": "HC Runes of Aldur",
+      "url": "hc-runes-of-aldur",
+      "hardcore": true
+    },
+    {
+      "name": "SSF Runes of Aldur",
+      "displayName": "SSF Runes of Aldur",
+      "url": "ssf-runes-of-aldur"
+    },
+    {
+      "name": "Standard",
+      "displayName": "Standard",
+      "url": "standard"
+    },
+    {
+      "name": "Dawn of the Hunt",
+      "displayName": "Dawn of the Hunt",
+      "url": "dawn-of-the-hunt"
+    },
+    {
+      "name": "Runes of Aldur PL123",
+      "displayName": "Runes of Aldur PL123",
+      "url": "runes-of-aldur-pl123"
+    }
+  ],
+  "snapshotVersions": [
+    {
+      "name": "Runes of Aldur",
+      "url": "runes-of-aldur",
+      "version": "0137-20260624-38624",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "HC Runes of Aldur",
+      "url": "hc-runes-of-aldur",
+      "version": "0138-20260625-10000",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "SSF Runes of Aldur",
+      "url": "ssf-runes-of-aldur",
+      "version": "0138-20260625-10001",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "Standard",
+      "url": "standard",
+      "version": "0139-20260626-10002",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "Dawn of the Hunt",
+      "url": "dawn-of-the-hunt",
+      "version": "0120-20260404-10003",
+      "passiveTree": "PassiveTree-0.4"
+    },
+    {
+      "name": "Runes of Aldur PL123",
+      "url": "runes-of-aldur-pl123",
+      "version": "0140-20260627-10004",
+      "passiveTree": "PassiveTree-0.5"
+    }
+  ]
+}
