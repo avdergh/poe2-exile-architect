@@ -338,8 +338,9 @@ def _commit_version(
     commit: Mapping[str, Any],
     label: str,
 ) -> tuple[str, str, str] | None:
+    message = _commit_message(commit, label)
     try:
-        return _three_part_version(_commit_message(commit, label), f"{label} version")
+        return _three_part_version(message, f"{label} version")
     except GGGParseError:
         return None
 

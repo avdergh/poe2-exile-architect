@@ -235,6 +235,32 @@ def test_official_tree_falls_back_to_release_tag_for_non_version_data_commit_mes
     assert tree.tree_series == "0_5"
 
 
+@pytest.mark.parametrize(
+    ("commit_details", "expected_message"),
+    [
+        (None, "details"),
+        ({}, "message"),
+        ({"message": ""}, "message"),
+    ],
+)
+def test_official_tree_rejects_unexpected_data_commit_message_shape(
+    commit_details,
+    expected_message,
+):
+    data_commit = read_json("ggg-tree-data-commit.json")
+    if commit_details is None:
+        del data_commit[0]["commit"]
+    else:
+        data_commit[0]["commit"] = commit_details
+
+    with pytest.raises(ValueError, match=expected_message):
+        parse_official_tree(
+            read_json("ggg-tree-release.json"),
+            read_json("ggg-tree-commit.json"),
+            data_commit,
+        )
+
+
 def test_official_tree_allows_non_version_main_ahead_of_data_commit():
     main_commit = read_json("ggg-tree-commit.json")
     main_commit["sha"] = "a" * 40
