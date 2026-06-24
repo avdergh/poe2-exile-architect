@@ -100,6 +100,7 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
     index = _mapping(index_json, "index")
     build_index = _mapping(build_index_json, "build index")
     leagues = _sequence(index.get("buildLeagues"), "buildLeagues")
+    old_urls = _old_build_league_urls(index)
     snapshots = _sequence(index.get("snapshotVersions"), "snapshotVersions")
     league_builds = _sequence(build_index.get("leagueBuilds"), "leagueBuilds")
 
@@ -111,7 +112,10 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         league_url = _league_url_token(league.get("url"), "build league URL")
 
         # Exclusion rules intentionally run before parsing snapshots so HC/SSF/Ruthless,
-        # Standard, and private-league rows cannot win merely by having newer versions.
+        # Standard, private-league, and old-league rows cannot win merely by having
+        # newer or remaining versions.
+        if league_url in old_urls:
+            continue
         if _is_excluded_league(
             name=league_name,
             display_name=display_name,
@@ -214,6 +218,20 @@ def _snapshot_entry(snapshot: Mapping[str, Any]) -> _SnapshotEntry:
         passive_tree=passive_tree,
         passive_tree_claim=passive_tree_claim,
     )
+
+
+def _old_build_league_urls(index: Mapping[str, Any]) -> set[str]:
+    if "oldBuildLeagues" not in index:
+        return set()
+    old_leagues = _sequence(index.get("oldBuildLeagues"), "oldBuildLeagues")
+    old_urls: set[str] = set()
+    for raw_league in old_leagues:
+        league = _mapping(raw_league, "old build league")
+        try:
+            old_urls.add(_league_url_token(league.get("url"), "old build league URL"))
+        except NinjaParseError:
+            continue
+    return old_urls
 
 
 def _reject_tree_mismatch(

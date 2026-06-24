@@ -26,6 +26,10 @@ Observed on 2026-06-24:
 
 - `index-state.buildLeagues[]` contains league descriptors such as `Runes of Aldur`,
   HC/SSF variants, `Standard`, and private leagues.
+- `index-state.oldBuildLeagues[]` contains historical build league descriptors.
+  Its `url` tokens are treated as an exclusion set for current softcore trade
+  selection. If the field is absent, the parser defaults the old-league set to
+  empty for compatibility with compact fixtures or schema drift.
 - `index-state.snapshotVersions[]` contains snapshot facts:
   - `name`
   - `url`, the API league URL token, for example `runesofaldur`
@@ -62,6 +66,8 @@ Exclude any candidate when:
 - the URL or name identifies a private league:
   - `PL\d+` in the name, or
   - `pl\d+` in the URL;
+- the URL appears in `oldBuildLeagues[]`, even if the same URL is also present in
+  `buildLeagues[]`, `snapshotVersions[]`, or `leagueBuilds[]`;
 - no matching snapshot exists;
 - no matching build count exists;
 - `total` sample size is missing, zero, or negative.

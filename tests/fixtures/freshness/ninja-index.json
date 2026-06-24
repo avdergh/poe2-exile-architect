@@ -50,6 +50,15 @@
       "indexed": true
     }
   ],
+  "oldBuildLeagues": [
+    {
+      "name": "Dawn of the Hunt",
+      "displayName": "Dawn of the Hunt",
+      "url": "dawnofthehunt",
+      "hardcore": false,
+      "indexed": true
+    }
+  ],
   "snapshotVersions": [
     {
       "name": "Runes of Aldur",

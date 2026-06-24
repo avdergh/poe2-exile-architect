@@ -120,6 +120,45 @@ def test_parse_ninja_snapshot_does_not_assume_first_selectable_league_is_current
     assert snapshot.sample_size == 124302
 
 
+def test_parse_ninja_snapshot_rejects_missing_current_snapshot_without_old_league_fallback():
+    index_json, build_index_json = snapshot_fixture()
+    index_json["snapshotVersions"] = [
+        snapshot
+        for snapshot in index_json["snapshotVersions"]
+        if snapshot["url"] != "runesofaldur"
+    ]
+
+    with pytest.raises(ValueError, match="snapshot|current|league"):
+        parse_ninja_snapshot(index_json, build_index_json)
+
+
+def test_parse_ninja_snapshot_ignores_old_league_first_when_current_snapshot_is_valid():
+    index_json, build_index_json = snapshot_fixture()
+    dawn_league = next(
+        league
+        for league in index_json["buildLeagues"]
+        if league["url"] == "dawnofthehunt"
+    )
+    index_json["buildLeagues"] = [
+        dawn_league,
+        *[
+            league
+            for league in index_json["buildLeagues"]
+            if league["url"] != "dawnofthehunt"
+        ],
+    ]
+    index_json["snapshotVersions"] = [
+        snapshot
+        for snapshot in index_json["snapshotVersions"]
+        if snapshot["url"] != "dawnofthehunt"
+    ]
+
+    snapshot = parse_ninja_snapshot(index_json, build_index_json)
+
+    assert snapshot.league == "Runes of Aldur"
+    assert snapshot.league_url == "runesofaldur"
+
+
 def test_parse_ninja_snapshot_ignores_private_league_url_markers():
     index_json, build_index_json = snapshot_fixture()
     private_league = next(
