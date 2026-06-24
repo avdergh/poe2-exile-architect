@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "source_url": "https://api.github.com/repos/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/latest",
+    "retrieved_at": "2026-06-24T00:00:00+00:00",
+    "note": "Compact fixture; body is shortened to compatibility-looking text to prove release notes are not authority."
+  },
+  "tag_name": "v0.21.1",
+  "name": "Release 0.21.1",
+  "html_url": "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/tag/v0.21.1",
+  "published_at": "2026-06-23T05:51:33Z",
+  "body": "Shortened release notes mention Path of Exile 2 patch 0.5.3 and PassiveTree 0_5, but tests require the compatibility manifest before claims are emitted."
+}

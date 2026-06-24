@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "source_url": "https://api.github.com/repos/PathOfBuildingCommunity/PathOfBuilding-PoE2/commits/v0.21.1",
+    "retrieved_at": "2026-06-24T00:00:00+00:00"
+  },
+  "sha": "dc409a7073e4e2752e9a642db7544af53551d006",
+  "html_url": "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/commit/dc409a7073e4e2752e9a642db7544af53551d006",
+  "commit": {
+    "committer": {
+      "date": "2026-06-23T05:51:33Z"
+    },
+    "message": "Release 0.21.1"
+  }
+}
