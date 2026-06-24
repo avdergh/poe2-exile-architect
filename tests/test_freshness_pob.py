@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from server.freshness import pob as pob_module
 from server.freshness.cache import (
     FileCacheStore,
     RefreshAttemptThrottle,
@@ -294,6 +295,40 @@ def test_ambiguous_local_short_prefix_in_provider_emits_unknown(tmp_path):
     assert any("ambiguous" in diagnostic for diagnostic in result.diagnostics)
 
 
+def test_resolved_short_prefix_uses_full_manifest_commit_for_remote_comparison(tmp_path):
+    local_manifest_commit = "abcdef1111111111111111111111111111111111"
+    remote_commit = "abcdef2222222222222222222222222222222222"
+    release = read_json("pob-release.json")
+    release["tag_name"] = "v0.22.0"
+    release["name"] = "Release 0.22.0"
+    commit = read_json("pob-release-commit.json")
+    commit["sha"] = remote_commit
+    transport = RouteTransport(
+        {
+            POB_RELEASE_API_URL: TransportResponse(
+                status_code=200,
+                body=json.dumps(release).encode(),
+            ),
+            pob_release_commit_api_url(release["tag_name"]): TransportResponse(
+                status_code=200,
+                body=json.dumps(commit).encode(),
+            ),
+        }
+    )
+    provider, _transport = make_provider(
+        tmp_path,
+        manifest_entries=[compatibility_entry(commit=local_manifest_commit)],
+        local_metadata={"pob_commit": "abcdef"},
+        transport=transport,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert all(evidence.status is SourceStatus.STALE for evidence in result.evidence)
+    assert all(evidence.version == local_manifest_commit for evidence in result.evidence)
+    assert any(local_manifest_commit in diagnostic for diagnostic in result.diagnostics)
+
+
 def test_missing_local_commit_emits_unknown_without_claims(tmp_path):
     provider, _transport = make_provider(
         tmp_path,
@@ -330,3 +365,27 @@ def test_initial_repository_manifest_does_not_pre_authorize_current_pin():
 
     assert manifest.schema_version == 1
     assert manifest.entries == ()
+
+
+def test_read_pinned_commit_parses_pinned_markdown_table(tmp_path):
+    pinned_path = tmp_path / "PINNED.md"
+    pinned_path.write_text(
+        "| Key | Value |\n"
+        "| --- | --- |\n"
+        "| Pinned commit | `a82a33b` |\n",
+        encoding="utf-8",
+    )
+
+    assert pob_module.read_pinned_commit(pinned_path) == "a82a33b"
+
+
+def test_local_metadata_falls_back_to_pinned_commit_when_installed_lacks_commit(tmp_path):
+    pinned_path = tmp_path / "PINNED.md"
+    pinned_path.write_text("Pinned commit | `a82a33b`\n", encoding="utf-8")
+
+    metadata = pob_module._local_metadata_with_pinned_fallback(
+        installed={"version": "v0.1.39"},
+        pinned_path=pinned_path,
+    )
+
+    assert metadata == {"version": "v0.1.39", "pob_commit": "a82a33b"}

@@ -51,8 +51,11 @@ POB_POLICY = CachePolicy(
 DEFAULT_COMPATIBILITY_MANIFEST = (
     Path(__file__).resolve().parents[2] / "data" / "compatibility" / "pob.json"
 )
+DEFAULT_PINNED_PATH = Path(__file__).resolve().parents[2] / "pob" / "PINNED.md"
 
 _SAFE_TAG = re.compile(r"^[A-Za-z0-9._-]+$")
+_PINNED_COMMIT_LABEL = re.compile(r"pinned\s+commit", re.IGNORECASE)
+_PINNED_COMMIT_TOKEN = re.compile(r"\b([0-9a-fA-F]{7,40})\b")
 
 
 class PobParseError(PayloadParseError, ValueError):
@@ -215,8 +218,13 @@ def shape_pob_evidence(
         ), tuple(shaped_diagnostics)
 
     claims = _compatibility_claims(compatibility) if compatibility is not None else ()
+    # Short local pins are normalized through the manifest before freshness comparison.
+    # Otherwise a remote full SHA that shares the same prefix can be mistaken as current.
+    effective_local_commit = (
+        compatibility.commit if compatibility is not None else normalized_local_commit
+    )
     remote_newer = _remote_release_differs_from_local(
-        normalized_local_commit,
+        effective_local_commit,
         remote_release,
     )
     if remote_newer:
@@ -224,7 +232,7 @@ def shape_pob_evidence(
         shaped_diagnostics.append(
             "local PoB "
             f"version={normalized_local_version or 'unknown'} "
-            f"commit={normalized_local_commit}; "
+            f"commit={effective_local_commit}; "
             f"latest release={remote_release.tag} commit={remote_release.commit[:12]}"
         )
     elif compatibility is None:
@@ -243,11 +251,16 @@ def shape_pob_evidence(
     else:
         status = SourceStatus.UNKNOWN
 
+    evidence_version = (
+        compatibility.commit
+        if compatibility is not None
+        else normalized_local_version or normalized_local_commit
+    )
     return _pob_records(
         status=status,
         observed_at=observed_at,
         source_url=_evidence_url(remote_release),
-        version=normalized_local_version or normalized_local_commit,
+        version=evidence_version,
         claims=claims,
     ), tuple(shaped_diagnostics)
 
@@ -565,10 +578,41 @@ def _successful_response(
     return response
 
 
+def read_pinned_commit(path: str | Path) -> str | None:
+    """Read the development-time PoB pin from pob/PINNED.md if present."""
+
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        if _PINNED_COMMIT_LABEL.search(line) is None:
+            continue
+        match = _PINNED_COMMIT_TOKEN.search(line)
+        if match is not None:
+            return match.group(1).lower()
+    return None
+
+
+def _local_metadata_with_pinned_fallback(
+    *,
+    installed: Mapping[str, Any],
+    pinned_path: str | Path = DEFAULT_PINNED_PATH,
+) -> Mapping[str, Any]:
+    metadata = dict(installed)
+    if _metadata_string(metadata.get("pob_commit")) is None:
+        # Development checkouts may not have installed metadata yet; PINNED.md is the
+        # documented local pin source and does not require a runtime PoB git checkout.
+        pinned_commit = read_pinned_commit(pinned_path)
+        if pinned_commit is not None:
+            metadata["pob_commit"] = pinned_commit
+    return metadata
+
+
 def _default_local_metadata() -> Mapping[str, Any]:
     from ..live.update import installed_meta
 
-    return installed_meta()
+    return _local_metadata_with_pinned_fallback(installed=installed_meta())
 
 
 def _duration_ms(started: float, finished: float) -> int:
