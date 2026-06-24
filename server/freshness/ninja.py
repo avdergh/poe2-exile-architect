@@ -123,14 +123,14 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         selectable_leagues.append(_SelectableLeague(name=league_name, url=league_url))
 
     selectable_urls = {league.url for league in selectable_leagues}
-    snapshots_by_url: dict[str, list[Mapping[str, Any]]] = {}
+    snapshots_by_url: dict[str, list[_SnapshotEntry]] = {}
     for raw_snapshot in snapshots:
         snapshot = _mapping(raw_snapshot, "snapshot")
         raw_url = _url_lookup_key(snapshot.get("url"))
         if raw_url not in selectable_urls:
             continue
         url = _league_url_token(snapshot.get("url"), "snapshot URL")
-        snapshots_by_url.setdefault(url, []).append(snapshot)
+        snapshots_by_url.setdefault(url, []).append(_snapshot_entry(snapshot))
 
     builds_by_url: dict[str, Mapping[str, Any]] = {}
     for raw_build in league_builds:
@@ -141,57 +141,71 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         url = _league_url_token(build.get("leagueUrl"), "league build URL")
         builds_by_url.setdefault(url, build)
 
-    candidates: list[NinjaSnapshot] = []
-    missing_snapshot_count = 0
-    missing_build_count = 0
-    invalid_sample_count = 0
+    if not selectable_leagues:
+        raise NinjaParseError("index contains no selectable current league")
+
+    # Stage 1: choose the newest selectable league/date using league descriptors and
+    # snapshot metadata only. Build/sample validation happens after selection so an
+    # incomplete current league cannot silently fall back to a historical league.
+    #
+    # poe.ninja lists the mainstream current trade league before historical rows; if
+    # that leading selectable row has no snapshot, freshness must be UNKNOWN rather
+    # than treating an older league as current.
+    if selectable_leagues[0].url not in snapshots_by_url:
+        raise NinjaParseError("snapshot is missing for selectable league")
+
+    dated_candidates: list[tuple[_SelectableLeague, _SnapshotEntry]] = []
     for selectable_league in selectable_leagues:
-        league_name = selectable_league.name
-        league_url = selectable_league.url
-        raw_entries = snapshots_by_url.get(league_url)
-        if not raw_entries:
-            missing_snapshot_count += 1
+        entries = snapshots_by_url.get(selectable_league.url)
+        if not entries:
             continue
-
-        current_build = builds_by_url.get(league_url)
-        if current_build is None:
-            missing_build_count += 1
-            continue
-        sample_size = _positive_int(current_build.get("total"), "sample size")
-        if sample_size <= 0:
-            invalid_sample_count += 1
-            continue
-
-        entries = [_snapshot_entry(entry) for entry in raw_entries]
-        _reject_tree_mismatch(league_url=league_url, entries=entries)
-        selected_entry = max(entries, key=lambda entry: (entry.snapshot_date, entry.version))
-        candidates.append(
-            NinjaSnapshot(
-                league=league_name,
-                league_url=league_url,
-                version=selected_entry.version,
-                snapshot_date=selected_entry.snapshot_date,
-                passive_tree=selected_entry.passive_tree,
-                passive_tree_claim=selected_entry.passive_tree_claim,
-                sample_size=sample_size,
+        dated_candidates.append(
+            (
+                selectable_league,
+                max(entries, key=lambda entry: (entry.snapshot_date, entry.version)),
             )
         )
 
-    if not candidates:
-        if invalid_sample_count:
-            raise NinjaParseError("sample size is zero or missing for selectable league")
-        if missing_snapshot_count:
-            raise NinjaParseError("snapshot is missing for selectable league")
-        if missing_build_count:
-            raise NinjaParseError("build sample count is missing for selectable league")
-        raise NinjaParseError("index contains no selectable current league")
+    if not dated_candidates:
+        raise NinjaParseError("snapshot is missing for selectable league")
 
-    newest_date = max(candidate.snapshot_date for candidate in candidates)
-    newest = [candidate for candidate in candidates if candidate.snapshot_date == newest_date]
-    newest_names = {candidate.league.casefold() for candidate in newest}
+    newest_date = max(entry.snapshot_date for _, entry in dated_candidates)
+    newest = [
+        (league, entry)
+        for league, entry in dated_candidates
+        if entry.snapshot_date == newest_date
+    ]
+    newest_names = {league.name.casefold() for league, _ in newest}
     if len(newest_names) > 1:
         raise NinjaParseError("ambiguous newest poe.ninja league candidates")
-    return max(newest, key=lambda candidate: (candidate.version, candidate.league_url))
+    selected_league, selected_entry = max(
+        newest,
+        key=lambda candidate: (candidate[1].version, candidate[0].url),
+    )
+
+    # Stage 2: strictly validate the selected latest league. Missing build/sample
+    # data is a provider parse failure, not permission to emit an older snapshot.
+    selected_entries = snapshots_by_url[selected_league.url]
+    _reject_tree_mismatch(
+        league_url=selected_league.url,
+        entries=selected_entries,
+        snapshot_date=selected_entry.snapshot_date,
+    )
+    current_build = builds_by_url.get(selected_league.url)
+    if current_build is None:
+        raise NinjaParseError("build sample count is missing for selectable league")
+    sample_size = _positive_int(current_build.get("total"), "sample size")
+    if sample_size <= 0:
+        raise NinjaParseError("sample size is zero or missing for selectable league")
+    return NinjaSnapshot(
+        league=selected_league.name,
+        league_url=selected_league.url,
+        version=selected_entry.version,
+        snapshot_date=selected_entry.snapshot_date,
+        passive_tree=selected_entry.passive_tree,
+        passive_tree_claim=selected_entry.passive_tree_claim,
+        sample_size=sample_size,
+    )
 
 
 def _snapshot_entry(snapshot: Mapping[str, Any]) -> _SnapshotEntry:
@@ -209,9 +223,16 @@ def _snapshot_entry(snapshot: Mapping[str, Any]) -> _SnapshotEntry:
     )
 
 
-def _reject_tree_mismatch(*, league_url: str, entries: Sequence[_SnapshotEntry]) -> None:
+def _reject_tree_mismatch(
+    *,
+    league_url: str,
+    entries: Sequence[_SnapshotEntry],
+    snapshot_date: date,
+) -> None:
     claims_by_date: dict[date, set[str]] = {}
     for entry in entries:
+        if entry.snapshot_date != snapshot_date:
+            continue
         claims_by_date.setdefault(entry.snapshot_date, set()).add(entry.passive_tree_claim)
     for claims in claims_by_date.values():
         if len(claims) > 1:

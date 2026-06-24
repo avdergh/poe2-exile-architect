@@ -22,6 +22,7 @@ from server.freshness.ninja import (
     NINJA_BUILD_INDEX_URL,
     NINJA_INDEX_URL,
     NINJA_POLICY,
+    NinjaParseError,
     NinjaSnapshotProvider,
     parse_ninja_snapshot,
 )
@@ -147,6 +148,43 @@ def test_parse_ninja_snapshot_rejects_missing_snapshot_for_only_candidate():
     build_index_json["leagueBuilds"] = [build_index_json["leagueBuilds"][0]]
 
     with pytest.raises(ValueError, match="snapshot"):
+        parse_ninja_snapshot(index_json, build_index_json)
+
+
+def test_parse_ninja_snapshot_rejects_missing_build_for_newest_candidate_without_fallback():
+    index_json, build_index_json = snapshot_fixture()
+    build_index_json["leagueBuilds"] = [
+        build
+        for build in build_index_json["leagueBuilds"]
+        if build["leagueUrl"] != "runesofaldur"
+    ]
+
+    with pytest.raises(NinjaParseError, match="build|sample"):
+        parse_ninja_snapshot(index_json, build_index_json)
+
+
+def test_parse_ninja_snapshot_rejects_zero_total_for_newest_candidate_without_fallback():
+    index_json, build_index_json = snapshot_fixture()
+    runes_build = next(
+        build
+        for build in build_index_json["leagueBuilds"]
+        if build["leagueUrl"] == "runesofaldur"
+    )
+    runes_build["total"] = 0
+
+    with pytest.raises(NinjaParseError, match="sample"):
+        parse_ninja_snapshot(index_json, build_index_json)
+
+
+def test_parse_ninja_snapshot_rejects_missing_snapshot_for_newest_candidate_without_fallback():
+    index_json, build_index_json = snapshot_fixture()
+    index_json["snapshotVersions"] = [
+        snapshot
+        for snapshot in index_json["snapshotVersions"]
+        if snapshot["url"] != "runesofaldur"
+    ]
+
+    with pytest.raises(NinjaParseError, match="snapshot"):
         parse_ninja_snapshot(index_json, build_index_json)
 
 
@@ -355,4 +393,39 @@ def test_ninja_provider_revalidates_cached_snapshot_payload(tmp_path):
     assert result.evidence[0].source_url == NINJA_INDEX_URL
     assert result.evidence[0].version is None
     assert result.evidence[0].claims == ()
+    assert any("cached payload invalid" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_ninja_provider_rejects_cached_league_url_path_smuggling(tmp_path):
+    payload = make_ninja_envelope(checked_at=NOW).payload
+    payload["league_url"] = "runesofaldur/../../evil"
+
+    def cache_runner(**kwargs):
+        return CacheRunResult(
+            envelope=CacheEnvelope.create(
+                source="poe-ninja",
+                source_url=NINJA_INDEX_URL,
+                fetched_at=NOW,
+                checked_at=NOW,
+                etag=None,
+                last_modified=None,
+                payload=payload,
+            ),
+            cache_state=CacheState.FRESH,
+            hard_stale=False,
+            diagnostics=(),
+        )
+
+    provider = NinjaSnapshotProvider(
+        store=FileCacheStore(tmp_path / "ninja.json"),
+        transport=RouteTransport({}),
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+        cache_runner=cache_runner,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert result.evidence[0].status is SourceStatus.UNKNOWN
+    assert result.evidence[0].source_url == NINJA_INDEX_URL
     assert any("cached payload invalid" in diagnostic for diagnostic in result.diagnostics)
