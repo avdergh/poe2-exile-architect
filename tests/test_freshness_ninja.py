@@ -91,6 +91,35 @@ def test_parse_ninja_snapshot_selects_current_softcore_trade_league():
     assert snapshot.sample_size == 124302
 
 
+def test_parse_ninja_snapshot_does_not_assume_first_selectable_league_is_current():
+    index_json, build_index_json = snapshot_fixture()
+    dawn_league = next(
+        league
+        for league in index_json["buildLeagues"]
+        if league["url"] == "dawnofthehunt"
+    )
+    index_json["buildLeagues"] = [
+        dawn_league,
+        *[
+            league
+            for league in index_json["buildLeagues"]
+            if league["url"] != "dawnofthehunt"
+        ],
+    ]
+    index_json["snapshotVersions"] = [
+        snapshot
+        for snapshot in index_json["snapshotVersions"]
+        if snapshot["url"] != "dawnofthehunt"
+    ]
+
+    snapshot = parse_ninja_snapshot(index_json, build_index_json)
+
+    assert snapshot.league == "Runes of Aldur"
+    assert snapshot.league_url == "runesofaldur"
+    assert snapshot.snapshot_date == date(2026, 6, 24)
+    assert snapshot.sample_size == 124302
+
+
 def test_parse_ninja_snapshot_ignores_private_league_url_markers():
     index_json, build_index_json = snapshot_fixture()
     private_league = next(
@@ -176,12 +205,12 @@ def test_parse_ninja_snapshot_rejects_zero_total_for_newest_candidate_without_fa
         parse_ninja_snapshot(index_json, build_index_json)
 
 
-def test_parse_ninja_snapshot_rejects_missing_snapshot_for_newest_candidate_without_fallback():
+def test_parse_ninja_snapshot_rejects_missing_snapshot_when_no_selectable_snapshot_remains():
     index_json, build_index_json = snapshot_fixture()
     index_json["snapshotVersions"] = [
         snapshot
         for snapshot in index_json["snapshotVersions"]
-        if snapshot["url"] != "runesofaldur"
+        if snapshot["url"] not in {"runesofaldur", "dawnofthehunt"}
     ]
 
     with pytest.raises(NinjaParseError, match="snapshot"):

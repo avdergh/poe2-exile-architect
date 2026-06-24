@@ -147,13 +147,6 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
     # Stage 1: choose the newest selectable league/date using league descriptors and
     # snapshot metadata only. Build/sample validation happens after selection so an
     # incomplete current league cannot silently fall back to a historical league.
-    #
-    # poe.ninja lists the mainstream current trade league before historical rows; if
-    # that leading selectable row has no snapshot, freshness must be UNKNOWN rather
-    # than treating an older league as current.
-    if selectable_leagues[0].url not in snapshots_by_url:
-        raise NinjaParseError("snapshot is missing for selectable league")
-
     dated_candidates: list[tuple[_SelectableLeague, _SnapshotEntry]] = []
     for selectable_league in selectable_leagues:
         entries = snapshots_by_url.get(selectable_league.url)
