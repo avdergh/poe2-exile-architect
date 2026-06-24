@@ -495,6 +495,132 @@ def test_patch_provider_maps_missing_cache_failure_to_unknown(tmp_path):
     assert result.evidence[0].claims == ()
 
 
+@pytest.mark.parametrize(
+    "payload_override",
+    [
+        {"title": "0.5.3 Hotfix 9 notes"},
+        {"thread_url": "https://evil.example/forum/view-thread/3973617"},
+    ],
+)
+def test_patch_provider_revalidates_cached_title_and_thread_url(tmp_path, payload_override):
+    payload = make_patch_envelope(checked_at=NOW).payload
+    payload.update(payload_override)
+
+    def cache_runner(**kwargs):
+        return CacheRunResult(
+            envelope=CacheEnvelope.create(
+                source="ggg-patch",
+                source_url=PATCH_INDEX_URL,
+                fetched_at=NOW,
+                checked_at=NOW,
+                etag=None,
+                last_modified=None,
+                payload=payload,
+            ),
+            cache_state=CacheState.FRESH,
+            hard_stale=False,
+            diagnostics=(),
+        )
+
+    provider = GGGPatchProvider(
+        store=FileCacheStore(tmp_path / "ggg-patch.json"),
+        transport=RouteTransport({}),
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+        cache_runner=cache_runner,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert result.evidence[0].status is SourceStatus.UNKNOWN
+    assert result.evidence[0].version is None
+    assert result.evidence[0].claims == ()
+    assert any("cached payload invalid" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_tree_provider_canonicalizes_cached_release_and_commit_urls(tmp_path):
+    payload = make_tree_envelope(checked_at=NOW).payload
+    payload["release_url"] = "https://evil.example/releases/tag/0.5.2"
+    payload["commit_url"] = f"https://evil.example/commit/{TREE_SHA}"
+
+    def cache_runner(**kwargs):
+        return CacheRunResult(
+            envelope=CacheEnvelope.create(
+                source="ggg-tree",
+                source_url=TREE_MAIN_COMMIT_API_URL,
+                fetched_at=NOW,
+                checked_at=NOW,
+                etag=None,
+                last_modified=None,
+                payload=payload,
+            ),
+            cache_state=CacheState.FRESH,
+            hard_stale=False,
+            diagnostics=(),
+        )
+
+    provider = GGGOfficialTreeProvider(
+        store=FileCacheStore(tmp_path / "ggg-tree.json"),
+        transport=RouteTransport({}),
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+        cache_runner=cache_runner,
+    )
+
+    result = provider.collect(now=NOW)
+
+    by_component = {evidence.component: evidence for evidence in result.evidence}
+    assert by_component[Component.LEAGUE].source_url == (
+        "https://github.com/grindinggear/poe2-skilltree-export/releases/tag/0.5.2"
+    )
+    assert by_component[Component.PASSIVE_TREE].source_url == TREE_COMMIT_URL
+
+
+@pytest.mark.parametrize(
+    "payload_override",
+    [
+        {"tree_series": "0_5/../../evil"},
+        {"release_tag": "0.5"},
+        {"commit": "abc123"},
+        {"main_commit": "g" * 40},
+    ],
+)
+def test_tree_provider_revalidates_cached_series_tag_and_shas(tmp_path, payload_override):
+    payload = make_tree_envelope(checked_at=NOW).payload
+    payload.update(payload_override)
+
+    def cache_runner(**kwargs):
+        return CacheRunResult(
+            envelope=CacheEnvelope.create(
+                source="ggg-tree",
+                source_url=TREE_MAIN_COMMIT_API_URL,
+                fetched_at=NOW,
+                checked_at=NOW,
+                etag=None,
+                last_modified=None,
+                payload=payload,
+            ),
+            cache_state=CacheState.FRESH,
+            hard_stale=False,
+            diagnostics=(),
+        )
+
+    provider = GGGOfficialTreeProvider(
+        store=FileCacheStore(tmp_path / "ggg-tree.json"),
+        transport=RouteTransport({}),
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+        cache_runner=cache_runner,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert {evidence.status for evidence in result.evidence} == {SourceStatus.UNKNOWN}
+    assert all(evidence.version is None for evidence in result.evidence)
+    assert all(evidence.claims == () for evidence in result.evidence)
+    assert any("cached payload invalid" in diagnostic for diagnostic in result.diagnostics)
+
+
 def test_provider_injects_cache_transport_store_throttle_and_coordinator(tmp_path):
     store = FileCacheStore(tmp_path / "ggg-patch.json")
     transport = RouteTransport({})

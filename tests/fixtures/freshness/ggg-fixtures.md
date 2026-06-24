@@ -9,4 +9,4 @@ HTML elements required by the parser tests.
 | `ggg-patch-thread.html` | https://www.pathofexile.com/forum/view-thread/3973617 |
 | `ggg-tree-release.json` | https://api.github.com/repos/grindinggear/poe2-skilltree-export/releases/latest |
 | `ggg-tree-commit.json` | https://api.github.com/repos/grindinggear/poe2-skilltree-export/commits/main |
-| `ggg-tree-data-commit.json` | https://api.github.com/repos/grindinggear/poe2-skilltree-export/commits?path=data.json&per_page=1 |
+| `ggg-tree-data-commit.json` | https://api.github.com/repos/grindinggear/poe2-skilltree-export/commits?path=data.json&sha=1e9eb2d8c1946398c3aaaacfbaead5c75c0d1fa6&per_page=1 |

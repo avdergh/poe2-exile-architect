@@ -54,6 +54,7 @@ TREE_POLICY = CachePolicy(
 
 _PATCH_TITLE = re.compile(r"^(\d+\.\d+\.\d+)(?: Hotfix \d+)?$")
 _THREAD_PATH = re.compile(r"^/forum/view-thread/(\d+)$")
+_TREE_SERIES = re.compile(r"^\d+_\d+$")
 _THREAD_TITLE_PREFIX = "Early Access Patch Notes - "
 _THREAD_TITLE_SUFFIX = " - Forum - Path of Exile"
 _RELEASE_NAME_PREFIX = "Path of Exile 2:"
@@ -384,10 +385,16 @@ def _successful_response(
 
 
 def _patch_from_payload(payload: Mapping[str, Any]) -> tuple[PatchTopic, PatchThread]:
+    title = _nonempty_string(payload.get("title"), "cached patch title")
+    title_match = _PATCH_TITLE.fullmatch(title)
+    if title_match is None:
+        raise GGGParseError("cached patch title is not a strict version topic")
     topic = PatchTopic(
-        title=_nonempty_string(payload.get("title"), "cached patch title"),
-        base_patch=_nonempty_string(payload.get("base_patch"), "cached base patch"),
-        thread_url=_nonempty_string(payload.get("thread_url"), "cached patch thread URL"),
+        title=title,
+        base_patch=title_match.group(1),
+        thread_url=_canonical_thread_url(
+            _nonempty_string(payload.get("thread_url"), "cached patch thread URL")
+        ),
     )
     thread = PatchThread(
         posted_at_raw=_nonempty_string(payload.get("posted_at_raw"), "cached staff post date")
@@ -396,14 +403,21 @@ def _patch_from_payload(payload: Mapping[str, Any]) -> tuple[PatchTopic, PatchTh
 
 
 def _tree_from_payload(payload: Mapping[str, Any]) -> OfficialTree:
+    release_tag = _nonempty_string(payload.get("release_tag"), "cached release tag")
+    _three_part_version(release_tag, "cached release tag")
+    tree_series = _nonempty_string(payload.get("tree_series"), "cached tree series")
+    if _TREE_SERIES.fullmatch(tree_series) is None:
+        raise GGGParseError("cached tree series is not a major_minor token")
+    commit = _full_sha(payload.get("commit"), "cached data.json commit")
+    main_commit = _full_sha(payload.get("main_commit"), "cached main commit")
     return OfficialTree(
         league=_nonempty_string(payload.get("league"), "cached league"),
-        tree_series=_nonempty_string(payload.get("tree_series"), "cached tree series"),
-        commit=_full_sha(payload.get("commit"), "cached data.json commit"),
-        main_commit=_full_sha(payload.get("main_commit"), "cached main commit"),
-        release_tag=_nonempty_string(payload.get("release_tag"), "cached release tag"),
-        release_url=_nonempty_string(payload.get("release_url"), "cached release URL"),
-        commit_url=_nonempty_string(payload.get("commit_url"), "cached commit URL"),
+        tree_series=tree_series,
+        commit=commit,
+        main_commit=main_commit,
+        release_tag=release_tag,
+        release_url=_canonical_tree_release_url(release_tag),
+        commit_url=_canonical_tree_commit_url(commit),
     )
 
 
