@@ -97,6 +97,7 @@ def make_tree_envelope(*, checked_at: datetime) -> CacheEnvelope:
             "tree_series": "0_5",
             "commit": TREE_SHA,
             "main_commit": TREE_SHA,
+            "release_tag": "0.5.2",
             "release_url": (
                 "https://github.com/grindinggear/poe2-skilltree-export/releases/tag/0.5.2"
             ),
@@ -111,6 +112,35 @@ def test_patch_index_selects_first_strict_version_topic_in_document_order():
     assert patch.title == "0.5.3 Hotfix 9"
     assert patch.base_patch == "0.5.3"
     assert patch.thread_url == PATCH_THREAD_URL
+
+
+def test_patch_index_canonicalizes_official_absolute_thread_url():
+    html = """
+    <a href="https://pathofexile.com/forum/view-thread/3973617">
+      0.5.3 Hotfix 9
+    </a>
+    """
+
+    patch = parse_patch_index(html)
+
+    assert patch.thread_url == PATCH_THREAD_URL
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://evil.example/forum/view-thread/3973617",
+        "https://www.pathofexile.com@evil.example/forum/view-thread/3973617",
+        "https://www.pathofexile.com/forum/view-thread/3973617/extra",
+        "https://www.pathofexile.com/forum/view-thread/3973617?next=evil",
+        "//evil.example/forum/view-thread/3973617",
+    ],
+)
+def test_patch_index_rejects_noncanonical_thread_urls(href):
+    html = f'<a href="{href}">0.5.3 Hotfix 9</a>'
+
+    with pytest.raises(ValueError, match="thread URL"):
+        parse_patch_index(html)
 
 
 @pytest.mark.parametrize(
@@ -192,28 +222,68 @@ def test_official_tree_rejects_missing_release_league():
         )
 
 
-def test_official_tree_rejects_non_version_data_commit_message():
+def test_official_tree_falls_back_to_release_tag_for_non_version_data_commit_message():
     data_commit = read_json("ggg-tree-data-commit.json")
     data_commit[0]["commit"]["message"] = "Update data.json"
 
-    with pytest.raises(ValueError, match="version"):
-        parse_official_tree(
-            read_json("ggg-tree-release.json"),
-            read_json("ggg-tree-commit.json"),
-            data_commit,
-        )
+    tree = parse_official_tree(
+        read_json("ggg-tree-release.json"),
+        read_json("ggg-tree-commit.json"),
+        data_commit,
+    )
+
+    assert tree.tree_series == "0_5"
 
 
-def test_official_tree_rejects_non_version_main_commit_message():
+def test_official_tree_allows_non_version_main_ahead_of_data_commit():
     main_commit = read_json("ggg-tree-commit.json")
-    main_commit["commit"]["message"] = "Update repository metadata"
+    main_commit["sha"] = "a" * 40
+    main_commit["commit"]["message"] = "Document export format"
+    data_commit = read_json("ggg-tree-data-commit.json")
+    data_commit[0]["sha"] = "b" * 40
+    data_commit[0]["commit"]["message"] = "0.5.2"
 
-    with pytest.raises(ValueError, match="version"):
-        parse_official_tree(
-            read_json("ggg-tree-release.json"),
-            main_commit,
-            read_json("ggg-tree-data-commit.json"),
-        )
+    tree = parse_official_tree(
+        read_json("ggg-tree-release.json"),
+        main_commit,
+        data_commit,
+    )
+
+    assert tree.league == "Runes of Aldur"
+    assert tree.tree_series == "0_5"
+    assert tree.main_commit == "a" * 40
+    assert tree.commit == "b" * 40
+
+
+def test_official_tree_prefers_data_commit_series_over_release_tag():
+    data_commit = read_json("ggg-tree-data-commit.json")
+    data_commit[0]["commit"]["message"] = "0.6.1"
+
+    tree = parse_official_tree(
+        read_json("ggg-tree-release.json"),
+        read_json("ggg-tree-commit.json"),
+        data_commit,
+    )
+
+    assert tree.tree_series == "0_6"
+
+
+def test_official_tree_constructs_canonical_urls_from_validated_tag_and_sha():
+    release = read_json("ggg-tree-release.json")
+    release["html_url"] = "https://evil.example/releases/tag/0.5.2"
+    data_commit = read_json("ggg-tree-data-commit.json")
+    data_commit[0]["html_url"] = "https://evil.example/commit/" + TREE_SHA
+
+    tree = parse_official_tree(
+        release,
+        read_json("ggg-tree-commit.json"),
+        data_commit,
+    )
+
+    assert tree.release_url == (
+        "https://github.com/grindinggear/poe2-skilltree-export/releases/tag/0.5.2"
+    )
+    assert tree.commit_url == TREE_COMMIT_URL
 
 
 def test_patch_provider_refreshes_and_emits_game_patch_evidence(tmp_path):

@@ -11,7 +11,7 @@ import re
 import string
 from time import monotonic
 from typing import Any, Protocol
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urlsplit
 
 from .cache import (
     CacheRunResult,
@@ -53,6 +53,7 @@ TREE_POLICY = CachePolicy(
 )
 
 _PATCH_TITLE = re.compile(r"^(\d+\.\d+\.\d+)(?: Hotfix \d+)?$")
+_THREAD_PATH = re.compile(r"^/forum/view-thread/(\d+)$")
 _THREAD_TITLE_PREFIX = "Early Access Patch Notes - "
 _THREAD_TITLE_SUFFIX = " - Forum - Path of Exile"
 _RELEASE_NAME_PREFIX = "Path of Exile 2:"
@@ -108,6 +109,7 @@ class OfficialTree:
     tree_series: str
     commit: str
     main_commit: str
+    release_tag: str
     release_url: str
     commit_url: str
 
@@ -214,7 +216,7 @@ def parse_patch_index(html: str) -> PatchTopic:
             return PatchTopic(
                 title=title,
                 base_patch=match.group(1),
-                thread_url=urljoin(GGG_BASE_URL, href),
+                thread_url=_canonical_thread_url(href),
             )
     raise GGGParseError("patch index contains no strict version topic")
 
@@ -254,24 +256,22 @@ def parse_official_tree(
     if not league:
         raise GGGParseError("release league is missing")
 
-    release_version = _three_part_version(
-        _nonempty_string(release.get("tag_name"), "release tag"),
-        "release tag",
-    )
-    data_message = _commit_message(data_commit, "data.json commit")
-    data_version = _three_part_version(data_message, "data.json commit version")
-    main_message = _commit_message(main_commit, "main commit")
-    main_version = _three_part_version(main_message, "main commit version")
-    if not release_version[:2] == main_version[:2] == data_version[:2]:
-        raise GGGParseError("release and commits use different tree series")
+    release_tag = _nonempty_string(release.get("tag_name"), "release tag")
+    release_version = _three_part_version(release_tag, "release tag")
+    data_version = _commit_version(data_commit, "data.json commit") or release_version
+    data_sha = _full_sha(data_commit.get("sha"), "data.json commit")
+    main_sha = _full_sha(main_commit.get("sha"), "main commit")
 
     return OfficialTree(
         league=league,
         tree_series=f"{data_version[0]}_{data_version[1]}",
-        commit=_full_sha(data_commit.get("sha"), "data.json commit"),
-        main_commit=_full_sha(main_commit.get("sha"), "main commit"),
-        release_url=_nonempty_string(release.get("html_url"), "release URL"),
-        commit_url=_nonempty_string(data_commit.get("html_url"), "data.json commit URL"),
+        commit=data_sha,
+        main_commit=main_sha,
+        release_tag=release_tag,
+        # Evidence URLs are reconstructed from validated official facts rather than
+        # trusting unstructured html_url fields returned by an external API payload.
+        release_url=_canonical_tree_release_url(release_tag),
+        commit_url=_canonical_tree_commit_url(data_sha),
     )
 
 
@@ -281,6 +281,33 @@ def tree_data_commit_api_url(main_sha: str) -> str:
     return (
         f"{TREE_COMMITS_API_URL}?{urlencode({'path': 'data.json', 'sha': main_sha, 'per_page': 1})}"
     )
+
+
+def _canonical_thread_url(href: str) -> str:
+    parsed = urlsplit(href.strip())
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme != "https" or parsed.netloc not in {
+            "pathofexile.com",
+            "www.pathofexile.com",
+        }:
+            raise GGGParseError("patch thread URL is not an official thread")
+    if parsed.query or parsed.fragment:
+        raise GGGParseError("patch thread URL must not contain query or fragment")
+
+    match = _THREAD_PATH.fullmatch(parsed.path)
+    if match is None:
+        raise GGGParseError("patch thread URL path is not canonical")
+    return f"{GGG_BASE_URL}/forum/view-thread/{match.group(1)}"
+
+
+def _canonical_tree_release_url(release_tag: str) -> str:
+    # _three_part_version has already restricted the tag to a semver-like token,
+    # so interpolating it cannot smuggle a different GitHub path or host.
+    return f"https://github.com/{TREE_REPOSITORY}/releases/tag/{release_tag}"
+
+
+def _canonical_tree_commit_url(commit_sha: str) -> str:
+    return f"https://github.com/{TREE_REPOSITORY}/commit/{commit_sha}"
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -305,6 +332,16 @@ def _commit_message(commit: Mapping[str, Any], label: str) -> str:
     details = _mapping(commit.get("commit"), f"{label} details")
     message = _nonempty_string(details.get("message"), f"{label} message")
     return message.splitlines()[0].strip()
+
+
+def _commit_version(
+    commit: Mapping[str, Any],
+    label: str,
+) -> tuple[str, str, str] | None:
+    try:
+        return _three_part_version(_commit_message(commit, label), f"{label} version")
+    except GGGParseError:
+        return None
 
 
 def _three_part_version(value: str, label: str) -> tuple[str, str, str]:
@@ -363,6 +400,7 @@ def _tree_from_payload(payload: Mapping[str, Any]) -> OfficialTree:
         tree_series=_nonempty_string(payload.get("tree_series"), "cached tree series"),
         commit=_full_sha(payload.get("commit"), "cached data.json commit"),
         main_commit=_full_sha(payload.get("main_commit"), "cached main commit"),
+        release_tag=_nonempty_string(payload.get("release_tag"), "cached release tag"),
         release_url=_nonempty_string(payload.get("release_url"), "cached release URL"),
         commit_url=_nonempty_string(payload.get("commit_url"), "cached commit URL"),
     )
@@ -567,6 +605,7 @@ class GGGOfficialTreeProvider:
             "tree_series": tree.tree_series,
             "commit": tree.commit,
             "main_commit": tree.main_commit,
+            "release_tag": tree.release_tag,
             "release_url": tree.release_url,
             "commit_url": tree.commit_url,
         }
