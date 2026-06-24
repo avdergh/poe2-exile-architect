@@ -88,6 +88,12 @@ class _SnapshotEntry:
     passive_tree_claim: str
 
 
+@dataclass(frozen=True, slots=True)
+class _SelectableLeague:
+    name: str
+    url: str
+
+
 def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapshot:
     """Select the newest current softcore trade snapshot from poe.ninja indexes."""
 
@@ -97,22 +103,7 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
     snapshots = _sequence(index.get("snapshotVersions"), "snapshotVersions")
     league_builds = _sequence(build_index.get("leagueBuilds"), "leagueBuilds")
 
-    snapshots_by_url: dict[str, list[Mapping[str, Any]]] = {}
-    for raw_snapshot in snapshots:
-        snapshot = _mapping(raw_snapshot, "snapshot")
-        url = _league_url_token(snapshot.get("url"), "snapshot URL")
-        snapshots_by_url.setdefault(url, []).append(snapshot)
-
-    builds_by_url: dict[str, Mapping[str, Any]] = {}
-    for raw_build in league_builds:
-        build = _mapping(raw_build, "league build")
-        url = _league_url_token(build.get("leagueUrl"), "league build URL")
-        builds_by_url.setdefault(url, build)
-
-    candidates: list[NinjaSnapshot] = []
-    missing_snapshot_count = 0
-    missing_build_count = 0
-    invalid_sample_count = 0
+    selectable_leagues: list[_SelectableLeague] = []
     for raw_league in leagues:
         league = _mapping(raw_league, "build league")
         league_name = _league_name(league)
@@ -129,6 +120,34 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         ):
             continue
 
+        selectable_leagues.append(_SelectableLeague(name=league_name, url=league_url))
+
+    selectable_urls = {league.url for league in selectable_leagues}
+    snapshots_by_url: dict[str, list[Mapping[str, Any]]] = {}
+    for raw_snapshot in snapshots:
+        snapshot = _mapping(raw_snapshot, "snapshot")
+        raw_url = _url_lookup_key(snapshot.get("url"))
+        if raw_url not in selectable_urls:
+            continue
+        url = _league_url_token(snapshot.get("url"), "snapshot URL")
+        snapshots_by_url.setdefault(url, []).append(snapshot)
+
+    builds_by_url: dict[str, Mapping[str, Any]] = {}
+    for raw_build in league_builds:
+        build = _mapping(raw_build, "league build")
+        raw_url = _url_lookup_key(build.get("leagueUrl"))
+        if raw_url not in selectable_urls:
+            continue
+        url = _league_url_token(build.get("leagueUrl"), "league build URL")
+        builds_by_url.setdefault(url, build)
+
+    candidates: list[NinjaSnapshot] = []
+    missing_snapshot_count = 0
+    missing_build_count = 0
+    invalid_sample_count = 0
+    for selectable_league in selectable_leagues:
+        league_name = selectable_league.name
+        league_url = selectable_league.url
         raw_entries = snapshots_by_url.get(league_url)
         if not raw_entries:
             missing_snapshot_count += 1
@@ -138,7 +157,7 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         if current_build is None:
             missing_build_count += 1
             continue
-        sample_size = _positive_int(current_build.get("sampleSize"), "sample size")
+        sample_size = _positive_int(current_build.get("total"), "sample size")
         if sample_size <= 0:
             invalid_sample_count += 1
             continue
@@ -280,6 +299,12 @@ def _league_url_token(value: Any, label: str) -> str:
     if _LEAGUE_URL.fullmatch(url) is None:
         raise NinjaParseError(f"{label} is not a canonical league URL token")
     return url
+
+
+def _url_lookup_key(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return " ".join(value.split()).casefold()
 
 
 def _positive_int(value: Any, label: str) -> int:

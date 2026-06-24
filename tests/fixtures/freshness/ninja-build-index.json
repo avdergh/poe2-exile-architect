@@ -2,33 +2,38 @@
   "leagueBuilds": [
     {
       "leagueName": "Runes of Aldur",
-      "leagueUrl": "runes-of-aldur",
-      "sampleSize": 124302
+      "leagueUrl": "runesofaldur",
+      "total": 124302
     },
     {
-      "leagueName": "HC Runes of Aldur",
-      "leagueUrl": "hc-runes-of-aldur",
-      "sampleSize": 4110
+      "leagueName": "Runes of Aldur HC",
+      "leagueUrl": "runesofaldurhc",
+      "total": 4110
     },
     {
-      "leagueName": "SSF Runes of Aldur",
-      "leagueUrl": "ssf-runes-of-aldur",
-      "sampleSize": 933
+      "leagueName": "Runes of Aldur SSF",
+      "leagueUrl": "runesofaldurssf",
+      "total": 933
+    },
+    {
+      "leagueName": "Runes of Aldur HC SSF",
+      "leagueUrl": "runesofaldurhcssf",
+      "total": 313
     },
     {
       "leagueName": "Standard",
       "leagueUrl": "standard",
-      "sampleSize": 88888
+      "total": 88888
     },
     {
       "leagueName": "Dawn of the Hunt",
-      "leagueUrl": "dawn-of-the-hunt",
-      "sampleSize": 55000
+      "leagueUrl": "dawnofthehunt",
+      "total": 55000
     },
     {
-      "leagueName": "Runes of Aldur PL123",
-      "leagueUrl": "runes-of-aldur-pl123",
-      "sampleSize": 250
+      "leagueName": "Runes of Aldur PL81609",
+      "leagueUrl": "pl81609",
+      "total": 250
     }
   ]
 }

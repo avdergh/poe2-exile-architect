@@ -28,11 +28,17 @@ Observed on 2026-06-24:
   HC/SSF variants, `Standard`, and private leagues.
 - `index-state.snapshotVersions[]` contains snapshot facts:
   - `name`
-  - `url`
+  - `url`, the API league URL token, for example `runesofaldur`
   - `version`, for example `0137-20260624-38624`
+  - `snapshotName`, the display slug, for example `runes-of-aldur`
   - `passiveTree`, for example `PassiveTree-0.5`
 - `build-index-state.leagueBuilds[]` contains build sample counts keyed by
-  `leagueName` and `leagueUrl`.
+  `leagueName` and `leagueUrl`, with the sample count in `total`.
+
+`snapshotVersions[]` can also include archival or race snapshots whose `url` is not
+a canonical current league token, for example `0.4.0act4bosskillrace3ssf`. These
+entries must not break parsing unless their URL is selected through current
+`buildLeagues[]`.
 
 Fixtures in `tests/fixtures/freshness/` must be compact, attributed excerpts that
 preserve only fields needed by the parser and selection logic.
@@ -47,7 +53,8 @@ Candidates are built by joining:
 2. `snapshotVersions[]` entries, and
 3. `leagueBuilds[]` sample-size entries
 
-on canonical lowercase `url`.
+on canonical lowercase API URL tokens such as `runesofaldur`. Do not substitute
+the hyphenated `snapshotName` slug for `league_url`.
 
 Exclude any candidate when:
 
@@ -57,7 +64,7 @@ Exclude any candidate when:
   - `pl\d+` in the URL;
 - no matching snapshot exists;
 - no matching build count exists;
-- sample size is zero or negative.
+- `total` sample size is missing, zero, or negative.
 
 Parse `version` with the strict shape:
 
@@ -107,8 +114,11 @@ selected league:
 https://poe.ninja/poe2/builds/{league_url}
 ```
 
-The cached API URLs remain in diagnostics and cache identity, not in user-facing
-evidence when a selected snapshot is available.
+For example, Runes of Aldur uses
+`https://poe.ninja/poe2/builds/runesofaldur`, not the synthetic
+`snapshotName` slug `runes-of-aldur`. The cached API URLs remain in diagnostics
+and cache identity, not in user-facing evidence when a selected snapshot is
+available.
 
 ## Test obligations
 
@@ -118,12 +128,12 @@ evidence when a selected snapshot is available.
   and private league candidates;
 - parsing `version` date;
 - converting `PassiveTree-0.5` to `0_5`;
-- looking up sample size;
+- looking up sample size from `total`;
+- ignoring archival/race snapshot URLs outside selectable `buildLeagues[]`;
 - ambiguous current candidates;
 - missing snapshot;
 - malformed `version`;
-- zero sample size;
+- missing or zero sample size;
 - passive-tree mismatch between candidates or expected shape;
 - provider success, hard-stale fallback, missing/fetch failure, and invalid cached
   payload behavior.
-

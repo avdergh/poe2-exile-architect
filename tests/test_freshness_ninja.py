@@ -30,7 +30,7 @@ from server.freshness.provider_models import CacheState
 
 FIXTURES = Path(__file__).parent / "fixtures" / "freshness"
 NOW = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
-NINJA_BUILD_URL = "https://poe.ninja/poe2/builds/runes-of-aldur"
+NINJA_BUILD_URL = "https://poe.ninja/poe2/builds/runesofaldur"
 
 
 def read_text(name: str) -> str:
@@ -68,7 +68,7 @@ def make_ninja_envelope(*, checked_at: datetime) -> CacheEnvelope:
         last_modified=None,
         payload={
             "league": "Runes of Aldur",
-            "league_url": "runes-of-aldur",
+            "league_url": "runesofaldur",
             "version": "0137-20260624-38624",
             "passive_tree": "PassiveTree-0.5",
             "sample_size": 124302,
@@ -82,7 +82,7 @@ def test_parse_ninja_snapshot_selects_current_softcore_trade_league():
     snapshot = parse_ninja_snapshot(index_json, build_index_json)
 
     assert snapshot.league == "Runes of Aldur"
-    assert snapshot.league_url == "runes-of-aldur"
+    assert snapshot.league_url == "runesofaldur"
     assert snapshot.version == "0137-20260624-38624"
     assert snapshot.snapshot_date == date(2026, 6, 24)
     assert snapshot.passive_tree == "PassiveTree-0.5"
@@ -93,7 +93,7 @@ def test_parse_ninja_snapshot_selects_current_softcore_trade_league():
 def test_parse_ninja_snapshot_ignores_private_league_url_markers():
     index_json, build_index_json = snapshot_fixture()
     private_league = next(
-        league for league in index_json["buildLeagues"] if league["url"] == "runes-of-aldur-pl123"
+        league for league in index_json["buildLeagues"] if league["url"] == "pl81609"
     )
     private_league["name"] = "Runes of Aldur Guild Event"
     private_league["displayName"] = "Runes of Aldur Guild Event"
@@ -101,6 +101,22 @@ def test_parse_ninja_snapshot_ignores_private_league_url_markers():
     snapshot = parse_ninja_snapshot(index_json, build_index_json)
 
     assert snapshot.league == "Runes of Aldur"
+
+
+def test_parse_ninja_snapshot_ignores_archival_snapshot_urls_outside_selectable_leagues():
+    index_json, build_index_json = snapshot_fixture()
+    assert any(
+        snapshot["url"] == "0.4.0act4bosskillrace3ssf"
+        for snapshot in index_json["snapshotVersions"]
+    )
+    assert all(
+        league["url"] != "0.4.0act4bosskillrace3ssf"
+        for league in index_json["buildLeagues"]
+    )
+
+    snapshot = parse_ninja_snapshot(index_json, build_index_json)
+
+    assert snapshot.league_url == "runesofaldur"
 
 
 def test_parse_ninja_snapshot_rejects_ambiguous_newest_current_candidates():
@@ -117,7 +133,7 @@ def test_parse_ninja_snapshot_rejects_ambiguous_newest_current_candidates():
         }
     )
     build_index_json["leagueBuilds"].append(
-        {"leagueName": "Secrets of the Atlas", "leagueUrl": "secrets", "sampleSize": 77}
+        {"leagueName": "Secrets of the Atlas", "leagueUrl": "secrets", "total": 77}
     )
 
     with pytest.raises(ValueError, match="ambiguous"):
@@ -142,12 +158,16 @@ def test_parse_ninja_snapshot_rejects_malformed_version():
         parse_ninja_snapshot(index_json, build_index_json)
 
 
-def test_parse_ninja_snapshot_rejects_zero_sample_size_for_only_candidate():
+@pytest.mark.parametrize("total", [None, 0])
+def test_parse_ninja_snapshot_rejects_missing_or_zero_total_for_only_candidate(total):
     index_json, build_index_json = snapshot_fixture()
     index_json["buildLeagues"] = [index_json["buildLeagues"][0]]
     index_json["snapshotVersions"] = [index_json["snapshotVersions"][0]]
     build_index_json["leagueBuilds"] = [build_index_json["leagueBuilds"][0]]
-    build_index_json["leagueBuilds"][0]["sampleSize"] = 0
+    if total is None:
+        del build_index_json["leagueBuilds"][0]["total"]
+    else:
+        build_index_json["leagueBuilds"][0]["total"] = total
 
     with pytest.raises(ValueError, match="sample"):
         parse_ninja_snapshot(index_json, build_index_json)
@@ -158,7 +178,7 @@ def test_parse_ninja_snapshot_rejects_tree_version_mismatch_on_selected_date():
     index_json["snapshotVersions"].append(
         {
             "name": "Runes of Aldur",
-            "url": "runes-of-aldur",
+            "url": "runesofaldur",
             "version": "0137-20260624-38625",
             "passiveTree": "PassiveTree-0.6",
         }
@@ -238,6 +258,23 @@ def test_ninja_provider_maps_hard_stale_fallback_to_stale_meta_snapshot(tmp_path
     evidence = result.evidence[0]
     assert evidence.status is SourceStatus.STALE
     assert evidence.observed_at == checked_at
+    assert evidence.source_url == NINJA_BUILD_URL
+
+
+def test_ninja_provider_revalidates_cached_payload_with_real_league_url_shape(tmp_path):
+    store = FileCacheStore(tmp_path / "ninja.json")
+    store.save(make_ninja_envelope(checked_at=NOW))
+    provider = NinjaSnapshotProvider(
+        store=store,
+        transport=RouteTransport({}),
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert result.cache_state is CacheState.FRESH
+    evidence = result.evidence[0]
     assert evidence.source_url == NINJA_BUILD_URL
 
 

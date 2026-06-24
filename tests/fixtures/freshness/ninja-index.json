@@ -3,70 +3,108 @@
     {
       "name": "Runes of Aldur",
       "displayName": "Runes of Aldur",
-      "url": "runes-of-aldur"
+      "url": "runesofaldur",
+      "hardcore": false,
+      "indexed": true
     },
     {
-      "name": "HC Runes of Aldur",
-      "displayName": "HC Runes of Aldur",
-      "url": "hc-runes-of-aldur",
-      "hardcore": true
+      "name": "Runes of Aldur HC",
+      "displayName": "Runes of Aldur HC",
+      "url": "runesofaldurhc",
+      "hardcore": true,
+      "indexed": true
     },
     {
-      "name": "SSF Runes of Aldur",
-      "displayName": "SSF Runes of Aldur",
-      "url": "ssf-runes-of-aldur"
+      "name": "Runes of Aldur SSF",
+      "displayName": "Runes of Aldur SSF",
+      "url": "runesofaldurssf",
+      "hardcore": false,
+      "indexed": true
+    },
+    {
+      "name": "Runes of Aldur HC SSF",
+      "displayName": "Runes of Aldur HC SSF",
+      "url": "runesofaldurhcssf",
+      "hardcore": true,
+      "indexed": true
     },
     {
       "name": "Standard",
       "displayName": "Standard",
-      "url": "standard"
+      "url": "standard",
+      "hardcore": false,
+      "indexed": true
     },
     {
       "name": "Dawn of the Hunt",
       "displayName": "Dawn of the Hunt",
-      "url": "dawn-of-the-hunt"
+      "url": "dawnofthehunt",
+      "hardcore": false,
+      "indexed": true
     },
     {
-      "name": "Runes of Aldur PL123",
-      "displayName": "Runes of Aldur PL123",
-      "url": "runes-of-aldur-pl123"
+      "name": "Runes of Aldur PL81609",
+      "displayName": "Runes of Aldur PL81609",
+      "url": "pl81609",
+      "hardcore": false,
+      "indexed": true
     }
   ],
   "snapshotVersions": [
     {
       "name": "Runes of Aldur",
-      "url": "runes-of-aldur",
+      "url": "runesofaldur",
       "version": "0137-20260624-38624",
+      "snapshotName": "runes-of-aldur",
       "passiveTree": "PassiveTree-0.5"
     },
     {
-      "name": "HC Runes of Aldur",
-      "url": "hc-runes-of-aldur",
+      "name": "Runes of Aldur HC",
+      "url": "runesofaldurhc",
       "version": "0138-20260625-10000",
+      "snapshotName": "runes-of-aldur-hc",
       "passiveTree": "PassiveTree-0.5"
     },
     {
-      "name": "SSF Runes of Aldur",
-      "url": "ssf-runes-of-aldur",
+      "name": "Runes of Aldur SSF",
+      "url": "runesofaldurssf",
       "version": "0138-20260625-10001",
+      "snapshotName": "runes-of-aldur-ssf",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "Runes of Aldur HC SSF",
+      "url": "runesofaldurhcssf",
+      "version": "0138-20260625-10002",
+      "snapshotName": "runes-of-aldur-hc-ssf",
       "passiveTree": "PassiveTree-0.5"
     },
     {
       "name": "Standard",
       "url": "standard",
-      "version": "0139-20260626-10002",
+      "version": "0139-20260626-10003",
+      "snapshotName": "standard",
       "passiveTree": "PassiveTree-0.5"
     },
     {
       "name": "Dawn of the Hunt",
-      "url": "dawn-of-the-hunt",
-      "version": "0120-20260404-10003",
+      "url": "dawnofthehunt",
+      "version": "0120-20260404-10004",
+      "snapshotName": "dawn-of-the-hunt",
       "passiveTree": "PassiveTree-0.4"
     },
     {
-      "name": "Runes of Aldur PL123",
-      "url": "runes-of-aldur-pl123",
-      "version": "0140-20260627-10004",
+      "name": "Runes of Aldur PL81609",
+      "url": "pl81609",
+      "version": "0140-20260627-10005",
+      "snapshotName": "runes-of-aldur-pl81609",
+      "passiveTree": "PassiveTree-0.5"
+    },
+    {
+      "name": "Act 4 Boss Kill Race 3 SSF",
+      "url": "0.4.0act4bosskillrace3ssf",
+      "version": "0042-20250401-00001",
+      "snapshotName": "0.4.0-act4-boss-kill-race3-ssf",
       "passiveTree": "PassiveTree-0.5"
     }
   ]
