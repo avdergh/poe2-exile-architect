@@ -7,6 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from functools import partial
 import math
+from threading import Lock
 from time import monotonic
 from typing import Any
 import urllib.error
@@ -38,6 +39,8 @@ _USER_AGENT = {"User-Agent": "poe2-build-mcp freshness/0.1"}
 
 _attempt_throttle = RefreshAttemptThrottle()
 _refresh_coordinator = RefreshCoordinator()
+_provider_executor_instance: ThreadPoolExecutor | None = None
+_provider_executor_lock = Lock()
 
 ProviderFactory = Callable[[], EvidenceProvider]
 ProviderTask = Callable[[], ProviderResult]
@@ -115,8 +118,9 @@ _provider_factories: tuple[ProviderFactory, ...] = (
 
 
 def get_freshness_report(
-    force_refresh: bool = False,
     observed_at: datetime | None = None,
+    *,
+    force_refresh: bool = False,
     total_timeout: float = DEFAULT_TOTAL_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Return the strict cross-source freshness report plus provider diagnostics."""
@@ -155,48 +159,56 @@ def _collect_provider_results(
     results: dict[str, ProviderResult] = {}
     submitted_at: dict[Future[ProviderResult], float] = {}
     future_sources: dict[Future[ProviderResult], str] = {}
-    executor = ThreadPoolExecutor(max_workers=_MAX_PROVIDER_WORKERS)
+    executor = _provider_executor()
     pending: set[Future[ProviderResult]] = set()
-    try:
-        for source, task in tasks:
-            started = monotonic()
-            future = executor.submit(task)
-            submitted_at[future] = started
-            future_sources[future] = source
-            pending.add(future)
+    for source, task in tasks:
+        started = monotonic()
+        future = executor.submit(task)
+        submitted_at[future] = started
+        future_sources[future] = source
+        pending.add(future)
 
-        while pending:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                break
-            done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
-            if not done:
-                break
-            for future in done:
-                source = future_sources[future]
-                try:
-                    results[source] = future.result()
-                except Exception as exc:  # pragma: no cover - task wrappers already normalize.
-                    results[source] = _missing_result(
-                        source=source,
-                        started=submitted_at[future],
-                        diagnostic=f"provider failed with {type(exc).__name__}: {exc}",
-                    )
-
-        for future in pending:
-            future.cancel()
+    while pending:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+        if not done:
+            break
+        for future in done:
             source = future_sources[future]
-            # Freshness is a safety gate: a source that misses the shared budget is reported
-            # as missing so the evaluator fails closed instead of silently blessing stale data.
-            results[source] = _missing_result(
-                source=source,
-                started=submitted_at[future],
-                diagnostic="provider collection timed out before total service budget expired",
-            )
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                results[source] = future.result()
+            except Exception as exc:  # pragma: no cover - task wrappers already normalize.
+                results[source] = _missing_result(
+                    source=source,
+                    started=submitted_at[future],
+                    diagnostic=f"provider failed with {type(exc).__name__}: {exc}",
+                )
+
+    for future in pending:
+        # Cancellation is best-effort for already-running provider calls. A shared bounded
+        # executor keeps those stragglers inside a global worker cap while this response fails
+        # closed and treats the missing source as unavailable evidence.
+        future.cancel()
+        source = future_sources[future]
+        # Freshness is a safety gate: a source that misses the shared budget is reported
+        # as missing so the evaluator fails closed instead of silently blessing stale data.
+        results[source] = _missing_result(
+            source=source,
+            started=submitted_at[future],
+            diagnostic="provider did not finish within total service timeout",
+        )
 
     return tuple(results.get(source) or _missing_result(source=source) for source, _task in tasks)
+
+
+def _provider_executor() -> ThreadPoolExecutor:
+    global _provider_executor_instance
+    with _provider_executor_lock:
+        if _provider_executor_instance is None:
+            _provider_executor_instance = ThreadPoolExecutor(max_workers=_MAX_PROVIDER_WORKERS)
+        return _provider_executor_instance
 
 
 def _provider_tasks(

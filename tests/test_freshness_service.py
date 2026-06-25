@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 import sqlite3
 import threading
@@ -303,6 +304,47 @@ def test_provider_diagnostics_are_serialized_in_deterministic_order(monkeypatch)
     ]
 
 
+def test_positional_observed_at_remains_backward_compatible(monkeypatch):
+    install_matching_providers(monkeypatch)
+
+    report = service.get_freshness_report(NOW)
+
+    assert report["evaluated_at"] == NOW.isoformat()
+
+
+def test_force_refresh_is_forwarded_to_each_live_provider(monkeypatch):
+    live_providers = install_matching_providers(monkeypatch)
+
+    service.get_freshness_report(observed_at=NOW, force_refresh=True)
+
+    assert [provider.calls for provider in live_providers] == [[(NOW, True)]] * 4
+
+
+def test_service_reuses_bounded_executor_across_calls(monkeypatch):
+    constructed: list[int] = []
+
+    class CountingExecutor(ThreadPoolExecutor):
+        def __init__(self, *args, **kwargs):
+            constructed.append(kwargs.get("max_workers", args[0] if args else None))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(service, "ThreadPoolExecutor", CountingExecutor)
+    old_executor = service._provider_executor_instance
+    service._provider_executor_instance = None
+    install_matching_providers(monkeypatch)
+
+    try:
+        service.get_freshness_report(observed_at=NOW)
+        service.get_freshness_report(observed_at=NOW)
+
+        assert constructed == [4]
+    finally:
+        executor = getattr(service, "_provider_executor_instance", None)
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        service._provider_executor_instance = old_executor
+
+
 def test_provider_exception_becomes_missing_diagnostic_without_losing_other_evidence(monkeypatch):
     monkeypatch.setattr(
         providers,
@@ -348,7 +390,10 @@ def test_total_timeout_returns_promptly_with_missing_provider_diagnostic(monkeyp
     provider_rows = {provider["source"]: provider for provider in report["providers"]}
     assert elapsed < 0.15
     assert provider_rows["pob"]["cache_state"] == CacheState.MISSING.value
-    assert any("timed out" in item for item in provider_rows["pob"]["diagnostics"])
+    assert any(
+        "did not finish within total service timeout" in item
+        for item in provider_rows["pob"]["diagnostics"]
+    )
 
 
 def test_local_provider_degrades_on_sqlite_read_error(monkeypatch):

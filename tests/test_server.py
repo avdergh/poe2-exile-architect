@@ -47,6 +47,15 @@ def test_tool_surface_intact():
     } <= names
 
 
+def test_freshness_report_tool_exposes_force_refresh_schema():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    schema = tools["get_freshness_report"].inputSchema
+
+    assert schema["properties"]["force_refresh"]["type"] == "boolean"
+    assert schema["properties"]["force_refresh"]["default"] is False
+
+
 def test_get_freshness_report_forwards_force_refresh(monkeypatch):
     from server import main
 
