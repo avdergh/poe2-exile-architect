@@ -60,7 +60,10 @@ DEFAULT_REQUIRED_COMPONENTS = frozenset(
 REQUIRED_CLAIMS = {
     Component.GAME_PATCH: frozenset({ClaimDimension.GAME_PATCH}),
     Component.LEAGUE: frozenset({ClaimDimension.LEAGUE}),
-    Component.PASSIVE_TREE: frozenset({ClaimDimension.GAME_PATCH, ClaimDimension.PASSIVE_TREE}),
+    # Official tree evidence proves the tree/league snapshot, while the patch index proves the
+    # live game patch. Requiring every tree record to also assert game_patch would reject real
+    # provider output even when the separate GGG patch source and certified local sources agree.
+    Component.PASSIVE_TREE: frozenset({ClaimDimension.PASSIVE_TREE}),
     Component.POB_ENGINE: frozenset({ClaimDimension.GAME_PATCH, ClaimDimension.PASSIVE_TREE}),
     Component.POB_DATA: frozenset({ClaimDimension.GAME_PATCH, ClaimDimension.PASSIVE_TREE}),
     Component.CORPUS: frozenset({ClaimDimension.GAME_PATCH, ClaimDimension.PASSIVE_TREE}),

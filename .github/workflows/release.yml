@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  POB_COMMIT: a82a33b # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
+  POB_COMMIT: dc409a7073e4e2752e9a642db7544af53551d006 # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
   LUAJIT_COMMIT: 871db2c84ecefd70a850e03a6c340214a81739f0 # matches PoB's pinned LuaJIT
 
 jobs:
@@ -104,7 +104,7 @@ jobs:
             pob/PathOfBuilding-PoE2/src \
             pob/PathOfBuilding-PoE2/runtime/lua \
             -x '*.zst' '*.dds' '*.png' '*.jpg' '*.jpeg' '*.tga' '*.gif' '*.bk2' '*.mp4' '*.ogg' '*.mp3'
-          POB_COMMIT=$(git -C pob/PathOfBuilding-PoE2 rev-parse --short HEAD)
+          POB_COMMIT=$(git -C pob/PathOfBuilding-PoE2 rev-parse HEAD)
           BASE="https://github.com/${{ github.repository }}/releases/latest/download"
           # source_sha = hash of the deterministic upstream inputs (RePoE + wiki), so the scheduled
           # refresh can detect "did upstream change?" without false positives from build timestamps.
@@ -120,11 +120,19 @@ jobs:
           import hashlib, json, sys
           commit, base, src_sha = sys.argv[1], sys.argv[2], sys.argv[3]
           def sha(p): return hashlib.sha256(open(p,"rb").read()).hexdigest()
+          compat = json.load(open("data/compatibility/pob.json", encoding="utf-8"))
+          # Freshness gates must come from the certification manifest, never from release names.
+          certified = next((e for e in compat.get("entries", []) if e.get("commit") == commit), None)
+          if certified is None:
+              raise SystemExit(f"PoB commit {commit} is not certified in data/compatibility/pob.json")
           tag = "${{ github.ref_name }}"
           manifest = {
               "version": tag,                       # data version (apply_updates compares this)
               "app_version": tag.lstrip("v"),       # .mcpb/code version (decoupled .mcpb nag)
               "pob_commit": commit,
+              "pob_version": certified["pob_version"],
+              "game_patch": certified["game_patch"],
+              "passive_tree": certified["passive_tree"],
               "source_sha": src_sha,
               "corpus": {"url": f"{base}/corpus.sqlite", "sha256": sha("rel/corpus.sqlite")},
               "engine": {"url": f"{base}/pob-engine.zip", "sha256": sha("rel/pob-engine.zip")},

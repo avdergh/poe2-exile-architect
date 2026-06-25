@@ -25,6 +25,8 @@ def _manifest(version: str, corpus_blob: bytes, engine_blob: bytes, app: str = "
         "version": version,
         "app_version": app,
         "pob_commit": "abc123",
+        "game_patch": "0.5.3",
+        "passive_tree": "0_5",
         "corpus": {
             "url": "http://x/corpus.sqlite",
             "sha256": hashlib.sha256(corpus_blob).hexdigest(),
@@ -62,6 +64,25 @@ def test_data_refresh_reuses_unchanged_engine(tmp_path, monkeypatch):
     assert r["updated"] and r["version"] == "0.1.20.5"
     assert any("corpus.sqlite" in u for u in calls)
     assert not any("engine.zip" in u for u in calls)  # unchanged engine not re-downloaded
+
+
+def test_apply_updates_persists_certified_freshness_claims(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    engine = _engine_zip()
+    corpus = b"corpus"
+    blobs = {"http://x/engine.zip": engine, "http://x/corpus.sqlite": corpus}
+
+    monkeypatch.setattr(update, "_http", lambda url, timeout=60.0: blobs[url])
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: _manifest("0.1.20", corpus, engine))
+
+    r = update.apply_updates()
+
+    assert r["updated"] is True
+    installed = json.loads((tmp_path / "installed.json").read_text())
+    assert installed["pob_commit"] == "abc123"
+    assert installed["game_patch"] == "0.5.3"
+    assert installed["passive_tree"] == "0_5"
 
 
 def test_check_for_updates_decouples_data_from_mcpb(tmp_path, monkeypatch):

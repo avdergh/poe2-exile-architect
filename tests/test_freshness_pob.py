@@ -432,11 +432,22 @@ def test_overlong_hex_local_commit_emits_unknown_without_claims(tmp_path):
     )
 
 
-def test_initial_repository_manifest_does_not_pre_authorize_current_pin():
+def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     manifest = load_compatibility_manifest(Path("data/compatibility/pob.json"))
 
     assert manifest.schema_version == 1
-    assert manifest.entries == ()
+    assert len(manifest.entries) == 1
+
+    entry = manifest.entries[0]
+    assert entry.commit == REMOTE_COMMIT
+    assert entry.pob_version == "0.21.1"
+    assert entry.game_patch == "0.5.3"
+    assert entry.passive_tree == "0_5"
+    assert entry.verified_by == ("golden-tests", "GGG-patch", "GGG-tree", "ninja-tree")
+    assert entry.verified_at.tzinfo is UTC
+
+    # Certification remains exact: nearby or older PoB commits must not inherit these claims.
+    assert resolve_compatibility(LOCAL_PIN, manifest) is None
 
 
 def test_read_pinned_commit_parses_pinned_markdown_table(tmp_path):

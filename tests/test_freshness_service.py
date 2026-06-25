@@ -139,6 +139,23 @@ def ggg_tree_evidence() -> tuple[FreshnessEvidence, ...]:
     )
 
 
+def ggg_tree_evidence_without_patch_claim() -> tuple[FreshnessEvidence, ...]:
+    return (
+        evidence(
+            Component.LEAGUE,
+            "ggg-tree",
+            version="Runes of Aldur",
+            claims=(VersionClaim(ClaimDimension.LEAGUE, "Runes of Aldur"),),
+        ),
+        evidence(
+            Component.PASSIVE_TREE,
+            "ggg-tree",
+            version="tree-sha",
+            claims=(VersionClaim(ClaimDimension.PASSIVE_TREE, "0_5"),),
+        ),
+    )
+
+
 def ninja_evidence(passive_tree: str = "0_5") -> tuple[FreshnessEvidence, ...]:
     return (
         evidence(
@@ -216,6 +233,7 @@ def test_validated_release_is_shaped_as_local_component_evidence():
             "app_version": "0.1.39",
             "pob_commit": "a82a33b4",
             "game_patch": "0.5.3",
+            "passive_tree": "0_5",
         },
         corpus_info={"schema_version": 4, "built_at": "2026-06-23T04:00:00+00:00"},
         observed_at=NOW,
@@ -239,6 +257,37 @@ def test_validated_release_is_shaped_as_local_component_evidence():
     )
 
 
+def test_validated_release_uses_installed_passive_tree_claim_without_hardcoded_fallback():
+    records = providers.shape_validated_release(
+        installed={
+            "version": "v0.1.40",
+            "pob_commit": "future-tree",
+            "game_patch": "0.6.0",
+            "passive_tree": "0_6",
+        },
+        corpus_info={"schema_version": 4},
+        observed_at=NOW,
+    )
+
+    by_component = {record.component: record for record in records}
+    assert any(
+        claim.key == ClaimDimension.PASSIVE_TREE and claim.value == "0_6"
+        for claim in by_component[Component.POB_ENGINE].claims
+    )
+
+    missing_tree_records = providers.shape_validated_release(
+        installed={
+            "version": "v0.1.40",
+            "pob_commit": "future-tree",
+            "game_patch": "0.6.0",
+        },
+        corpus_info={"schema_version": 4},
+        observed_at=NOW,
+    )
+    missing_tree_claims = {claim.key for record in missing_tree_records for claim in record.claims}
+    assert ClaimDimension.PASSIVE_TREE not in missing_tree_claims
+
+
 def test_all_required_live_and_local_evidence_matching_verifies_current(monkeypatch):
     install_matching_providers(monkeypatch)
 
@@ -247,6 +296,26 @@ def test_all_required_live_and_local_evidence_matching_verifies_current(monkeypa
     assert report["decision"] == FreshnessDecision.VERIFIED_CURRENT.value
     assert report["blockers"] == []
     assert provider_sources(report) == ["local", "ggg-patch", "ggg-tree", "poe-ninja", "pob"]
+
+
+def test_official_patch_and_tree_claims_can_be_split_across_sources(monkeypatch):
+    monkeypatch.setattr(
+        providers,
+        "collect_local_evidence",
+        lambda observed_at: local_validated_release(),
+    )
+    install_provider_stubs(
+        monkeypatch,
+        StubProvider("ggg-patch", ggg_patch_evidence()),
+        StubProvider("ggg-tree", ggg_tree_evidence_without_patch_claim()),
+        StubProvider("poe-ninja", ninja_evidence()),
+        StubProvider("pob", pob_evidence()),
+    )
+
+    report = service.get_freshness_report(observed_at=NOW)
+
+    assert report["decision"] == FreshnessDecision.VERIFIED_CURRENT.value
+    assert report["blockers"] == []
 
 
 def test_stale_local_pob_evidence_blocks_current_verification(monkeypatch):

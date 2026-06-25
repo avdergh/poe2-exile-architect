@@ -1,1 +1,13 @@
-{"schema_version": 1, "entries": []}
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "commit": "dc409a7073e4e2752e9a642db7544af53551d006",
+      "pob_version": "0.21.1",
+      "game_patch": "0.5.3",
+      "passive_tree": "0_5",
+      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree"],
+      "verified_at": "2026-06-25T10:03:52Z"
+    }
+  ]
+}

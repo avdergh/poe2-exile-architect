@@ -105,26 +105,34 @@ Fallback rules:
 This means offline mode can still explain the latest known source facts, but it cannot
 invent current-season verification.
 
-## Expected current blocker before PoB certification
+## Certified runtime claims
 
-As of the Phase 2 implementation, the local repository/development pin is:
+The local validated-release provider reads `installed.json` from the user-data directory.
+That metadata must persist the certified PoB commit and game patch claims from
+`update-manifest.json`; the freshness runtime intentionally does not infer those claims
+from release names or dates.
+
+Required installed metadata fields:
 
 ```text
-PoB commit: a82a33b4
+pob_commit
+game_patch
+passive_tree
 ```
 
-The observed upstream Path of Building Community PoE2 release on 2026-06-24 was:
+The PoB provider then matches `pob_commit` against `data/compatibility/pob.json` before it
+can assert `game_patch` and `passive_tree` for the engine/data components.
+
+Official GGG evidence is deliberately split:
 
 ```text
-tag: v0.21.1
-commit: dc409a7073e4e2752e9a642db7544af53551d006
+GGG patch index -> game_patch
+GGG passive-tree release -> league + passive_tree
 ```
 
-Until a PoB upgrade is imported and certified in `data/compatibility/pob.json`, the
-full report is expected to remain blocked. This is a safety result: remote release notes
-can prove a newer PoB exists, but only this project's compatibility manifest can certify
-which `game_patch` and `passive_tree` the local engine/data have passed golden tests
-against.
+The evaluator accepts this split proof when the claims agree with poe.ninja and the
+certified local PoB/corpus evidence. It still blocks if any required component is missing,
+stale, conflicted, or lacks the claims that source is responsible for proving.
 
 ## Smoke output policy
 
@@ -138,4 +146,3 @@ availability. It should:
 - exit non-zero only for internal script/service errors;
 - exit zero for `blocked_stale`, `blocked_unknown`, or temporary network unavailability,
   because those are valid freshness outcomes.
-

@@ -64,12 +64,14 @@ Do not silently edit the ignored PoB working copy as the durable fix.
 Focused engine gate:
 
 ```powershell
+.\.tools\uv\uv.exe run python -m pipeline.build_corpus
 .\.tools\uv\uv.exe run pytest tests/test_compute.py -q --timeout=300
 ```
 
 Every completed test result must be recorded. The known slow
-`test_optimize_build_crafting_keeps_resists_capped` case must not be called passing if it times
-out or is interrupted.
+`test_optimize_build_crafting_keeps_resists_capped` case carries an explicit per-test timeout
+because it exercises full cross-slot crafting and resist re-capping; it must still complete and
+must not be called passing if it times out or is interrupted.
 
 If a golden value changes:
 
@@ -108,6 +110,10 @@ Only after successful focused and full verification, add an entry like:
 Use the actual UTC verification timestamp. Do not add the entry if compute tests, source
 freshness, or patch application are unresolved.
 
+The release workflow must derive `pob_version`, `game_patch`, and `passive_tree` for
+`update-manifest.json` from this compatibility manifest entry. Runtime freshness depends on
+those claims being persisted into `installed.json` during self-update.
+
 ## Expected freshness result
 
 After the local pin and compatibility manifest both point at the certified PoB commit,
@@ -121,4 +127,3 @@ required sources agree at runtime:
 
 If any source is unavailable, hard-stale, or conflicting during the final smoke, record the
 exact source state in the audit instead of weakening the gate.
-

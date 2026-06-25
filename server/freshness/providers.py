@@ -17,9 +17,6 @@ from .models import (
 )
 
 
-# The validated release currently pins a PoB data tree with this compatibility identifier.
-# It is a compatibility claim, not proof that the official live tree is still the same.
-PINNED_PASSIVE_TREE = "0_5"
 RELEASES_URL = "https://github.com/MaxWilk/poe2-build-mcp/releases"
 
 
@@ -39,9 +36,12 @@ def shape_validated_release(
     release_url = (
         f"{RELEASES_URL}/tag/{release_version}" if release_version.startswith("v") else RELEASES_URL
     )
-    claims = [VersionClaim(ClaimDimension.PASSIVE_TREE, PINNED_PASSIVE_TREE)]
-    # The upstream manifest does not currently publish this field. Do not infer it from dates
-    # or release names; future validated releases can add it without changing the domain model.
+    claims: list[VersionClaim] = []
+    # These compatibility claims come from update-manifest.json / installed.json. Do not infer
+    # them from release names or dates; missing fields must fail closed at the evaluator layer.
+    passive_tree = str(installed.get("passive_tree") or "").strip()
+    if passive_tree:
+        claims.append(VersionClaim(ClaimDimension.PASSIVE_TREE, passive_tree))
     game_patch = str(installed.get("game_patch") or "").strip()
     if game_patch:
         claims.append(VersionClaim(ClaimDimension.GAME_PATCH, game_patch))

@@ -28,7 +28,7 @@ jobs:
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git pob/PathOfBuilding-PoE2
           git -C pob/PathOfBuilding-PoE2 config core.autocrlf false # keep LF so the LF patch applies
-          git -C pob/PathOfBuilding-PoE2 checkout -q a82a33b
+          git -C pob/PathOfBuilding-PoE2 checkout -q dc409a7073e4e2752e9a642db7544af53551d006
           (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 
       - name: Install dependencies

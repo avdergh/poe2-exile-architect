@@ -10,6 +10,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # Required by the PoB certification gate so slow golden tests fail explicitly
+    # instead of being mistaken for a completed pass.
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
     "mypy>=1.10",
 ]

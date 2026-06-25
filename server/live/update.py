@@ -157,6 +157,10 @@ def apply_updates(force: bool = False) -> dict[str, Any]:
                 "version": latest,
                 "app_version": manifest.get("app_version") or latest,
                 "pob_commit": manifest.get("pob_commit"),
+                # Freshness providers deliberately refuse to infer game compatibility from
+                # release names. Persist the certified claims published by update-manifest.json.
+                "game_patch": manifest.get("game_patch"),
+                "passive_tree": manifest.get("passive_tree"),
                 "engine_sha256": engine_sha or prev.get("engine_sha256"),
             }
         )
