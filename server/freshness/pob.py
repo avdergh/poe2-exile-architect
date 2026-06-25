@@ -40,9 +40,7 @@ POB_RELEASE_API_URL = (
 POB_RELEASE_COMMIT_API_URL_BASE = (
     "https://api.github.com/repos/PathOfBuildingCommunity/PathOfBuilding-PoE2/commits"
 )
-POB_RELEASE_URL_BASE = (
-    "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/tag"
-)
+POB_RELEASE_URL_BASE = "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/tag"
 POB_COMMIT_URL_BASE = "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/commit"
 POB_POLICY = CachePolicy(
     refresh_after=timedelta(hours=1),

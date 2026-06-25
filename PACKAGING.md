@@ -47,6 +47,42 @@ golden-test CI), never live upstream — see [server/live/update.py](server/live
   rebuilds the corpus from RePoE locally. Set `POE2_MCP_NO_AUTOUPDATE=1` to disable auto-update,
   or `POE2_MCP_DATA` to relocate the user-data dir.
 
+## Live freshness runtime
+
+The bundle also runs live freshness checks through `get_freshness_report`. These checks are
+separate from self-update: `POE2_MCP_NO_AUTOUPDATE=1` disables the background updater, but it does
+not disable on-demand freshness live checks.
+
+Freshness provider caches live in the writable user-data directory under:
+
+```text
+<POE2_MCP_DATA or platform user-data>/freshness/
+```
+
+Set `POE2_MCP_DATA` to relocate both self-update data and freshness caches for local smoke runs or
+portable deployments:
+
+```powershell
+$env:POE2_MCP_DATA = Join-Path $PWD.Path '.runtime-data'
+```
+
+Calling `get_freshness_report(force_refresh=True)` requests an immediate provider refresh, subject
+to each provider's reject window and minimum forced-refresh throttle. It bypasses the normal
+`refresh_after` interval once that throttle allows a new attempt, but it may still return fresh
+cache, fallback cache, or a source-specific blocker instead of performing a new HTTP request on
+every call.
+
+Run the live diagnostic from the repo root with:
+
+```powershell
+$env:POE2_MCP_DATA = Join-Path $PWD.Path '.runtime-data'
+.\.tools\uv\uv.exe run python scripts/smoke_freshness.py
+```
+
+The smoke prints the strict decision, blockers, provider cache states, and evidence versions. It
+exits non-zero only for internal script/service errors; `blocked_stale`, `blocked_unknown`, and
+temporary network unavailability are valid freshness outcomes.
+
 ## Requirements at the host
 
 The `.mcpb` manifest runs `python -m server.main` with `PYTHONPATH=${__dirname}`, so the host

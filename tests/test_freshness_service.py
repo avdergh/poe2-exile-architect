@@ -363,7 +363,10 @@ def test_provider_exception_becomes_missing_diagnostic_without_losing_other_evid
 
     provider_rows = {provider["source"]: provider for provider in report["providers"]}
     assert provider_rows["ggg-tree"]["cache_state"] == CacheState.MISSING.value
-    assert any("RuntimeError" in item and "boom" in item for item in provider_rows["ggg-tree"]["diagnostics"])
+    assert any(
+        "RuntimeError" in item and "boom" in item
+        for item in provider_rows["ggg-tree"]["diagnostics"]
+    )
     assert any(item["source"] == "ggg-patch" for item in report["evidence"])
     assert any(item["source"] == "poe-ninja" for item in report["evidence"])
     assert report["decision"] == FreshnessDecision.BLOCKED_UNKNOWN.value

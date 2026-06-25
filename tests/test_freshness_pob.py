@@ -378,8 +378,13 @@ def test_hard_stale_remote_cache_with_transport_failure_does_not_mark_unknown_ma
     assert all(evidence.status is SourceStatus.UNKNOWN for evidence in result.evidence)
     assert all(evidence.claims == () for evidence in result.evidence)
     assert all(evidence.source_url == POB_RELEASE_API_URL for evidence in result.evidence)
-    assert any("hard-stale" in diagnostic or "reject_after" in diagnostic for diagnostic in result.diagnostics)
-    assert any("remote" in diagnostic and "cache" in diagnostic for diagnostic in result.diagnostics)
+    assert any(
+        "hard-stale" in diagnostic or "reject_after" in diagnostic
+        for diagnostic in result.diagnostics
+    )
+    assert any(
+        "remote" in diagnostic and "cache" in diagnostic for diagnostic in result.diagnostics
+    )
 
 
 def test_hard_stale_remote_cache_with_transport_failure_keeps_manifest_claims_without_remote_url(
@@ -403,7 +408,10 @@ def test_hard_stale_remote_cache_with_transport_failure_keeps_manifest_claims_wi
             (ClaimDimension.GAME_PATCH, "0.5.3"),
             (ClaimDimension.PASSIVE_TREE, "0_5"),
         ]
-    assert any("hard-stale" in diagnostic or "reject_after" in diagnostic for diagnostic in result.diagnostics)
+    assert any(
+        "hard-stale" in diagnostic or "reject_after" in diagnostic
+        for diagnostic in result.diagnostics
+    )
 
 
 def test_overlong_hex_local_commit_emits_unknown_without_claims(tmp_path):
@@ -434,9 +442,7 @@ def test_initial_repository_manifest_does_not_pre_authorize_current_pin():
 def test_read_pinned_commit_parses_pinned_markdown_table(tmp_path):
     pinned_path = tmp_path / "PINNED.md"
     pinned_path.write_text(
-        "| Key | Value |\n"
-        "| --- | --- |\n"
-        "| Pinned commit | `a82a33b` |\n",
+        "| Key | Value |\n| --- | --- |\n| Pinned commit | `a82a33b` |\n",
         encoding="utf-8",
     )
 

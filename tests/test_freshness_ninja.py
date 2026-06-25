@@ -94,17 +94,11 @@ def test_parse_ninja_snapshot_selects_current_softcore_trade_league():
 def test_parse_ninja_snapshot_does_not_assume_first_selectable_league_is_current():
     index_json, build_index_json = snapshot_fixture()
     dawn_league = next(
-        league
-        for league in index_json["buildLeagues"]
-        if league["url"] == "dawnofthehunt"
+        league for league in index_json["buildLeagues"] if league["url"] == "dawnofthehunt"
     )
     index_json["buildLeagues"] = [
         dawn_league,
-        *[
-            league
-            for league in index_json["buildLeagues"]
-            if league["url"] != "dawnofthehunt"
-        ],
+        *[league for league in index_json["buildLeagues"] if league["url"] != "dawnofthehunt"],
     ]
     index_json["snapshotVersions"] = [
         snapshot
@@ -123,9 +117,7 @@ def test_parse_ninja_snapshot_does_not_assume_first_selectable_league_is_current
 def test_parse_ninja_snapshot_rejects_missing_current_snapshot_without_old_league_fallback():
     index_json, build_index_json = snapshot_fixture()
     index_json["snapshotVersions"] = [
-        snapshot
-        for snapshot in index_json["snapshotVersions"]
-        if snapshot["url"] != "runesofaldur"
+        snapshot for snapshot in index_json["snapshotVersions"] if snapshot["url"] != "runesofaldur"
     ]
 
     with pytest.raises(ValueError, match="snapshot|current|league"):
@@ -135,17 +127,11 @@ def test_parse_ninja_snapshot_rejects_missing_current_snapshot_without_old_leagu
 def test_parse_ninja_snapshot_ignores_old_league_first_when_current_snapshot_is_valid():
     index_json, build_index_json = snapshot_fixture()
     dawn_league = next(
-        league
-        for league in index_json["buildLeagues"]
-        if league["url"] == "dawnofthehunt"
+        league for league in index_json["buildLeagues"] if league["url"] == "dawnofthehunt"
     )
     index_json["buildLeagues"] = [
         dawn_league,
-        *[
-            league
-            for league in index_json["buildLeagues"]
-            if league["url"] != "dawnofthehunt"
-        ],
+        *[league for league in index_json["buildLeagues"] if league["url"] != "dawnofthehunt"],
     ]
     index_json["snapshotVersions"] = [
         snapshot
@@ -179,8 +165,7 @@ def test_parse_ninja_snapshot_ignores_archival_snapshot_urls_outside_selectable_
         for snapshot in index_json["snapshotVersions"]
     )
     assert all(
-        league["url"] != "0.4.0act4bosskillrace3ssf"
-        for league in index_json["buildLeagues"]
+        league["url"] != "0.4.0act4bosskillrace3ssf" for league in index_json["buildLeagues"]
     )
 
     snapshot = parse_ninja_snapshot(index_json, build_index_json)
@@ -222,9 +207,7 @@ def test_parse_ninja_snapshot_rejects_missing_snapshot_for_only_candidate():
 def test_parse_ninja_snapshot_rejects_missing_build_for_newest_candidate_without_fallback():
     index_json, build_index_json = snapshot_fixture()
     build_index_json["leagueBuilds"] = [
-        build
-        for build in build_index_json["leagueBuilds"]
-        if build["leagueUrl"] != "runesofaldur"
+        build for build in build_index_json["leagueBuilds"] if build["leagueUrl"] != "runesofaldur"
     ]
 
     with pytest.raises(NinjaParseError, match="build|sample"):
@@ -234,9 +217,7 @@ def test_parse_ninja_snapshot_rejects_missing_build_for_newest_candidate_without
 def test_parse_ninja_snapshot_rejects_zero_total_for_newest_candidate_without_fallback():
     index_json, build_index_json = snapshot_fixture()
     runes_build = next(
-        build
-        for build in build_index_json["leagueBuilds"]
-        if build["leagueUrl"] == "runesofaldur"
+        build for build in build_index_json["leagueBuilds"] if build["leagueUrl"] == "runesofaldur"
     )
     runes_build["total"] = 0
 

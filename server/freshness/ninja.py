@@ -168,9 +168,7 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
 
     newest_date = max(entry.snapshot_date for _, entry in dated_candidates)
     newest = [
-        (league, entry)
-        for league, entry in dated_candidates
-        if entry.snapshot_date == newest_date
+        (league, entry) for league, entry in dated_candidates if entry.snapshot_date == newest_date
     ]
     newest_names = {league.name.casefold() for league, _ in newest}
     if len(newest_names) > 1:
