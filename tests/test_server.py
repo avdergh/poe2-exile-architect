@@ -47,6 +47,55 @@ def test_tool_surface_intact():
     } <= names
 
 
+def test_get_freshness_report_forwards_force_refresh(monkeypatch):
+    from server import main
+
+    captured: dict[str, bool] = {}
+
+    def fake_report(*, force_refresh: bool = False):
+        captured["force_refresh"] = force_refresh
+        return {"decision": "verified_current"}
+
+    monkeypatch.setattr(main.freshness_service, "get_freshness_report", fake_report)
+
+    assert main.get_freshness_report(force_refresh=True) == {"decision": "verified_current"}
+    assert captured == {"force_refresh": True}
+
+
+def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):
+    from server import main
+
+    calls = 0
+    strict = {
+        "decision": "blocked_unknown",
+        "evidence": [],
+        "active_evidence": [],
+        "blockers": ["required component game_patch has no evidence"],
+        "warnings": [],
+        "evaluated_at": "2026-06-24T12:00:00+00:00",
+        "providers": [],
+    }
+
+    def fake_report():
+        nonlocal calls
+        calls += 1
+        return strict
+
+    monkeypatch.setattr(main.freshness_service, "get_freshness_report", fake_report)
+    monkeypatch.setattr(
+        main.live_version,
+        "check_data_version",
+        lambda: {"recommendation": "up_to_date"},
+    )
+
+    result = main.check_data_version()
+
+    assert calls == 1
+    assert result["recommendation"] == "blocked_unknown"
+    assert result["freshness"] == strict
+    assert result["legacy_corpus_probe"] == {"recommendation": "up_to_date"}
+
+
 def test_apply_combat_profile_sets_conditions(monkeypatch):
     from server import main
 
@@ -106,6 +155,16 @@ def test_equip_item_flags_illegal_affixes(monkeypatch):
             return {"ok": True, "slot": slot or "Body Armour", "stats": {"TotalDPS": 1.0}}
 
     monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.corpus,
+        "get_item",
+        lambda name: {"name": name} if name == "Sacramental Robe" else None,
+    )
+    monkeypatch.setattr(
+        main.corpus,
+        "illegal_affixes",
+        lambda base, affixes: [{"text": affixes[0]}],
+    )
     raw = (
         "Rarity: Rare\nFantasy Plate\nSacramental Robe\n--------\n"
         "60% increased maximum Mana\n+40% to Fire Resistance"
@@ -123,6 +182,12 @@ def test_equip_item_clean_gear_has_no_warning(monkeypatch):
             return {"ok": True, "slot": slot or "Ring 1", "stats": {}}
 
     monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.corpus,
+        "get_item",
+        lambda name: {"name": name} if name == "Sapphire Ring" else None,
+    )
+    monkeypatch.setattr(main.corpus, "illegal_affixes", lambda base, affixes: [])
     raw = (
         "Rarity: Rare\nGood Ring\nSapphire Ring\n--------\n"
         "+140 to maximum Mana\n+42% to Lightning Resistance"

@@ -1339,21 +1339,23 @@ def lookup_mechanic(topic: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_freshness_report() -> dict[str, Any]:
+def get_freshness_report(force_refresh: bool = False) -> dict[str, Any]:
     """Return the strict cross-source freshness gate used before claiming a current-season build.
 
-    Missing official patch/tree/league or meta evidence is a blocker, even when the local corpus
-    is the newest validated release. The report includes source-level evidence and reasons.
+    This is a live cross-source gate over the local validated release, official GGG patch/tree
+    data, poe.ninja snapshots, and PoB compatibility evidence. Missing or conflicting sources
+    block current-season verification. Pass force_refresh=True to ask live providers to refresh
+    their caches now, subject to provider safety throttles.
     """
-    return freshness_service.get_freshness_report()
+    return freshness_service.get_freshness_report(force_refresh=force_refresh)
 
 
 @mcp.tool()
 def check_data_version() -> dict[str, Any]:
     """Compatibility wrapper around the strict freshness report plus the legacy corpus probe.
 
-    The RePoE timestamp only describes one corpus input and can never promote the overall result
-    to current-season verified.
+    The RePoE timestamp only describes one legacy corpus input. The top-level recommendation is
+    the strict live freshness decision, while the old probe is nested for compatibility.
     """
     freshness = freshness_service.get_freshness_report()
     return {
