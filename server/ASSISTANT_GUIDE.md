@@ -101,7 +101,12 @@ guide-text signals such as starter language, switch-level snippets, skill candid
 unique language; `sourceTransitionGates` converts explicit switch snippets into draft gates. Treat
 both as external-guide evidence, not computed proof: re-run readiness/stage verification before
 telling the player to swap. Feedback from play goes through `record_build_feedback`; promote it with
-`promote_technique_memory` only after it is reusable and patch-scoped.
+`promote_technique_memory` only after it is reusable and patch-scoped. Later lifecycle routes include
+`memoryContext`: treat `recentEpisodicReflections` as local practice notes, and only treat
+`repeatedFailurePatterns` as stage-specific caution when they match the exact `buildId`. If a stage
+has `memoryWarnings` / `memoryRecommendedActions`, explain the repeated player issue and stabilize
+that stage before recommending a transition. Technique cards are still advisory; stale or unknown
+cards must be re-verified against the current patch/tree before they influence a build decision.
 
 When the route feels too generic or the user asks "why this archetype?", inspect
 `analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live

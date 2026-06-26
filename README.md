@@ -65,7 +65,10 @@ engine confirms the effect.
 
 **Plan build lifecycles**: open-ended requests can return campaign starter → transition gates →
 budget endgame → final endgame, with local feedback memory so practical lessons can later become
-patch-scoped technique cards. Imported or pasted guide text is also scanned for explicit starter,
+patch-scoped technique cards. Later route suggestions include advisory `memoryContext`: repeated
+exact-build feedback can become stage warnings/repair priorities, while promoted techniques are
+marked current/stale/unknown against the local patch/tree claim. This never replaces PoB
+verification or invents numbers. Imported or pasted guide text is also scanned for explicit starter,
 transition, endgame, skill, and unique-item evidence, but those hints still require engine
 verification before any numbers are claimed. Explicit guide phrases like "switch at level 75 when X
 is equipped" become source-derived transition gates, which must still be checked against the active

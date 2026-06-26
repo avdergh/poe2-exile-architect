@@ -689,3 +689,85 @@ def test_feedback_ids_do_not_collide_within_same_second(tmp_path, monkeypatch):
 
     assert first["feedbackId"] != second["feedbackId"]
     assert len(lifecycle.load_memory()["feedback_reflections"]) == 2
+
+
+def test_research_lifecycle_includes_repeated_feedback_memory_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    goal = "给我一个新手能玩的强力终局BD"
+    first = lifecycle.research_build_lifecycle(goal, persist=True)
+
+    lifecycle.record_build_feedback(first["buildId"], "maps_entry", "刚进异界暴毙")
+    lifecycle.record_build_feedback(first["buildId"], "maps_entry", "还是容易死")
+    second = lifecycle.research_build_lifecycle(goal, persist=False)
+
+    assert second["buildId"] == first["buildId"]
+    assert second["memoryContext"]["policy"]["advisoryOnly"] is True
+    assert second["memoryContext"]["repeatedFailurePatterns"][0]["stage"] == "maps_entry"
+    maps = next(stage for stage in second["stages"] if stage["id"] == "maps_entry")
+    assert maps["memoryWarnings"]
+    assert maps["memoryRecommendedActions"]
+
+
+def test_single_feedback_is_recent_context_but_not_stage_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    route = lifecycle.research_build_lifecycle("闪电新手开荒BD", persist=True)
+
+    lifecycle.record_build_feedback(route["buildId"], "maps_entry", "缺蓝")
+    updated = lifecycle.research_build_lifecycle("闪电新手开荒BD", persist=False)
+
+    assert updated["memoryContext"]["recentEpisodicReflections"]
+    assert updated["memoryContext"]["repeatedFailurePatterns"] == []
+    maps = next(stage for stage in updated["stages"] if stage["id"] == "maps_entry")
+    assert maps["memoryWarnings"] == []
+
+
+def test_feedback_memory_does_not_cross_build_ids(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    route_a = lifecycle.research_build_lifecycle("闪电新手开荒BD", persist=True)
+    route_b = lifecycle.research_build_lifecycle("火焰新手开荒BD", persist=True)
+
+    lifecycle.record_build_feedback(route_a["buildId"], "maps_entry", "暴毙")
+    lifecycle.record_build_feedback(route_a["buildId"], "maps_entry", "还是死")
+    updated_b = lifecycle.research_build_lifecycle("火焰新手开荒BD", persist=False)
+
+    assert updated_b["buildId"] == route_b["buildId"]
+    assert updated_b["memoryContext"]["repeatedFailurePatterns"] == []
+
+
+def test_general_feedback_memory_does_not_claim_gate_satisfied(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    route = lifecycle.research_build_lifecycle("新手强力BD", persist=True)
+
+    lifecycle.record_build_feedback(route["buildId"], "campaign_mid", "体验不太顺")
+    lifecycle.record_build_feedback(route["buildId"], "campaign_mid", "第二次还是不顺")
+    updated = lifecycle.research_build_lifecycle("新手强力BD", persist=False)
+
+    pattern = updated["memoryContext"]["repeatedFailurePatterns"][0]
+    mid = next(stage for stage in updated["stages"] if stage["id"] == "campaign_mid")
+
+    assert pattern["failurePattern"] == "general_feedback"
+    assert "Gate is satisfied" not in " ".join(pattern["recommendedActions"])
+    assert "Gate is satisfied" not in " ".join(mid["memoryRecommendedActions"])
+
+
+def test_stale_promoted_technique_is_downweighted(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    feedback = lifecycle.record_build_feedback("life-test", "maps_entry", "暴毙")
+    lifecycle.promote_technique_memory(
+        [feedback["feedbackId"]],
+        "Old patch lesson",
+        current_patch="0.5.3",
+        current_tree="0_5_old",
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "current_compatibility_claim",
+        lambda: {"game_patch": "0.5.4", "passive_tree": "0_5_new"},
+    )
+
+    route = lifecycle.research_build_lifecycle("任意强力BD", persist=False)
+
+    card = route["memoryContext"]["techniqueCards"][0]
+    assert card["compatibilityStatus"] == "stale"
+    assert card["influence"] == "downweighted"
+    assert route["memoryContext"]["stalenessNotes"]

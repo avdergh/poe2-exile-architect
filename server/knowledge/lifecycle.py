@@ -452,6 +452,171 @@ def _collect_goal_evidence(goal: str, preferences: str | None = None) -> dict[st
     return {"queries": queries, "skillCandidates": candidates}
 
 
+def _summarize_lifecycle_memory(build_id: str) -> dict[str, Any]:
+    """Summarize local memory for route synthesis without turning it into build proof.
+
+    The summary deliberately matches feedback by exact build id. Reusing feedback across similar
+    goals would be a planner decision, so Phase 3K keeps this layer conservative and advisory.
+    """
+    with _MEMORY_LOCK:
+        memory = load_memory()
+
+    reflections = [
+        row
+        for row in (memory.get("feedback_reflections") or {}).values()
+        if isinstance(row, dict) and row.get("buildId") == build_id
+    ]
+    reflections.sort(key=lambda row: str(row.get("createdAt") or ""), reverse=True)
+
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in reflections:
+        stage = str(row.get("stage") or "")
+        pattern = str(row.get("failurePattern") or "general_feedback")
+        if not stage:
+            continue
+        group = groups.setdefault(
+            (stage, pattern),
+            {
+                "stage": stage,
+                "failurePattern": pattern,
+                "count": 0,
+                "evidenceIds": [],
+                "lastSeenAt": None,
+            },
+        )
+        group["count"] += 1
+        if row.get("id"):
+            group["evidenceIds"].append(row["id"])
+        created_at = row.get("createdAt")
+        if created_at and (group["lastSeenAt"] is None or str(created_at) > group["lastSeenAt"]):
+            group["lastSeenAt"] = str(created_at)
+
+    repeated_patterns: list[dict[str, Any]] = []
+    for group in groups.values():
+        if group["count"] < 2:
+            continue
+        repeated_patterns.append(
+            {
+                **group,
+                "recommendedActions": _recommended_actions(group["stage"], group["failurePattern"]),
+                "evidenceTags": ["local-episodic-feedback", "repeated-feedback-pattern"],
+            }
+        )
+    repeated_patterns.sort(
+        key=lambda row: (-int(row["count"]), row["stage"], row["failurePattern"])
+    )
+
+    claim = current_compatibility_claim()
+    technique_cards: list[dict[str, Any]] = []
+    staleness_notes: list[str] = []
+    for card in (memory.get("technique_cards") or {}).values():
+        if not isinstance(card, dict):
+            continue
+        status, influence = _compatibility_for_card(card, claim)
+        summary = {
+            "id": card.get("id"),
+            "reason": card.get("reason"),
+            "buildIds": card.get("buildIds") or [],
+            "stages": card.get("stages") or [],
+            "patch": card.get("patch"),
+            "passiveTree": card.get("passiveTree"),
+            "compatibilityStatus": status,
+            "influence": influence,
+            "evidenceTags": ["durable-technique-memory", "compatibility-claim"],
+        }
+        technique_cards.append(summary)
+        if status == "stale":
+            staleness_notes.append(
+                f"Technique {card.get('id')} is from patch/tree "
+                f"{card.get('patch')}/{card.get('passiveTree')} and is downweighted against "
+                f"{claim.get('game_patch')}/{claim.get('passive_tree')}."
+            )
+        elif status == "unknown":
+            staleness_notes.append(
+                f"Technique {card.get('id')} has unknown patch/tree compatibility; re-verify before use."
+            )
+
+    recent = [
+        {
+            "id": row.get("id"),
+            "stage": row.get("stage"),
+            "failurePattern": row.get("failurePattern"),
+            "feedback": row.get("feedback"),
+            "outcome": row.get("outcome"),
+            "createdAt": row.get("createdAt"),
+            "memoryType": "episodic",
+            "evidenceTags": ["local-episodic-feedback"],
+        }
+        for row in reflections[:5]
+    ]
+
+    tags = ["local-lifecycle-memory"]
+    if reflections:
+        tags.append("local-episodic-feedback")
+    if technique_cards:
+        tags.extend(["durable-technique-memory", "compatibility-claim"])
+
+    return {
+        "ok": True,
+        "scope": {"buildId": build_id, "source": "local_lifecycle_memory"},
+        "policy": {
+            "advisoryOnly": True,
+            "doesNotReplacePobVerification": True,
+            "singleFeedbackIsEpisodicOnly": True,
+            "noComputedNumbers": True,
+        },
+        "repeatedFailurePatterns": repeated_patterns,
+        "recentEpisodicReflections": recent,
+        "techniqueCards": technique_cards,
+        "stalenessNotes": staleness_notes,
+        "evidenceTags": tags,
+    }
+
+
+def _compatibility_for_card(card: dict[str, Any], claim: dict[str, Any]) -> tuple[str, str]:
+    """Return `(compatibilityStatus, influence)` for a promoted technique card."""
+    card_patch = str(card.get("patch") or "").strip()
+    card_tree = str(card.get("passiveTree") or "").strip()
+    claim_patch = str(claim.get("game_patch") or "").strip()
+    claim_tree = str(claim.get("passive_tree") or "").strip()
+
+    if (
+        not card_patch
+        or not card_tree
+        or not claim_patch
+        or not claim_tree
+        or card_patch == "unknown"
+        or card_tree == "unknown"
+    ):
+        return "unknown", "unknown"
+    if card_patch != claim_patch or card_tree != claim_tree:
+        return "stale", "downweighted"
+    return "current", "advisory"
+
+
+def _memory_annotation_for_stage(
+    stage_id: str, memory_context: dict[str, Any] | None
+) -> dict[str, list[str]]:
+    warnings: list[str] = []
+    actions: list[str] = []
+    for pattern in (memory_context or {}).get("repeatedFailurePatterns") or []:
+        if pattern.get("stage") != stage_id:
+            continue
+        failure_pattern = str(pattern.get("failurePattern") or "general_feedback")
+        count = int(pattern.get("count") or 0)
+        warnings.append(
+            "Repeated local feedback for this exact build/stage: "
+            f"{failure_pattern} reported {count} times. Treat as advisory and verify before "
+            "transitioning."
+        )
+        for action in pattern.get("recommendedActions") or _recommended_actions(
+            stage_id, failure_pattern
+        ):
+            if action not in actions:
+                actions.append(action)
+    return {"memoryWarnings": warnings, "memoryRecommendedActions": actions}
+
+
 def _stage_plan(
     stage: dict[str, Any],
     goal: str,
@@ -459,6 +624,7 @@ def _stage_plan(
     evidence: dict[str, Any] | None = None,
     cohort: dict[str, Any] | None = None,
     budget: str | None = None,
+    memory_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tags = ["lifecycle-research", "corpus"]
     if stage["id"] in {"endgame_budget", "endgame_final"}:
@@ -483,6 +649,7 @@ def _stage_plan(
     cohort_hints = (
         _cohort_hints(cohort) if stage["id"] in {"endgame_budget", "endgame_final"} else []
     )
+    memory_annotation = _memory_annotation_for_stage(stage["id"], memory_context)
 
     return {
         **stage,
@@ -505,6 +672,8 @@ def _stage_plan(
         ],
         "risks": [transition_note],
         "cohortHints": cohort_hints,
+        "memoryWarnings": memory_annotation["memoryWarnings"],
+        "memoryRecommendedActions": memory_annotation["memoryRecommendedActions"],
         "verification": lifecycle_verification.plan_stage_verification(stage["id"]),
         "evidenceTags": tags,
     }
@@ -575,15 +744,24 @@ def research_build_lifecycle(
         skill_candidates=evidence.get("skillCandidates") or [],
         meta=meta,
     )
+    build_id = _short_hash("|".join([goal, preferences or "", budget or "", mode or ""]), "life")
+    memory_context = _summarize_lifecycle_memory(build_id)
     stages = [
-        _stage_plan(stage, goal, classification["classification"], evidence, cohort, budget)
+        _stage_plan(
+            stage,
+            goal,
+            classification["classification"],
+            evidence,
+            cohort,
+            budget,
+            memory_context,
+        )
         for stage in STAGES
         if stage["id"] in {"campaign_early", "campaign_mid", "campaign_late", "maps_entry"}
         or wants_endgame
         or stage["id"] == "endgame_budget"
     ]
     gates = _default_gates()
-    build_id = _short_hash("|".join([goal, preferences or "", budget or "", mode or ""]), "life")
     freshness = freshness or {"decision": "not_checked", "blockers": [], "warnings": []}
 
     result = {
@@ -612,6 +790,7 @@ def research_build_lifecycle(
         "constraints": {"preferences": preferences, "budget": budget, "mode": mode},
         "evidence": evidence,
         "cohortAnalysis": cohort,
+        "memoryContext": memory_context,
         "stages": stages,
         "transitionGates": gates,
         "memoryPolicy": (
@@ -968,13 +1147,17 @@ def _recommended_actions(
         actions.append("Use engine lever ranking to find the missing multiplier before switching.")
     elif pattern == "clear_speed_gap":
         actions.append("Separate clear-speed support choices from bossing support choices first.")
+    elif pattern == "general_feedback":
+        # Repeated free-form feedback is useful local memory, but it is not a readiness proof.
+        # Keep the repair action neutral so advisory memory cannot claim that a transition gate passed.
+        actions.append("Review repeated local feedback and verify the stage before transitioning.")
 
     if stage == "maps_entry":
         actions.append(
             "For maps_entry, keep farming/repairing until resists_capped, basic_defense_online, "
             "and sustain_ok are true."
         )
-    if not actions:
+    if not actions and pattern is None and not missing:
         actions.append("Gate is satisfied; snapshot the current PoB before changing the build.")
     return actions
 
