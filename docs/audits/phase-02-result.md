@@ -1,9 +1,8 @@
 # 第二阶段结果：Live freshness runtime
 
-Status: DONE for the 2026-06-25 certification snapshot. Source certification for the
-2026-06-26 `0.5.4` PoB dev-export candidate is complete, but live smoke remains blocked
-until a new validated runtime is built/installed over the old `.runtime-data`
-`v0.1.39` / `0.5.3` release.
+Status: DONE. Source certification for the 2026-06-26 `0.5.4` PoB dev-export candidate is
+complete, and the local `.runtime-data` validated runtime has been installed at
+`0.1.39.1-local.20260626`, returning live smoke to `verified_current`.
 
 ## 审计日期
 
@@ -184,16 +183,32 @@ PoB `dev` 分支在 2026-06-25 出现：
 | `.\.tools\uv\uv.exe run mypy server/freshness` | PASS，退出码 0，`Success: no issues found in 10 source files`。 |
 | `npx --yes @anthropic-ai/mcpb validate manifest.json` | PASS，退出码 0，manifest schema validation passes；仅有图标建议尺寸 warning。 |
 
-真实 `.runtime-data` smoke（`evaluated_at=2026-06-26T03:13:03.309260+00:00`）仍为
-`blocked_conflict`：GGG patch 已是 `0.5.4 Hotfix 2`，但当前本地安装 runtime 仍是
-`v0.1.39` / `dc409a7073e4e2752e9a642db7544af53551d006`，claim `game_patch=0.5.3`。
-这是预期行为；下一步需要发布或安装使用新 `POB_COMMIT` 构建的 validated runtime，不能让
-旧安装冒充 `0.5.4`。该次 smoke 中 GGG tree 与 PoB release provider 因 HTTP 403 使用
-缓存 fallback；缓存证据仍足以暴露 `0.5.3` / `0.5.4` 的 claim conflict。
+新增 `scripts/install_local_validated_runtime.py`，将已通过 compatibility manifest 认证的
+当前 PoB working copy 与 `data/corpus.sqlite` 安装到 `.runtime-data`，并写入：
+
+- `version=0.1.39.1-local.20260626`；
+- `pob_commit=7d1aa43c8c938d7be150d197ed9cdec8a4c1c620`；
+- `pob_version=0.21.1-dev.20260625`；
+- `game_patch=0.5.4`；
+- `passive_tree=0_5`。
+
+安装后真实 `.runtime-data` smoke（`evaluated_at=2026-06-26T03:54:37.536611+00:00`）返回
+`verified_current`，blockers/warnings 均为 none。观察到的 live evidence：
+
+| Component | Source | Status | Version | Claims |
+| --- | --- | --- | --- | --- |
+| `pob_engine` | `validated-release-engine` | `current` | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620` | `passive_tree=0_5`; `game_patch=0.5.4` |
+| `pob_data` | `validated-release-pob-data` | `current` | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620` | `passive_tree=0_5`; `game_patch=0.5.4` |
+| `corpus` | `validated-release-corpus` | `current` | `0.1.39.1-local.20260626` | `passive_tree=0_5`; `game_patch=0.5.4` |
+| `game_patch` | `ggg-patch` | `current` | `0.5.4 Hotfix 3` | `game_patch=0.5.4` |
+| `league` | `ggg-tree` | `current` | `Runes of Aldur` | `league=runes-of-aldur` |
+| `passive_tree` | `ggg-tree` | `current` | `1e9eb2d8c1946398c3aaaacfbaead5c75c0d1fa6` | `passive_tree=0_5` |
+| `meta_snapshot` | `poe-ninja` | `current` | `0259-20260626-23663` | `league=runes-of-aldur`; `passive_tree=0_5` |
+| `pob_engine` | `pob` | `current` | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620` | `game_patch=0.5.4`; `passive_tree=0_5` |
+| `pob_data` | `pob` | `current` | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620` | `game_patch=0.5.4`; `passive_tree=0_5` |
 
 ## Remaining blockers
 
-None for the Phase 2 implementation itself. Current live verification is blocked by the
-workspace `.runtime-data` still pointing at the previous `v0.1.39` validated runtime. The
-`0.5.4` PoB candidate is certified in source; a new validated runtime publish/install is
-required for this local smoke to return to `verified_current`.
+None for the Phase 2 implementation itself. Local smoke is `verified_current` after installing
+the `0.5.4` validated runtime into `.runtime-data`. A public GitHub release/update asset still
+needs to be cut later for non-local users to receive the same runtime through self-update.
