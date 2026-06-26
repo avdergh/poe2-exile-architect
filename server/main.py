@@ -30,6 +30,7 @@ from .knowledge import advice
 from .knowledge import db as corpus
 from .knowledge import itemparse
 from .knowledge import lifecycle
+from .knowledge import lifecycle_eval
 from .knowledge import mechanics
 from .knowledge import refbuilds
 from .live import meta as live_meta
@@ -1215,6 +1216,24 @@ def audit_lifecycle_route(route: dict[str, Any]) -> dict[str, Any]:
     transition gates, evidence tags, and verification plans before a route is treated as complete.
     """
     return lifecycle.lifecycle_quality.audit_lifecycle_route(route)
+
+
+@mcp.tool()
+def evaluate_lifecycle_route(
+    route: dict[str, Any],
+    reference_profile: dict[str, Any] | None = None,
+    goal: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate a lifecycle route for regression/development review.
+
+    This tool re-audits route structure and compares only safe, non-copyable reference/cohort fields.
+    It does not run PoB, fetch live data, write memory, or certify numeric DPS/EHP strength.
+    """
+    return lifecycle_eval.evaluate_lifecycle_route(
+        route,
+        reference_profile=reference_profile,
+        goal=goal,
+    )
 
 
 @mcp.tool()

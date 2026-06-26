@@ -33,7 +33,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 77
+    assert len(tools) == 78
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -61,6 +61,7 @@ def test_tool_surface_intact():
         "plan_lifecycle_stage_verification",
         "verify_lifecycle_stage",
         "audit_lifecycle_route",
+        "evaluate_lifecycle_route",
         "get_meta_archetype_trends",
     } <= names
 
@@ -72,6 +73,17 @@ def test_freshness_report_tool_exposes_force_refresh_schema():
 
     assert schema["properties"]["force_refresh"]["type"] == "boolean"
     assert schema["properties"]["force_refresh"]["default"] is False
+
+
+def test_evaluate_lifecycle_route_tool_schema():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    schema = tools["evaluate_lifecycle_route"].inputSchema
+
+    assert "route" in schema["required"]
+    assert schema["properties"]["route"]["type"] == "object"
+    assert schema["properties"]["reference_profile"]["anyOf"][0]["type"] == "object"
+    assert schema["properties"]["goal"]["anyOf"][0]["type"] == "string"
 
 
 def test_get_freshness_report_forwards_force_refresh(monkeypatch):
@@ -311,6 +323,32 @@ def test_audit_lifecycle_route_tool_forwards_route(monkeypatch):
 
     assert result["pass"] is False
     assert result["route"]["stages"] == []
+
+
+def test_evaluate_lifecycle_route_tool_forwards_route(monkeypatch):
+    from server import main
+
+    monkeypatch.setattr(
+        main.lifecycle_eval,
+        "evaluate_lifecycle_route",
+        lambda route, reference_profile=None, goal=None: {
+            "kind": "lifecycle_route_evaluation",
+            "route": route,
+            "referenceProfile": reference_profile,
+            "goal": goal,
+        },
+    )
+
+    result = main.evaluate_lifecycle_route(
+        {"stages": []},
+        reference_profile={"sampleSize": 1},
+        goal="eval goal",
+    )
+
+    assert result["kind"] == "lifecycle_route_evaluation"
+    assert result["route"]["stages"] == []
+    assert result["referenceProfile"]["sampleSize"] == 1
+    assert result["goal"] == "eval goal"
 
 
 def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):

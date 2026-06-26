@@ -68,7 +68,7 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
   and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
   `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `audit_lifecycle_route`,
-  `list_transition_gates`,
+  `evaluate_lifecycle_route`, `list_transition_gates`,
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
   `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
@@ -107,6 +107,9 @@ telling the player to swap. Feedback from play goes through `record_build_feedba
 has `memoryWarnings` / `memoryRecommendedActions`, explain the repeated player issue and stabilize
 that stage before recommending a transition. Technique cards are still advisory; stale or unknown
 cards must be re-verified against the current patch/tree before they influence a build decision.
+For development/regression evaluation, `evaluate_lifecycle_route(route)` checks route structure,
+safe reference/cohort alignment, evidence labels, and memory boundaries. Treat it as an evaluation
+harness, not a build generator or PoB verification result; it does not certify numeric strength.
 
 When the route feels too generic or the user asks "why this archetype?", inspect
 `analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live
