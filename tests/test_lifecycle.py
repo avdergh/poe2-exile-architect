@@ -94,6 +94,98 @@ def test_research_build_lifecycle_uses_goal_specific_skill_evidence(monkeypatch)
     assert "Lightning Spear" in result["stages"][0]["skillPlan"]
 
 
+def test_lifecycle_cohort_extracts_reference_patterns_and_live_meta(monkeypatch):
+    from server.knowledge import lifecycle_cohort
+
+    monkeypatch.setattr(
+        lifecycle_cohort.refbuilds,
+        "search",
+        lambda query="", limit=8: {
+            "count": 2,
+            "builds": [
+                {
+                    "ascendancy": "Stormweaver",
+                    "mainSkill": "Lightning Spear",
+                    "damageTypes": ["lightning"],
+                    "delivery": ["spell", "projectile"],
+                    "defenseIdentity": "ES recharge",
+                    "dominantLever": "+levels to skills",
+                    "topLevers": [
+                        {"lever": "+levels to skills"},
+                        {"lever": "critical multiplier"},
+                    ],
+                },
+                {
+                    "ascendancy": "Stormweaver",
+                    "mainSkill": "Spark",
+                    "damageTypes": ["lightning"],
+                    "delivery": ["spell", "projectile"],
+                    "defenseIdentity": "ES recharge",
+                    "dominantLever": "+levels to skills",
+                    "topLevers": [{"lever": "+levels to skills"}, {"lever": "cast speed"}],
+                },
+            ],
+        },
+    )
+
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal="闪电远程终局BD",
+        skill_candidates=[{"name": "Lightning Spear", "query": "lightning"}],
+        meta={
+            "ok": True,
+            "source": "poe.ninja",
+            "league": "Runes of Aldur",
+            "ascendancies": [{"ascendancy": "Stormweaver", "percentage": 18.5, "trend": "rising"}],
+        },
+        limit=4,
+    )
+
+    assert cohort["ok"] is True
+    assert cohort["sampleSize"] == 2
+    assert cohort["commonLevers"][0]["name"] == "+levels to skills"
+    assert cohort["commonDamageTypes"][0]["name"] == "lightning"
+    assert cohort["ascendancyContext"][0]["ascendancy"] == "Stormweaver"
+    assert cohort["ascendancyContext"][0]["liveMeta"]["percentage"] == 18.5
+    assert "reference-cohort" in cohort["evidenceTags"]
+    assert "live-meta" in cohort["evidenceTags"]
+
+
+def test_research_build_lifecycle_includes_cohort_hints(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle.corpus,
+        "find_skills",
+        lambda query="", gem_type=None, limit=5, **_kw: [
+            {"name": "Lightning Spear", "tags": ["lightning", "projectile"]}
+        ],
+    )
+    monkeypatch.setattr(
+        lifecycle.lifecycle_cohort,
+        "analyze_goal_cohort",
+        lambda **_kw: {
+            "ok": True,
+            "sampleSize": 1,
+            "referenceMatches": [{"mainSkill": "Lightning Spear", "ascendancy": "Stormweaver"}],
+            "commonLevers": [{"name": "+levels to skills", "count": 1}],
+            "commonDamageTypes": [{"name": "lightning", "count": 1}],
+            "commonDelivery": [{"name": "projectile", "count": 1}],
+            "commonDefenses": [{"name": "ES recharge", "count": 1}],
+            "ascendancyContext": [{"ascendancy": "Stormweaver", "referenceCount": 1}],
+            "warnings": [],
+            "evidenceTags": ["reference-cohort", "live-meta"],
+        },
+    )
+
+    result = lifecycle.research_build_lifecycle(
+        "给我一个闪电远程终局BD",
+        meta={"ok": True, "ascendancies": []},
+    )
+
+    assert result["cohortAnalysis"]["sampleSize"] == 1
+    endgame = next(stage for stage in result["stages"] if stage["id"] == "endgame_final")
+    assert "+levels to skills" in " ".join(endgame["cohortHints"])
+    assert "reference-cohort" in endgame["evidenceTags"]
+
+
 def test_transition_gate_blocks_missing_requirements():
     gate = lifecycle.make_transition_gate(
         "maps_entry",

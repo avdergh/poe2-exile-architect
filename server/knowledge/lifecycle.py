@@ -19,6 +19,7 @@ from typing import Any
 
 from .. import paths
 from . import db as corpus
+from . import lifecycle_cohort
 
 STAGES: tuple[dict[str, Any], ...] = (
     {
@@ -383,11 +384,13 @@ def _stage_plan(
     goal: str,
     classification: str,
     evidence: dict[str, Any] | None = None,
+    cohort: dict[str, Any] | None = None,
     budget: str | None = None,
 ) -> dict[str, Any]:
     tags = ["lifecycle-research", "corpus"]
     if stage["id"] in {"endgame_budget", "endgame_final"}:
         tags.append("reference-calibration")
+        tags.extend(tag for tag in (cohort or {}).get("evidenceTags", []) if tag not in tags)
     if stage["id"] == "maps_entry":
         tags.append("user-feedback-ready")
 
@@ -404,6 +407,9 @@ def _stage_plan(
         else f"Choose a low-dependency skill package aligned with: {goal}"
     )
     budget_note = f"Budget constraint: {budget}." if budget else "Budget not specified."
+    cohort_hints = (
+        _cohort_hints(cohort) if stage["id"] in {"endgame_budget", "endgame_final"} else []
+    )
 
     return {
         **stage,
@@ -425,12 +431,42 @@ def _stage_plan(
             "pob_model_supported",
         ],
         "risks": [transition_note],
+        "cohortHints": cohort_hints,
         "verification": {
             "status": "planned",
             "source": "PoB verification should be run with this stage's level/gear/passive budget.",
         },
         "evidenceTags": tags,
     }
+
+
+def _cohort_hints(cohort: dict[str, Any] | None) -> list[str]:
+    """Translate cohort evidence into short stage hints without copying a reference build."""
+    if not cohort or not cohort.get("sampleSize"):
+        return ["No mature reference cohort matched yet; verify this stage from first principles."]
+
+    hints: list[str] = []
+    for label, key in (
+        ("Common mature-build levers", "commonLevers"),
+        ("Common damage types", "commonDamageTypes"),
+        ("Common delivery traits", "commonDelivery"),
+        ("Common defense identities", "commonDefenses"),
+    ):
+        names = _row_names(cohort.get(key) or [])
+        if names:
+            hints.append(f"{label}: {', '.join(names)}")
+    ascendancies = [
+        str(row.get("ascendancy"))
+        for row in (cohort.get("ascendancyContext") or [])[:3]
+        if row.get("ascendancy")
+    ]
+    if ascendancies:
+        hints.append(f"Reference ascendancies to compare, not copy: {', '.join(ascendancies)}")
+    return hints
+
+
+def _row_names(rows: list[dict[str, Any]]) -> list[str]:
+    return [str(row.get("name")) for row in rows[:3] if row.get("name")]
 
 
 def research_build_lifecycle(
@@ -464,8 +500,13 @@ def research_build_lifecycle(
     }
     classification = classify_lifecycle(features)
     evidence = _collect_goal_evidence(goal, preferences)
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal=goal,
+        skill_candidates=evidence.get("skillCandidates") or [],
+        meta=meta,
+    )
     stages = [
-        _stage_plan(stage, goal, classification["classification"], evidence, budget)
+        _stage_plan(stage, goal, classification["classification"], evidence, cohort, budget)
         for stage in STAGES
         if stage["id"] in {"campaign_early", "campaign_mid", "campaign_late", "maps_entry"}
         or wants_endgame
@@ -500,6 +541,7 @@ def research_build_lifecycle(
         "metaContext": meta or {"ok": False, "note": "meta not fetched"},
         "constraints": {"preferences": preferences, "budget": budget, "mode": mode},
         "evidence": evidence,
+        "cohortAnalysis": cohort,
         "stages": stages,
         "transitionGates": gates,
         "memoryPolicy": (
@@ -520,6 +562,11 @@ def research_build_lifecycle(
                 "goal": goal,
                 "constraints": result["constraints"],
                 "evidence": result["evidence"],
+                "cohortSummary": {
+                    "sampleSize": cohort.get("sampleSize"),
+                    "commonLevers": cohort.get("commonLevers") or [],
+                    "ascendancyContext": cohort.get("ascendancyContext") or [],
+                },
                 "classification": result["classification"],
                 "starterViable": result["starterViable"],
                 "stageIds": [s["id"] for s in stages],
@@ -530,6 +577,28 @@ def research_build_lifecycle(
             save_memory(memory)
 
     return result
+
+
+def analyze_lifecycle_cohort(
+    goal: str,
+    *,
+    preferences: str | None = None,
+    meta: dict[str, Any] | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Inspect non-copyable mature-build cohort evidence for a natural-language goal."""
+    goal = (goal or "").strip()
+    if not goal:
+        return {"ok": False, "error": "goal is required"}
+    evidence = _collect_goal_evidence(goal, preferences)
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal=goal,
+        skill_candidates=evidence.get("skillCandidates") or [],
+        meta=meta,
+        limit=limit,
+    )
+    cohort["goalEvidence"] = evidence
+    return cohort
 
 
 def analyze_build_lifecycle(

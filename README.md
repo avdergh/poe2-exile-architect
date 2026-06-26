@@ -69,7 +69,7 @@ patch-scoped technique cards.
 
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 
-### The toolset (71 MCP tools)
+### The toolset (72 MCP tools)
 
 *Build / compute — real Path of Building numbers:*
 - `import_build(source)` — PoB share code, pobb.in/pastebin link, or raw XML
@@ -114,6 +114,7 @@ patch-scoped technique cards.
 - `parse_item(text)` — parse an item's text → affix tiers (T1=best) + open prefix/suffix slots
 - `list_ascendancies(character?)` / `corpus_info()`
 - `suggest_build_lifecycle(goal, preferences?, budget?, mode?)` — research campaign → transition → endgame route
+- `analyze_lifecycle_cohort(goal, preferences?, limit?)` — inspect non-copyable mature-build cohort evidence for a goal
 - `analyze_build_lifecycle(source)` — classify an imported/source build as starter, transition, or endgame-only
 - `compare_lifecycle_routes(route_a, route_b)` / `list_transition_gates(build_id?)`
 - `record_build_feedback(build_id, stage, feedback, outcome?)` — save practical feedback as episodic memory
@@ -164,14 +165,16 @@ Set up and verify:
 ```sh
 uv sync                                    # create venv, install deps
 uv run python -m pipeline.build_corpus     # build data/corpus.sqlite from RePoE (network)
-uv run pytest                              # golden-build suite (engine + corpus)
+.\scripts\verify.ps1 quick                 # fast inner loop: lifecycle/server + static checks
+.\scripts\verify.ps1 full                  # expensive full gate: engine + corpus + static checks
 uv run python scripts/smoke_mcp_client.py  # full MCP protocol over stdio (all tool groups)
 ```
 
-The `scripts/smoke_*.py` files cover each tool group individually; `pytest` is the pinned
-golden-value regression suite (see `tests/`). On Windows, run the smoke scripts with
-`PYTHONUTF8=1` to avoid code-page issues with some item/skill names (the server itself is
-unaffected). Lint/type with `uv run ruff check . && uv run mypy server`.
+The `scripts/verify.ps1` profiles keep the normal development loop short: use `quick` for
+knowledge/MCP/lifecycle edits, `noncompute` for broad non-engine regression, `compute` when the PoB
+engine or optimizer changes, and `full` for release/merge gates. The `scripts/smoke_*.py` files
+cover each tool group individually. On Windows, run the smoke scripts with `PYTHONUTF8=1` to avoid
+code-page issues with some item/skill names (the server itself is unaffected).
 
 To run from source in Claude Desktop, add to `claude_desktop_config.json`:
 

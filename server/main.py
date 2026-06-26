@@ -1145,6 +1145,30 @@ def suggest_build_lifecycle(
 
 
 @mcp.tool()
+def analyze_lifecycle_cohort(
+    goal: str,
+    preferences: str | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Analyze non-copyable lifecycle cohort evidence for a natural-language build goal.
+
+    This is a research inspection tool: it summarizes recurring levers, delivery traits, defenses,
+    and live ascendancy context from calibration sources. It does not produce a final build and must
+    not be treated as permission to copy a reference build.
+    """
+    try:
+        meta = live_meta.get_meta_builds(limit=limit)
+    except live_meta.MetaError as e:
+        meta = {"ok": False, "error": f"meta data unavailable: {e}"}
+    return lifecycle.analyze_lifecycle_cohort(
+        goal,
+        preferences=preferences,
+        meta=meta,
+        limit=limit,
+    )
+
+
+@mcp.tool()
 def analyze_build_lifecycle(source: str) -> dict[str, Any]:
     """Import or inspect a build source and classify its lifecycle viability.
 

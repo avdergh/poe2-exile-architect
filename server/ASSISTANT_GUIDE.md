@@ -67,8 +67,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   layer — `explain_mechanic` / `search_mechanics` / `relevant_mechanics` (wiki tier, PoE2 Wiki
   **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
   and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
-  `compare_lifecycle_routes`, `list_transition_gates`, `record_build_feedback`,
-  `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
+  `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `list_transition_gates`,
+  `record_build_feedback`, `promote_technique_memory`). Static facts to *find* options; the engine
+  *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
   `lookup_mechanic` (live wiki fallback for topics not in the corpus), `check_data_version`,
   `check_for_updates`/`apply_updates`, `update_corpus`. Approximate, time-sensitive; if one returns
@@ -95,6 +96,11 @@ that stage. If the user supplies an existing PoB/source, use `analyze_build_life
 classify whether it can level directly or needs a separate starter. Feedback from play goes through
 `record_build_feedback`; promote it with `promote_technique_memory` only after it is reusable and
 patch-scoped.
+
+When the route feels too generic or the user asks "why this archetype?", inspect
+`analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live
+ascendancy context as research evidence. It is still calibration-only; never copy a reference build
+or treat poe.ninja popularity as proof of optimality.
 
 1. `new_build` → `set_class` → `set_level` → `set_skill` (main skill + a starter support set).
    Supports are usually the biggest "more" multiplier AND the corpus has no support magnitudes — so
@@ -233,3 +239,15 @@ realize it, then re-check defenses.
 No in-game interaction of any kind (no overlay, automation, or live-game reading). A pasted PoB
 code is user data — used only by the local engine, never sent anywhere except the explicit
 live-ops calls, which transmit only what they must (e.g. a league + item name).
+
+## Verification discipline
+
+Use layered verification instead of running the full golden suite after every small edit:
+
+- Focused RED/GREEN tests for the file or behavior being changed.
+- `.\scripts\verify.ps1 quick` for lifecycle, MCP surface, docs, memory, and knowledge-layer edits.
+- `.\scripts\verify.ps1 noncompute` before committing broad non-engine changes.
+- `.\scripts\verify.ps1 compute` when engine, optimizer, item generation, support ranking, or PoB
+  runtime behavior changes.
+- `.\scripts\verify.ps1 full` only for major milestones, release/merge gates, or cross-cutting
+  runtime changes.

@@ -31,7 +31,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 71
+    assert len(tools) == 72
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -54,6 +54,7 @@ def test_tool_surface_intact():
         "list_transition_gates",
         "record_build_feedback",
         "promote_technique_memory",
+        "analyze_lifecycle_cohort",
     } <= names
 
 
@@ -102,6 +103,32 @@ def test_suggest_build_lifecycle_uses_freshness_and_meta(monkeypatch, tmp_path):
     assert result["freshness"]["decision"] == "verified_current"
     assert result["metaContext"]["source"] == "poe.ninja"
     assert result["buildId"] in main.lifecycle.load_memory()["lifecycle_builds"]
+
+
+def test_analyze_lifecycle_cohort_tool_uses_meta(monkeypatch):
+    from server import main
+
+    monkeypatch.setattr(
+        main.live_meta,
+        "get_meta_builds",
+        lambda limit=8: {"ok": True, "source": "poe.ninja", "ascendancies": []},
+    )
+    monkeypatch.setattr(
+        main.lifecycle.lifecycle_cohort,
+        "analyze_goal_cohort",
+        lambda **kwargs: {
+            "ok": True,
+            "goal": kwargs["goal"],
+            "sampleSize": 0,
+            "referenceMatches": [],
+            "evidenceTags": ["reference-cohort"],
+        },
+    )
+
+    result = main.analyze_lifecycle_cohort("闪电终局BD")
+
+    assert result["ok"] is True
+    assert result["goal"] == "闪电终局BD"
 
 
 def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):
