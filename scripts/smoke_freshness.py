@@ -54,7 +54,7 @@ def _print_report(report: Mapping[str, Any]) -> None:
     print(f"evaluated_at: {_sanitize(report.get('evaluated_at'))}")
     _print_items("blockers", _as_iterable(report.get("blockers")))
     _print_items("warnings", _as_iterable(report.get("warnings")))
-    _print_providers(_as_iterable(report.get("providers")))
+    _print_providers(_as_iterable(report.get("provider_status") or report.get("providers")))
     _print_evidence(_as_iterable(report.get("evidence")))
 
 

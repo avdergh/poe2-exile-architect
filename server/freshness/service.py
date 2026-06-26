@@ -16,7 +16,9 @@ import urllib.request
 from .. import paths
 from . import providers
 from .cache import (
+    CacheError,
     FileCacheStore,
+    PayloadParseError,
     RefreshAttemptThrottle,
     RefreshCoordinator,
     TransportError,
@@ -31,11 +33,12 @@ from .pob import PobProvider
 from .provider_models import CacheState, EvidenceProvider, ProviderResult
 
 
-DEFAULT_TOTAL_TIMEOUT_SECONDS = 5.0
+DEFAULT_TOTAL_TIMEOUT_SECONDS = 8.0
 _MAX_PROVIDER_WORKERS = 4
-_HTTP_TIMEOUT_SECONDS = 2.0
+_HTTP_TIMEOUT_SECONDS = 5.0
 _LOCAL_SOURCE = "local"
 _USER_AGENT = {"User-Agent": "poe2-build-mcp freshness/0.1"}
+_EXPECTED_PROVIDER_EXCEPTIONS = (CacheError, PayloadParseError, TransportError)
 
 _attempt_throttle = RefreshAttemptThrottle()
 _refresh_coordinator = RefreshCoordinator()
@@ -93,7 +96,8 @@ def _ggg_tree_provider() -> EvidenceProvider:
 
 def _ninja_provider() -> EvidenceProvider:
     return NinjaSnapshotProvider(
-        store=_cache_store("poe-ninja"),
+        index_store=_cache_store("ninja-index"),
+        build_index_store=_cache_store("ninja-build-index"),
         transport=_http_transport,
         attempt_throttle=_attempt_throttle,
         refresh_coordinator=_refresh_coordinator,
@@ -102,7 +106,7 @@ def _ninja_provider() -> EvidenceProvider:
 
 def _pob_provider() -> EvidenceProvider:
     return PobProvider(
-        store=_cache_store("pob"),
+        store=_cache_store("pob-release"),
         transport=_http_transport,
         attempt_throttle=_attempt_throttle,
         refresh_coordinator=_refresh_coordinator,
@@ -144,7 +148,11 @@ def get_freshness_report(
         evaluated_at=now,
     )
     report = evaluate_freshness(manifest).to_dict()
-    report["providers"] = [_provider_result_to_dict(result) for result in results]
+    provider_status = [_provider_result_to_dict(result) for result in results]
+    # `provider_status` is the public MCP contract. Keep `providers` as a compatibility alias
+    # for older callers and the human-readable smoke script.
+    report["provider_status"] = provider_status
+    report["providers"] = provider_status
     return report
 
 
@@ -179,11 +187,11 @@ def _collect_provider_results(
             source = future_sources[future]
             try:
                 results[source] = future.result()
-            except Exception as exc:  # pragma: no cover - task wrappers already normalize.
+            except _EXPECTED_PROVIDER_EXCEPTIONS:
                 results[source] = _missing_result(
                     source=source,
                     started=submitted_at[future],
-                    diagnostic=f"provider failed with {type(exc).__name__}: {exc}",
+                    diagnostic="provider unavailable",
                 )
 
     for future in pending:
@@ -239,14 +247,8 @@ def _provider_tasks(
 
 def _collect_local(*, now: datetime) -> ProviderResult:
     started = monotonic()
-    try:
-        evidence = providers.collect_local_evidence(now)
-        diagnostics: tuple[str, ...] = ()
-    except Exception as exc:
-        # Local metadata participates in the same fail-closed gate as live providers: if it
-        # unexpectedly fails, keep other evidence but do not pretend local release facts exist.
-        evidence = ()
-        diagnostics = (f"provider failed with {type(exc).__name__}: {exc}",)
+    evidence = providers.collect_local_evidence(now)
+    diagnostics: tuple[str, ...] = () if evidence else ("local metadata unavailable",)
     return ProviderResult(
         source=_LOCAL_SOURCE,
         evidence=tuple(evidence),
@@ -266,13 +268,13 @@ def _collect_live_provider(
     started = monotonic()
     try:
         return provider.collect(now=now, force_refresh=force_refresh)
-    except Exception as exc:
+    except _EXPECTED_PROVIDER_EXCEPTIONS:
         # Provider failures are source diagnostics, not report failures. Missing evidence must
         # remain visible to the evaluator so a live outage blocks current-season verification.
         return _missing_result(
             source=source,
             started=started,
-            diagnostic=f"provider failed with {type(exc).__name__}: {exc}",
+            diagnostic="provider unavailable",
         )
 
 

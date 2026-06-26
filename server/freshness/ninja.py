@@ -29,11 +29,13 @@ from .models import (
     SourceStatus,
     VersionClaim,
 )
-from .provider_models import CachePolicy, ProviderResult
+from .provider_models import CachePolicy, CacheState, ProviderResult
 
 
 NINJA_INDEX_URL = "https://poe.ninja/poe2/api/data/index-state"
 NINJA_BUILD_INDEX_URL = "https://poe.ninja/poe2/api/data/build-index-state"
+NINJA_INDEX_SOURCE = "poe-ninja-index"
+NINJA_BUILD_INDEX_SOURCE = "poe-ninja-build-index"
 NINJA_POLICY = CachePolicy(
     refresh_after=timedelta(minutes=30),
     reject_after=timedelta(hours=2),
@@ -248,34 +250,28 @@ def _reject_tree_mismatch(
             raise NinjaParseError(f"passive tree mismatch for league {league_url}")
 
 
-def _snapshot_from_payload(payload: Mapping[str, Any]) -> NinjaSnapshot:
-    # Cache payload revalidation: cached compact facts are still untrusted, so rebuild
-    # the public evidence only after replaying every strict parser check.
-    league = _nonempty_string(payload.get("league"), "cached league")
-    league_url = _league_url_token(payload.get("league_url"), "cached league URL")
-    if _is_excluded_league(
-        name=league,
-        display_name=None,
-        url=league_url,
-        hardcore=False,
-    ):
-        raise NinjaParseError("cached league is excluded")
-    version = _nonempty_string(payload.get("version"), "cached version")
-    snapshot_date = _snapshot_date(version)
-    passive_tree = _nonempty_string(payload.get("passive_tree"), "cached passive tree")
-    passive_tree_claim = _passive_tree_claim(passive_tree)
-    sample_size = _positive_int(payload.get("sample_size"), "cached sample size")
-    if sample_size <= 0:
-        raise NinjaParseError("cached sample size is zero")
-    return NinjaSnapshot(
-        league=league,
-        league_url=league_url,
-        version=version,
-        snapshot_date=snapshot_date,
-        passive_tree=passive_tree,
-        passive_tree_claim=passive_tree_claim,
-        sample_size=sample_size,
-    )
+def _index_payload(index: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "buildLeagues": list(_sequence(index.get("buildLeagues"), "buildLeagues")),
+        "oldBuildLeagues": list(_sequence(index.get("oldBuildLeagues", []), "oldBuildLeagues")),
+        "snapshotVersions": list(_sequence(index.get("snapshotVersions"), "snapshotVersions")),
+    }
+
+
+def _build_index_payload(build_index: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "leagueBuilds": list(_sequence(build_index.get("leagueBuilds"), "leagueBuilds")),
+    }
+
+
+def _index_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    # Cache payload revalidation: cached compact API facts are still untrusted, so replay
+    # the same structural checks before combining index-state with build-index-state.
+    return _index_payload(payload)
+
+
+def _build_index_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _build_index_payload(payload)
 
 
 def _league_name(league: Mapping[str, Any]) -> str:
@@ -398,14 +394,16 @@ class NinjaSnapshotProvider:
     def __init__(
         self,
         *,
-        store: FileCacheStore,
+        index_store: FileCacheStore,
+        build_index_store: FileCacheStore,
         transport: Transport,
         attempt_throttle: RefreshAttemptThrottle,
         refresh_coordinator: RefreshCoordinator,
         cache_runner: CacheRunner = run_cached,
         timer: Callable[[], float] = monotonic,
     ) -> None:
-        self._store = store
+        self._index_store = index_store
+        self._build_index_store = build_index_store
         self._transport = transport
         self._attempt_throttle = attempt_throttle
         self._refresh_coordinator = refresh_coordinator
@@ -419,71 +417,93 @@ class NinjaSnapshotProvider:
         force_refresh: bool = False,
     ) -> ProviderResult:
         started = self._timer()
-        cache_result = self._cache_runner(
-            source=self.name,
+        index_result = self._cache_runner(
+            source=NINJA_INDEX_SOURCE,
             source_url=NINJA_INDEX_URL,
             now=now,
             policy=self.policy,
-            store=self._store,
+            store=self._index_store,
             transport=self._transport,
-            parse=self._parse_refresh,
+            parse=self._parse_index_refresh,
             attempt_throttle=self._attempt_throttle,
             refresh_coordinator=self._refresh_coordinator,
             force_refresh=force_refresh,
         )
-        evidence, diagnostics = self._shape_evidence(cache_result, now=now)
+        build_index_result = self._cache_runner(
+            source=NINJA_BUILD_INDEX_SOURCE,
+            source_url=NINJA_BUILD_INDEX_URL,
+            now=now,
+            policy=self.policy,
+            store=self._build_index_store,
+            transport=self._transport,
+            parse=self._parse_build_index_refresh,
+            attempt_throttle=self._attempt_throttle,
+            refresh_coordinator=self._refresh_coordinator,
+            force_refresh=force_refresh,
+        )
+        evidence, diagnostics = self._shape_evidence(
+            index_result,
+            build_index_result,
+            now=now,
+        )
         return ProviderResult(
             source=self.name,
             evidence=evidence,
-            cache_state=cache_result.cache_state,
+            cache_state=_combined_cache_state(
+                index_result.cache_state, build_index_result.cache_state
+            ),
             diagnostics=diagnostics,
             duration_ms=_duration_ms(started, self._timer()),
         )
 
-    def _parse_refresh(self, body: bytes) -> Mapping[str, Any]:
+    def _parse_index_refresh(self, body: bytes) -> Mapping[str, Any]:
         index_json = _json_value(body, "index")
-        build_response = _successful_response(
-            transport=self._transport,
-            url=NINJA_BUILD_INDEX_URL,
-            label="build index",
-        )
-        snapshot = parse_ninja_snapshot(
-            index_json,
-            _json_value(build_response.body, "build index"),
-        )
-        return {
-            "league": snapshot.league,
-            "league_url": snapshot.league_url,
-            "version": snapshot.version,
-            "passive_tree": snapshot.passive_tree,
-            "sample_size": snapshot.sample_size,
-        }
+        return _index_payload(_mapping(index_json, "index"))
+
+    def _parse_build_index_refresh(self, body: bytes) -> Mapping[str, Any]:
+        build_index_json = _json_value(body, "build index")
+        return _build_index_payload(_mapping(build_index_json, "build index"))
 
     def _shape_evidence(
         self,
-        cache_result: CacheRunResult,
+        index_result: CacheRunResult,
+        build_index_result: CacheRunResult,
         *,
         now: datetime,
     ) -> tuple[tuple[FreshnessEvidence, ...], tuple[str, ...]]:
-        diagnostics = list(cache_result.diagnostics)
-        if cache_result.envelope is None:
+        diagnostics = [
+            *[f"index: {diagnostic}" for diagnostic in index_result.diagnostics],
+            *[f"build-index: {diagnostic}" for diagnostic in build_index_result.diagnostics],
+        ]
+        if index_result.envelope is None or build_index_result.envelope is None:
             return self._unknown_evidence(now), tuple(diagnostics)
         try:
-            snapshot = _snapshot_from_payload(cache_result.envelope.payload)
+            snapshot = parse_ninja_snapshot(
+                _index_from_payload(index_result.envelope.payload),
+                _build_index_from_payload(build_index_result.envelope.payload),
+            )
         except NinjaParseError as exc:
             diagnostics.append(f"cached payload invalid: {exc}")
             return self._unknown_evidence(now), tuple(diagnostics)
 
         diagnostics.append(f"sample_size={snapshot.sample_size}")
         diagnostics.append(f"snapshot_date={snapshot.snapshot_date.isoformat()}")
-        status = SourceStatus.STALE if cache_result.hard_stale else SourceStatus.CURRENT
+        status = (
+            SourceStatus.STALE
+            if index_result.hard_stale or build_index_result.hard_stale
+            else SourceStatus.CURRENT
+        )
+        observed_at = min(
+            index_result.envelope.checked_at,
+            build_index_result.envelope.checked_at,
+        )
         return (
             (
                 FreshnessEvidence(
                     component=Component.META_SNAPSHOT,
                     source=self.name,
                     source_url=f"https://poe.ninja/poe2/builds/{snapshot.league_url}",
-                    observed_at=cache_result.envelope.checked_at,
+                    observed_at=observed_at,
                     version=snapshot.version,
                     status=status,
                     claims=(
@@ -513,3 +533,14 @@ class NinjaSnapshotProvider:
 
 def _duration_ms(started: float, finished: float) -> int:
     return int(max(0.0, finished - started) * 1000)
+
+
+def _combined_cache_state(first: CacheState, second: CacheState) -> CacheState:
+    priority = {
+        CacheState.MISSING: 5,
+        CacheState.FALLBACK: 4,
+        CacheState.REFRESHED: 3,
+        CacheState.REVALIDATED: 2,
+        CacheState.FRESH: 1,
+    }
+    return first if priority[first] >= priority[second] else second

@@ -7,6 +7,8 @@ import threading
 from time import monotonic
 from typing import Any
 
+import pytest
+
 from server.freshness import (
     CacheState,
     ClaimDimension,
@@ -18,6 +20,7 @@ from server.freshness import (
     VersionClaim,
 )
 from server.freshness import providers, service
+from server.freshness.cache import TransportError
 
 
 NOW = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
@@ -226,6 +229,31 @@ def provider_sources(report: dict[str, Any]) -> list[str]:
     return [provider["source"] for provider in report["providers"]]
 
 
+def test_service_uses_specified_timeout_budgets():
+    assert service.DEFAULT_TOTAL_TIMEOUT_SECONDS == 8.0
+    assert service._HTTP_TIMEOUT_SECONDS == 5.0
+
+
+def test_report_exposes_provider_status_alias(monkeypatch):
+    install_matching_providers(monkeypatch)
+
+    report = service.get_freshness_report(observed_at=NOW)
+
+    assert report["provider_status"] == report["providers"]
+    assert provider_sources(report) == ["local", "ggg-patch", "ggg-tree", "poe-ninja", "pob"]
+
+
+def test_provider_factories_use_spec_cache_file_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(service.paths, "user_data_dir", lambda: tmp_path)
+
+    ninja = service._ninja_provider()
+    pob = service._pob_provider()
+
+    assert ninja._index_store.path == tmp_path / "freshness" / "ninja-index.json"
+    assert ninja._build_index_store.path == tmp_path / "freshness" / "ninja-build-index.json"
+    assert pob._store.path == tmp_path / "freshness" / "pob-release.json"
+
+
 def test_validated_release_is_shaped_as_local_component_evidence():
     records = providers.shape_validated_release(
         installed={
@@ -237,6 +265,10 @@ def test_validated_release_is_shaped_as_local_component_evidence():
         },
         corpus_info={"schema_version": 4, "built_at": "2026-06-23T04:00:00+00:00"},
         observed_at=NOW,
+        compatibility=providers.LocalCompatibility(
+            game_patch="0.5.3",
+            passive_tree="0_5",
+        ),
     )
 
     by_component = {record.component: record for record in records}
@@ -257,7 +289,7 @@ def test_validated_release_is_shaped_as_local_component_evidence():
     )
 
 
-def test_validated_release_uses_installed_passive_tree_claim_without_hardcoded_fallback():
+def test_validated_release_requires_compatibility_before_emitting_claims():
     records = providers.shape_validated_release(
         installed={
             "version": "v0.1.40",
@@ -267,6 +299,10 @@ def test_validated_release_uses_installed_passive_tree_claim_without_hardcoded_f
         },
         corpus_info={"schema_version": 4},
         observed_at=NOW,
+        compatibility=providers.LocalCompatibility(
+            game_patch="0.6.0",
+            passive_tree="0_6",
+        ),
     )
 
     by_component = {record.component: record for record in records}
@@ -275,17 +311,18 @@ def test_validated_release_uses_installed_passive_tree_claim_without_hardcoded_f
         for claim in by_component[Component.POB_ENGINE].claims
     )
 
-    missing_tree_records = providers.shape_validated_release(
+    unverified_records = providers.shape_validated_release(
         installed={
             "version": "v0.1.40",
             "pob_commit": "future-tree",
             "game_patch": "0.6.0",
+            "passive_tree": "0_6",
         },
         corpus_info={"schema_version": 4},
         observed_at=NOW,
+        compatibility=None,
     )
-    missing_tree_claims = {claim.key for record in missing_tree_records for claim in record.claims}
-    assert ClaimDimension.PASSIVE_TREE not in missing_tree_claims
+    assert all(record.claims == () for record in unverified_records)
 
 
 def test_all_required_live_and_local_evidence_matching_verifies_current(monkeypatch):
@@ -423,7 +460,7 @@ def test_provider_exception_becomes_missing_diagnostic_without_losing_other_evid
     install_provider_stubs(
         monkeypatch,
         StubProvider("ggg-patch", ggg_patch_evidence()),
-        StubProvider("ggg-tree", exc=RuntimeError("boom")),
+        StubProvider("ggg-tree", exc=TransportError("boom")),
         StubProvider("poe-ninja", ninja_evidence()),
         StubProvider("pob", pob_evidence()),
     )
@@ -432,13 +469,38 @@ def test_provider_exception_becomes_missing_diagnostic_without_losing_other_evid
 
     provider_rows = {provider["source"]: provider for provider in report["providers"]}
     assert provider_rows["ggg-tree"]["cache_state"] == CacheState.MISSING.value
-    assert any(
-        "RuntimeError" in item and "boom" in item
-        for item in provider_rows["ggg-tree"]["diagnostics"]
-    )
+    assert provider_rows["ggg-tree"]["diagnostics"] == ["provider unavailable"]
     assert any(item["source"] == "ggg-patch" for item in report["evidence"])
     assert any(item["source"] == "poe-ninja" for item in report["evidence"])
     assert report["decision"] == FreshnessDecision.BLOCKED_UNKNOWN.value
+
+
+def test_unexpected_provider_bug_is_not_silently_converted(monkeypatch):
+    install_provider_stubs(
+        monkeypatch,
+        StubProvider("buggy-provider", exc=RuntimeError("secret path C:/Users/name/token")),
+    )
+
+    with pytest.raises(RuntimeError, match="secret path"):
+        service.get_freshness_report(observed_at=NOW)
+
+
+def test_local_expected_failure_uses_sanitized_diagnostic(monkeypatch):
+    monkeypatch.setattr(
+        providers.live_update,
+        "installed_meta",
+        lambda: (_ for _ in ()).throw(OSError("C:/Users/name/token")),
+    )
+    monkeypatch.setattr(
+        providers.db,
+        "corpus_info",
+        lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    result = service._collect_local(now=NOW)
+
+    assert result.cache_state is CacheState.MISSING
+    assert result.diagnostics == ("local metadata unavailable",)
 
 
 def test_total_timeout_returns_promptly_with_missing_provider_diagnostic(monkeypatch):

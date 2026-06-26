@@ -77,6 +77,49 @@ def make_ninja_envelope(*, checked_at: datetime) -> CacheEnvelope:
     )
 
 
+def make_ninja_index_envelope(*, checked_at: datetime) -> CacheEnvelope:
+    index_json, _build_index_json = snapshot_fixture()
+    return CacheEnvelope.create(
+        source="poe-ninja-index",
+        source_url=NINJA_INDEX_URL,
+        fetched_at=checked_at,
+        checked_at=checked_at,
+        etag='"index-v1"',
+        last_modified=None,
+        payload={
+            "buildLeagues": index_json["buildLeagues"],
+            "oldBuildLeagues": index_json["oldBuildLeagues"],
+            "snapshotVersions": index_json["snapshotVersions"],
+        },
+    )
+
+
+def make_ninja_build_index_envelope(*, checked_at: datetime) -> CacheEnvelope:
+    _index_json, build_index_json = snapshot_fixture()
+    return CacheEnvelope.create(
+        source="poe-ninja-build-index",
+        source_url=NINJA_BUILD_INDEX_URL,
+        fetched_at=checked_at,
+        checked_at=checked_at,
+        etag='"build-v1"',
+        last_modified=None,
+        payload={"leagueBuilds": build_index_json["leagueBuilds"]},
+    )
+
+
+def make_provider(
+    tmp_path: Path,
+    transport: RouteTransport,
+) -> NinjaSnapshotProvider:
+    return NinjaSnapshotProvider(
+        index_store=FileCacheStore(tmp_path / "ninja-index.json"),
+        build_index_store=FileCacheStore(tmp_path / "ninja-build-index.json"),
+        transport=transport,
+        attempt_throttle=RefreshAttemptThrottle(),
+        refresh_coordinator=RefreshCoordinator(),
+    )
+
+
 def test_parse_ninja_snapshot_selects_current_softcore_trade_league():
     index_json, build_index_json = snapshot_fixture()
 
@@ -296,12 +339,7 @@ def test_ninja_provider_refreshes_and_emits_meta_snapshot_evidence(tmp_path):
             ),
         }
     )
-    provider = NinjaSnapshotProvider(
-        store=FileCacheStore(tmp_path / "ninja.json"),
-        transport=transport,
-        attempt_throttle=RefreshAttemptThrottle(),
-        refresh_coordinator=RefreshCoordinator(),
-    )
+    provider = make_provider(tmp_path, transport)
 
     result = provider.collect(now=NOW)
 
@@ -322,6 +360,8 @@ def test_ninja_provider_refreshes_and_emits_meta_snapshot_evidence(tmp_path):
         NINJA_INDEX_URL,
         NINJA_BUILD_INDEX_URL,
     ]
+    assert (tmp_path / "ninja-index.json").exists()
+    assert (tmp_path / "ninja-build-index.json").exists()
     assert "sample_size=124302" in result.diagnostics
     assert "snapshot_date=2026-06-24" in result.diagnostics
     assert NINJA_POLICY.refresh_after == timedelta(minutes=30)
@@ -330,13 +370,18 @@ def test_ninja_provider_refreshes_and_emits_meta_snapshot_evidence(tmp_path):
 
 def test_ninja_provider_maps_hard_stale_fallback_to_stale_meta_snapshot(tmp_path):
     checked_at = NOW - timedelta(hours=3)
-    store = FileCacheStore(tmp_path / "ninja.json")
-    store.save(make_ninja_envelope(checked_at=checked_at))
-    provider = NinjaSnapshotProvider(
-        store=store,
-        transport=RouteTransport({NINJA_INDEX_URL: TransportError("offline")}),
-        attempt_throttle=RefreshAttemptThrottle(),
-        refresh_coordinator=RefreshCoordinator(),
+    index_store = FileCacheStore(tmp_path / "ninja-index.json")
+    build_index_store = FileCacheStore(tmp_path / "ninja-build-index.json")
+    index_store.save(make_ninja_index_envelope(checked_at=checked_at))
+    build_index_store.save(make_ninja_build_index_envelope(checked_at=checked_at))
+    provider = make_provider(
+        tmp_path,
+        RouteTransport(
+            {
+                NINJA_INDEX_URL: TransportError("offline"),
+                NINJA_BUILD_INDEX_URL: TransportError("offline"),
+            }
+        ),
     )
 
     result = provider.collect(now=NOW)
@@ -349,14 +394,11 @@ def test_ninja_provider_maps_hard_stale_fallback_to_stale_meta_snapshot(tmp_path
 
 
 def test_ninja_provider_revalidates_cached_payload_with_real_league_url_shape(tmp_path):
-    store = FileCacheStore(tmp_path / "ninja.json")
-    store.save(make_ninja_envelope(checked_at=NOW))
-    provider = NinjaSnapshotProvider(
-        store=store,
-        transport=RouteTransport({}),
-        attempt_throttle=RefreshAttemptThrottle(),
-        refresh_coordinator=RefreshCoordinator(),
+    FileCacheStore(tmp_path / "ninja-index.json").save(make_ninja_index_envelope(checked_at=NOW))
+    FileCacheStore(tmp_path / "ninja-build-index.json").save(
+        make_ninja_build_index_envelope(checked_at=NOW)
     )
+    provider = make_provider(tmp_path, RouteTransport({}))
 
     result = provider.collect(now=NOW)
 
@@ -366,11 +408,14 @@ def test_ninja_provider_revalidates_cached_payload_with_real_league_url_shape(tm
 
 
 def test_ninja_provider_maps_missing_cache_fetch_failure_to_unknown(tmp_path):
-    provider = NinjaSnapshotProvider(
-        store=FileCacheStore(tmp_path / "ninja.json"),
-        transport=RouteTransport({NINJA_INDEX_URL: TransportError("offline")}),
-        attempt_throttle=RefreshAttemptThrottle(),
-        refresh_coordinator=RefreshCoordinator(),
+    provider = make_provider(
+        tmp_path,
+        RouteTransport(
+            {
+                NINJA_INDEX_URL: TransportError("offline"),
+                NINJA_BUILD_INDEX_URL: TransportError("offline"),
+            }
+        ),
     )
 
     result = provider.collect(now=NOW)
@@ -394,28 +439,44 @@ def test_ninja_provider_maps_build_index_fetch_failure_to_unknown(tmp_path):
             NINJA_BUILD_INDEX_URL: TransportError("offline"),
         }
     )
-    provider = NinjaSnapshotProvider(
-        store=FileCacheStore(tmp_path / "ninja.json"),
-        transport=transport,
-        attempt_throttle=RefreshAttemptThrottle(),
-        refresh_coordinator=RefreshCoordinator(),
-    )
+    provider = make_provider(tmp_path, transport)
 
     result = provider.collect(now=NOW)
 
     assert result.cache_state is CacheState.MISSING
     assert result.evidence[0].status is SourceStatus.UNKNOWN
-    assert any("payload parse failed" in diagnostic for diagnostic in result.diagnostics)
+    assert any("build-index: transport failed" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_ninja_provider_uses_independent_build_index_cache_on_transport_failure(tmp_path):
+    build_store = FileCacheStore(tmp_path / "ninja-build-index.json")
+    build_store.save(make_ninja_build_index_envelope(checked_at=NOW - timedelta(minutes=40)))
+    transport = RouteTransport(
+        {
+            NINJA_INDEX_URL: TransportResponse(
+                status_code=200,
+                body=json.dumps(read_json("ninja-index.json")).encode(),
+            ),
+            NINJA_BUILD_INDEX_URL: TransportError("offline"),
+        }
+    )
+    provider = make_provider(tmp_path, transport)
+
+    result = provider.collect(now=NOW)
+
+    assert result.cache_state is CacheState.FALLBACK
+    assert result.evidence[0].status is SourceStatus.CURRENT
+    assert "sample_size=124302" in result.diagnostics
 
 
 def test_ninja_provider_revalidates_cached_snapshot_payload(tmp_path):
-    payload = make_ninja_envelope(checked_at=NOW).payload
+    payload = make_ninja_index_envelope(checked_at=NOW).payload
     payload["version"] = "0137-2026-38624"
 
     def cache_runner(**kwargs):
         return CacheRunResult(
             envelope=CacheEnvelope.create(
-                source="poe-ninja",
+                source="poe-ninja-index",
                 source_url=NINJA_INDEX_URL,
                 fetched_at=NOW,
                 checked_at=NOW,
@@ -429,7 +490,8 @@ def test_ninja_provider_revalidates_cached_snapshot_payload(tmp_path):
         )
 
     provider = NinjaSnapshotProvider(
-        store=FileCacheStore(tmp_path / "ninja.json"),
+        index_store=FileCacheStore(tmp_path / "ninja-index.json"),
+        build_index_store=FileCacheStore(tmp_path / "ninja-build-index.json"),
         transport=RouteTransport({}),
         attempt_throttle=RefreshAttemptThrottle(),
         refresh_coordinator=RefreshCoordinator(),
@@ -446,13 +508,13 @@ def test_ninja_provider_revalidates_cached_snapshot_payload(tmp_path):
 
 
 def test_ninja_provider_rejects_cached_league_url_path_smuggling(tmp_path):
-    payload = make_ninja_envelope(checked_at=NOW).payload
+    payload = make_ninja_index_envelope(checked_at=NOW).payload
     payload["league_url"] = "runesofaldur/../../evil"
 
     def cache_runner(**kwargs):
         return CacheRunResult(
             envelope=CacheEnvelope.create(
-                source="poe-ninja",
+                source="poe-ninja-index",
                 source_url=NINJA_INDEX_URL,
                 fetched_at=NOW,
                 checked_at=NOW,
@@ -466,7 +528,8 @@ def test_ninja_provider_rejects_cached_league_url_path_smuggling(tmp_path):
         )
 
     provider = NinjaSnapshotProvider(
-        store=FileCacheStore(tmp_path / "ninja.json"),
+        index_store=FileCacheStore(tmp_path / "ninja-index.json"),
+        build_index_store=FileCacheStore(tmp_path / "ninja-build-index.json"),
         transport=RouteTransport({}),
         attempt_throttle=RefreshAttemptThrottle(),
         refresh_coordinator=RefreshCoordinator(),

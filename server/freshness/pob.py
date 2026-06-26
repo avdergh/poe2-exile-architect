@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import json
+import sqlite3
 import re
 import string
 from pathlib import Path
@@ -362,8 +363,8 @@ class PobProvider:
 
         try:
             metadata = self._local_metadata()
-        except Exception as exc:  # noqa: BLE001
-            diagnostics.append(f"local PoB metadata unavailable: {exc}")
+        except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error):
+            diagnostics.append("local PoB metadata unavailable")
             metadata = {}
         local_commit = _metadata_string(metadata.get("pob_commit"))
         local_version = _metadata_string(metadata.get("version"))

@@ -12,11 +12,11 @@ why the gate passed or blocked.
 
 ## Provider set
 
-The service aggregates four provider families:
+The service aggregates five provider families:
 
 - local validated release evidence from `server.freshness.providers`;
-- official GGG patch notes, producing `GAME_PATCH` and `LEAGUE` evidence;
-- official GGG passive-tree JSON, producing `PASSIVE_TREE` evidence;
+- official GGG patch notes, producing `GAME_PATCH` evidence;
+- official GGG passive-tree release/JSON, producing `LEAGUE` and `PASSIVE_TREE` evidence;
 - poe.ninja build snapshots, producing `META_SNAPSHOT` evidence;
 - Path of Building compatibility evidence, producing `POB_ENGINE` and `POB_DATA`
   evidence.
@@ -53,12 +53,13 @@ the evidence.
 ## Provider diagnostics in the report
 
 `FreshnessReport` stays the domain output of the pure evaluator. The service extends the
-serialized MCP response with a `providers` array:
+serialized MCP response with a `provider_status` array. `providers` is retained as a
+backward-compatible alias for existing smoke and development tooling:
 
 ```json
 [
   {
-    "source": "poe-ninja-snapshot",
+    "source": "poe-ninja",
     "cache_state": "refreshed",
     "duration_ms": 153,
     "diagnostics": ["selected league Runes of Aldur with 124269 indexed builds"]
@@ -106,4 +107,3 @@ Server tests must cover:
 - `get_freshness_report(force_refresh=True)` forwards the force flag to the service;
 - `check_data_version()` calls the service once and keeps the legacy corpus probe nested;
 - the MCP tool surface remains stable.
-

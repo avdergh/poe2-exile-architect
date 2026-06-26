@@ -32,8 +32,9 @@ Current cache files:
 
 - `ggg-patch.json`
 - `ggg-tree.json`
-- `poe-ninja.json`
-- `pob.json`
+- `ninja-index.json`
+- `ninja-build-index.json`
+- `pob-release.json`
 
 Set `POE2_MCP_DATA` to relocate this directory during development or smoke tests. For
 example:
@@ -46,9 +47,9 @@ $env:POE2_MCP_DATA='E:\poe-bd-creator\.runtime-data'
 
 Service budget:
 
-- total freshness service timeout: `5.0s`;
+- total freshness service timeout: `8.0s`;
 - provider worker pool: shared `ThreadPoolExecutor(max_workers=4)`;
-- per HTTP request timeout: `2.0s`.
+- per HTTP request timeout: `5.0s`.
 
 The service timeout is a response budget. If a provider does not finish inside that
 budget, this report treats that provider as missing and fails closed. Python cannot
@@ -108,9 +109,9 @@ invent current-season verification.
 ## Certified runtime claims
 
 The local validated-release provider reads `installed.json` from the user-data directory.
-That metadata must persist the certified PoB commit and game patch claims from
-`update-manifest.json`; the freshness runtime intentionally does not infer those claims
-from release names or dates.
+That metadata records the installed release and PoB commit from `update-manifest.json`; the
+freshness runtime intentionally does not infer compatibility claims from release names,
+dates, or installed metadata alone.
 
 Required installed metadata fields:
 
@@ -120,8 +121,10 @@ game_patch
 passive_tree
 ```
 
-The PoB provider then matches `pob_commit` against `data/compatibility/pob.json` before it
-can assert `game_patch` and `passive_tree` for the engine/data components.
+The local provider and PoB provider both match `pob_commit` against
+`data/compatibility/pob.json` before they can assert `game_patch` and `passive_tree` for
+engine/data/corpus components. If the installed metadata publishes claims that do not have
+a matching compatibility manifest entry, the evaluator sees missing claims and fails closed.
 
 Official GGG evidence is deliberately split:
 

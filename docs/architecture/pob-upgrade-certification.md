@@ -111,8 +111,9 @@ Use the actual UTC verification timestamp. Do not add the entry if compute tests
 freshness, or patch application are unresolved.
 
 The release workflow must derive `pob_version`, `game_patch`, and `passive_tree` for
-`update-manifest.json` from this compatibility manifest entry. Runtime freshness depends on
-those claims being persisted into `installed.json` during self-update.
+`update-manifest.json` from this compatibility manifest entry. Self-update persists those
+claims into `installed.json`, and runtime freshness still verifies the installed PoB commit
+against this compatibility manifest before emitting compatibility claims.
 
 ## Expected freshness result
 

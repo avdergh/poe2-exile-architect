@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -15,9 +16,21 @@ from .models import (
     SourceStatus,
     VersionClaim,
 )
+from .pob import (
+    DEFAULT_COMPATIBILITY_MANIFEST,
+    PobParseError,
+    load_compatibility_manifest,
+    resolve_compatibility,
+)
 
 
 RELEASES_URL = "https://github.com/MaxWilk/poe2-build-mcp/releases"
+
+
+@dataclass(frozen=True, slots=True)
+class LocalCompatibility:
+    game_patch: str
+    passive_tree: str
 
 
 def shape_validated_release(
@@ -25,6 +38,7 @@ def shape_validated_release(
     installed: dict[str, Any],
     corpus_info: dict[str, Any],
     observed_at: datetime,
+    compatibility: LocalCompatibility | None = None,
 ) -> tuple[FreshnessEvidence, ...]:
     """Shape one checksum-validated local release without inferring live-game currency."""
 
@@ -36,16 +50,16 @@ def shape_validated_release(
     release_url = (
         f"{RELEASES_URL}/tag/{release_version}" if release_version.startswith("v") else RELEASES_URL
     )
-    claims: list[VersionClaim] = []
-    # These compatibility claims come from update-manifest.json / installed.json. Do not infer
-    # them from release names or dates; missing fields must fail closed at the evaluator layer.
-    passive_tree = str(installed.get("passive_tree") or "").strip()
-    if passive_tree:
-        claims.append(VersionClaim(ClaimDimension.PASSIVE_TREE, passive_tree))
-    game_patch = str(installed.get("game_patch") or "").strip()
-    if game_patch:
-        claims.append(VersionClaim(ClaimDimension.GAME_PATCH, game_patch))
-    release_claims = tuple(claims)
+    # Compatibility claims are authorized by data/compatibility/pob.json. The installed
+    # metadata records what the release published, but it cannot grant claims by itself.
+    release_claims = (
+        (
+            VersionClaim(ClaimDimension.PASSIVE_TREE, compatibility.passive_tree),
+            VersionClaim(ClaimDimension.GAME_PATCH, compatibility.game_patch),
+        )
+        if compatibility is not None
+        else ()
+    )
     engine_status = SourceStatus.CURRENT if pob_commit else SourceStatus.UNKNOWN
     corpus_version = release_version or str(corpus_info.get("built_at") or "").strip()
     corpus_status = (
@@ -96,8 +110,27 @@ def collect_local_evidence(observed_at: datetime) -> tuple[FreshnessEvidence, ..
         corpus_info = db.corpus_info()
     except (OSError, ValueError, sqlite3.Error):
         corpus_info = {}
+    compatibility = _resolve_local_compatibility(installed)
     return shape_validated_release(
         installed=installed,
         corpus_info=corpus_info,
         observed_at=observed_at,
+        compatibility=compatibility,
+    )
+
+
+def _resolve_local_compatibility(installed: dict[str, Any]) -> LocalCompatibility | None:
+    pob_commit = str(installed.get("pob_commit") or "").strip()
+    if not pob_commit:
+        return None
+    try:
+        manifest = load_compatibility_manifest(DEFAULT_COMPATIBILITY_MANIFEST)
+        match = resolve_compatibility(pob_commit, manifest)
+    except (OSError, ValueError, PobParseError):
+        return None
+    if match is None:
+        return None
+    return LocalCompatibility(
+        game_patch=match.game_patch,
+        passive_tree=match.passive_tree,
     )

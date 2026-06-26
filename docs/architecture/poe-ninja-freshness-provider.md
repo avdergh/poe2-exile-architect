@@ -98,9 +98,17 @@ Cache policy:
 - refresh after: 30 minutes;
 - reject after: 2 hours.
 
-`index-state` is the cache source URL. A refresh fetches `index-state` first, then
-fetches `build-index-state` unconditionally inside the parser so both JSON documents
-shape one compact cached payload.
+`index-state` and `build-index-state` are separate cache source URLs and separate cache
+files:
+
+- `ninja-index.json`
+- `ninja-build-index.json`
+
+Each endpoint uses the same poe.ninja TTL policy, conditional request handling, content
+hash validation, and hard-stale fallback rules. The provider combines the latest acceptable
+envelopes from both caches before selecting a snapshot. If either cache is missing or
+invalid, the provider emits `UNKNOWN`; if either accepted cache is hard-stale, the selected
+snapshot is emitted as `STALE`.
 
 Cached payloads are treated as untrusted source data. The provider must revalidate
 the selected league name, URL, snapshot version, passive-tree token, date, and sample
@@ -108,7 +116,7 @@ size before emitting evidence.
 
 Failure semantics:
 
-- fresh or refreshed payload -> `CURRENT` evidence;
+- fresh/refreshed/revalidated payloads for both endpoints -> `CURRENT` evidence;
 - hard-stale fallback -> `STALE` evidence;
 - missing cache, network failure, malformed JSON, ambiguous candidates, zero samples,
   missing snapshot/build count, or passive-tree mismatch -> `UNKNOWN` evidence.

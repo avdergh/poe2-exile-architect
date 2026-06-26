@@ -387,7 +387,7 @@ class FileCacheStore:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CacheFormatError(f"invalid cache JSON: {exc}") from exc
         except OSError as exc:
-            raise CacheIOError(f"unable to read cache {self.path}: {exc}") from exc
+            raise CacheIOError("unable to read cache") from exc
         if not isinstance(raw, dict):
             raise CacheFormatError("cache envelope must be a JSON object")
         return CacheEnvelope.from_dict(raw)
@@ -421,9 +421,9 @@ class FileCacheStore:
                 os.fsync(temporary.fileno())
             os.replace(temporary_path, self.path)
         except (TypeError, ValueError) as exc:
-            raise CacheFormatError(f"unable to encode cache {self.path}: {exc}") from exc
+            raise CacheFormatError(f"unable to encode cache: {exc}") from exc
         except OSError as exc:
-            raise CacheIOError(f"unable to write cache {self.path}: {exc}") from exc
+            raise CacheIOError("unable to write cache") from exc
         finally:
             if temporary_path is not None:
                 try:
@@ -508,7 +508,7 @@ def _load_available_cache(
     try:
         envelope = store.load()
     except CacheError as exc:
-        diagnostics.append(f"cache unavailable: {exc}")
+        diagnostics.append(f"cache unavailable: {_cache_error_diagnostic(exc)}")
         return None
     if envelope is None:
         return None
@@ -516,7 +516,7 @@ def _load_available_cache(
         # Stores can be substituted in tests or by callers, so do not trust load() alone.
         envelope.validate_integrity()
     except CacheError as exc:
-        diagnostics.append(f"cache unavailable: {exc}")
+        diagnostics.append(f"cache unavailable: {_cache_error_diagnostic(exc)}")
         return None
     if envelope.source != source or envelope.source_url != source_url:
         diagnostics.append("cache identity mismatch; cached payload ignored")
@@ -676,7 +676,9 @@ def run_cached(
                 # Validate again after I/O so a 304 cannot recalculate and bless altered content.
                 envelope.validate_integrity()
             except CacheError as exc:
-                diagnostics.append(f"cache unavailable during 304 revalidation: {exc}")
+                diagnostics.append(
+                    f"cache unavailable during 304 revalidation: {_cache_error_diagnostic(exc)}"
+                )
                 return _fallback_result(
                     None,
                     now=now,
@@ -737,7 +739,7 @@ def run_cached(
         try:
             store.save(refreshed)
         except CacheError as exc:
-            diagnostics.append(f"cache write failed: {exc}")
+            diagnostics.append(f"cache write failed: {_cache_error_diagnostic(exc)}")
             return _fallback_result(
                 envelope,
                 now=now,
@@ -750,3 +752,9 @@ def run_cached(
             hard_stale=False,
             diagnostics=tuple(diagnostics),
         )
+
+
+def _cache_error_diagnostic(exc: CacheError) -> str:
+    if isinstance(exc, CacheIOError):
+        return "cache I/O error"
+    return str(exc)

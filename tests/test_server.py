@@ -83,6 +83,7 @@ def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatc
         "warnings": [],
         "evaluated_at": "2026-06-24T12:00:00+00:00",
         "providers": [],
+        "provider_status": [],
     }
 
     def fake_report():

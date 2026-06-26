@@ -499,6 +499,22 @@ def test_invalid_utf8_cache_behaves_as_missing(tmp_path):
     assert result.diagnostics[0].startswith("cache unavailable:")
 
 
+def test_cache_io_diagnostic_does_not_expose_absolute_path(tmp_path):
+    store = FileCacheStore(tmp_path / "secret-user-dir" / "ggg-patch.json")
+
+    def fail_load():
+        raise CacheIOError(f"unable to read cache {store.path}: permission denied")
+
+    store.load = fail_load  # type: ignore[method-assign]
+    transport = RecordingTransport(TransportError("offline"))
+
+    result = run(store, transport)
+
+    assert str(tmp_path) not in " ".join(result.diagnostics)
+    assert "permission denied" not in " ".join(result.diagnostics)
+    assert result.diagnostics[0] == "cache unavailable: cache I/O error"
+
+
 @pytest.mark.parametrize(
     "changes",
     [

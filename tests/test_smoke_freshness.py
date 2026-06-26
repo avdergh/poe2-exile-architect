@@ -30,7 +30,7 @@ def test_main_returns_zero_for_report_decisions_and_sanitizes_output(
             "evaluated_at": "2026-06-25T08:30:00+08:00",
             "blockers": ["local PoB pin is behind upstream"],
             "warnings": ["cache warning\nwith newline"],
-            "providers": [
+            "provider_status": [
                 {
                     "source": "pob",
                     "cache_state": "fallback",
