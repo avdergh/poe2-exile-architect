@@ -7,6 +7,7 @@ get a contract/evidence report, not a new build.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -28,17 +29,24 @@ _REFERENCE_FIELDS = (
 )
 _COPYABLE_REFERENCE_KEYS = {
     "code",
+    "config",
+    "configs",
+    "configtab",
+    "configuration",
+    "configurations",
     "xml",
     "pobcode",
     "pob",
     "gear",
     "items",
+    "itemsets",
     "itemlist",
     "passivetree",
     "tree",
     "passives",
     "nodes",
     "skills",
+    "skillgroups",
     "supportgems",
     "supports",
 }
@@ -102,10 +110,14 @@ def evaluate_lifecycle_route(
         _append_unique(issues, "missing_transition_gate")
 
     evidence_review = _review_evidence(route, stages)
+    numeric_range_review = _review_numeric_ranges(stages, reference_profile)
+    evidence_review["numericRangeReview"] = numeric_range_review
     _add_check(checks, "stage_evidence_tags", evidence_review["stageEvidenceComplete"])
     _add_check(checks, "stage_verification_plans", evidence_review["stageVerificationPlanned"])
     for code in evidence_review["issues"]:
         _append_unique(issues, code)
+    for code in numeric_range_review["warnings"]:
+        _append_unique(warnings, code)
 
     memory_review = _review_memory(route.get("memoryContext"))
     _add_check(checks, "memory_policy_advisory", memory_review["advisoryOnly"])
@@ -247,11 +259,15 @@ def _compare_reference(
     stages: list[dict[str, Any]],
     reference_profile: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    source = "reference_profile" if reference_profile is not None else "route.cohortAnalysis"
-    raw_profile = (
-        reference_profile if reference_profile is not None else route.get("cohortAnalysis")
-    )
+    external_raw_field_count = _copyable_reference_key_count(reference_profile)
+    if _has_alignment_profile(reference_profile):
+        source = "reference_profile"
+        raw_profile = reference_profile
+    else:
+        source = "route.cohortAnalysis"
+        raw_profile = route.get("cohortAnalysis")
     profile, sanitized_count, invalid_sample_size = _sanitize_reference_profile(raw_profile)
+    sanitized_count += external_raw_field_count if raw_profile is not reference_profile else 0
     warnings: list[str] = []
     issues: list[str] = []
     unknowns: list[str] = []
@@ -306,10 +322,152 @@ def _compare_reference(
     }
 
 
+def _review_numeric_ranges(
+    stages: list[dict[str, Any]],
+    reference_profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ranges, range_warnings = _normalize_numeric_ranges(reference_profile)
+    if range_warnings:
+        # A mixed valid/invalid reference profile is still unsafe as a calibration source. Returning
+        # no rows keeps malformed external inputs from partially influencing lifecycle judgments.
+        return _numeric_range_result(status="invalid_reference", warnings=range_warnings)
+    if not ranges:
+        return _numeric_range_result(status="not_evaluated")
+
+    comparisons: list[dict[str, Any]] = []
+    for stage in stages:
+        if str(stage.get("id") or "") not in _ENDGAME_STAGES:
+            continue
+        verification = stage.get("verification")
+        if not _has_direct_evidence_tag(verification, "engine-computed"):
+            continue
+        observations = verification.get("observations") if isinstance(verification, dict) else {}
+        if not isinstance(observations, dict):
+            continue
+        offense = (
+            observations.get("offense") if isinstance(observations.get("offense"), dict) else {}
+        )
+        candidates = [
+            ("TotalDPS", "TotalDPS", offense.get("TotalDPS")),
+            ("TotalEHP", "TotalEHP", observations.get("totalEHP")),
+        ]
+        if "FullDPS" in ranges:
+            candidates.append(("FullDPS", "FullDPS", offense.get("FullDPS")))
+        for observed_metric, reference_metric, raw_value in candidates:
+            value = _finite_number(raw_value)
+            reference_range = ranges.get(reference_metric)
+            if value is None or reference_range is None:
+                continue
+            # Numeric range evaluation is calibration only: it helps the agent notice a weak
+            # verified stage, but it never turns reference builds into templates to copy.
+            row = {
+                "stage": stage.get("id"),
+                "metric": observed_metric,
+                "observedMetric": observed_metric,
+                "referenceMetric": reference_metric,
+                "value": value,
+                "referenceMin": reference_range["min"],
+                "referenceMax": reference_range["max"],
+                "placement": _range_placement(value, reference_range),
+            }
+            if "n" in reference_range:
+                row["referenceN"] = reference_range["n"]
+            comparisons.append(row)
+
+    warnings = list(range_warnings)
+    if any(row.get("placement") == "below_range" for row in comparisons):
+        warnings.append("numeric_range_below_reference")
+    status = "compared" if comparisons else "not_evaluated"
+    return _numeric_range_result(status=status, comparisons=comparisons, warnings=warnings)
+
+
+def _numeric_range_result(
+    *,
+    status: str,
+    comparisons: list[dict[str, Any]] | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "stageComparisons": comparisons or [],
+        "warnings": _dedupe(warnings or []),
+        "unknowns": [],
+        "evidenceTags": ["reference-numeric-range"] if comparisons else [],
+        "note": (
+            "Calibration only: range comparison uses already-computed stage metrics and safe "
+            "reference distributions; it does not run PoB or permit copying reference builds."
+        ),
+    }
+
+
+def _normalize_numeric_ranges(raw_profile: Any) -> tuple[dict[str, dict[str, float]], list[str]]:
+    if not isinstance(raw_profile, dict):
+        return {}, []
+
+    ranges: dict[str, dict[str, float]] = {}
+    invalid = False
+    numeric_ranges = raw_profile.get("numericRanges")
+    if "numericRanges" in raw_profile and not isinstance(numeric_ranges, dict):
+        invalid = True
+    elif isinstance(numeric_ranges, dict):
+        for metric in ("TotalDPS", "FullDPS", "TotalEHP"):
+            normalized, row_invalid = _normalize_range(numeric_ranges.get(metric))
+            if normalized is not None:
+                ranges[metric] = normalized
+            invalid = invalid or row_invalid
+
+    benchmark_sources = {
+        "TotalDPS": _nested_reference(raw_profile, "dps"),
+        "TotalEHP": _nested_reference(raw_profile, "ehp"),
+    }
+    for metric, raw_range in benchmark_sources.items():
+        if metric in ranges:
+            continue
+        normalized, row_invalid = _normalize_range(raw_range)
+        if normalized is not None:
+            ranges[metric] = normalized
+        invalid = invalid or row_invalid
+
+    warnings = ["numeric_range_reference_invalid"] if invalid else []
+    return ranges, warnings
+
+
+def _nested_reference(raw_profile: dict[str, Any], key: str) -> Any:
+    row = raw_profile.get(key)
+    if not isinstance(row, dict):
+        return None
+    return row.get("reference")
+
+
+def _normalize_range(raw_range: Any) -> tuple[dict[str, float] | None, bool]:
+    if raw_range is None:
+        return None, False
+    if not isinstance(raw_range, dict):
+        return None, True
+    min_value = _finite_number(raw_range.get("min"))
+    max_value = _finite_number(raw_range.get("max"))
+    if min_value is None or max_value is None or min_value > max_value:
+        return None, True
+    normalized: dict[str, float] = {"min": min_value, "max": max_value}
+    for key in ("p25", "median", "p75", "n"):
+        value = _finite_number(raw_range.get(key))
+        if value is not None:
+            normalized[key] = value
+    return normalized, False
+
+
+def _range_placement(value: float, reference_range: dict[str, float]) -> str:
+    if value < reference_range["min"]:
+        return "below_range"
+    if value > reference_range["max"]:
+        return "above_range"
+    return "within_range"
+
+
 def _sanitize_reference_profile(raw_profile: Any) -> tuple[dict[str, Any], int, bool]:
     if not isinstance(raw_profile, dict):
         return {}, 0, False
-    sanitized_count = sum(1 for key in raw_profile if key.lower() in _COPYABLE_REFERENCE_KEYS)
+    sanitized_count = _copyable_reference_key_count(raw_profile)
     sample_size, invalid_sample_size = _safe_sample_size(raw_profile.get("sampleSize"))
     profile: dict[str, Any] = {"sampleSize": sample_size}
     for key in _REFERENCE_FIELDS:
@@ -323,6 +481,25 @@ def _sanitize_reference_profile(raw_profile: Any) -> tuple[dict[str, Any], int, 
         else:
             profile[key] = []
     return profile, sanitized_count, invalid_sample_size
+
+
+def _copyable_reference_key_count(raw_profile: Any) -> int:
+    if not isinstance(raw_profile, dict):
+        return 0
+    return sum(1 for key in raw_profile if _reference_key_token(key) in _COPYABLE_REFERENCE_KEYS)
+
+
+def _has_alignment_profile(raw_profile: Any) -> bool:
+    if not isinstance(raw_profile, dict):
+        return False
+    profile, _, _ = _sanitize_reference_profile(raw_profile)
+    # Empty placeholder arrays in a numeric-only profile must not replace route.cohortAnalysis, but
+    # a profile with at least one safe alignment row is intentional input even if sampleSize is bad.
+    return any(profile.get(key) for key in _REFERENCE_FIELDS)
+
+
+def _reference_key_token(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
 
 
 def _safe_sample_size(value: Any) -> tuple[int, bool]:
@@ -431,6 +608,13 @@ def _is_numeric_scalar(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def _is_numeric_like_text(value: str) -> bool:
     return bool(_NUMERIC_LIKE_RE.match(value))
 
@@ -477,6 +661,17 @@ def _score(issues: list[str], warnings: list[str], unknowns: list[str]) -> int:
     return max(0, min(100, score))
 
 
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
 def _invalid_route_result(error: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -509,6 +704,7 @@ def _invalid_route_result(error: str) -> dict[str, Any]:
                 "unsupportedClaimCount": 0,
                 "note": "No DPS/EHP closeness judgment is made without engine-computed stage evidence.",
             },
+            "numericRangeReview": _numeric_range_result(status="not_evaluated"),
             "issues": ["invalid_route"],
         },
         "memoryReview": {

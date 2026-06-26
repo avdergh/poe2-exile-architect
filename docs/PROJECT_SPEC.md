@@ -60,23 +60,26 @@ and learn from user feedback without turning unverified anecdotes into durable r
 
 ## Current work
 
-### Phase 3L: lifecycle evaluation harness
+### Phase 3M: lifecycle numeric range evaluation
 
-Status: completed; targeted tests, quick verification, noncompute verification, code review, and
-spec/evidence-boundary review passed.
+Status: completed; focused tests, quick verification, noncompute verification, code review, and
+spec/evidence-boundary review passed after regression fixes.
 
-Goal: add a pure evaluation harness for route outputs so development/regression checks can ask
-whether a lifecycle route is structurally complete, evidence-labeled, aligned with safe reference
-cohort patterns, and honest about unknowns.
+Goal: extend lifecycle route evaluation so already engine-computed endgame stage snapshots can be
+compared against safe reference numeric distributions without running PoB or copying reference
+builds.
 
 Scope:
 
-- Add `server/knowledge/lifecycle_eval.py`.
-- Add MCP tool `evaluate_lifecycle_route`.
-- Add focused tests in `tests/test_lifecycle_eval.py`.
+- Keep the public MCP function as `evaluate_lifecycle_route`.
+- Add `evidenceReview.numericRangeReview` to the existing evaluation output.
+- Compare only endgame stages with stage-local `engine-computed` verification observations.
+- Accept safe reference distributions from `numericRanges` or existing `benchmark_build` output.
+- Keep numeric range input separate from cohort alignment input; numeric-only profiles must not
+  replace route `cohortAnalysis`.
+- Compare `FullDPS` only when an explicit `FullDPS` reference range exists.
 - Do not run PoB compute, network fetches, or memory writes.
-- Do not judge numeric range closeness in v1; engine-computed evidence only prevents local numeric
-  claims from being flagged as unsupported.
+- Treat below-range values as calibration warnings, not permission to copy reference builds.
 
 ## Review and verification policy
 
@@ -87,6 +90,9 @@ Scope:
   boundary, safety boundary, or user-output contract changes.
 - Write local technical docs before code for key features.
 - Use TDD for behavior changes: RED test, confirm failure, implement, confirm GREEN.
+- Skill instructions must be loaded from the exact skill root map shown in the active session.
+  In particular, `superpowers:*` skills are plugin skills under the `openai-curated/superpowers`
+  cache root, not `.codex/skills/.system`.
 - Preferred verification ladder:
   1. targeted tests for the touched feature;
   2. `.\scripts\verify.ps1 quick`;
@@ -95,8 +101,6 @@ Scope:
 
 ## Near backlog
 
-- Evaluation v2: compare verified lifecycle stage outputs against reference numeric ranges only when
-  engine-computed data is present.
 - Mature build sample ingestion: safe, fresh provider/corpus pipeline for poe.ninja/pobb.in/forum
   samples without copying raw build content into recommendations.
 - Passive tree research: graph/search strategy for large passive tree, non-connected selections,
