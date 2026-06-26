@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from server.main import mcp
 
 
@@ -31,7 +33,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 76
+    assert len(tools) == 77
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -59,6 +61,7 @@ def test_tool_surface_intact():
         "plan_lifecycle_stage_verification",
         "verify_lifecycle_stage",
         "audit_lifecycle_route",
+        "get_meta_archetype_trends",
     } <= names
 
 
@@ -97,8 +100,17 @@ def test_suggest_build_lifecycle_uses_freshness_and_meta(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         main.live_meta,
-        "get_meta_builds",
-        lambda limit=5: {"ok": True, "source": "poe.ninja", "limit": limit},
+        "get_meta_context",
+        lambda ascendancy_limit=5, archetype_limit=5: {
+            "ok": True,
+            "source": "poe.ninja",
+            "limit": ascendancy_limit,
+            "archetypeTrends": {
+                "ok": False,
+                "kind": "archetype_trends",
+                "archetypes": [],
+            },
+        },
     )
 
     result = main.suggest_build_lifecycle("给我一个新手能玩的强力终局BD")
@@ -106,6 +118,7 @@ def test_suggest_build_lifecycle_uses_freshness_and_meta(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["freshness"]["decision"] == "verified_current"
     assert result["metaContext"]["source"] == "poe.ninja"
+    assert result["metaContext"]["archetypeTrends"]["kind"] == "archetype_trends"
     assert result["buildId"] in main.lifecycle.load_memory()["lifecycle_builds"]
 
 
@@ -114,8 +127,17 @@ def test_analyze_lifecycle_cohort_tool_uses_meta(monkeypatch):
 
     monkeypatch.setattr(
         main.live_meta,
-        "get_meta_builds",
-        lambda limit=8: {"ok": True, "source": "poe.ninja", "ascendancies": []},
+        "get_meta_context",
+        lambda ascendancy_limit=8, archetype_limit=8: {
+            "ok": True,
+            "source": "poe.ninja",
+            "ascendancies": [],
+            "archetypeTrends": {
+                "ok": False,
+                "kind": "archetype_trends",
+                "archetypes": [],
+            },
+        },
     )
     monkeypatch.setattr(
         main.lifecycle.lifecycle_cohort,
@@ -133,6 +155,80 @@ def test_analyze_lifecycle_cohort_tool_uses_meta(monkeypatch):
 
     assert result["ok"] is True
     assert result["goal"] == "闪电终局BD"
+
+
+def test_lifecycle_tools_use_single_combined_meta_fetch(monkeypatch, tmp_path):
+    from server import main
+
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    monkeypatch.setattr(
+        main.freshness_service,
+        "get_freshness_report",
+        lambda: {"decision": "verified_current", "blockers": [], "warnings": []},
+    )
+    calls: list[tuple[int, int]] = []
+
+    def fake_context(*, ascendancy_limit: int = 15, archetype_limit: int = 10):
+        calls.append((ascendancy_limit, archetype_limit))
+        return {
+            "ok": True,
+            "source": "poe.ninja",
+            "ascendancies": [],
+            "archetypeTrends": {"ok": False, "kind": "archetype_trends", "archetypes": []},
+        }
+
+    monkeypatch.setattr(main.live_meta, "get_meta_context", fake_context, raising=False)
+    monkeypatch.setattr(
+        main.live_meta,
+        "get_meta_builds",
+        lambda **_kwargs: pytest.fail("get_meta_builds should not be called separately"),
+    )
+    monkeypatch.setattr(
+        main.live_meta,
+        "get_archetype_trends",
+        lambda **_kwargs: pytest.fail("get_archetype_trends should not be called separately"),
+    )
+
+    assert main.suggest_build_lifecycle("给我一个新手能玩的强力终局BD")["ok"] is True
+
+    assert calls == [(5, 5)]
+
+
+def test_get_meta_archetype_trends_tool_returns_adapter_result(monkeypatch):
+    from server import main
+
+    monkeypatch.setattr(
+        main.live_meta,
+        "get_archetype_trends",
+        lambda league=None, limit=10: {
+            "ok": False,
+            "league": league,
+            "limit": limit,
+            "kind": "archetype_trends",
+            "archetypes": [],
+        },
+    )
+
+    result = main.get_meta_archetype_trends(league="Runes", limit=3)
+
+    assert result["ok"] is False
+    assert result["league"] == "Runes"
+    assert result["limit"] == 3
+
+
+def test_get_meta_archetype_trends_tool_reports_unavailable_reason(monkeypatch):
+    from server import main
+
+    def fail_meta(**_kwargs):
+        raise main.live_meta.MetaError("network unavailable")
+
+    monkeypatch.setattr(main.live_meta, "get_archetype_trends", fail_meta)
+
+    result = main.get_meta_archetype_trends(league="Runes", limit=3)
+
+    assert result["ok"] is False
+    assert "network unavailable" in result["unavailableReason"]
+    assert "unavailable" in result["evidenceTags"]
 
 
 def test_evaluate_transition_readiness_tool_forwards_state(monkeypatch):

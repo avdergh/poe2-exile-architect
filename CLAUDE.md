@@ -25,7 +25,9 @@ this file first.
    "smart" heuristics to the server that belong in the model's reasoning.
 3. **Knowledge is offline-first and deterministic.** The corpus is a bundled, read-only
    SQLite file. The only network calls at runtime are the live-ops tools (`get_prices`,
-   `get_meta_builds`, `check_data_version`, `update_corpus`, and `lookup_mechanic`).
+   `list_price_leagues`, `get_meta_builds`, `get_meta_archetype_trends`,
+   `get_freshness_report`, `check_data_version`, `check_for_updates`, `apply_updates`,
+   `update_corpus`, and `lookup_mechanic`).
    `lookup_mechanic` is a deliberate, narrow exception: a single user-triggered, read-only wiki
    *lookup* for the long tail not in the corpus. It returns a targeted slice (not a dump),
    degrades to "unavailable", and never alters the corpus — it is *not* bundled redistribution
@@ -141,8 +143,24 @@ uv run python pob/spike.py                  # M0 headless spike harness
 ## Git / workflow
 
 - Conventional, scoped commits (e.g. `compute: add pathfind RPC`, `pipeline: scrape uniques`).
-- This is not yet a git repo — `git init` before the first commit.
+- Work on feature branches; do not initialize a new repository or rewrite history unless the
+  human explicitly asks for that operation.
 - Don't commit the bundled `data/corpus.sqlite` build artifact to source history; it's a
   release asset. Commit `schema.sql` and the pipeline that produces it.
 - Keep PLAN.md and this file current when decisions change — they're the source of truth for
   intent and conventions.
+- Starting with the next new requirement-development round, run a pre-implementation design/spec
+  review subagent before coding. Give it the project goal, optional current phase goal, the new
+  requirement goal, and the intended work; ask whether the direction is reasonable and whether a
+  better design exists. This is separate from the post-implementation spec review and code review.
+
+## Codex skill loading
+
+- Never construct a skill path from memory or from the skill name alone. Always read the current
+  turn's `Skill roots` table, expand the listed alias (`r0`, `r1`, `r5`, etc.), then append the
+  exact skill-relative path shown in the available-skills list.
+- Plugin-provided skills may live under a plugin cache or another root chosen by the current
+  Codex session. Do not assume `$CODEX_HOME/skills/<skill-name>` or any other fixed directory unless
+  the current `Skill roots` table explicitly maps a root there.
+- If a skill path lookup fails, stop and re-check the root alias mapping before reading any more
+  skill files or continuing implementation.

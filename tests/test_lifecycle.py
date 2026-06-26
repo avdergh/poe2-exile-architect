@@ -169,6 +169,132 @@ def test_lifecycle_cohort_extracts_reference_patterns_and_live_meta(monkeypatch)
     assert "live-meta" in cohort["evidenceTags"]
 
 
+def test_lifecycle_cohort_includes_matching_archetype_trends(monkeypatch):
+    from server.knowledge import lifecycle_cohort
+
+    monkeypatch.setattr(
+        lifecycle_cohort.refbuilds,
+        "search",
+        lambda query="", limit=8: {
+            "count": 1,
+            "builds": [
+                {
+                    "ascendancy": "Stormweaver",
+                    "mainSkill": "Spark",
+                    "damageTypes": ["lightning"],
+                    "delivery": ["spell"],
+                    "defenseIdentity": "ES recharge",
+                    "dominantLever": "+levels to skills",
+                    "topLevers": [{"lever": "+levels to skills"}],
+                }
+            ],
+        },
+    )
+
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal="闪电 Spark 终局BD",
+        skill_candidates=[{"name": "Spark", "query": "lightning"}],
+        meta={
+            "ok": True,
+            "source": "poe.ninja",
+            "ascendancies": [{"ascendancy": "Stormweaver", "percentage": 18.5}],
+            "archetypeTrends": {
+                "ok": True,
+                "archetypes": [
+                    {
+                        "skill": "Spark",
+                        "ascendancy": "Stormweaver",
+                        "sampleCount": 40,
+                        "share": 0.125,
+                        "trend": "rising",
+                        "evidenceTags": ["live-meta", "archetype-trend"],
+                    },
+                    {
+                        "skill": "Totally Different Skill",
+                        "ascendancy": "Infernalist",
+                        "sampleCount": 99,
+                        "share": 0.3,
+                        "trend": "flat",
+                        "evidenceTags": ["live-meta", "archetype-trend"],
+                    },
+                ],
+            },
+        },
+    )
+
+    assert cohort["archetypeTrendContext"] == [
+        {
+            "skill": "Spark",
+            "ascendancy": "Stormweaver",
+            "sampleCount": 40,
+            "share": 0.125,
+            "trend": "rising",
+            "evidenceTags": ["live-meta", "archetype-trend"],
+        }
+    ]
+    assert "live-archetype-trends" in cohort["evidenceTags"]
+
+
+def test_lifecycle_cohort_ignores_unsanitized_empty_trend_rows(monkeypatch):
+    from server.knowledge import lifecycle_cohort
+
+    monkeypatch.setattr(
+        lifecycle_cohort.refbuilds,
+        "search",
+        lambda query="", limit=8: {"count": 0, "builds": []},
+    )
+
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal="Spark 终局BD",
+        skill_candidates=[{"name": "Spark"}],
+        meta={
+            "ok": True,
+            "archetypeTrends": {
+                "ok": True,
+                "archetypes": [
+                    {"skill": "", "sampleCount": 10, "share": 0.1},
+                    {"skill": "Spark", "evidenceTags": ["live-meta"]},
+                ],
+            },
+        },
+    )
+
+    assert cohort["archetypeTrendContext"] == []
+    assert "live-archetype-trends" not in cohort["evidenceTags"]
+
+
+def test_lifecycle_cohort_ignores_nonnumeric_trend_metrics(monkeypatch):
+    from server.knowledge import lifecycle_cohort
+
+    monkeypatch.setattr(
+        lifecycle_cohort.refbuilds,
+        "search",
+        lambda query="", limit=8: {"count": 0, "builds": []},
+    )
+
+    cohort = lifecycle_cohort.analyze_goal_cohort(
+        goal="Spark 终局BD",
+        skill_candidates=[{"name": "Spark"}],
+        meta={
+            "ok": True,
+            "archetypeTrends": {
+                "ok": True,
+                "archetypes": [
+                    {
+                        "skill": "Spark",
+                        "sampleCount": {"not": "numeric"},
+                        "share": "popular",
+                        "evidenceTags": ["live-meta"],
+                    }
+                ],
+            },
+        },
+    )
+
+    assert cohort["archetypeTrendContext"] == []
+    assert "live-archetype-trends" not in cohort["evidenceTags"]
+
+
 def test_research_build_lifecycle_includes_cohort_hints(monkeypatch):
     monkeypatch.setattr(
         lifecycle.corpus,

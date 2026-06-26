@@ -72,9 +72,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
   `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
-  `lookup_mechanic` (live wiki fallback for topics not in the corpus), `check_data_version`,
-  `check_for_updates`/`apply_updates`, `update_corpus`. Approximate, time-sensitive; if one returns
-  "unavailable," carry on and say so.
+  `get_meta_archetype_trends`, `lookup_mechanic` (live wiki fallback for topics not in the corpus),
+  `check_data_version`, `check_for_updates`/`apply_updates`, `update_corpus`. Approximate,
+  time-sensitive; if one returns "unavailable," carry on and say so.
 
 ## One active build (shared session state)
 
@@ -105,8 +105,10 @@ telling the player to swap. Feedback from play goes through `record_build_feedba
 
 When the route feels too generic or the user asks "why this archetype?", inspect
 `analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live
-ascendancy context as research evidence. It is still calibration-only; never copy a reference build
-or treat poe.ninja popularity as proof of optimality.
+ascendancy context as research evidence. It may also include `archetypeTrendContext` from
+provider-backed aggregate skill/archetype rows. If that trend adapter is unavailable, do not infer
+build-level popularity from ascendancy-only data. Cohort evidence is still calibration-only; never
+copy a reference build or treat poe.ninja popularity as proof of optimality.
 
 When the user reports their current level/items/checks or asks "can I switch now?", run
 `evaluate_transition_readiness(from_stage, to_stage, state, build_id?)`. If it returns
@@ -247,10 +249,13 @@ realize it, then re-check defenses.
 - **Sustain & pricing:** compare `ManaCost` vs Mana+regen/leech (and Spirit); pricing is
   league-specific (`list_price_leagues`).
 - **Meta is context, not a target.** `get_meta_builds` is popularity, not a recommendation — build
-  to the user's goal; cite meta only when asked, as a data point with its sample size. It's
-  **ascendancy distribution only** — for a *build-level* meta comparison, web-search a build's
-  `pobb.in`/pastebin link, `import_build` it, and compare on the engine. Direct link import supports
-  pobb.in + pastebin; for maxroll/pobarchives/poe.ninja pages, paste the build's PoB export code.
+  to the user's goal; cite meta only when asked, as a data point with its sample size. It is
+  **ascendancy distribution only**. `get_meta_archetype_trends` is the safer build-level trend seam:
+  use its aggregate rows only when it returns `ok:true`; if it returns unavailable, say so and do
+  not infer skill/item/build popularity from ascendancy-only stats. For a concrete build-level
+  comparison, web-search a build's `pobb.in`/pastebin link, `import_build` it, and compare on the
+  engine. Direct link import supports pobb.in + pastebin; for maxroll/pobarchives/poe.ninja pages,
+  paste the build's PoB export code.
 
 ## Boundaries
 

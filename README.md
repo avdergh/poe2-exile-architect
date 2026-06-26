@@ -69,11 +69,13 @@ patch-scoped technique cards. Imported or pasted guide text is also scanned for 
 transition, endgame, skill, and unique-item evidence, but those hints still require engine
 verification before any numbers are claimed. Explicit guide phrases like "switch at level 75 when X
 is equipped" become source-derived transition gates, which must still be checked against the active
-build before recommending a swap.
+build before recommending a swap. Mature-build research can include reference cohorts, live
+ascendancy popularity, and provider-backed aggregate archetype trends when available; if build-level
+trend rows are not exposed by the live source, the tool says unavailable instead of guessing.
 
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 
-### The toolset (76 MCP tools)
+### The toolset (77 MCP tools)
 
 *Build / compute — real Path of Building numbers:*
 - `import_build(source)` — PoB share code, pobb.in/pastebin link, or raw XML
@@ -130,6 +132,8 @@ build before recommending a swap.
 *Live ops & self-update — network:*
 - `get_prices(query, kind, league?)` — poe2scout currency/unique prices · `list_price_leagues()`
 - `get_meta_builds(league?)` — live ascendancy popularity (poe.ninja; context, not a recommendation)
+- `get_meta_archetype_trends(league?)` — safe aggregate skill/archetype trend adapter; returns
+  unavailable unless a real provider supplies build-level sample rows
 - `lookup_mechanic(topic)` — fetch a mechanic/skill/item live from the PoE2 Wiki (long-tail fallback)
 - `check_for_updates()` / `apply_updates()` — pull validated engine + corpus releases
 - `check_data_version()` / `update_corpus(rebuild_from_source?)`

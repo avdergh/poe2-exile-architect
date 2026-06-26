@@ -1114,6 +1114,25 @@ def build_advice(topic: str = "") -> dict[str, Any]:
     return advice.advise(topic)
 
 
+def _live_meta_context(limit: int) -> dict[str, Any]:
+    """Fetch live meta context without letting one unavailable slice block lifecycle research."""
+    try:
+        return live_meta.get_meta_context(ascendancy_limit=limit, archetype_limit=limit)
+    except live_meta.MetaError as e:
+        return {
+            "ok": False,
+            "error": f"meta data unavailable: {e}",
+            "archetypeTrends": {
+                "ok": False,
+                "source": "poe.ninja",
+                "kind": "archetype_trends",
+                "archetypes": [],
+                "error": f"archetype trend data unavailable: {e}",
+                "evidenceTags": ["live-meta", "unavailable"],
+            },
+        }
+
+
 @mcp.tool()
 def suggest_build_lifecycle(
     goal: str,
@@ -1129,10 +1148,7 @@ def suggest_build_lifecycle(
     presenting DPS/EHP/resistance numbers.
     """
     freshness = freshness_service.get_freshness_report()
-    try:
-        meta = live_meta.get_meta_builds(limit=5)
-    except live_meta.MetaError as e:
-        meta = {"ok": False, "error": f"meta data unavailable: {e}"}
+    meta = _live_meta_context(limit=5)
     return lifecycle.research_build_lifecycle(
         goal,
         preferences=preferences,
@@ -1156,10 +1172,7 @@ def analyze_lifecycle_cohort(
     and live ascendancy context from calibration sources. It does not produce a final build and must
     not be treated as permission to copy a reference build.
     """
-    try:
-        meta = live_meta.get_meta_builds(limit=limit)
-    except live_meta.MetaError as e:
-        meta = {"ok": False, "error": f"meta data unavailable: {e}"}
+    meta = _live_meta_context(limit=limit)
     return lifecycle.analyze_lifecycle_cohort(
         goal,
         preferences=preferences,
@@ -1528,6 +1541,29 @@ def get_meta_builds(league: str | None = None, limit: int = 15) -> dict[str, Any
         return live_meta.get_meta_builds(league=league, limit=limit)
     except live_meta.MetaError as e:
         return {"ok": False, "error": f"meta data unavailable: {e}"}
+
+
+@mcp.tool()
+def get_meta_archetype_trends(league: str | None = None, limit: int = 10) -> dict[str, Any]:
+    """Live aggregate build-archetype trend adapter from poe.ninja when available.
+
+    This is intentionally conservative: if the live payload lacks build-level skill/archetype
+    samples, it returns `ok:false` with `unavailableReason` instead of inferring trends from
+    ascendancy popularity. Use available rows as discovery context only, then verify with PoB.
+    """
+    try:
+        return live_meta.get_archetype_trends(league=league, limit=limit)
+    except live_meta.MetaError as e:
+        return {
+            "ok": False,
+            "source": "poe.ninja",
+            "kind": "archetype_trends",
+            "league": league,
+            "archetypes": [],
+            "error": f"archetype trend data unavailable: {e}",
+            "unavailableReason": f"archetype trend data unavailable: {e}",
+            "evidenceTags": ["live-meta", "unavailable"],
+        }
 
 
 @mcp.tool()
