@@ -21,6 +21,7 @@ from .. import paths
 from . import db as corpus
 from . import lifecycle_cohort
 from . import lifecycle_evidence
+from . import lifecycle_quality
 from . import lifecycle_verification
 
 STAGES: tuple[dict[str, Any], ...] = (
@@ -623,6 +624,7 @@ def research_build_lifecycle(
             "per stage before presenting computed DPS/EHP/resistance numbers."
         ),
     }
+    result["qualityGate"] = lifecycle_quality.audit_lifecycle_route(result)
 
     if persist:
         with _MEMORY_LOCK:

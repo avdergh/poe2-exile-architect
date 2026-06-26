@@ -1195,6 +1195,16 @@ def compare_lifecycle_routes(route_a: dict[str, Any], route_b: dict[str, Any]) -
 
 
 @mcp.tool()
+def audit_lifecycle_route(route: dict[str, Any]) -> dict[str, Any]:
+    """Audit whether a lifecycle route has the minimum structure needed before presentation.
+
+    This is a structural quality gate, not a power check: it verifies starter/maps/endgame stages,
+    transition gates, evidence tags, and verification plans before a route is treated as complete.
+    """
+    return lifecycle.lifecycle_quality.audit_lifecycle_route(route)
+
+
+@mcp.tool()
 def list_transition_gates(build_id: str = "") -> dict[str, Any]:
     """List stored transition gates for a lifecycle build, or default gates when omitted."""
     return lifecycle.list_transition_gates(build_id or None)

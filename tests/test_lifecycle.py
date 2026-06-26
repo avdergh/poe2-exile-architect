@@ -65,6 +65,25 @@ def test_research_build_lifecycle_returns_staged_route_and_transition_gates():
     assert all(stage["evidenceTags"] for stage in result["stages"])
 
 
+def test_lifecycle_quality_gate_fails_incomplete_route():
+    from server.knowledge import lifecycle_quality
+
+    audit = lifecycle_quality.audit_lifecycle_route(
+        {"classification": "starter_then_transition", "stages": [], "transitionGates": []}
+    )
+
+    assert audit["pass"] is False
+    assert "missing_campaign_stage" in audit["missing"]
+    assert "missing_transition_gates" in audit["missing"]
+
+
+def test_research_build_lifecycle_includes_quality_gate():
+    result = lifecycle.research_build_lifecycle("给我一个新手能玩的强力终局BD")
+
+    assert result["qualityGate"]["pass"] is True
+    assert result["qualityGate"]["score"] >= 80
+
+
 def test_research_build_lifecycle_uses_goal_specific_skill_evidence(monkeypatch):
     monkeypatch.setattr(
         lifecycle.corpus,

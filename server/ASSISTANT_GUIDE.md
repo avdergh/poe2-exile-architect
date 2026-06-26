@@ -67,7 +67,8 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   layer — `explain_mechanic` / `search_mechanics` / `relevant_mechanics` (wiki tier, PoE2 Wiki
   **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
   and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
-  `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `list_transition_gates`,
+  `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `audit_lifecycle_route`,
+  `list_transition_gates`,
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
   `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
@@ -92,7 +93,9 @@ For open-ended requests like "give me a strong build", run the **lifecycle workf
 `suggest_build_lifecycle(goal)` → explain whether the final build is `starter_to_endgame`,
 `starter_then_transition`, `endgame_only`, `starter_only`, or `unknown_lifecycle` → follow the
 campaign stages until a transition gate is met → only then assemble and verify the active PoB for
-that stage. If the user supplies an existing PoB/source, use `analyze_build_lifecycle(source)` to
+that stage. Check `qualityGate` or call `audit_lifecycle_route(route)` before presenting a route; if
+it fails, repair the missing starter/maps/endgame/gate/evidence structure first. If the user
+supplies an existing PoB/source, use `analyze_build_lifecycle(source)` to
 classify whether it can level directly or needs a separate starter. Its `sourceEvidence` can expose
 guide-text signals such as starter language, switch-level snippets, skill candidates, or required
 unique language; `sourceTransitionGates` converts explicit switch snippets into draft gates. Treat
