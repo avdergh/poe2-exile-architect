@@ -95,9 +95,10 @@ campaign stages until a transition gate is met → only then assemble and verify
 that stage. If the user supplies an existing PoB/source, use `analyze_build_lifecycle(source)` to
 classify whether it can level directly or needs a separate starter. Its `sourceEvidence` can expose
 guide-text signals such as starter language, switch-level snippets, skill candidates, or required
-unique language; treat those as external-guide evidence, not computed proof. Feedback from play goes
-through `record_build_feedback`; promote it with `promote_technique_memory` only after it is reusable
-and patch-scoped.
+unique language; `sourceTransitionGates` converts explicit switch snippets into draft gates. Treat
+both as external-guide evidence, not computed proof: re-run readiness/stage verification before
+telling the player to swap. Feedback from play goes through `record_build_feedback`; promote it with
+`promote_technique_memory` only after it is reusable and patch-scoped.
 
 When the route feels too generic or the user asks "why this archetype?", inspect
 `analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live

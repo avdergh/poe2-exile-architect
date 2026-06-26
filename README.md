@@ -67,7 +67,9 @@ engine confirms the effect.
 budget endgame → final endgame, with local feedback memory so practical lessons can later become
 patch-scoped technique cards. Imported or pasted guide text is also scanned for explicit starter,
 transition, endgame, skill, and unique-item evidence, but those hints still require engine
-verification before any numbers are claimed.
+verification before any numbers are claimed. Explicit guide phrases like "switch at level 75 when X
+is equipped" become source-derived transition gates, which must still be checked against the active
+build before recommending a swap.
 
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 

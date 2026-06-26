@@ -395,6 +395,34 @@ def test_analyze_build_lifecycle_uses_source_evidence_when_import_is_unavailable
     assert result["sourceEvidence"]["uniqueCandidates"][0]["name"] == "Dream Fragment"
 
 
+def test_analyze_build_lifecycle_synthesizes_source_transition_gate(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle.lifecycle_evidence,
+        "extract_lifecycle_source_evidence",
+        lambda source: {
+            "stageSignals": ["campaign_early", "endgame_final"],
+            "lifecycleHints": ["starter_route", "transition_required", "endgame_form"],
+            "uniqueCandidates": [{"name": "Dream Fragment"}],
+            "skillCandidates": [{"name": "Spark"}],
+            "transitionHints": [
+                {"level": 75, "snippet": "Switch at level 75 when Dream Fragment is equipped."}
+            ],
+            "riskFlags": ["required_unique_language"],
+            "evidenceTags": ["external-guide", "corpus", "lifecycle-source-extraction"],
+        },
+    )
+
+    result = lifecycle.analyze_build_lifecycle("guide text", import_error="not a pob")
+
+    gate = result["sourceTransitionGates"][0]
+    assert gate["source"] == "source-evidence"
+    assert gate["fromStage"] == "maps_entry"
+    assert gate["toStage"] == "endgame_budget"
+    assert gate["requirements"]["level"] == 75
+    assert gate["requirements"]["items"] == ["Dream Fragment"]
+    assert "resists_capped" in gate["requirements"]["checks"]
+
+
 def test_feedback_is_episodic_until_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
 

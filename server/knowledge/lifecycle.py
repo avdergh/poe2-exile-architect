@@ -715,6 +715,7 @@ def analyze_build_lifecycle(
         or "endgame_form" in lifecycle_hints,
     }
     classification = classify_lifecycle(features)
+    source_gates = _source_transition_gates(source_evidence)
     return {
         "ok": import_error is None,
         "classification": classification["classification"],
@@ -726,7 +727,8 @@ def analyze_build_lifecycle(
             "mainSkill": build.get("mainSkill"),
             "level": level or None,
         },
-        "transitionGates": _default_gates(),
+        "transitionGates": _merge_transition_gates(source_gates, _default_gates()),
+        "sourceTransitionGates": source_gates,
         "sourceEvidence": source_evidence,
         "importCaveats": import_caveats or [],
         "importError": import_error,
@@ -738,6 +740,98 @@ def analyze_build_lifecycle(
         ),
         "note": "Use transition gates before recommending this as a leveling route.",
     }
+
+
+def _source_transition_gates(source_evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert explicit guide transition snippets into draft TransitionGate objects.
+
+    These gates intentionally keep their `source-evidence` label and snippet caveat: external guide
+    text can tell us what to verify next, but readiness and engine checks still decide whether the
+    player should actually switch.
+    """
+    hints = source_evidence.get("transitionHints") or []
+    if not hints:
+        return []
+    required_items = _source_required_items(source_evidence)
+    gates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int | None, tuple[str, ...]]] = set()
+    for hint in hints:
+        level = hint.get("level") if isinstance(hint, dict) else None
+        from_stage, to_stage = _stage_pair_for_level(level if isinstance(level, int) else None)
+        key = (
+            from_stage,
+            to_stage,
+            level if isinstance(level, int) else None,
+            tuple(required_items),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        gate = make_transition_gate(
+            from_stage,
+            to_stage,
+            required_level=level if isinstance(level, int) else None,
+            required_items=required_items,
+            required_checks=_source_gate_checks(to_stage),
+            caveats=[
+                "Source-derived transition gate; verify with active PoB state before switching.",
+                f"Source snippet: {str(hint.get('snippet') or '')[:220]}",
+            ],
+        )
+        gate["id"] = f"gate-source-{from_stage}-to-{to_stage}-{level or 'unknown'}"
+        gate["source"] = "source-evidence"
+        gate["evidenceTags"] = ["external-guide", "transition-gate"]
+        gates.append(gate)
+    return gates
+
+
+def _source_required_items(source_evidence: dict[str, Any]) -> list[str]:
+    if "required_unique_language" not in (source_evidence.get("riskFlags") or []):
+        return []
+    return sorted(
+        {
+            str(row.get("name"))
+            for row in source_evidence.get("uniqueCandidates") or []
+            if row.get("name")
+        }
+    )
+
+
+def _stage_pair_for_level(level: int | None) -> tuple[str, str]:
+    if level is None:
+        return "endgame_budget", "endgame_final"
+    if level <= 25:
+        return "campaign_early", "campaign_mid"
+    if level <= 45:
+        return "campaign_mid", "campaign_late"
+    if level <= 65:
+        return "campaign_late", "maps_entry"
+    if level <= 85:
+        return "maps_entry", "endgame_budget"
+    return "endgame_budget", "endgame_final"
+
+
+def _source_gate_checks(to_stage: str) -> dict[str, Any]:
+    if to_stage == "maps_entry":
+        return {"resists_capped": True, "basic_defense_online": True}
+    if to_stage == "endgame_budget":
+        return {"resists_capped": True, "sustain_ok": True, "pob_model_supported": True}
+    if to_stage == "endgame_final":
+        return {"core_threshold_met": True, "upgrade_budget_ready": True}
+    return {}
+
+
+def _merge_transition_gates(
+    source_gates: list[dict[str, Any]], default_gates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged = list(source_gates)
+    seen_pairs = {(gate.get("fromStage"), gate.get("toStage")) for gate in merged}
+    for gate in default_gates:
+        pair = (gate.get("fromStage"), gate.get("toStage"))
+        if pair in seen_pairs:
+            continue
+        merged.append(gate)
+    return merged
 
 
 def _unique_dependencies(build: dict[str, Any]) -> list[str]:
