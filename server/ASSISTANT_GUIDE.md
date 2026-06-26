@@ -114,7 +114,8 @@ Before claiming a lifecycle stage is viable, inspect `plan_lifecycle_stage_verif
 Treat it as the checklist for PoB work: level target, passive budget, gear assumption, engine tools,
 metrics, and target checks. It is not a computed result. Once the active build is assembled for that
 stage, run `verify_lifecycle_stage(stage, state?, build_id?)`; if it returns `failed` or `unknown`,
-describe the failed/unknown checks instead of presenting the stage as ready.
+describe the failed/unknown checks and follow its `recommendedActions` instead of presenting the
+stage as ready.
 
 1. `new_build` → `set_class` → `set_level` → `set_skill` (main skill + a starter support set).
    Supports are usually the biggest "more" multiplier AND the corpus has no support magnitudes — so

@@ -256,6 +256,7 @@ def verify_stage_metrics(
         "checks": checks,
         "failedChecks": failed,
         "unknownChecks": unknown,
+        "recommendedActions": _recommended_actions(stage, checks, failed, unknown),
         "caveats": result_caveats,
         "evidenceTags": ["engine-computed", "stage-verification"],
     }
@@ -431,6 +432,69 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
         "detail": {"mana": mana, "manaCost": mana_cost},
         "target": "available mana at least 5x main skill mana cost",
     }
+
+
+def _recommended_actions(
+    stage: str,
+    checks: list[dict[str, Any]],
+    failed: list[str],
+    unknown: list[str],
+) -> list[str]:
+    actions: list[str] = []
+    if failed:
+        actions.append("Do not transition yet; failed stage checks: " + ", ".join(sorted(failed)))
+    if "resists_capped" in failed or "resists_near_cap" in failed:
+        actions.append("Cap or repair elemental resistances before progressing this route.")
+    if "basic_defense_online" in failed:
+        actions.append(
+            "Raise the current stage's life/ES/EHP layer before trading defense for damage."
+        )
+    if "sustain_ok" in failed or "sustain_ok" in unknown:
+        actions.append("Fix mana/Spirit/life sustain before adding supports or switching stages.")
+    if "pob_model_supported" in failed:
+        actions.append(
+            "PoB reports a modeling limitation; do not present the computed number as the true "
+            "mechanic value."
+        )
+
+    for check in unknown:
+        if check == "build_defining_component_online":
+            actions.append(
+                "Confirm the build-defining item, gem, or rare affix is actually online before "
+                "claiming this endgame stage."
+            )
+        elif check == "core_threshold_met":
+            actions.append("Verify the core threshold directly; do not infer it from guide text.")
+        elif check == "upgrade_budget_ready":
+            actions.append("Confirm the final upgrade budget/gear assumptions before switching.")
+        elif check == "pinnacle_ready":
+            actions.append(
+                "Run pinnacle readiness or equivalent endgame checks before presenting final form."
+            )
+        elif check not in {"sustain_ok"}:
+            actions.append(
+                f"Gather explicit evidence for `{check}` before marking the stage ready."
+            )
+
+    if stage == "maps_entry" and failed:
+        actions.append(
+            "For maps_entry, hold the current setup until resistances, basic defense, and sustain "
+            "are stable."
+        )
+    if not actions:
+        actions.append("Stage checks passed; snapshot the PoB before making further changes.")
+    return _dedupe(actions)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _number(value: Any) -> float | None:

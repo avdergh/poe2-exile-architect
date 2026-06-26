@@ -245,6 +245,41 @@ def test_verify_stage_metrics_passes_maps_entry_with_engine_values():
     assert result["failedChecks"] == []
 
 
+def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={"Life": 1200, "Mana": 40, "ManaCost": 80},
+        defenses={
+            "resistances": {"fire": 55, "cold": 76, "lightning": 70},
+            "totalEHP": 2400,
+        },
+    )
+
+    joined = " ".join(result["recommendedActions"]).lower()
+    assert "resist" in joined
+    assert "sustain" in joined or "mana" in joined
+    assert "transition" in joined
+
+
+def test_verify_stage_metrics_returns_actions_for_unknown_endgame_checks():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "endgame_budget",
+        stats={"Life": 4000, "Mana": 500, "ManaCost": 30},
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 14000,
+        },
+    )
+
+    joined = " ".join(result["recommendedActions"]).lower()
+    assert "build-defining" in joined
+    assert result["status"] == "unknown"
+
+
 def test_transition_gate_blocks_missing_requirements():
     gate = lifecycle.make_transition_gate(
         "maps_entry",
