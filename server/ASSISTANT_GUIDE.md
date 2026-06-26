@@ -45,6 +45,11 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
    skills on purpose; let the player's goal and the engine's numbers pick. The reference-build
    library (`list_reference_builds` / `benchmark_build`) is **calibration only** — never reproduce a
    reference build as the answer; it exists to range-check numbers and reveal an archetype's lever.
+9. **Treat strong builds as a lifecycle, not a static PoB.** A final-form endgame build may be
+   impossible or miserable to level with if it depends on a unique, lineage gem, threshold, Spirit
+   setup, or late passive cluster. When the user asks for a strong build without a full anchor, start
+   with `suggest_build_lifecycle`: present campaign starter → transition gate → budget endgame →
+   final endgame. Never recommend switching stages until the transition gate is met.
 
 ## Three kinds of facts
 
@@ -60,8 +65,10 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `find_skills`/`get_gem`/`find_supports_for`, `search_mods`/`reverse_lookup`,
   `search_uniques`/`get_unique`, `parse_item`, `list_ascendancies`, `corpus_info`, and the mechanics
   layer — `explain_mechanic` / `search_mechanics` / `relevant_mechanics` (wiki tier, PoE2 Wiki
-  **CC BY-NC-SA 3.0** — cite the `attribution` it returns) and `build_advice` (durable principles).
-  Static facts to *find* options; the engine *values* them.
+  **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
+  and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
+  `compare_lifecycle_routes`, `list_transition_gates`, `record_build_feedback`,
+  `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
   `lookup_mechanic` (live wiki fallback for topics not in the corpus), `check_data_version`,
   `check_for_updates`/`apply_updates`, `update_corpus`. Approximate, time-sensitive; if one returns
@@ -79,6 +86,15 @@ All compute tools operate on a single in-memory build that persists across calls
 - `get_build` = full read-back; `export_build` = a PoB import code for the user.
 
 ## Canonical build (create → optimize → validate → cost → present)
+
+For open-ended requests like "give me a strong build", run the **lifecycle workflow first**:
+`suggest_build_lifecycle(goal)` → explain whether the final build is `starter_to_endgame`,
+`starter_then_transition`, `endgame_only`, `starter_only`, or `unknown_lifecycle` → follow the
+campaign stages until a transition gate is met → only then assemble and verify the active PoB for
+that stage. If the user supplies an existing PoB/source, use `analyze_build_lifecycle(source)` to
+classify whether it can level directly or needs a separate starter. Feedback from play goes through
+`record_build_feedback`; promote it with `promote_technique_memory` only after it is reusable and
+patch-scoped.
 
 1. `new_build` → `set_class` → `set_level` → `set_skill` (main skill + a starter support set).
    Supports are usually the biggest "more" multiplier AND the corpus has no support magnitudes — so
@@ -137,6 +153,9 @@ realize it, then re-check defenses.
   (`list_levers` shows named levers). A/B two builds → `compare_to`.
 - "Is this build good?" → `evaluate_build` (numbers) + `build_advice("red flags")` (judgment).
   Endgame/pinnacle defense gate → `pinnacle_readiness` (resists + chaos + EHP + DPS, not raw EHP).
+- Open-ended "strong build" / "beginner-friendly endgame" → `suggest_build_lifecycle` first. Use
+  the returned transition gate list to explain when to swap from starter to endgame; do not present
+  final-form gear as a leveling path unless the classification is `starter_to_endgame`.
 - Calibrate a build vs real high-end builds → `benchmark_build`; browse references by archetype →
   `list_reference_builds`. **Calibration ONLY — never copy/recommend a reference; build to the goal.**
 - Realistic boss DPS (not the bare default) → `apply_combat_profile`. Add tree jewels →

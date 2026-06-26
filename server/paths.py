@@ -48,6 +48,15 @@ def reference_builds_path() -> Path:
     )
 
 
+def lifecycle_memory_path() -> Path:
+    """Writable Phase 3 lifecycle research memory.
+
+    The corpus remains read-only and release-managed; user feedback and promoted build
+    techniques are local learning artifacts, so they live in the mutable user-data layer.
+    """
+    return user_data_dir() / "lifecycle_memory.json"
+
+
 def pob_src_dir() -> Path:
     return _prefer(
         user_data_dir() / "pob" / "PathOfBuilding-PoE2" / "src",

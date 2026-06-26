@@ -63,9 +63,13 @@ optimization principles and mechanics references (see
 [server/BUILD_ADVICE.md](server/BUILD_ADVICE.md)) so the assistant knows *what* to change; the
 engine confirms the effect.
 
+**Plan build lifecycles**: open-ended requests can return campaign starter → transition gates →
+budget endgame → final endgame, with local feedback memory so practical lessons can later become
+patch-scoped technique cards.
+
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 
-### The toolset (64 MCP tools)
+### The toolset (71 MCP tools)
 
 *Build / compute — real Path of Building numbers:*
 - `import_build(source)` — PoB share code, pobb.in/pastebin link, or raw XML
@@ -109,6 +113,11 @@ engine confirms the effect.
 - `relevant_uniques()` — unique items + unique jewels that synergize with the *active* build (build-defining gear a rare-only build misses; corpus suggestions, verify on the engine)
 - `parse_item(text)` — parse an item's text → affix tiers (T1=best) + open prefix/suffix slots
 - `list_ascendancies(character?)` / `corpus_info()`
+- `suggest_build_lifecycle(goal, preferences?, budget?, mode?)` — research campaign → transition → endgame route
+- `analyze_build_lifecycle(source)` — classify an imported/source build as starter, transition, or endgame-only
+- `compare_lifecycle_routes(route_a, route_b)` / `list_transition_gates(build_id?)`
+- `record_build_feedback(build_id, stage, feedback, outcome?)` — save practical feedback as episodic memory
+- `promote_technique_memory(evidence_ids, reason)` — promote verified feedback into patch-scoped technique memory
 
 *Live ops & self-update — network:*
 - `get_prices(query, kind, league?)` — poe2scout currency/unique prices · `list_price_leagues()`

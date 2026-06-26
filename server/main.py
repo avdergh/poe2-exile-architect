@@ -29,6 +29,7 @@ from .compute.pob_code import PobCodeError, decode_code, encode_code, is_link, t
 from .knowledge import advice
 from .knowledge import db as corpus
 from .knowledge import itemparse
+from .knowledge import lifecycle
 from .knowledge import mechanics
 from .knowledge import refbuilds
 from .live import meta as live_meta
@@ -1111,6 +1112,100 @@ def build_advice(topic: str = "") -> dict[str, Any]:
     for deciding what to change; the actual DPS/EHP numbers still come from the compute tools.
     """
     return advice.advise(topic)
+
+
+@mcp.tool()
+def suggest_build_lifecycle(
+    goal: str,
+    preferences: str | None = None,
+    budget: str | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    """Research a staged PoE2 build route: campaign starter → transition → endgame.
+
+    Use this when the user asks for a strong build but has not supplied a skill/item anchor, or
+    when an endgame build might be impossible to level directly. The response is a lifecycle
+    scaffold with evidence labels and transition gates; run PoB verification for each stage before
+    presenting DPS/EHP/resistance numbers.
+    """
+    freshness = freshness_service.get_freshness_report()
+    try:
+        meta = live_meta.get_meta_builds(limit=5)
+    except live_meta.MetaError as e:
+        meta = {"ok": False, "error": f"meta data unavailable: {e}"}
+    return lifecycle.research_build_lifecycle(
+        goal,
+        preferences=preferences,
+        budget=budget,
+        mode=mode,
+        freshness=freshness,
+        meta=meta,
+        persist=True,
+    )
+
+
+@mcp.tool()
+def analyze_build_lifecycle(source: str) -> dict[str, Any]:
+    """Import or inspect a build source and classify its lifecycle viability.
+
+    The tool answers whether the build can be used as a starter, needs a separate starter route,
+    or should be treated as endgame-only. If import succeeds, the source becomes the active build
+    just like `import_build`; if import fails, the result is still a structure-only lifecycle
+    analysis with the import error attached.
+    """
+    imported = import_build(source)
+    if not imported.get("ok", True):
+        return lifecycle.analyze_build_lifecycle(source, import_error=imported.get("error"))
+    eng = get_engine()
+    return lifecycle.analyze_build_lifecycle(
+        source,
+        imported_build=eng.get_build(),
+        import_caveats=imported.get("importCaveats") or [],
+    )
+
+
+@mcp.tool()
+def compare_lifecycle_routes(route_a: dict[str, Any], route_b: dict[str, Any]) -> dict[str, Any]:
+    """Compare two lifecycle route dictionaries for starter/transition/endgame trade-offs."""
+    return lifecycle.compare_lifecycle_routes(route_a, route_b)
+
+
+@mcp.tool()
+def list_transition_gates(build_id: str = "") -> dict[str, Any]:
+    """List stored transition gates for a lifecycle build, or default gates when omitted."""
+    return lifecycle.list_transition_gates(build_id or None)
+
+
+@mcp.tool()
+def record_build_feedback(
+    build_id: str,
+    stage: str,
+    feedback: str,
+    outcome: str | None = None,
+) -> dict[str, Any]:
+    """Record user practice feedback as episodic lifecycle memory.
+
+    A single feedback report is not automatically promoted into a durable rule. Use
+    `promote_technique_memory` only after the lesson is reusable and evidence-backed.
+    """
+    return lifecycle.record_build_feedback(
+        build_id=build_id,
+        stage=stage,
+        feedback=feedback,
+        outcome=outcome,
+    )
+
+
+@mcp.tool()
+def promote_technique_memory(evidence_ids: list[str], reason: str) -> dict[str, Any]:
+    """Promote verified feedback/evidence into durable, patch-scoped technique memory."""
+    claim = lifecycle.current_compatibility_claim()
+    return lifecycle.promote_technique_memory(
+        evidence_ids=evidence_ids,
+        reason=reason,
+        current_patch=claim.get("game_patch"),
+        current_tree=claim.get("passive_tree"),
+    )
 
 
 @mcp.tool()

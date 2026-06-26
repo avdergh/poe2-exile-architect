@@ -1,0 +1,210 @@
+"""Lifecycle-build research tests.
+
+These tests describe the Phase 3A contract: a build is no longer a single static PoB
+snapshot, but a staged route with transition gates and feedback memory.
+"""
+
+from __future__ import annotations
+
+from server.knowledge import lifecycle
+
+
+def test_terminal_unique_dependency_is_not_marked_as_starter_to_endgame():
+    result = lifecycle.classify_lifecycle(
+        {
+            "critical_uniques": ["Dream Fragment"],
+            "low_level_viable": False,
+            "starter_route_available": False,
+            "endgame_scaling": True,
+        }
+    )
+
+    assert result["classification"] == "endgame_only"
+    assert result["starter_viable"] is False
+    assert any("critical unique" in reason.lower() for reason in result["reasons"])
+
+
+def test_low_dependency_scaling_build_is_starter_to_endgame():
+    result = lifecycle.classify_lifecycle(
+        {
+            "critical_uniques": [],
+            "low_level_viable": True,
+            "starter_route_available": True,
+            "endgame_scaling": True,
+        }
+    )
+
+    assert result["classification"] == "starter_to_endgame"
+    assert result["starter_viable"] is True
+
+
+def test_research_build_lifecycle_returns_staged_route_and_transition_gates():
+    result = lifecycle.research_build_lifecycle(
+        "给我一个强力但新手能看懂的闪电终局BD",
+        freshness={"decision": "verified_current", "blockers": [], "warnings": []},
+        meta={"ok": True, "source": "poe.ninja", "league": "Runes of Aldur"},
+    )
+
+    stage_ids = [stage["id"] for stage in result["stages"]]
+
+    assert result["ok"] is True
+    assert result["buildId"].startswith("life-")
+    assert result["classification"] in {"starter_then_transition", "starter_to_endgame"}
+    assert {"campaign_early", "campaign_mid", "maps_entry", "endgame_final"} <= set(stage_ids)
+    assert len(result["transitionGates"]) >= 3
+    assert result["researchPlan"]["steps"] == [
+        "freshness_gate",
+        "question_development",
+        "evidence_collection",
+        "evidence_extraction",
+        "cohort_analysis",
+        "lifecycle_synthesis",
+        "pob_verification",
+        "memory_promotion",
+    ]
+    assert all(stage["evidenceTags"] for stage in result["stages"])
+
+
+def test_research_build_lifecycle_uses_goal_specific_skill_evidence(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle.corpus,
+        "find_skills",
+        lambda query="", gem_type=None, limit=5, **_kw: (
+            [
+                {
+                    "name": f"{query.title()} Spear",
+                    "tags": [query, "attack"],
+                    "gem_type": gem_type,
+                }
+            ]
+            if query == "lightning"
+            else []
+        ),
+    )
+
+    result = lifecycle.research_build_lifecycle(
+        "我想玩闪电终局BD",
+        preferences="远程",
+        budget="低预算",
+        freshness={"decision": "verified_current"},
+    )
+
+    assert result["evidence"]["skillCandidates"][0]["name"] == "Lightning Spear"
+    assert result["constraints"]["budget"] == "低预算"
+    assert "Lightning Spear" in result["stages"][0]["skillPlan"]
+
+
+def test_transition_gate_blocks_missing_requirements():
+    gate = lifecycle.make_transition_gate(
+        "maps_entry",
+        "endgame_budget",
+        required_level=75,
+        required_items=["关键暗金戒指"],
+        required_checks={"resists_capped": True},
+    )
+
+    result = lifecycle.evaluate_transition_gate(
+        gate,
+        {"level": 72, "items": [], "checks": {"resists_capped": False}},
+    )
+
+    assert result["ready"] is False
+    assert "level 75" in " ".join(result["missing"]).lower()
+    assert "关键暗金戒指" in " ".join(result["missing"])
+    assert "resists_capped" in " ".join(result["missing"])
+
+
+def test_analyze_imported_gear_marks_known_uniques_as_endgame_dependency(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "_known_unique",
+        lambda name, base=None: {"name": name, "base": base} if name == "Endgame Idol" else None,
+    )
+
+    result = lifecycle.analyze_build_lifecycle(
+        "imported",
+        imported_build={
+            "level": 90,
+            "mainSkill": "Example Nuke",
+            "gear": {"Ring 1": {"name": "Endgame Idol", "base": "Ruby Ring"}},
+        },
+    )
+
+    assert result["classification"] == "starter_then_transition"
+    assert result["starterViable"] is True
+    assert any("Endgame Idol" in reason for reason in result["classificationReasons"])
+
+
+def test_feedback_is_episodic_until_promoted(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+
+    feedback = lifecycle.record_build_feedback(
+        build_id="life-test",
+        stage="maps_entry",
+        feedback="进异界后经常暴毙，抗性没满。",
+        outcome="补抗性和生命后稳定。",
+    )
+    store = lifecycle.load_memory()
+
+    assert feedback["memoryType"] == "episodic"
+    assert feedback["promotionEligible"] is False
+    assert store["feedback_reflections"]
+    assert store["technique_cards"] == {}
+
+    promoted = lifecycle.promote_technique_memory(
+        evidence_ids=[feedback["feedbackId"]],
+        reason="多次反馈证明：进异界前必须先补满元素抗性。",
+        current_patch="0.5.4",
+        current_tree="0_5",
+    )
+    store = lifecycle.load_memory()
+
+    assert promoted["ok"] is True
+    assert promoted["memoryType"] == "durable_technique"
+    assert len(store["technique_cards"]) == 1
+    card = next(iter(store["technique_cards"].values()))
+    assert card["patch"] == "0.5.4"
+    assert card["passiveTree"] == "0_5"
+
+
+def test_promote_technique_rejects_missing_evidence_ids(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+
+    feedback = lifecycle.record_build_feedback(
+        build_id="life-test",
+        stage="maps_entry",
+        feedback="伤害很低，boss 打得很慢。",
+    )
+
+    result = lifecycle.promote_technique_memory(
+        evidence_ids=[feedback["feedbackId"], "fb-missing"],
+        reason="missing evidence should block promotion",
+    )
+
+    assert result["ok"] is False
+    assert result["missingEvidenceIds"] == ["fb-missing"]
+    assert lifecycle.load_memory()["technique_cards"] == {}
+
+
+def test_current_compatibility_claim_prefers_installed_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    (tmp_path / "installed.json").write_text(
+        '{"game_patch":"9.9.9","passive_tree":"9_9","pob_commit":"abc"}',
+        encoding="utf-8",
+    )
+
+    claim = lifecycle.current_compatibility_claim()
+
+    assert claim["game_patch"] == "9.9.9"
+    assert claim["passive_tree"] == "9_9"
+
+
+def test_feedback_ids_do_not_collide_within_same_second(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    monkeypatch.setattr(lifecycle, "_now", lambda: "2026-06-26T00:00:00+00:00")
+
+    first = lifecycle.record_build_feedback("life-test", "maps_entry", "伤害不足")
+    second = lifecycle.record_build_feedback("life-test", "maps_entry", "伤害不足")
+
+    assert first["feedbackId"] != second["feedbackId"]
+    assert len(lifecycle.load_memory()["feedback_reflections"]) == 2

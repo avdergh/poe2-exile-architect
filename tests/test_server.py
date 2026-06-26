@@ -18,6 +18,10 @@ def test_instructions_are_delivered():
     assert "Path of Exile 2" in instr
     # The cardinal rule has to survive — it's why answers stay grounded in the engine.
     assert "never" in instr.lower() and "engine" in instr.lower()
+    # Phase 3 lifecycle guidance must reach the client: strong endgame builds may need a
+    # separate starter route and explicit transition gates.
+    assert "lifecycle" in instr.lower()
+    assert "transition gate" in instr.lower()
 
 
 def test_workflow_prompts_registered():
@@ -27,7 +31,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 65
+    assert len(tools) == 71
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -44,6 +48,12 @@ def test_tool_surface_intact():
         "optimize_build",
         "craft_item",
         "get_freshness_report",
+        "suggest_build_lifecycle",
+        "analyze_build_lifecycle",
+        "compare_lifecycle_routes",
+        "list_transition_gates",
+        "record_build_feedback",
+        "promote_technique_memory",
     } <= names
 
 
@@ -69,6 +79,29 @@ def test_get_freshness_report_forwards_force_refresh(monkeypatch):
 
     assert main.get_freshness_report(force_refresh=True) == {"decision": "verified_current"}
     assert captured == {"force_refresh": True}
+
+
+def test_suggest_build_lifecycle_uses_freshness_and_meta(monkeypatch, tmp_path):
+    from server import main
+
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    monkeypatch.setattr(
+        main.freshness_service,
+        "get_freshness_report",
+        lambda: {"decision": "verified_current", "blockers": [], "warnings": []},
+    )
+    monkeypatch.setattr(
+        main.live_meta,
+        "get_meta_builds",
+        lambda limit=5: {"ok": True, "source": "poe.ninja", "limit": limit},
+    )
+
+    result = main.suggest_build_lifecycle("给我一个新手能玩的强力终局BD")
+
+    assert result["ok"] is True
+    assert result["freshness"]["decision"] == "verified_current"
+    assert result["metaContext"]["source"] == "poe.ninja"
+    assert result["buildId"] in main.lifecycle.load_memory()["lifecycle_builds"]
 
 
 def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):
