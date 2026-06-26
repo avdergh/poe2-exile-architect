@@ -334,6 +334,67 @@ def test_analyze_imported_gear_marks_known_uniques_as_endgame_dependency(monkeyp
     assert any("Endgame Idol" in reason for reason in result["classificationReasons"])
 
 
+def test_lifecycle_source_evidence_extracts_starter_transition_and_endgame_signals(
+    monkeypatch,
+):
+    from server.knowledge import lifecycle_evidence
+
+    monkeypatch.setattr(
+        lifecycle_evidence.corpus,
+        "find_skills",
+        lambda query="", gem_type=None, limit=30, **_kw: (
+            [{"name": "Spark", "gem_type": "active", "tags": ["lightning"]}]
+            if query.lower() == "spark"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle_evidence.corpus,
+        "search_uniques",
+        lambda query="", limit=20, **_kw: (
+            [{"name": "Dream Fragment", "base": "Sapphire Ring", "item_type": "ring"}]
+            if query.lower() == "dream fragment"
+            else []
+        ),
+    )
+
+    evidence = lifecycle_evidence.extract_lifecycle_source_evidence(
+        "Level with Spark through campaign. Switch at level 75 when Dream Fragment is equipped. "
+        "Final endgame setup is not a starter."
+    )
+
+    assert "campaign_early" in evidence["stageSignals"]
+    assert "endgame_final" in evidence["stageSignals"]
+    assert evidence["skillCandidates"][0]["name"] == "Spark"
+    assert evidence["uniqueCandidates"][0]["name"] == "Dream Fragment"
+    assert evidence["transitionHints"][0]["level"] == 75
+    assert "required_unique_language" in evidence["riskFlags"]
+
+
+def test_analyze_build_lifecycle_uses_source_evidence_when_import_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        lifecycle.lifecycle_evidence,
+        "extract_lifecycle_source_evidence",
+        lambda source: {
+            "stageSignals": ["campaign_early", "endgame_final"],
+            "lifecycleHints": ["starter_route", "endgame_form"],
+            "uniqueCandidates": [{"name": "Dream Fragment"}],
+            "skillCandidates": [{"name": "Spark"}],
+            "transitionHints": [{"level": 75, "snippet": "Switch at level 75"}],
+            "riskFlags": ["required_unique_language"],
+            "evidenceTags": ["external-guide", "corpus", "lifecycle-source-extraction"],
+        },
+    )
+
+    result = lifecycle.analyze_build_lifecycle("guide text", import_error="not a pob")
+
+    assert result["ok"] is False
+    assert result["classification"] == "starter_then_transition"
+    assert result["sourceEvidence"]["uniqueCandidates"][0]["name"] == "Dream Fragment"
+
+
 def test_feedback_is_episodic_until_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
 

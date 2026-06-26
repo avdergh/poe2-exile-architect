@@ -20,6 +20,7 @@ from typing import Any
 from .. import paths
 from . import db as corpus
 from . import lifecycle_cohort
+from . import lifecycle_evidence
 from . import lifecycle_verification
 
 STAGES: tuple[dict[str, Any], ...] = (
@@ -678,15 +679,40 @@ def analyze_build_lifecycle(
 ) -> dict[str, Any]:
     """Analyze lifecycle viability for an imported or externally described build."""
     build = imported_build or {}
+    source_evidence = lifecycle_evidence.extract_lifecycle_source_evidence(source)
     level = int(build.get("level") or 0)
     unique_names = _unique_dependencies(build)
+    source_unique_names = [
+        str(row.get("name"))
+        for row in source_evidence.get("uniqueCandidates") or []
+        if row.get("name")
+    ]
+    critical_uniques = sorted(
+        {
+            *unique_names,
+            *(
+                source_unique_names
+                if "required_unique_language" in (source_evidence.get("riskFlags") or [])
+                else []
+            ),
+        }
+    )
+    stage_signals = set(source_evidence.get("stageSignals") or [])
+    lifecycle_hints = set(source_evidence.get("lifecycleHints") or [])
     features = {
-        "critical_uniques": unique_names,
-        "low_level_viable": 1 <= level <= 70 and not unique_names,
+        "critical_uniques": critical_uniques,
+        "low_level_viable": (1 <= level <= 70 and not critical_uniques)
+        or ("campaign_early" in stage_signals and "starter_route" in lifecycle_hints),
         # An imported final-form unique-dependent build needs a separate starter route. If there
         # is no unique dependency and the import is already high-level, do not infer starter safety.
-        "starter_route_available": bool(unique_names),
-        "endgame_scaling": level >= 75 or bool(unique_names) or bool(build.get("mainSkill")),
+        "starter_route_available": bool(critical_uniques)
+        or "starter_route" in lifecycle_hints
+        or bool(source_evidence.get("transitionHints")),
+        "endgame_scaling": level >= 75
+        or bool(critical_uniques)
+        or bool(build.get("mainSkill"))
+        or "endgame_final" in stage_signals
+        or "endgame_form" in lifecycle_hints,
     }
     classification = classify_lifecycle(features)
     return {
@@ -701,9 +727,15 @@ def analyze_build_lifecycle(
             "level": level or None,
         },
         "transitionGates": _default_gates(),
+        "sourceEvidence": source_evidence,
         "importCaveats": import_caveats or [],
         "importError": import_error,
-        "evidenceTags": ["engine-computed" if imported_build else "external-guide"],
+        "evidenceTags": sorted(
+            {
+                "engine-computed" if imported_build else "external-guide",
+                *(source_evidence.get("evidenceTags") or []),
+            }
+        ),
         "note": "Use transition gates before recommending this as a leveling route.",
     }
 

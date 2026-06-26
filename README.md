@@ -65,7 +65,9 @@ engine confirms the effect.
 
 **Plan build lifecycles**: open-ended requests can return campaign starter → transition gates →
 budget endgame → final endgame, with local feedback memory so practical lessons can later become
-patch-scoped technique cards.
+patch-scoped technique cards. Imported or pasted guide text is also scanned for explicit starter,
+transition, endgame, skill, and unique-item evidence, but those hints still require engine
+verification before any numbers are claimed.
 
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 
@@ -115,7 +117,7 @@ patch-scoped technique cards.
 - `list_ascendancies(character?)` / `corpus_info()`
 - `suggest_build_lifecycle(goal, preferences?, budget?, mode?)` — research campaign → transition → endgame route
 - `analyze_lifecycle_cohort(goal, preferences?, limit?)` — inspect non-copyable mature-build cohort evidence for a goal
-- `analyze_build_lifecycle(source)` — classify an imported/source build as starter, transition, or endgame-only
+- `analyze_build_lifecycle(source)` — classify an imported PoB or guide/source text as starter, transition, or endgame-only
 - `compare_lifecycle_routes(route_a, route_b)` / `list_transition_gates(build_id?)`
 - `evaluate_transition_readiness(from_stage, to_stage, state, build_id?)` — decide whether a stage swap is safe now
 - `plan_lifecycle_stage_verification(stage, state?, build_id?)` — return the PoB verification budget for a lifecycle stage

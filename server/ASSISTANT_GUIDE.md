@@ -93,9 +93,11 @@ For open-ended requests like "give me a strong build", run the **lifecycle workf
 `starter_then_transition`, `endgame_only`, `starter_only`, or `unknown_lifecycle` → follow the
 campaign stages until a transition gate is met → only then assemble and verify the active PoB for
 that stage. If the user supplies an existing PoB/source, use `analyze_build_lifecycle(source)` to
-classify whether it can level directly or needs a separate starter. Feedback from play goes through
-`record_build_feedback`; promote it with `promote_technique_memory` only after it is reusable and
-patch-scoped.
+classify whether it can level directly or needs a separate starter. Its `sourceEvidence` can expose
+guide-text signals such as starter language, switch-level snippets, skill candidates, or required
+unique language; treat those as external-guide evidence, not computed proof. Feedback from play goes
+through `record_build_feedback`; promote it with `promote_technique_memory` only after it is reusable
+and patch-scoped.
 
 When the route feels too generic or the user asks "why this archetype?", inspect
 `analyze_lifecycle_cohort(goal)`: use its common levers, delivery traits, defenses, and live
