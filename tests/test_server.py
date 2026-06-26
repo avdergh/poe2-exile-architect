@@ -31,7 +31,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 73
+    assert len(tools) == 74
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -56,6 +56,7 @@ def test_tool_surface_intact():
         "promote_technique_memory",
         "analyze_lifecycle_cohort",
         "evaluate_transition_readiness",
+        "plan_lifecycle_stage_verification",
     } <= names
 
 
@@ -150,6 +151,22 @@ def test_evaluate_transition_readiness_tool_forwards_state(monkeypatch):
     assert result["ok"] is True
     assert result["state"]["level"] == 70
     assert result["from"] == "maps_entry"
+
+
+def test_plan_lifecycle_stage_verification_tool_forwards_state(monkeypatch):
+    from server import main
+
+    monkeypatch.setattr(
+        main.lifecycle.lifecycle_verification,
+        "plan_stage_verification",
+        lambda stage, state=None: {"ok": True, "stage": stage, "state": state},
+    )
+
+    result = main.plan_lifecycle_stage_verification("maps_entry", state={"level": 68})
+
+    assert result["ok"] is True
+    assert result["stage"] == "maps_entry"
+    assert result["state"]["level"] == 68
 
 
 def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):

@@ -20,6 +20,7 @@ from typing import Any
 from .. import paths
 from . import db as corpus
 from . import lifecycle_cohort
+from . import lifecycle_verification
 
 STAGES: tuple[dict[str, Any], ...] = (
     {
@@ -502,10 +503,7 @@ def _stage_plan(
         ],
         "risks": [transition_note],
         "cohortHints": cohort_hints,
-        "verification": {
-            "status": "planned",
-            "source": "PoB verification should be run with this stage's level/gear/passive budget.",
-        },
+        "verification": lifecycle_verification.plan_stage_verification(stage["id"]),
         "evidenceTags": tags,
     }
 

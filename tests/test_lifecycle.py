@@ -186,6 +186,29 @@ def test_research_build_lifecycle_includes_cohort_hints(monkeypatch):
     assert "reference-cohort" in endgame["evidenceTags"]
 
 
+def test_stage_verification_plan_for_maps_entry_requires_resists_and_sustain():
+    from server.knowledge import lifecycle_verification
+
+    plan = lifecycle_verification.plan_stage_verification("maps_entry")
+
+    assert plan["ok"] is True
+    assert plan["stage"] == "maps_entry"
+    assert plan["levelTarget"] >= 65
+    assert "get_defenses" in plan["engineTools"]
+    assert "resists_capped" in plan["targetChecks"]
+    assert "sustain_ok" in plan["targetChecks"]
+
+
+def test_research_build_lifecycle_attaches_concrete_stage_verification():
+    result = lifecycle.research_build_lifecycle("给我一个新手能懂的终局BD")
+    maps_entry = next(stage for stage in result["stages"] if stage["id"] == "maps_entry")
+
+    assert maps_entry["verification"]["status"] == "planned"
+    assert maps_entry["verification"]["levelTarget"] >= 65
+    assert "gearAssumption" in maps_entry["verification"]
+    assert "evaluate_build" in maps_entry["verification"]["engineTools"]
+
+
 def test_transition_gate_blocks_missing_requirements():
     gate = lifecycle.make_transition_gate(
         "maps_entry",

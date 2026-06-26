@@ -68,8 +68,8 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
   and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
   `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `list_transition_gates`,
-  `evaluate_transition_readiness`, `record_build_feedback`, `promote_technique_memory`). Static
-  facts to *find* options; the engine *values* them.
+  `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
+  `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
   `lookup_mechanic` (live wiki fallback for topics not in the corpus), `check_data_version`,
   `check_for_updates`/`apply_updates`, `update_corpus`. Approximate, time-sensitive; if one returns
@@ -106,6 +106,10 @@ When the user reports their current level/items/checks or asks "can I switch now
 `evaluate_transition_readiness(from_stage, to_stage, state, build_id?)`. If it returns
 `hold_current_stage`, explain the missing gate requirements and recommended repair actions before
 discussing the next form.
+
+Before claiming a lifecycle stage is viable, inspect `plan_lifecycle_stage_verification(stage)`.
+Treat it as the checklist for PoB work: level target, passive budget, gear assumption, engine tools,
+metrics, and target checks. It is not a computed result.
 
 1. `new_build` → `set_class` → `set_level` → `set_skill` (main skill + a starter support set).
    Supports are usually the biggest "more" multiplier AND the corpus has no support magnitudes — so

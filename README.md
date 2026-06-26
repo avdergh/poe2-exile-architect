@@ -69,7 +69,7 @@ patch-scoped technique cards.
 
 **Stay current**: live currency/unique prices, corpus freshness checks, and one-click self-update.
 
-### The toolset (73 MCP tools)
+### The toolset (74 MCP tools)
 
 *Build / compute — real Path of Building numbers:*
 - `import_build(source)` — PoB share code, pobb.in/pastebin link, or raw XML
@@ -118,6 +118,7 @@ patch-scoped technique cards.
 - `analyze_build_lifecycle(source)` — classify an imported/source build as starter, transition, or endgame-only
 - `compare_lifecycle_routes(route_a, route_b)` / `list_transition_gates(build_id?)`
 - `evaluate_transition_readiness(from_stage, to_stage, state, build_id?)` — decide whether a stage swap is safe now
+- `plan_lifecycle_stage_verification(stage, state?, build_id?)` — return the PoB verification budget for a lifecycle stage
 - `record_build_feedback(build_id, stage, feedback, outcome?)` — save practical feedback as episodic memory
 - `promote_technique_memory(evidence_ids, reason)` — promote verified feedback into patch-scoped technique memory
 

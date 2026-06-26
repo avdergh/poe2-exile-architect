@@ -1222,6 +1222,23 @@ def evaluate_transition_readiness(
 
 
 @mcp.tool()
+def plan_lifecycle_stage_verification(
+    stage: str,
+    state: dict[str, Any] | None = None,
+    build_id: str = "",
+) -> dict[str, Any]:
+    """Return the PoB verification budget for one lifecycle stage.
+
+    This is a plan, not a computed result: use it to decide which level, passive budget, gear
+    assumption, metrics, and engine tools must be checked before making stage-specific claims.
+    """
+    result = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state)
+    if build_id:
+        result["buildId"] = build_id
+    return result
+
+
+@mcp.tool()
 def record_build_feedback(
     build_id: str,
     stage: str,
