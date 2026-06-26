@@ -295,6 +295,76 @@ def evaluate_transition_gate(gate: dict[str, Any], state: dict[str, Any]) -> dic
     }
 
 
+def evaluate_transition_readiness(
+    *,
+    build_id: str | None = None,
+    from_stage: str = "",
+    to_stage: str = "",
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate whether the player should transition between lifecycle stages now.
+
+    A failed gate is intentionally blocking: final-form builds can feel terrible before their
+    required items/checks are online, so the safe recommendation is to hold the current stage and
+    repair the missing layer first.
+    """
+    if not isinstance(state, dict):
+        return {"ok": False, "error": "state must be a dictionary"}
+    gates, source = _readiness_gates(build_id)
+    gate = _find_gate(gates, from_stage, to_stage)
+    if gate is None:
+        return {
+            "ok": False,
+            "error": "transition gate not found",
+            "buildId": build_id,
+            "fromStage": from_stage,
+            "toStage": to_stage,
+            "source": source,
+        }
+
+    gate_result = evaluate_transition_gate(gate, state)
+    feedback = str(state.get("feedback") or "")
+    pattern = _failure_pattern(feedback) if feedback.strip() else None
+    actions = _recommended_actions(
+        from_stage or str(gate.get("fromStage") or ""), pattern, gate_result["missing"]
+    )
+    ready = bool(gate_result["ready"])
+    return {
+        "ok": True,
+        "buildId": build_id,
+        "source": source,
+        "ready": ready,
+        "recommendation": "transition_allowed" if ready else "hold_current_stage",
+        "fromStage": gate_result["fromStage"],
+        "toStage": gate_result["toStage"],
+        "missing": gate_result["missing"],
+        "feedbackPattern": pattern,
+        "recommendedActions": actions,
+        "caveats": gate_result["caveats"],
+        "gate": gate,
+        "evidenceTags": ["transition-gate", "user-state"],
+    }
+
+
+def _readiness_gates(build_id: str | None) -> tuple[list[dict[str, Any]], str]:
+    if build_id:
+        with _MEMORY_LOCK:
+            memory = load_memory()
+        gates = memory["transition_gates"].get(build_id)
+        if gates:
+            return list(gates), "stored"
+    return _default_gates(), "default"
+
+
+def _find_gate(
+    gates: list[dict[str, Any]], from_stage: str, to_stage: str
+) -> dict[str, Any] | None:
+    for gate in gates:
+        if gate.get("fromStage") == from_stage and gate.get("toStage") == to_stage:
+            return gate
+    return None
+
+
 def _default_gates() -> list[dict[str, Any]]:
     return [
         make_transition_gate(
@@ -741,6 +811,48 @@ def _failure_pattern(feedback: str) -> str:
     return "general_feedback"
 
 
+def _recommended_actions(
+    stage: str,
+    pattern: str | None,
+    missing: list[str] | None = None,
+) -> list[str]:
+    """Stage-aware repair advice used by readiness checks and feedback memory.
+
+    These actions are intentionally conservative: when the player reports a failure pattern or a
+    gate requirement is missing, the agent should stabilize the current stage before recommending a
+    switch to the next lifecycle form.
+    """
+    actions: list[str] = []
+    missing = missing or []
+    if missing:
+        actions.append("Do not transition yet; missing gate requirements: " + ", ".join(missing))
+
+    if pattern == "defense_gap":
+        actions.extend(
+            [
+                "Cap elemental resistances before moving to the next stage.",
+                "Raise the current stage's basic defense layer before trading defense for damage.",
+            ]
+        )
+    elif pattern == "resistance_gap":
+        actions.append("Hold the current stage until elemental resistances are capped.")
+    elif pattern == "sustain_gap":
+        actions.append("Fix mana/Spirit/life sustain before adding more damage supports.")
+    elif pattern == "damage_gap":
+        actions.append("Use engine lever ranking to find the missing multiplier before switching.")
+    elif pattern == "clear_speed_gap":
+        actions.append("Separate clear-speed support choices from bossing support choices first.")
+
+    if stage == "maps_entry":
+        actions.append(
+            "For maps_entry, keep farming/repairing until resists_capped, basic_defense_online, "
+            "and sustain_ok are true."
+        )
+    if not actions:
+        actions.append("Gate is satisfied; snapshot the current PoB before changing the build.")
+    return actions
+
+
 def record_build_feedback(
     build_id: str,
     stage: str,
@@ -758,6 +870,7 @@ def record_build_feedback(
     with _MEMORY_LOCK:
         memory = load_memory()
         pattern = _failure_pattern(feedback)
+        recommended_actions = _recommended_actions(stage, pattern)
         # Include a UUID so repeated identical feedback in the same second never overwrites the prior
         # reflection while still producing compact, human-scannable ids.
         feedback_id = _short_hash(
@@ -770,6 +883,7 @@ def record_build_feedback(
             "feedback": feedback,
             "outcome": outcome,
             "failurePattern": pattern,
+            "recommendedActions": recommended_actions,
             "memoryType": "episodic",
             "promotionEligible": False,
             "createdAt": _now(),
@@ -788,6 +902,7 @@ def record_build_feedback(
         "memoryType": "episodic",
         "promotionEligible": False,
         "failurePattern": pattern,
+        "recommendedActions": recommended_actions,
         "diagnosis": _diagnosis_for_pattern(pattern),
     }
 

@@ -1201,6 +1201,27 @@ def list_transition_gates(build_id: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
+def evaluate_transition_readiness(
+    from_stage: str,
+    to_stage: str,
+    state: dict[str, Any],
+    build_id: str = "",
+) -> dict[str, Any]:
+    """Check whether a player should switch lifecycle stages now.
+
+    `state` may include level, items, gems, ascendancyPoints, checks such as resists_capped or
+    sustain_ok, and optional free-text feedback. A failed gate means hold the current stage and fix
+    the missing requirements before recommending the next build form.
+    """
+    return lifecycle.evaluate_transition_readiness(
+        build_id=build_id or None,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        state=state,
+    )
+
+
+@mcp.tool()
 def record_build_feedback(
     build_id: str,
     stage: str,

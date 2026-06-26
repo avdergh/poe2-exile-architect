@@ -206,6 +206,54 @@ def test_transition_gate_blocks_missing_requirements():
     assert "resists_capped" in " ".join(result["missing"])
 
 
+def test_transition_readiness_blocks_missing_gate_requirements_and_feedback():
+    result = lifecycle.evaluate_transition_readiness(
+        from_stage="maps_entry",
+        to_stage="endgame_budget",
+        state={
+            "level": 72,
+            "items": [],
+            "checks": {
+                "resists_capped": False,
+                "sustain_ok": False,
+                "pob_model_supported": True,
+            },
+            "feedback": "进图缺蓝，不能维持输出。",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["ready"] is False
+    assert result["recommendation"] == "hold_current_stage"
+    assert "level 75" in " ".join(result["missing"]).lower()
+    assert result["feedbackPattern"] == "sustain_gap"
+    assert any("sustain" in action.lower() for action in result["recommendedActions"])
+
+
+def test_transition_readiness_uses_stored_build_gates(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    route = lifecycle.research_build_lifecycle("闪电终局BD", persist=True)
+
+    result = lifecycle.evaluate_transition_readiness(
+        build_id=route["buildId"],
+        from_stage="maps_entry",
+        to_stage="endgame_budget",
+        state={
+            "level": 75,
+            "items": ["build-defining unique or equivalent rare affix"],
+            "checks": {
+                "resists_capped": True,
+                "sustain_ok": True,
+                "pob_model_supported": True,
+            },
+        },
+    )
+
+    assert result["ready"] is True
+    assert result["recommendation"] == "transition_allowed"
+    assert result["source"] == "stored"
+
+
 def test_analyze_imported_gear_marks_known_uniques_as_endgame_dependency(monkeypatch):
     monkeypatch.setattr(
         lifecycle,
@@ -257,6 +305,19 @@ def test_feedback_is_episodic_until_promoted(tmp_path, monkeypatch):
     card = next(iter(store["technique_cards"].values()))
     assert card["patch"] == "0.5.4"
     assert card["passiveTree"] == "0_5"
+
+
+def test_record_build_feedback_returns_stage_repair_actions(tmp_path, monkeypatch):
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+
+    result = lifecycle.record_build_feedback(
+        build_id="life-test",
+        stage="maps_entry",
+        feedback="刚进异界暴毙，抗性也没满。",
+    )
+
+    assert result["failurePattern"] == "defense_gap"
+    assert any("resist" in action.lower() for action in result["recommendedActions"])
 
 
 def test_promote_technique_rejects_missing_evidence_ids(tmp_path, monkeypatch):
