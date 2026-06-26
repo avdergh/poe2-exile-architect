@@ -1,8 +1,9 @@
 # 第二阶段结果：Live freshness runtime
 
-Status: DONE for the 2026-06-25 certification snapshot; 2026-06-26 live smoke is
-currently blocked by a real upstream patch drift (`GGG=0.5.4`, certified PoB/local
-release=`0.5.3`).
+Status: DONE for the 2026-06-25 certification snapshot. Source certification for the
+2026-06-26 `0.5.4` PoB dev-export candidate is complete, but live smoke remains blocked
+until a new validated runtime is built/installed over the old `.runtime-data`
+`v0.1.39` / `0.5.3` release.
 
 ## 审计日期
 
@@ -137,7 +138,62 @@ PoB/data release。下一步必须认证 PoB `0.5.4` 候选（截至复核时，
 `0.5.4 Export` commit），并发布或安装新的 validated release 后，live smoke 才能重新
 达到 `verified_current`。
 
+### 0.5.4 candidate selected
+
+PoB tagged release 仍停留在 `v0.21.1` / `dc409a7073e4e2752e9a642db7544af53551d006`。
+PoB `dev` 分支在 2026-06-25 出现：
+
+- `7f52b81ba25217737524257799732361bc8fda42`：`0.5.4 Export`；
+- `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620`：`ModCache`。
+
+认证候选选择后者，因为它包含导出后的派生 cache 更新。该候选只有在本地 fork patch
+应用成功、compute golden tests 完整通过、并写入 `data/compatibility/pob.json` 后，才能
+获得 `game_patch=0.5.4` claim。
+
+### 0.5.4 candidate certification result
+
+认证候选：
+
+```text
+7d1aa43c8c938d7be150d197ed9cdec8a4c1c620
+```
+
+已完成：
+
+- 重新 clone `PathOfBuildingCommunity/PathOfBuilding-PoE2` `dev`，checkout exact SHA；
+- 应用 tracked fork patch，实际修改 ignored PoB 工作副本中的
+  `src/Classes/Item.lua` / `src/Classes/PassiveSpec.lua`；
+- 更新 `pob/PINNED.md` 与 `.github/workflows/release.yml` 的 `POB_COMMIT`；
+- 在 `data/compatibility/pob.json` 新增 `game_patch=0.5.4` entry：
+  `pob_version=0.21.1-dev.20260625`，
+  `verified_at=2026-06-26T02:59:55Z`；
+- 修复 PoB provider 对 dev-export candidate 的 stale 判定：当 `pob-dev-export`
+  认证时间晚于 latest tagged release 发布时间时，不把较旧 tagged release 当作更新来源；
+  未来新 tagged release 仍会 supersede candidate 并强制重新认证。
+
+验证：
+
+| 命令 | 结果 |
+| --- | --- |
+| `.\.tools\uv\uv.exe run pytest tests/test_compute.py -q --timeout=300` | PASS，退出码 0，完整 compute golden 认证通过。 |
+| `.\.tools\uv\uv.exe run python -m pipeline.build_corpus` | PASS，items 4926，gems 1110，ascendancies 23，mods 8259，uniques 433，mechanics 42。 |
+| `.\.tools\uv\uv.exe run pytest tests/test_freshness_pob.py tests/test_freshness_service.py tests/test_freshness_cache.py tests/test_smoke_freshness.py -q` | PASS，退出码 0，dev-export stale 规则与 focused freshness tests 通过。 |
+| `.\.tools\uv\uv.exe run pytest -q --ignore=tests/test_compute.py` | PASS，退出码 0，所有非 compute 测试通过。 |
+| `.\.tools\uv\uv.exe run ruff check server scripts pipeline tests` | PASS，退出码 0，`All checks passed!` |
+| `.\.tools\uv\uv.exe run ruff format --check server scripts pipeline tests` | PASS，退出码 0，`66 files already formatted`。 |
+| `.\.tools\uv\uv.exe run mypy server/freshness` | PASS，退出码 0，`Success: no issues found in 10 source files`。 |
+| `npx --yes @anthropic-ai/mcpb validate manifest.json` | PASS，退出码 0，manifest schema validation passes；仅有图标建议尺寸 warning。 |
+
+真实 `.runtime-data` smoke（`evaluated_at=2026-06-26T03:13:03.309260+00:00`）仍为
+`blocked_conflict`：GGG patch 已是 `0.5.4 Hotfix 2`，但当前本地安装 runtime 仍是
+`v0.1.39` / `dc409a7073e4e2752e9a642db7544af53551d006`，claim `game_patch=0.5.3`。
+这是预期行为；下一步需要发布或安装使用新 `POB_COMMIT` 构建的 validated runtime，不能让
+旧安装冒充 `0.5.4`。该次 smoke 中 GGG tree 与 PoB release provider 因 HTTP 403 使用
+缓存 fallback；缓存证据仍足以暴露 `0.5.3` / `0.5.4` 的 claim conflict。
+
 ## Remaining blockers
 
 None for the Phase 2 implementation itself. Current live verification is blocked by the
-2026-06-26 upstream `0.5.4` patch drift until a new PoB/data certification is completed.
+workspace `.runtime-data` still pointing at the previous `v0.1.39` validated runtime. The
+`0.5.4` PoB candidate is certified in source; a new validated runtime publish/install is
+required for this local smoke to return to `verified_current`.

@@ -34,6 +34,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "freshness"
 NOW = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
 LOCAL_PIN = "a82a33b4"
 REMOTE_COMMIT = "dc409a7073e4e2752e9a642db7544af53551d006"
+POB_054_CANDIDATE = "7d1aa43c8c938d7be150d197ed9cdec8a4c1c620"
 VERIFIED_COMMIT = "1234567890abcdef1234567890abcdef12345678"
 
 
@@ -188,6 +189,98 @@ def test_matching_verified_commit_receives_game_patch_and_passive_tree_claims(tm
             (ClaimDimension.GAME_PATCH, "0.5.3"),
             (ClaimDimension.PASSIVE_TREE, "0_5"),
         ]
+
+
+def test_certified_dev_export_candidate_is_not_stale_behind_older_release(tmp_path):
+    release = read_json("pob-release.json")
+    release["published_at"] = "2026-06-23T05:51:33Z"
+    commit = read_json("pob-release-commit.json")
+    commit["sha"] = REMOTE_COMMIT
+    transport = RouteTransport(
+        {
+            POB_RELEASE_API_URL: TransportResponse(
+                status_code=200,
+                body=json.dumps(release).encode(),
+            ),
+            pob_release_commit_api_url(release["tag_name"]): TransportResponse(
+                status_code=200,
+                body=json.dumps(commit).encode(),
+            ),
+        }
+    )
+    candidate = compatibility_entry(
+        commit=POB_054_CANDIDATE,
+        pob_version="0.21.1-dev.20260625",
+        game_patch="0.5.4",
+    )
+    candidate["verified_by"] = [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree",
+        "pob-dev-export",
+    ]
+    candidate["verified_at"] = "2026-06-26T02:59:55Z"
+    provider, _transport = make_provider(
+        tmp_path,
+        manifest_entries=[candidate],
+        local_metadata={"version": "0.21.1-dev.20260625", "pob_commit": POB_054_CANDIDATE},
+        transport=transport,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert all(evidence.status is SourceStatus.CURRENT for evidence in result.evidence)
+    assert all(
+        claim_pairs(evidence)
+        == [
+            (ClaimDimension.GAME_PATCH, "0.5.4"),
+            (ClaimDimension.PASSIVE_TREE, "0_5"),
+        ]
+        for evidence in result.evidence
+    )
+
+
+def test_dev_export_candidate_is_stale_when_release_is_not_older_than_certification(tmp_path):
+    release = read_json("pob-release.json")
+    release["published_at"] = "2026-06-26T02:59:55Z"
+    commit = read_json("pob-release-commit.json")
+    commit["sha"] = REMOTE_COMMIT
+    transport = RouteTransport(
+        {
+            POB_RELEASE_API_URL: TransportResponse(
+                status_code=200,
+                body=json.dumps(release).encode(),
+            ),
+            pob_release_commit_api_url(release["tag_name"]): TransportResponse(
+                status_code=200,
+                body=json.dumps(commit).encode(),
+            ),
+        }
+    )
+    candidate = compatibility_entry(
+        commit=POB_054_CANDIDATE,
+        pob_version="0.21.1-dev.20260625",
+        game_patch="0.5.4",
+    )
+    candidate["verified_by"] = [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree",
+        "pob-dev-export",
+    ]
+    candidate["verified_at"] = "2026-06-26T02:59:55Z"
+    provider, _transport = make_provider(
+        tmp_path,
+        manifest_entries=[candidate],
+        local_metadata={"version": "0.21.1-dev.20260625", "pob_commit": POB_054_CANDIDATE},
+        transport=transport,
+    )
+
+    result = provider.collect(now=NOW)
+
+    assert all(evidence.status is SourceStatus.STALE for evidence in result.evidence)
 
 
 def test_remote_release_ahead_of_local_pin_marks_engine_and_data_stale(tmp_path):
@@ -436,15 +529,30 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     manifest = load_compatibility_manifest(Path("data/compatibility/pob.json"))
 
     assert manifest.schema_version == 1
-    assert len(manifest.entries) == 1
+    assert len(manifest.entries) == 2
 
-    entry = manifest.entries[0]
-    assert entry.commit == REMOTE_COMMIT
-    assert entry.pob_version == "0.21.1"
-    assert entry.game_patch == "0.5.3"
-    assert entry.passive_tree == "0_5"
-    assert entry.verified_by == ("golden-tests", "GGG-patch", "GGG-tree", "ninja-tree")
-    assert entry.verified_at.tzinfo is UTC
+    entries = {entry.commit: entry for entry in manifest.entries}
+    release_entry = entries[REMOTE_COMMIT]
+    assert release_entry.pob_version == "0.21.1"
+    assert release_entry.game_patch == "0.5.3"
+    assert release_entry.passive_tree == "0_5"
+    assert release_entry.verified_by == ("golden-tests", "GGG-patch", "GGG-tree", "ninja-tree")
+    assert release_entry.verified_at.tzinfo is UTC
+
+    candidate_entry = entries[POB_054_CANDIDATE]
+    assert candidate_entry.pob_version == "0.21.1-dev.20260625"
+    assert candidate_entry.game_patch == "0.5.4"
+    assert candidate_entry.passive_tree == "0_5"
+    assert candidate_entry.verified_by == (
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree",
+        "pob-dev-export",
+    )
+    assert candidate_entry.verified_at.tzinfo is UTC
+
+    assert resolve_compatibility(POB_054_CANDIDATE, manifest) == candidate_entry
 
     # Certification remains exact: nearby or older PoB commits must not inherit these claims.
     assert resolve_compatibility(LOCAL_PIN, manifest) is None

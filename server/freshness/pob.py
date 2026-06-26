@@ -224,9 +224,10 @@ def shape_pob_evidence(
     effective_local_commit = (
         compatibility.commit if compatibility is not None else normalized_local_commit
     )
-    remote_newer = _remote_release_differs_from_local(
+    remote_newer = _remote_release_supersedes_local(
         effective_local_commit,
         remote_release,
+        compatibility,
     )
     if remote_newer:
         assert remote_release is not None
@@ -467,6 +468,26 @@ def _remote_release_differs_from_local(
     if len(local_commit) < 40:
         return not remote_release.commit.startswith(local_commit)
     return local_commit != remote_release.commit
+
+
+def _remote_release_supersedes_local(
+    local_commit: str,
+    remote_release: PobRelease | None,
+    compatibility: CompatibilityEntry | None,
+) -> bool:
+    if not _remote_release_differs_from_local(local_commit, remote_release):
+        return False
+    if remote_release is None or compatibility is None:
+        return True
+    # Tagged releases are the normal freshness authority. A certified dev-export candidate is
+    # the narrow exception: it may intentionally be ahead of the latest tag until PoB cuts the
+    # next release, but a later tagged release will supersede it and force recertification.
+    if (
+        "pob-dev-export" in compatibility.verified_by
+        and compatibility.verified_at > remote_release.published_at
+    ):
+        return False
+    return True
 
 
 def _pob_records(

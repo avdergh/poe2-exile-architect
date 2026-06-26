@@ -9,9 +9,9 @@ git submodule pinned to the commit below.
 |-------|-------|
 | Repo | https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2 |
 | Branch | `dev` |
-| Pinned commit | `dc409a7073e4e2752e9a642db7544af53551d006` (2026-06-23, `v0.21.1`) |
+| Pinned commit | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620` (2026-06-25, `dev` candidate: `0.5.4 Export` + `ModCache`) |
 | License | MIT |
-| Game data | passive tree version `0_5` |
+| Game data | game patch `0.5.4`, passive tree version `0_5` |
 
 ## Reproduce the working copy
 
@@ -23,7 +23,7 @@ git clone --filter=blob:none --no-checkout \
   https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git \
   pob/PathOfBuilding-PoE2
 git -C pob/PathOfBuilding-PoE2 config core.autocrlf false   # keep LF so the LF patch applies on Windows
-git -C pob/PathOfBuilding-PoE2 checkout dc409a7073e4e2752e9a642db7544af53551d006
+git -C pob/PathOfBuilding-PoE2 checkout 7d1aa43c8c938d7be150d197ed9cdec8a4c1c620
 # then apply our tracked fork patches (see "Local patches" below)
 (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 ```

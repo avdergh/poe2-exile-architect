@@ -12,7 +12,7 @@ patches, optimizer assumptions, and golden calculations still work. Only a succe
 local certification run may add `game_patch` and `passive_tree` claims to
 `data/compatibility/pob.json`.
 
-## Target release
+## Target release or dev-export candidate
 
 Task 7 targets the upstream release observed during Phase 2:
 
@@ -26,6 +26,13 @@ Before changing the pin, the implementer must re-resolve the tag from upstream u
 fresh network source. GitHub API may be rate-limited; `git ls-remote` is an acceptable
 fallback. If neither source can confirm the release tag and commit in the current
 session, certification must stop as blocked rather than relying only on old fixtures.
+
+Tagged releases remain preferred. If GGG live patch evidence moves ahead before a new
+tagged PoB release exists, this project may certify a PoB `dev` commit only under the
+rules in `docs/architecture/pob-dev-export-certification.md`: the `dev` history must
+contain an explicit export/data commit for the new patch, the chosen commit must be a
+full SHA including any follow-up generated cache commit, and golden compute tests must
+pass before the compatibility manifest is updated.
 
 ## Files changed by certification
 
@@ -110,6 +117,10 @@ Only after successful focused and full verification, add an entry like:
 Use the actual UTC verification timestamp. Do not add the entry if compute tests, source
 freshness, or patch application are unresolved.
 
+For an untagged dev-export candidate, use a clearly marked `pob_version` such as
+`0.21.1-dev.20260625` and include `pob-dev-export` in `verified_by`. The full commit SHA
+is still the authority; the version string is descriptive metadata, not a moving branch.
+
 The release workflow must derive `pob_version`, `game_patch`, and `passive_tree` for
 `update-manifest.json` from this compatibility manifest entry. Self-update persists those
 claims into `installed.json`, and runtime freshness still verifies the installed PoB commit
@@ -121,10 +132,11 @@ After the local pin and compatibility manifest both point at the certified PoB c
 `get_freshness_report(force_refresh=True)` can reach `verified_current` only when the other
 required sources agree at runtime:
 
-- GGG patch -> `game_patch=0.5.3`;
+- GGG patch -> the certified `game_patch` value, for example `0.5.3` for Task7 or `0.5.4`
+  for the 2026-06-26 dev-export candidate;
 - GGG tree -> `passive_tree=0_5`;
 - poe.ninja -> `league=runes-of-aldur`, `passive_tree=0_5`;
-- local corpus / PoB data -> certified `game_patch=0.5.3`, `passive_tree=0_5`.
+- local corpus / PoB data -> the same certified `game_patch`, plus `passive_tree=0_5`.
 
 If any source is unavailable, hard-stale, or conflicting during the final smoke, record the
 exact source state in the audit instead of weakening the gate.
