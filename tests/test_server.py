@@ -31,7 +31,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 74
+    assert len(tools) == 75
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -57,6 +57,7 @@ def test_tool_surface_intact():
         "analyze_lifecycle_cohort",
         "evaluate_transition_readiness",
         "plan_lifecycle_stage_verification",
+        "verify_lifecycle_stage",
     } <= names
 
 
@@ -167,6 +168,37 @@ def test_plan_lifecycle_stage_verification_tool_forwards_state(monkeypatch):
     assert result["ok"] is True
     assert result["stage"] == "maps_entry"
     assert result["state"]["level"] == 68
+
+
+def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
+    from server import main
+
+    class _Stub:
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 2600,
+                    "Mana": 500,
+                    "ManaCost": 40,
+                    "TotalDPS": 90000,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 79, "lightning": 76},
+                "totalEHP": 12000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage("maps_entry", state={"level": 68})
+
+    assert result["ok"] is True
+    assert result["stage"] == "maps_entry"
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["level"] == 68
+    assert "engine-computed" in result["evidenceTags"]
 
 
 def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatch):

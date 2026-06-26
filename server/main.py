@@ -1239,6 +1239,44 @@ def plan_lifecycle_stage_verification(
 
 
 @mcp.tool()
+def verify_lifecycle_stage(
+    stage: str,
+    state: dict[str, Any] | None = None,
+    build_id: str = "",
+) -> dict[str, Any]:
+    """Execute a read-only lifecycle-stage verification against the active build.
+
+    This is the computed counterpart to `plan_lifecycle_stage_verification`: it pulls the active
+    build's PoB stats/defenses, evaluates the stage target checks, and returns pass/fail/unknown
+    without mutating gear, passives, level, or config. Use it before claiming a stage is viable.
+    """
+    plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state)
+    if not plan.get("ok"):
+        return plan
+
+    eng = get_engine()
+    stat_keys = lifecycle.lifecycle_verification.requested_metric_keys(stage)
+    stats_result = eng.get_stats(stat_keys)
+    stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
+    defenses = eng.get_defenses()
+    # Preserve engine warnings as caveats instead of hiding them behind a boolean. This is
+    # especially important for PoE2 mechanics that the pinned PoB runtime cannot model faithfully.
+    engine_warning = None
+    if isinstance(stats_result, dict):
+        engine_warning = stats_result.get("warning") or stats_result.get("engineLimitation")
+    result = lifecycle.lifecycle_verification.verify_stage_metrics(
+        stage,
+        stats=stats if isinstance(stats, dict) else {},
+        defenses=defenses if isinstance(defenses, dict) else {},
+        state=state,
+        engine_warning=engine_warning,
+    )
+    if build_id:
+        result["buildId"] = build_id
+    return result
+
+
+@mcp.tool()
 def record_build_feedback(
     build_id: str,
     stage: str,

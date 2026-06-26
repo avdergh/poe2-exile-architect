@@ -59,8 +59,8 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   system), `optimize_build` (the holistic whole-build optimizer), `alloc_passive`/`dealloc_passive`,
   `scaffold_gear`,
   `search_passives`/`get_passive` (query the
-  active tree, with `pathDist` reachability), `engine_health`, and every `set_*`/`equip_*` mutator
-  (they return fresh stats). Exact for the current build state.
+  active tree, with `pathDist` reachability), `verify_lifecycle_stage`, `engine_health`, and every
+  `set_*`/`equip_*` mutator (they return fresh stats). Exact for the current build state.
 - **Looked-up (corpus — offline, deterministic):** `search_items`/`get_item`,
   `find_skills`/`get_gem`/`find_supports_for`, `search_mods`/`reverse_lookup`,
   `search_uniques`/`get_unique`, `parse_item`, `list_ascendancies`, `corpus_info`, and the mechanics
@@ -109,7 +109,9 @@ discussing the next form.
 
 Before claiming a lifecycle stage is viable, inspect `plan_lifecycle_stage_verification(stage)`.
 Treat it as the checklist for PoB work: level target, passive budget, gear assumption, engine tools,
-metrics, and target checks. It is not a computed result.
+metrics, and target checks. It is not a computed result. Once the active build is assembled for that
+stage, run `verify_lifecycle_stage(stage, state?, build_id?)`; if it returns `failed` or `unknown`,
+describe the failed/unknown checks instead of presenting the stage as ready.
 
 1. `new_build` → `set_class` → `set_level` → `set_skill` (main skill + a starter support set).
    Supports are usually the biggest "more" multiplier AND the corpus has no support magnitudes — so

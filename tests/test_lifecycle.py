@@ -209,6 +209,42 @@ def test_research_build_lifecycle_attaches_concrete_stage_verification():
     assert "evaluate_build" in maps_entry["verification"]["engineTools"]
 
 
+def test_verify_stage_metrics_fails_maps_entry_when_resists_and_sustain_are_low():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={"TotalDPS": 20000, "Life": 1200, "Mana": 40, "ManaCost": 80},
+        defenses={
+            "resistances": {"fire": 55, "cold": 76, "lightning": 70},
+            "totalEHP": 2400,
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["pass"] is False
+    assert result["status"] == "failed"
+    assert {"resists_capped", "basic_defense_online", "sustain_ok"} <= set(result["failedChecks"])
+    assert "engine-computed" in result["evidenceTags"]
+
+
+def test_verify_stage_metrics_passes_maps_entry_with_engine_values():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={"TotalDPS": 90000, "Life": 2600, "Mana": 500, "ManaCost": 40},
+        defenses={
+            "resistances": {"fire": 75, "cold": 79, "lightning": 76},
+            "totalEHP": 12000,
+        },
+    )
+
+    assert result["pass"] is True
+    assert result["status"] == "passed"
+    assert result["failedChecks"] == []
+
+
 def test_transition_gate_blocks_missing_requirements():
     gate = lifecycle.make_transition_gate(
         "maps_entry",
