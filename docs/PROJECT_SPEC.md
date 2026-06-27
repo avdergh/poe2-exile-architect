@@ -74,6 +74,9 @@ implemented with focused tests passing. Task 3 sanitizer/copyability guard is im
 focused tests passing. Task 4 structured fixture manifest and deterministic import are implemented
 with focused tests passing. Task 5 boundary tests for visibility/scope/copy-safety/inert expiration
 are implemented with focused tests passing, and no route/MCP surface files are touched.
+Post-review fixes tightened candidate evidence creator visibility, recursive forbidden-key
+normalization, sanitizer enum/sample/numeric validation, seed all-or-nothing import, and bundled
+seed fixture smoke coverage.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and

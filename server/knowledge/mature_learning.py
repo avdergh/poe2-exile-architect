@@ -51,6 +51,27 @@ VALID_VISIBILITY_SPLITS = {
 }
 VALID_KNOWLEDGE_SCOPES = {"global_seed", "local_user", "eval_ephemeral"}
 VALID_MODELABILITY = {"full", "partial", "not_modelable", "unknown"}
+VALID_LIFECYCLE_STAGES = {
+    "campaign_early",
+    "campaign_mid",
+    "campaign_late",
+    "maps_entry",
+    "endgame_budget",
+    "endgame_final",
+    "unknown_lifecycle",
+}
+VALID_EVIDENCE_TYPES = {
+    "poe_ninja_hot",
+    "external_forum_guide",
+    "pobb_in_import",
+    "pob_archive",
+    "reference_cohort",
+    "engine_computed",
+    "user_feedback_local",
+    "generated_eval_gap",
+    "multi_source_confirmed",
+    "manual_fixture",
+}
 VALID_FRESHNESS = {
     "current_metadata_only",
     "verified_current",
@@ -226,7 +247,12 @@ CREATE TABLE IF NOT EXISTS candidate_evidence (
         OR (visibility = 'quarantined' AND split = 'quarantine')
     ),
     CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
-    CHECK (creator_visible IN (0, 1))
+    CHECK (creator_visible IN (0, 1)),
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context' AND creator_visible = 1)
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout' AND creator_visible = 0)
+        OR (visibility = 'quarantined' AND split = 'quarantine' AND creator_visible = 0)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS technique_edges (
@@ -305,14 +331,19 @@ def _as_string_list(value: Any, *, max_items: int = 12) -> list[str]:
     return out
 
 
+def _normalize_field_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
 def _find_forbidden_paths(value: Any, *, path: str = "") -> list[str]:
     """Find forbidden raw-build fields anywhere inside a fixture payload."""
+    forbidden_normalized = {_normalize_field_name(field) for field in FORBIDDEN_COPYABLE_FIELDS}
     found: list[str] = []
     if isinstance(value, dict):
         for key, child in value.items():
             key_text = str(key)
             child_path = f"{path}.{key_text}" if path else key_text
-            if key_text in FORBIDDEN_COPYABLE_FIELDS:
+            if _normalize_field_name(key_text) in forbidden_normalized:
                 found.append(child_path)
             found.extend(_find_forbidden_paths(child, path=child_path))
     elif isinstance(value, list):
@@ -383,6 +414,19 @@ def _validate_numeric_ranges(value: Any) -> tuple[dict[str, Any], str | None]:
                 return {}, "invalid_numeric_ranges_or_metrics"
         if float(range_value["min"]) > float(range_value["max"]):
             return {}, "invalid_numeric_ranges_or_metrics"
+        if int(range_value["n"]) != range_value["n"] or int(range_value["n"]) <= 0:
+            return {}, "invalid_numeric_ranges_or_metrics"
+        min_value = float(range_value["min"])
+        max_value = float(range_value["max"])
+        ordered_percentiles = [
+            key for key in ("p10", "p25", "median", "p75", "p90", "p95") if key in range_value
+        ]
+        previous = min_value
+        for key in ordered_percentiles:
+            current = float(range_value[key])
+            if current < min_value or current > max_value or current < previous:
+                return {}, "invalid_numeric_ranges_or_metrics"
+            previous = current
         normalized[metric] = dict(range_value)
     return normalized, None
 
@@ -399,6 +443,23 @@ def _validate_visibility_scope(raw: dict[str, Any]) -> str | None:
     if evidence_type == "user_feedback_local" and scope != "local_user":
         return "local_feedback_must_stay_local"
     return None
+
+
+def _raw_value(raw: dict[str, Any], camel: str, snake: str, default: Any = "") -> Any:
+    value = raw.get(camel)
+    if value in (None, "") and snake in raw:
+        return raw.get(snake)
+    return default if value is None else value
+
+
+def _sample_weight(value: Any) -> tuple[float, str | None]:
+    try:
+        sample_weight = float(value if value not in (None, "") else 1.0)
+    except (TypeError, ValueError):
+        return 0.0, "invalid_sample_weight"
+    if not math.isfinite(sample_weight) or sample_weight <= 0:
+        return 0.0, "invalid_sample_weight"
+    return sample_weight, None
 
 
 def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
@@ -439,6 +500,14 @@ def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "invalid_compatibility_status"}
     if modelability not in VALID_MODELABILITY:
         return {"ok": False, "error": "invalid_pob_modelability"}
+    lifecycle_stage = str(
+        raw.get("lifecycleStage") or raw.get("lifecycle_stage") or "unknown_lifecycle"
+    )
+    evidence_type = str(raw.get("evidenceType") or raw.get("evidence_type") or "manual_fixture")
+    if lifecycle_stage not in VALID_LIFECYCLE_STAGES:
+        return {"ok": False, "error": "invalid_lifecycle_stage"}
+    if evidence_type not in VALID_EVIDENCE_TYPES:
+        return {"ok": False, "error": "invalid_evidence_type"}
     if freshness in CURRENT_FRESHNESS_CLAIMS and (
         str(raw.get("league") or "").lower() == "unknown"
         or str(raw.get("gamePatch") or "").lower() == "unknown"
@@ -449,9 +518,14 @@ def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         return {"ok": False, "error": "current_claim_missing_version_metadata"}
 
-    numeric_ranges, numeric_error = _validate_numeric_ranges(raw.get("numericRangesOrMetrics") or {})
+    numeric_ranges, numeric_error = _validate_numeric_ranges(
+        raw.get("numericRangesOrMetrics") or {}
+    )
     if numeric_error:
         return {"ok": False, "error": numeric_error}
+    sample_weight, sample_error = _sample_weight(raw.get("sampleWeight"))
+    if sample_error:
+        return {"ok": False, "error": sample_error}
 
     keypoints = _as_string_list(raw.get("keypoints"), max_items=8)
     now = _now()
@@ -476,18 +550,18 @@ def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
         "delivery_tags": _as_string_list(raw.get("deliveryTags")),
         "defense_tags": _as_string_list(raw.get("defenseTags")),
         "mechanic_tags": _as_string_list(raw.get("mechanicTags")),
-        "lifecycle_stage": str(raw.get("lifecycleStage") or "unknown_lifecycle"),
+        "lifecycle_stage": lifecycle_stage,
         "budget_band": str(raw.get("budgetBand") or "unknown"),
         "popularity_rank": raw.get("popularityRank"),
-        "sample_weight": float(raw.get("sampleWeight") or 1.0),
+        "sample_weight": sample_weight,
         "pob_modelability": modelability,
         "sanitized_keypoints": keypoints,
         "numeric_ranges_or_metrics": numeric_ranges,
         "redacted_fields_present": [],
         "visibility": str(raw.get("visibility")),
         "split": str(raw.get("split")),
-        "knowledge_scope": str(raw.get("knowledgeScope")),
-        "evidence_type": str(raw.get("evidenceType") or "manual_fixture"),
+        "knowledge_scope": str(_raw_value(raw, "knowledgeScope", "knowledge_scope")),
+        "evidence_type": evidence_type,
         "game_patch": str(raw.get("gamePatch") or "unknown"),
         "passive_tree_version": str(raw.get("passiveTreeVersion") or "unknown"),
         "league": str(raw.get("league") or "unknown"),
@@ -526,9 +600,10 @@ def validate_fixture_manifest(raw: dict[str, Any]) -> dict[str, Any]:
     structured_missing: list[str] = []
     if not str(popularity_signal.get("kind") or "").strip():
         structured_missing.append("popularity_signal.kind")
-    if popularity_signal.get("kind") == "rank" and not str(
-        popularity_signal.get("rank") or ""
-    ).strip():
+    if (
+        popularity_signal.get("kind") == "rank"
+        and not str(popularity_signal.get("rank") or "").strip()
+    ):
         structured_missing.append("popularity_signal.rank")
 
     currentness = manifest.get("currentness_basis")
@@ -586,31 +661,33 @@ def import_fixture_file(
         return {"ok": False, "error": "fixture_cases_must_be_list"}
 
     initialize_store(db_path)
-    imported = 0
+    pending: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     rejected: list[dict[str, Any]] = []
+    for raw in cases:
+        if str(raw.get("evidenceType") or raw.get("evidence_type") or "") == "user_feedback_local":
+            rejected.append({"ok": False, "error": "seed_fixture_cannot_use_user_feedback"})
+            continue
+        manifest_result = validate_fixture_manifest(raw)
+        if not manifest_result.get("ok"):
+            rejected.append(manifest_result)
+            continue
+        sanitized = sanitize_mature_case(raw)
+        if not sanitized.get("ok"):
+            rejected.append(sanitized)
+            continue
+        pending.append((raw, sanitized, manifest_result["manifest"]))
+
+    if rejected:
+        return {"ok": False, "importedCases": 0, "rejected": rejected}
+
     con = connect(db_path)
     try:
-        for raw in cases:
-            if (
-                str(raw.get("evidenceType") or raw.get("evidence_type") or "")
-                == "user_feedback_local"
-            ):
-                rejected.append({"ok": False, "error": "seed_fixture_cannot_use_user_feedback"})
-                continue
-            manifest_result = validate_fixture_manifest(raw)
-            if not manifest_result.get("ok"):
-                rejected.append(manifest_result)
-                continue
-            sanitized = sanitize_mature_case(raw)
-            if not sanitized.get("ok"):
-                rejected.append(sanitized)
-                continue
-            _insert_sanitized_fixture(con, raw, sanitized, manifest_result["manifest"])
-            imported += 1
+        for raw, sanitized, manifest in pending:
+            _insert_sanitized_fixture(con, raw, sanitized, manifest)
         con.commit()
     finally:
         con.close()
-    return {"ok": not rejected, "importedCases": imported, "rejected": rejected}
+    return {"ok": True, "importedCases": len(pending), "rejected": []}
 
 
 def _insert_sanitized_fixture(

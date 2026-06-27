@@ -1871,7 +1871,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 3: Request post-implementation code review**
+- [x] **Step 3: Request post-implementation code review**
 
 Send a code-review subagent the changed file list and ask for:
 
@@ -1882,7 +1882,7 @@ Send a code-review subagent the changed file list and ask for:
 - accidental route synthesis or retrieval influence;
 - Windows/path compatibility.
 
-- [ ] **Step 4: Request narrow post-implementation spec review**
+- [x] **Step 4: Request narrow post-implementation spec review**
 
 Because 3N.1 introduces a new evidence store and safety boundary, request a narrow spec review
 covering:
@@ -1893,7 +1893,7 @@ covering:
 - no route generation influence;
 - no raw mature build copying.
 
-- [ ] **Step 5: Apply review fixes with targeted tests**
+- [x] **Step 5: Apply review fixes with targeted tests**
 
 For each accepted review finding:
 
