@@ -61,11 +61,14 @@ and learn from user feedback without turning unverified anecdotes into durable r
 
 ## Current work
 
-### Phase 3N: mature build learning pipeline design
+### Phase 3N: mature build learning pipeline
 
-Status: design in progress; pre-design subagent review completed; formal design spec drafted in
-`docs/superpowers/specs/2026-06-27-mature-build-learning-design.md`; implementation plan and code
-must wait for user approval of the design.
+Status: design approved for the first implementation slice. The reviewed design spec lives in
+`docs/superpowers/specs/2026-06-27-mature-build-learning-design.md`. Phase 3N.1 implementation
+planning is documented in
+`docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`; pre-implementation subagent
+review completed with blocking issues resolved and only small implementation-level fixes folded
+into the plan.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
@@ -89,6 +92,23 @@ Scope:
   Phase 3N.
 - Split Phase 3N into smaller slices: schema/sanitizer/fixtures, deterministic candidate extraction
   and evidence bridge, retrieval/FTS/provenance, then optional edge population.
+
+Current Phase 3N.1 target:
+
+- Add SQLite schema and user-data store path for mature-learning data.
+- Add a tiny curated fixture manifest and deterministic sanitized fixture import.
+- Add an allowlist sanitizer and copyability/reconstruction tests.
+- Enforce `visibility` / `split` / `knowledge_scope` boundaries and prove local user feedback
+  cannot enter global seed knowledge.
+- Keep expiration metadata inert and do not change route synthesis behavior.
+
+Pre-review fixes folded into the Phase 3N.1 plan:
+
+- Schema initialization must be idempotent and refuse future DB versions without downgrading.
+- `candidate_evidence` and `technique_edges` need stable primary keys.
+- Sanitization must scan recursively and validate aggregate numeric range shape.
+- Fixture manifests must use structured popularity/currentness/diversity fields.
+- Seed fixture import must reject `user_feedback_local` even when scoped as `local_user`.
 
 Confirmation gates:
 
