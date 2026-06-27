@@ -44,6 +44,22 @@ FORBIDDEN_COPYABLE_FIELDS = {
     "guideText",
     "copiedGuideText",
     "configTab",
+    "raw",
+    "rawContent",
+    "rawPayload",
+    "rawJson",
+    "rawHtml",
+    "rawResponse",
+    "originalPayload",
+    "sourceHtml",
+    "sourceJson",
+    "guideMarkdown",
+    "guideHtml",
+    "rawGuideText",
+    "characterUrl",
+    "profileUrl",
+    "accountName",
+    "characterName",
 }
 
 VALID_VISIBILITY_SPLITS = {

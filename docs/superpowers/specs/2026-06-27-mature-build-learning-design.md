@@ -444,6 +444,11 @@ Phase 3N is split into smaller implementation slices:
 
 ### Phase 3N.3: retrieval, FTS, indexes, and provenance output
 
+> 2026-06-27 更新：本小节是历史草稿，已被 `docs/PROJECT_SPEC.md` 中的
+> “Phase 3N.3 LLM-assisted mature build extraction and real-effect validation”
+> 覆盖。不要按本小节继续实现 `server/knowledge/mature_retrieval.py`；retrieval
+> 仅保留为后续辅助能力，而不是当前 3N.3 主线。
+
 - support read-only retrieval and exact filtering;
 - add FTS/BM25 over summaries if needed;
 - return provenance, caveats, and visibility-safe summaries;
