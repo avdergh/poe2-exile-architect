@@ -123,3 +123,164 @@ def test_schema_rejects_invalid_candidate_evidence_visibility_split(tmp_path):
             )
             """
         )
+
+
+def _raw_case(**overrides):
+    base = {
+        "sourceType": "manual_fixture",
+        "sourceRef": "fixture://spark-stormweaver",
+        "league": "Dawn of the Hunt",
+        "gamePatch": "0.5.4",
+        "passiveTreeVersion": "0_5",
+        "class": "Sorceress",
+        "ascendancy": "Stormweaver",
+        "mainSkill": "Spark",
+        "damageTypes": ["lightning"],
+        "deliveryTags": ["spell", "projectile"],
+        "defenseTags": ["energy_shield", "recharge"],
+        "mechanicTags": ["crit", "shock"],
+        "lifecycleStage": "endgame_final",
+        "budgetBand": "expensive",
+        "popularityRank": 1,
+        "sampleWeight": 1.0,
+        "pobModelability": "partial",
+        "keypoints": [
+            "Scales lightning spell damage through broad +level and crit investment.",
+            "Uses an endgame-only defensive identity; not a direct campaign starter.",
+        ],
+        "numericRangesOrMetrics": {
+            "TotalDPS": {"min": 100000, "median": 500000, "max": 1200000, "n": 8}
+        },
+        "visibility": "creator_visible",
+        "split": "train_context",
+        "knowledgeScope": "global_seed",
+        "evidenceType": "poe_ninja_hot",
+        "freshnessStatus": "verified_current",
+        "compatibilityStatus": "current",
+        "fixtureManifest": {
+            "eligibility_basis": "manual_stand_in_for_hot_sample",
+            "popularity_signal": {"kind": "rank", "rank": 1, "source": "fixture_manifest"},
+            "currentness_basis": {
+                "league": "Dawn of the Hunt",
+                "game_patch": "0.5.4",
+                "passive_tree_version": "0_5",
+                "snapshot_date": "2026-06-27",
+            },
+            "diversity_policy": "Popularity filtered before diversity cap.",
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_sanitize_mature_case_keeps_allowed_coarse_fields():
+    sanitized = mature_learning.sanitize_mature_case(_raw_case())
+
+    assert sanitized["class"] == "Sorceress"
+    assert sanitized["ascendancy"] == "Stormweaver"
+    assert sanitized["main_skill"] == "Spark"
+    assert sanitized["damage_types"] == ["lightning"]
+    assert sanitized["delivery_tags"] == ["spell", "projectile"]
+    assert sanitized["redacted_fields_present"] == []
+    assert sanitized["sanitized_keypoints"]
+    assert "pobCode" not in sanitized
+    assert "passiveTree" not in sanitized
+
+
+def test_sanitize_rejects_explicit_raw_copyable_fields():
+    raw = _raw_case(
+        pobCode="eNrtVerySecret",
+        passiveTree={"nodes": [1, 2, 3]},
+        gear={"Ring 1": {"name": "Exact Item"}},
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert "forbidden_copyable_fields" in result["error"]
+    assert {"pobCode", "passiveTree", "gear"} <= set(result["redactedFieldsPresent"])
+
+
+def test_copyability_guard_rejects_reconstructable_keypoints():
+    raw = _raw_case(
+        keypoints=[
+            "Unique: Exact Ring",
+            "Unique: Exact Helmet",
+            "Unique: Exact Body Armour",
+            "Passive path: node 1 -> node 2 -> node 3 -> node 4",
+            "Supports: A, B, C, D, E",
+        ]
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert result["error"] == "copyability_guard_failed"
+    assert "too_many_named_uniques" in result["copyabilityFlags"]
+    assert "ordered_passive_path" in result["copyabilityFlags"]
+    assert "full_support_link_like" in result["copyabilityFlags"]
+
+
+def test_sanitize_rejects_nested_forbidden_copyable_fields():
+    raw = _raw_case(
+        numericRangesOrMetrics={
+            "TotalDPS": {"min": 100000, "max": 200000, "n": 3},
+            "gear": {"Ring 1": "Exact copied item"},
+        }
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert result["error"] == "forbidden_copyable_fields"
+    assert "numericRangesOrMetrics.gear" in result["redactedFieldsPresent"]
+
+
+def test_sanitize_rejects_pob_code_like_text_anywhere():
+    raw = _raw_case(
+        keypoints=[
+            "Broad summary.",
+            "eNrt" + ("A" * 180),
+        ]
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert result["error"] == "copyability_guard_failed"
+    assert "pob_code_like_blob" in result["copyabilityFlags"]
+
+
+def test_sanitize_rejects_non_aggregate_numeric_metrics():
+    raw = _raw_case(
+        numericRangesOrMetrics={
+            "TotalDPS": {"value": 123456},
+        }
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_numeric_ranges_or_metrics"
+
+
+def test_sanitize_rejects_non_finite_numeric_metrics():
+    raw = _raw_case(
+        numericRangesOrMetrics={
+            "TotalDPS": {"min": 100000, "median": float("inf"), "max": 200000, "n": 3},
+        }
+    )
+
+    result = mature_learning.sanitize_mature_case(raw)
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_numeric_ranges_or_metrics"
+
+
+def test_sanitize_rejects_current_claim_with_unknown_patch_tree_or_league():
+    result = mature_learning.sanitize_mature_case(
+        _raw_case(league="unknown", freshnessStatus="verified_current")
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "current_claim_missing_version_metadata"

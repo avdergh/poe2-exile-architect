@@ -662,7 +662,7 @@ Expected: commit succeeds.
 - Modify: `tests/test_mature_learning.py`
 - Modify: `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`
 
-- [ ] **Step 1: Add failing sanitizer tests**
+- [x] **Step 1: Add failing sanitizer tests**
 
 Append these tests to `tests/test_mature_learning.py`:
 
@@ -796,7 +796,7 @@ def test_sanitize_rejects_pob_code_like_text_anywhere():
 def test_sanitize_rejects_non_aggregate_numeric_metrics():
     raw = _raw_case(
         numericRangesOrMetrics={
-            "TotalDPS": {"value": 123456, "configTab": {"enemyIsBoss": "Uber"}},
+            "TotalDPS": {"value": 123456},
         }
     )
 
@@ -828,7 +828,7 @@ def test_sanitize_rejects_current_claim_with_unknown_patch_tree_or_league():
     assert result["error"] == "current_claim_missing_version_metadata"
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -838,7 +838,7 @@ Run:
 
 Expected: FAIL because `sanitize_mature_case` is not implemented.
 
-- [ ] **Step 3: Add sanitizer constants and helper functions**
+- [x] **Step 3: Add sanitizer constants and helper functions**
 
 In `server/knowledge/mature_learning.py`, add these imports:
 
@@ -1014,7 +1014,7 @@ def _validate_visibility_scope(raw: dict[str, Any]) -> str | None:
     return None
 ```
 
-- [ ] **Step 4: Add `sanitize_mature_case`**
+- [x] **Step 4: Add `sanitize_mature_case`**
 
 In `server/knowledge/mature_learning.py`, add:
 
@@ -1117,7 +1117,7 @@ def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
     }
 ```
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 Run:
 

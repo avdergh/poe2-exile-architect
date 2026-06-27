@@ -7,12 +7,59 @@ own visibility and provenance gates are implemented.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .. import paths
 
 SCHEMA_VERSION = 1
+SANITIZER_VERSION = "phase3n1-v1"
+
+FORBIDDEN_COPYABLE_FIELDS = {
+    "pobCode",
+    "pastebinCode",
+    "pobbInCode",
+    "rawXml",
+    "rawPob",
+    "passiveTree",
+    "passiveNodeIds",
+    "fullPassiveNodeIds",
+    "orderedPassiveNodes",
+    "gear",
+    "items",
+    "itemSets",
+    "affixes",
+    "exactAffixes",
+    "skillGroups",
+    "supportGems",
+    "fullGemLinks",
+    "guideText",
+    "copiedGuideText",
+    "configTab",
+}
+
+VALID_VISIBILITY_SPLITS = {
+    ("creator_visible", "train_context"),
+    ("evaluator_only", "eval_holdout"),
+    ("quarantined", "quarantine"),
+}
+VALID_KNOWLEDGE_SCOPES = {"global_seed", "local_user", "eval_ephemeral"}
+VALID_MODELABILITY = {"full", "partial", "not_modelable", "unknown"}
+VALID_FRESHNESS = {
+    "current_metadata_only",
+    "verified_current",
+    "stale",
+    "needs_revalidation",
+    "unknown",
+}
+VALID_COMPATIBILITY = {"current", "stale", "unknown", "quarantined"}
+CURRENT_FRESHNESS_CLAIMS = {"verified_current", "current_metadata_only"}
 
 
 class SchemaVersionError(RuntimeError):
@@ -227,3 +274,216 @@ def schema_version(con: sqlite3.Connection) -> int:
     except sqlite3.OperationalError:
         return 0
     return int(row[0]) if row else 0
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _stable_hash(payload: Any) -> str:
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _as_string_list(value: Any, *, max_items: int = 12) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value[:max_items]:
+        text = str(item).strip()
+        if text:
+            out.append(text[:240])
+    return out
+
+
+def _find_forbidden_paths(value: Any, *, path: str = "") -> list[str]:
+    """Find forbidden raw-build fields anywhere inside a fixture payload."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}" if path else key_text
+            if key_text in FORBIDDEN_COPYABLE_FIELDS:
+                found.append(child_path)
+            found.extend(_find_forbidden_paths(child, path=child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            found.extend(_find_forbidden_paths(child, path=child_path))
+    return found
+
+
+def _all_text_fragments(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        fragments: list[str] = []
+        for child in value.values():
+            fragments.extend(_all_text_fragments(child))
+        return fragments
+    if isinstance(value, list):
+        fragments = []
+        for child in value:
+            fragments.extend(_all_text_fragments(child))
+        return fragments
+    return []
+
+
+def _copyability_flags(raw: dict[str, Any]) -> list[str]:
+    text = "\n".join(_all_text_fragments(raw))
+    lower = text.lower()
+    flags: list[str] = []
+    unique_mentions = len(re.findall(r"\bunique\s*:", lower))
+    if unique_mentions >= 3:
+        flags.append("too_many_named_uniques")
+    if re.search(r"(passive path|node\s+\d+).{0,80}(->|,|\bthen\b).{0,80}node\s+\d+", lower):
+        flags.append("ordered_passive_path")
+    if re.search(r"supports?\s*:\s*[^.\n,]+(?:,\s*[^.\n,]+){4,}", lower):
+        flags.append("full_support_link_like")
+    if re.search(r"(ring 1|ring 2|helmet|body armour|gloves|boots|weapon)\s*:", lower):
+        flags.append("slot_exact_gear_like")
+    if len(text) > 1200:
+        flags.append("long_guide_prose_like")
+    if re.search(r"\b(?:eNrt|pobb\.in/|pastebin\.com/)[A-Za-z0-9+/_=-]{80,}", text):
+        flags.append("pob_code_like_blob")
+    return flags
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _validate_numeric_ranges(value: Any) -> tuple[dict[str, Any], str | None]:
+    """Allow only aggregate metric ranges, never raw stat dumps."""
+    if value in (None, {}):
+        return {}, None
+    if not isinstance(value, dict):
+        return {}, "invalid_numeric_ranges_or_metrics"
+    normalized: dict[str, Any] = {}
+    allowed_keys = {"min", "median", "max", "n", "p10", "p25", "p75", "p90", "p95"}
+    for metric, range_value in value.items():
+        if not isinstance(metric, str) or not isinstance(range_value, dict):
+            return {}, "invalid_numeric_ranges_or_metrics"
+        extra = set(range_value) - allowed_keys
+        if extra:
+            return {}, "invalid_numeric_ranges_or_metrics"
+        if not {"min", "max", "n"} <= set(range_value):
+            return {}, "invalid_numeric_ranges_or_metrics"
+        for cell in range_value.values():
+            if not _is_number(cell):
+                return {}, "invalid_numeric_ranges_or_metrics"
+        if float(range_value["min"]) > float(range_value["max"]):
+            return {}, "invalid_numeric_ranges_or_metrics"
+        normalized[metric] = dict(range_value)
+    return normalized, None
+
+
+def _validate_visibility_scope(raw: dict[str, Any]) -> str | None:
+    visibility = str(raw.get("visibility") or "")
+    split = str(raw.get("split") or "")
+    if (visibility, split) not in VALID_VISIBILITY_SPLITS:
+        return "invalid_visibility_split"
+    scope = str(raw.get("knowledgeScope") or raw.get("knowledge_scope") or "")
+    if scope not in VALID_KNOWLEDGE_SCOPES:
+        return "invalid_knowledge_scope"
+    evidence_type = str(raw.get("evidenceType") or raw.get("evidence_type") or "")
+    if evidence_type == "user_feedback_local" and scope != "local_user":
+        return "local_feedback_must_stay_local"
+    return None
+
+
+def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a sanitized mature-case dict or an explicit rejection result.
+
+    This is intentionally allowlist-first: raw build fields are rejected recursively before any
+    summary text is persisted, and the remaining text is checked for reconstructable build details.
+    """
+    if not isinstance(raw, dict):
+        return {"ok": False, "error": "case_must_be_object"}
+
+    forbidden_present = sorted(_find_forbidden_paths(raw))
+    if forbidden_present:
+        return {
+            "ok": False,
+            "error": "forbidden_copyable_fields",
+            "redactedFieldsPresent": forbidden_present,
+        }
+
+    boundary_error = _validate_visibility_scope(raw)
+    if boundary_error:
+        return {"ok": False, "error": boundary_error}
+
+    copyability = _copyability_flags(raw)
+    if copyability:
+        return {
+            "ok": False,
+            "error": "copyability_guard_failed",
+            "copyabilityFlags": copyability,
+        }
+
+    freshness = str(raw.get("freshnessStatus") or "unknown")
+    compatibility = str(raw.get("compatibilityStatus") or "unknown")
+    modelability = str(raw.get("pobModelability") or "unknown")
+    if freshness not in VALID_FRESHNESS:
+        return {"ok": False, "error": "invalid_freshness_status"}
+    if compatibility not in VALID_COMPATIBILITY:
+        return {"ok": False, "error": "invalid_compatibility_status"}
+    if modelability not in VALID_MODELABILITY:
+        return {"ok": False, "error": "invalid_pob_modelability"}
+    if freshness in CURRENT_FRESHNESS_CLAIMS and (
+        str(raw.get("league") or "").lower() == "unknown"
+        or str(raw.get("gamePatch") or "").lower() == "unknown"
+        or str(raw.get("passiveTreeVersion") or "").lower() == "unknown"
+        or not str(raw.get("league") or "").strip()
+        or not str(raw.get("gamePatch") or "").strip()
+        or not str(raw.get("passiveTreeVersion") or "").strip()
+    ):
+        return {"ok": False, "error": "current_claim_missing_version_metadata"}
+
+    numeric_ranges, numeric_error = _validate_numeric_ranges(raw.get("numericRangesOrMetrics") or {})
+    if numeric_error:
+        return {"ok": False, "error": numeric_error}
+
+    keypoints = _as_string_list(raw.get("keypoints"), max_items=8)
+    now = _now()
+    source_ref = str(raw.get("sourceRef") or raw.get("sourceUrl") or "")
+    external_hash = _stable_hash(
+        {
+            "sourceRef": source_ref,
+            "class": raw.get("class"),
+            "ascendancy": raw.get("ascendancy"),
+            "mainSkill": raw.get("mainSkill"),
+            "keypoints": keypoints,
+        }
+    )
+
+    return {
+        "ok": True,
+        "external_id_hash": external_hash,
+        "class": str(raw.get("class") or ""),
+        "ascendancy": str(raw.get("ascendancy") or ""),
+        "main_skill": str(raw.get("mainSkill") or ""),
+        "damage_types": _as_string_list(raw.get("damageTypes")),
+        "delivery_tags": _as_string_list(raw.get("deliveryTags")),
+        "defense_tags": _as_string_list(raw.get("defenseTags")),
+        "mechanic_tags": _as_string_list(raw.get("mechanicTags")),
+        "lifecycle_stage": str(raw.get("lifecycleStage") or "unknown_lifecycle"),
+        "budget_band": str(raw.get("budgetBand") or "unknown"),
+        "popularity_rank": raw.get("popularityRank"),
+        "sample_weight": float(raw.get("sampleWeight") or 1.0),
+        "pob_modelability": modelability,
+        "sanitized_keypoints": keypoints,
+        "numeric_ranges_or_metrics": numeric_ranges,
+        "redacted_fields_present": [],
+        "visibility": str(raw.get("visibility")),
+        "split": str(raw.get("split")),
+        "knowledge_scope": str(raw.get("knowledgeScope")),
+        "evidence_type": str(raw.get("evidenceType") or "manual_fixture"),
+        "game_patch": str(raw.get("gamePatch") or "unknown"),
+        "passive_tree_version": str(raw.get("passiveTreeVersion") or "unknown"),
+        "league": str(raw.get("league") or "unknown"),
+        "freshness_status": freshness,
+        "compatibility_status": compatibility,
+        "created_at": now,
+        "last_seen_at": now,
+    }
