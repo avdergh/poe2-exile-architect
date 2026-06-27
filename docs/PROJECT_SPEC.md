@@ -69,7 +69,8 @@ planning is documented in
 `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`; pre-implementation subagent
 review completed with blocking issues resolved and only small implementation-level fixes folded
 into the plan. Task 1 local architecture documentation has started in
-`docs/architecture/phase-03n1-mature-build-learning-store.md`.
+`docs/architecture/phase-03n1-mature-build-learning-store.md`. Task 2 SQLite schema/path work is
+implemented with focused tests passing.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
@@ -96,7 +97,7 @@ Scope:
 
 Current Phase 3N.1 target:
 
-- Add SQLite schema and user-data store path for mature-learning data.
+- Add SQLite schema and user-data store path for mature-learning data. (implemented)
 - Add a tiny curated fixture manifest and deterministic sanitized fixture import.
 - Add an allowlist sanitizer and copyability/reconstruction tests.
 - Enforce `visibility` / `split` / `knowledge_scope` boundaries and prove local user feedback

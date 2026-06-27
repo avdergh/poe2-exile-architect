@@ -57,6 +57,21 @@ def lifecycle_memory_path() -> Path:
     return user_data_dir() / "lifecycle_memory.json"
 
 
+def mature_learning_path() -> Path:
+    """Writable Phase 3N mature-build learning store.
+
+    Mature build learning is release-seeded but locally mutable. The SQLite database belongs in
+    user-data so fixture imports, later revalidation metadata, and local-only feedback boundaries do
+    not modify bundled project files.
+    """
+    return user_data_dir() / "mature_build_learning.sqlite"
+
+
+def mature_learning_seed_fixtures_path() -> Path:
+    """Bundled sanitized seed fixtures for the mature-learning store."""
+    return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"
+
+
 def pob_src_dir() -> Path:
     return _prefer(
         user_data_dir() / "pob" / "PathOfBuilding-PoE2" / "src",

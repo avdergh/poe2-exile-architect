@@ -233,7 +233,7 @@ Expected: commit succeeds.
 - Create: `tests/test_mature_learning.py`
 - Modify: `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`
 
-- [ ] **Step 1: Write failing path/schema tests**
+- [x] **Step 1: Write failing path/schema tests**
 
 Create `tests/test_mature_learning.py` with these initial tests:
 
@@ -365,7 +365,7 @@ def test_schema_rejects_invalid_candidate_evidence_visibility_split(tmp_path):
         )
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -376,7 +376,7 @@ Run:
 Expected: FAIL because `paths.mature_learning_path`, `server.knowledge.mature_learning`, and
 `SchemaVersionError` do not exist yet.
 
-- [ ] **Step 3: Add path helpers**
+- [x] **Step 3: Add path helpers**
 
 In `server/paths.py`, add:
 
@@ -396,7 +396,7 @@ def mature_learning_seed_fixtures_path() -> Path:
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"
 ```
 
-- [ ] **Step 4: Add minimal schema module**
+- [x] **Step 4: Add minimal schema module**
 
 Create `server/knowledge/mature_learning.py` with:
 
@@ -631,7 +631,7 @@ def schema_version(con: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 ```
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 Run:
 
