@@ -613,13 +613,16 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def initialize_store(db_path: Path | None = None) -> Path:
     path = db_path or mature_learning_path()
-    with connect(path) as con:
+    con = connect(path)
+    try:
         existing = schema_version(con)
         if existing > SCHEMA_VERSION:
             raise SchemaVersionError(
                 f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
             )
         con.executescript(_SCHEMA_SQL)
+    finally:
+        con.close()
     return path
 
 
@@ -699,6 +702,7 @@ def _raw_case(**overrides):
         "evidenceType": "poe_ninja_hot",
         "freshnessStatus": "verified_current",
         "compatibilityStatus": "current",
+        "diversityBucket": "stormweaver-lightning-spell",
         "fixtureManifest": {
             "eligibility_basis": "manual_stand_in_for_hot_sample",
             "popularity_signal": {"kind": "rank", "rank": 1, "source": "fixture_manifest"},
@@ -1149,7 +1153,7 @@ Expected: commit succeeds.
 - Modify: `tests/test_mature_learning.py`
 - Modify: `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`
 
-- [ ] **Step 1: Add failing fixture import tests**
+- [x] **Step 1: Add failing fixture import tests**
 
 Append these tests to `tests/test_mature_learning.py`:
 
@@ -1333,7 +1337,7 @@ def test_seed_fixture_import_rejects_user_feedback_even_when_local_scope(tmp_pat
     assert result["rejected"][0]["error"] == "seed_fixture_cannot_use_user_feedback"
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -1343,7 +1347,7 @@ Run:
 
 Expected: FAIL because fixture validation/import functions do not exist.
 
-- [ ] **Step 3: Add bundled seed fixture file**
+- [x] **Step 3: Add bundled seed fixture file**
 
 Create `data/mature_build_learning/seed_cases.json` with four sanitized fixture rows. Use the two
 rows from the test above, plus:
@@ -1444,7 +1448,7 @@ The final JSON file must be valid and must wrap all four rows in:
 }
 ```
 
-- [ ] **Step 4: Implement fixture validation/import**
+- [x] **Step 4: Implement fixture validation/import**
 
 In `server/knowledge/mature_learning.py`, add:
 
@@ -1541,7 +1545,8 @@ def import_fixture_file(fixture_path: Path | None = None, *, db_path: Path | Non
     initialize_store(db_path)
     imported = 0
     rejected: list[dict[str, Any]] = []
-    with connect(db_path) as con:
+    con = connect(db_path)
+    try:
         for raw in cases:
             if str(raw.get("evidenceType") or raw.get("evidence_type") or "") == "user_feedback_local":
                 rejected.append({"ok": False, "error": "seed_fixture_cannot_use_user_feedback"})
@@ -1556,6 +1561,9 @@ def import_fixture_file(fixture_path: Path | None = None, *, db_path: Path | Non
                 continue
             _insert_sanitized_fixture(con, raw, sanitized, manifest_result["manifest"])
             imported += 1
+        con.commit()
+    finally:
+        con.close()
     return {"ok": not rejected, "importedCases": imported, "rejected": rejected}
 
 
@@ -1675,7 +1683,7 @@ def _insert_sanitized_fixture(
     )
 ```
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 Run:
 

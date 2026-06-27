@@ -60,6 +60,12 @@ VALID_FRESHNESS = {
 }
 VALID_COMPATIBILITY = {"current", "stale", "unknown", "quarantined"}
 CURRENT_FRESHNESS_CLAIMS = {"verified_current", "current_metadata_only"}
+REQUIRED_FIXTURE_MANIFEST_FIELDS = {
+    "eligibility_basis",
+    "popularity_signal",
+    "currentness_basis",
+    "diversity_policy",
+}
 
 
 class SchemaVersionError(RuntimeError):
@@ -258,13 +264,16 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def initialize_store(db_path: Path | None = None) -> Path:
     path = db_path or mature_learning_path()
-    with connect(path) as con:
+    con = connect(path)
+    try:
         existing = schema_version(con)
         if existing > SCHEMA_VERSION:
             raise SchemaVersionError(
                 f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
             )
         con.executescript(_SCHEMA_SQL)
+    finally:
+        con.close()
     return path
 
 
@@ -487,3 +496,234 @@ def sanitize_mature_case(raw: dict[str, Any]) -> dict[str, Any]:
         "created_at": now,
         "last_seen_at": now,
     }
+
+
+def validate_fixture_manifest(raw: dict[str, Any]) -> dict[str, Any]:
+    manifest = raw.get("fixtureManifest") or raw.get("fixture_manifest")
+    if not isinstance(manifest, dict):
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": sorted(REQUIRED_FIXTURE_MANIFEST_FIELDS),
+        }
+    missing = sorted(key for key in REQUIRED_FIXTURE_MANIFEST_FIELDS if key not in manifest)
+    if missing:
+        return {"ok": False, "error": "fixture_manifest_incomplete", "missing": missing}
+    if not str(manifest.get("eligibility_basis") or "").strip():
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": ["eligibility_basis"],
+        }
+    popularity_signal = manifest.get("popularity_signal")
+    if not isinstance(popularity_signal, dict) or not popularity_signal:
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": ["popularity_signal"],
+        }
+
+    structured_missing: list[str] = []
+    if not str(popularity_signal.get("kind") or "").strip():
+        structured_missing.append("popularity_signal.kind")
+    if popularity_signal.get("kind") == "rank" and not str(
+        popularity_signal.get("rank") or ""
+    ).strip():
+        structured_missing.append("popularity_signal.rank")
+
+    currentness = manifest.get("currentness_basis")
+    if not isinstance(currentness, dict) or not currentness:
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": ["currentness_basis"],
+        }
+    if not str(currentness.get("snapshot_date") or "").strip():
+        structured_missing.append("currentness_basis.snapshot_date")
+    if not str(manifest.get("diversity_policy") or "").strip():
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": ["diversity_policy"],
+        }
+    if structured_missing:
+        return {
+            "ok": False,
+            "error": "fixture_manifest_incomplete",
+            "missing": structured_missing,
+        }
+    if not str(raw.get("popularityRank") or "").strip():
+        return {"ok": False, "error": "fixture_popularity_missing", "missing": ["popularityRank"]}
+    if not str(raw.get("diversityBucket") or "").strip():
+        return {"ok": False, "error": "fixture_diversity_missing", "missing": ["diversityBucket"]}
+    if str(raw.get("freshnessStatus") or "") in CURRENT_FRESHNESS_CLAIMS:
+        required_currentness = {"league", "game_patch", "passive_tree_version"}
+        currentness_missing = sorted(
+            key
+            for key in required_currentness
+            if not str(currentness.get(key) or "").strip()
+            or str(currentness.get(key) or "").lower() == "unknown"
+        )
+        if currentness_missing:
+            return {
+                "ok": False,
+                "error": "fixture_currentness_incomplete",
+                "missing": currentness_missing,
+            }
+    return {"ok": True, "manifest": manifest}
+
+
+def import_fixture_file(
+    fixture_path: Path | None = None, *, db_path: Path | None = None
+) -> dict[str, Any]:
+    path = fixture_path or paths.mature_learning_seed_fixtures_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"fixture_file_unreadable: {exc}"}
+    cases = payload.get("cases") if isinstance(payload, dict) else None
+    if not isinstance(cases, list):
+        return {"ok": False, "error": "fixture_cases_must_be_list"}
+
+    initialize_store(db_path)
+    imported = 0
+    rejected: list[dict[str, Any]] = []
+    con = connect(db_path)
+    try:
+        for raw in cases:
+            if (
+                str(raw.get("evidenceType") or raw.get("evidence_type") or "")
+                == "user_feedback_local"
+            ):
+                rejected.append({"ok": False, "error": "seed_fixture_cannot_use_user_feedback"})
+                continue
+            manifest_result = validate_fixture_manifest(raw)
+            if not manifest_result.get("ok"):
+                rejected.append(manifest_result)
+                continue
+            sanitized = sanitize_mature_case(raw)
+            if not sanitized.get("ok"):
+                rejected.append(sanitized)
+                continue
+            _insert_sanitized_fixture(con, raw, sanitized, manifest_result["manifest"])
+            imported += 1
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": not rejected, "importedCases": imported, "rejected": rejected}
+
+
+def _insert_sanitized_fixture(
+    con: sqlite3.Connection,
+    raw: dict[str, Any],
+    sanitized: dict[str, Any],
+    manifest: dict[str, Any],
+) -> None:
+    now = _now()
+    source_ref = str(raw.get("sourceRef") or "")
+    dedupe_hash = _stable_hash(
+        {
+            "sourceType": raw.get("sourceType"),
+            "sourceRef": source_ref,
+            "class": raw.get("class"),
+            "ascendancy": raw.get("ascendancy"),
+            "mainSkill": raw.get("mainSkill"),
+        }
+    )
+    source_group_id = f"sg-{dedupe_hash[:12]}"
+    snapshot_id = f"ss-{dedupe_hash[:12]}"
+    case_id = f"case-{sanitized['external_id_hash'][:12]}"
+
+    con.execute(
+        """
+        INSERT OR REPLACE INTO source_groups(
+            source_group_id, dedupe_hash, canonical_source_type, canonical_source_ref,
+            league, game_patch, passive_tree_version, created_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source_group_id,
+            dedupe_hash,
+            str(raw.get("sourceType") or "manual_fixture"),
+            source_ref,
+            sanitized["league"],
+            sanitized["game_patch"],
+            sanitized["passive_tree_version"],
+            now,
+            now,
+        ),
+    )
+    con.execute(
+        """
+        INSERT OR REPLACE INTO source_snapshots(
+            id, source_group_id, source_type, source_url, fetched_at, league, game_patch,
+            passive_tree_version, pob_version_or_commit, popularity_filter, diversity_bucket,
+            raw_hash, sanitizer_version, freshness_status, attribution, usage_policy,
+            fixture_manifest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            source_group_id,
+            str(raw.get("sourceType") or "manual_fixture"),
+            source_ref,
+            now,
+            sanitized["league"],
+            sanitized["game_patch"],
+            sanitized["passive_tree_version"],
+            str(raw.get("pobVersionOrCommit") or "unknown"),
+            str(raw.get("popularityFilter") or "fixture-structured-popularity-required"),
+            str(raw.get("diversityBucket") or "unknown"),
+            _stable_hash(raw),
+            SANITIZER_VERSION,
+            sanitized["freshness_status"],
+            str(raw.get("attribution") or source_ref),
+            str(raw.get("usagePolicy") or "sanitized_fixture_only"),
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    con.execute(
+        """
+        INSERT OR REPLACE INTO mature_build_cases(
+            case_id, source_snapshot_id, external_id_hash, visibility, split, knowledge_scope,
+            class, ascendancy, main_skill, damage_types, delivery_tags, defense_tags,
+            mechanic_tags, lifecycle_stage, budget_band, popularity_rank, sample_weight,
+            pob_modelability, sanitized_keypoints, numeric_ranges_or_metrics,
+            redacted_fields_present, source_group_id, evidence_type, game_patch,
+            passive_tree_version, league, freshness_status, compatibility_status,
+            created_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            case_id,
+            snapshot_id,
+            sanitized["external_id_hash"],
+            sanitized["visibility"],
+            sanitized["split"],
+            sanitized["knowledge_scope"],
+            sanitized["class"],
+            sanitized["ascendancy"],
+            sanitized["main_skill"],
+            json.dumps(sanitized["damage_types"], ensure_ascii=False),
+            json.dumps(sanitized["delivery_tags"], ensure_ascii=False),
+            json.dumps(sanitized["defense_tags"], ensure_ascii=False),
+            json.dumps(sanitized["mechanic_tags"], ensure_ascii=False),
+            sanitized["lifecycle_stage"],
+            sanitized["budget_band"],
+            sanitized["popularity_rank"],
+            sanitized["sample_weight"],
+            sanitized["pob_modelability"],
+            json.dumps(sanitized["sanitized_keypoints"], ensure_ascii=False),
+            json.dumps(sanitized["numeric_ranges_or_metrics"], ensure_ascii=False),
+            json.dumps(sanitized["redacted_fields_present"], ensure_ascii=False),
+            source_group_id,
+            sanitized["evidence_type"],
+            sanitized["game_patch"],
+            sanitized["passive_tree_version"],
+            sanitized["league"],
+            sanitized["freshness_status"],
+            sanitized["compatibility_status"],
+            sanitized["created_at"],
+            sanitized["last_seen_at"],
+        ),
+    )

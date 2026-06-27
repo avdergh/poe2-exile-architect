@@ -157,6 +157,7 @@ def _raw_case(**overrides):
         "evidenceType": "poe_ninja_hot",
         "freshnessStatus": "verified_current",
         "compatibilityStatus": "current",
+        "diversityBucket": "stormweaver-lightning-spell",
         "fixtureManifest": {
             "eligibility_basis": "manual_stand_in_for_hot_sample",
             "popularity_signal": {"kind": "rank", "rank": 1, "source": "fixture_manifest"},
@@ -284,3 +285,198 @@ def test_sanitize_rejects_current_claim_with_unknown_patch_tree_or_league():
 
     assert result["ok"] is False
     assert result["error"] == "current_claim_missing_version_metadata"
+
+
+def test_fixture_manifest_requires_structured_popularity_currentness_and_diversity():
+    raw = _raw_case(fixtureManifest={"eligibility_basis": "manual_stand_in_for_hot_sample"})
+
+    result = mature_learning.validate_fixture_manifest(raw)
+
+    assert result["ok"] is False
+    assert "fixture_manifest_incomplete" in result["error"]
+    assert "popularity_signal" in result["missing"]
+    assert "currentness_basis" in result["missing"]
+    assert "diversity_policy" in result["missing"]
+
+
+def test_fixture_manifest_requires_rank_signal_and_snapshot_date():
+    raw = _raw_case(
+        fixtureManifest={
+            "eligibility_basis": "manual_stand_in_for_hot_sample",
+            "popularity_signal": {"kind": "rank"},
+            "currentness_basis": {
+                "league": "Dawn of the Hunt",
+                "game_patch": "0.5.4",
+                "passive_tree_version": "0_5",
+            },
+            "diversity_policy": "Popularity filtered before diversity cap.",
+        }
+    )
+
+    result = mature_learning.validate_fixture_manifest(raw)
+
+    assert result["ok"] is False
+    assert "popularity_signal.rank" in result["missing"]
+    assert "currentness_basis.snapshot_date" in result["missing"]
+
+
+def test_import_seed_fixtures_persists_sanitized_cases(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    fixture_path.write_text(
+        """
+{
+  "schemaVersion": 1,
+  "fixtureSet": "phase3n1-test",
+  "cases": [
+    {
+      "sourceType": "manual_fixture",
+      "sourceRef": "fixture://spark-stormweaver",
+      "league": "Dawn of the Hunt",
+      "gamePatch": "0.5.4",
+      "passiveTreeVersion": "0_5",
+      "class": "Sorceress",
+      "ascendancy": "Stormweaver",
+      "mainSkill": "Spark",
+      "damageTypes": ["lightning"],
+      "deliveryTags": ["spell", "projectile"],
+      "defenseTags": ["energy_shield"],
+      "mechanicTags": ["crit", "shock"],
+      "lifecycleStage": "endgame_final",
+      "budgetBand": "expensive",
+      "popularityRank": 1,
+      "sampleWeight": 1.0,
+      "pobModelability": "partial",
+      "keypoints": ["Endgame lightning caster scaling fixture."],
+      "numericRangesOrMetrics": {},
+      "visibility": "creator_visible",
+      "split": "train_context",
+      "knowledgeScope": "global_seed",
+      "evidenceType": "poe_ninja_hot",
+      "freshnessStatus": "verified_current",
+      "compatibilityStatus": "current",
+      "diversityBucket": "stormweaver-lightning-spell",
+      "fixtureManifest": {
+        "eligibility_basis": "manual_stand_in_for_hot_sample",
+        "popularity_signal": {"kind": "rank", "rank": 1, "source": "fixture_manifest"},
+        "currentness_basis": {
+          "league": "Dawn of the Hunt",
+          "game_patch": "0.5.4",
+          "passive_tree_version": "0_5",
+          "snapshot_date": "2026-06-27"
+        },
+        "diversity_policy": "Popularity filtered before diversity balancing."
+      }
+    },
+    {
+      "sourceType": "manual_fixture",
+      "sourceRef": "fixture://deadeye-projectile",
+      "league": "Dawn of the Hunt",
+      "gamePatch": "0.5.4",
+      "passiveTreeVersion": "0_5",
+      "class": "Ranger",
+      "ascendancy": "Deadeye",
+      "mainSkill": "Lightning Arrow",
+      "damageTypes": ["lightning", "physical"],
+      "deliveryTags": ["attack", "projectile"],
+      "defenseTags": ["evasion"],
+      "mechanicTags": ["projectile"],
+      "lifecycleStage": "endgame_budget",
+      "budgetBand": "moderate",
+      "popularityRank": 2,
+      "sampleWeight": 1.0,
+      "pobModelability": "partial",
+      "keypoints": ["Projectile attack fixture with starter-risk caveat."],
+      "numericRangesOrMetrics": {},
+      "visibility": "evaluator_only",
+      "split": "eval_holdout",
+      "knowledgeScope": "global_seed",
+      "evidenceType": "poe_ninja_hot",
+      "freshnessStatus": "verified_current",
+      "compatibilityStatus": "current",
+      "diversityBucket": "deadeye-projectile-attack",
+      "fixtureManifest": {
+        "eligibility_basis": "manual_stand_in_for_hot_sample",
+        "popularity_signal": {"kind": "rank", "rank": 2, "source": "fixture_manifest"},
+        "currentness_basis": {
+          "league": "Dawn of the Hunt",
+          "game_patch": "0.5.4",
+          "passive_tree_version": "0_5",
+          "snapshot_date": "2026-06-27"
+        },
+        "diversity_policy": "Held out for later evaluator tests after popularity filter."
+      }
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+    mature_learning.initialize_store(db_path)
+
+    result = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+
+    assert result["ok"] is True
+    assert result["importedCases"] == 2
+    con = sqlite3.connect(db_path)
+    assert con.execute("SELECT count(*) FROM source_groups").fetchone()[0] == 2
+    assert con.execute("SELECT count(*) FROM source_snapshots").fetchone()[0] == 2
+    assert con.execute("SELECT count(*) FROM mature_build_cases").fetchone()[0] == 2
+    rows = con.execute("SELECT visibility, split FROM mature_build_cases ORDER BY case_id").fetchall()
+    assert {tuple(row) for row in rows} == {
+        ("creator_visible", "train_context"),
+        ("evaluator_only", "eval_holdout"),
+    }
+    versions = con.execute("SELECT DISTINCT sanitizer_version FROM source_snapshots").fetchall()
+    assert {row[0] for row in versions} == {mature_learning.SANITIZER_VERSION}
+
+
+def test_import_fixture_file_is_idempotent(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    raw = _raw_case(sourceRef="fixture://idempotent-case")
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "idempotent", "cases": [raw]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+
+    first = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+    second = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    con = sqlite3.connect(db_path)
+    assert con.execute("SELECT count(*) FROM source_groups").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM source_snapshots").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM mature_build_cases").fetchone()[0] == 1
+
+
+def test_import_fixture_file_closes_connection_after_import(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    raw = _raw_case(sourceRef="fixture://close-test")
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "close-test", "cases": [raw]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+
+    result = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+
+    assert result["ok"] is True
+    db_path.unlink()
+    assert not db_path.exists()
+
+
+def test_seed_fixture_import_rejects_user_feedback_even_when_local_scope(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    raw = _raw_case(evidenceType="user_feedback_local", knowledgeScope="local_user")
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "feedback", "cases": [raw]}),
+        encoding="utf-8",
+    )
+
+    result = mature_learning.import_fixture_file(fixture_path, db_path=tmp_path / "mature.sqlite")
+
+    assert result["ok"] is False
+    assert result["importedCases"] == 0
+    assert result["rejected"][0]["error"] == "seed_fixture_cannot_use_user_feedback"

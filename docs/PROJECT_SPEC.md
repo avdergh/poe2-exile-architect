@@ -71,7 +71,8 @@ review completed with blocking issues resolved and only small implementation-lev
 into the plan. Task 1 local architecture documentation has started in
 `docs/architecture/phase-03n1-mature-build-learning-store.md`. Task 2 SQLite schema/path work is
 implemented with focused tests passing. Task 3 sanitizer/copyability guard is implemented with
-focused tests passing.
+focused tests passing. Task 4 structured fixture manifest and deterministic import are implemented
+with focused tests passing.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
@@ -99,7 +100,7 @@ Scope:
 Current Phase 3N.1 target:
 
 - Add SQLite schema and user-data store path for mature-learning data. (implemented)
-- Add a tiny curated fixture manifest and deterministic sanitized fixture import.
+- Add a tiny curated fixture manifest and deterministic sanitized fixture import. (implemented)
 - Add an allowlist sanitizer and copyability/reconstruction tests. (implemented)
 - Enforce `visibility` / `split` / `knowledge_scope` boundaries and prove local user feedback
   cannot enter global seed knowledge.
