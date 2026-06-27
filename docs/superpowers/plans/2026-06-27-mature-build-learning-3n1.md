@@ -78,7 +78,7 @@ Out of scope for this slice:
 - Modify: `docs/PROJECT_SPEC.md`
 - Modify: `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`
 
-- [ ] **Step 1: Create the architecture doc**
+- [x] **Step 1: Create the architecture doc**
 
 Create `docs/architecture/phase-03n1-mature-build-learning-store.md` with this content:
 
@@ -201,13 +201,13 @@ Freshness and compatibility fields are stored as inert metadata only. Phase 3N.1
 fields to change confidence, ranking, promotion status, retrieval order, or route synthesis.
 ```
 
-- [ ] **Step 2: Update project spec status**
+- [x] **Step 2: Update project spec status**
 
 In `docs/PROJECT_SPEC.md`, update the Phase 3N current work status to say that Phase 3N.1 is in
 implementation planning/execution and that this slice is limited to schema, fixture manifest,
 sanitizer, and redaction/copyability tests.
 
-- [ ] **Step 3: Mark Task 1 complete in this plan**
+- [x] **Step 3: Mark Task 1 complete in this plan**
 
 Change the Task 1 checkboxes from `[ ]` to `[x]` after the doc and spec update are saved.
 

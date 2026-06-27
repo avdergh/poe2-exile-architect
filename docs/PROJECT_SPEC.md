@@ -68,7 +68,8 @@ Status: design approved for the first implementation slice. The reviewed design 
 planning is documented in
 `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`; pre-implementation subagent
 review completed with blocking issues resolved and only small implementation-level fixes folded
-into the plan.
+into the plan. Task 1 local architecture documentation has started in
+`docs/architecture/phase-03n1-mature-build-learning-store.md`.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
