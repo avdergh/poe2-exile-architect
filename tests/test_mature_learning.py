@@ -663,3 +663,301 @@ def test_expiration_metadata_is_inert_in_phase_3n1(tmp_path):
         "SELECT freshness_status, compatibility_status FROM mature_build_cases"
     ).fetchone()
     assert tuple(row) == ("stale", "stale")
+
+
+def _extract_rows(con: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
+    con.row_factory = sqlite3.Row
+    return con.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+
+
+def test_extract_technique_candidates_creates_candidates_and_evidence(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    result = mature_learning.import_fixture_file(db_path=db_path)
+    assert result["ok"] is True
+
+    extract = mature_learning.extract_technique_candidates(db_path=db_path)
+
+    assert extract["ok"] is True
+    assert extract["casesScanned"] == 4
+    assert extract["candidatesUpserted"] == 4
+    assert extract["evidenceUpserted"] == 4
+    con = mature_learning.connect(db_path)
+    candidates = _extract_rows(con, "technique_candidates")
+    evidence = _extract_rows(con, "candidate_evidence")
+    assert len(candidates) == 4
+    assert len(evidence) == 4
+    assert {row["support_count"] for row in candidates} == {1}
+    assert {row["contradiction_count"] for row in candidates} == {0}
+    assert {row["source_count"] for row in candidates} == {1}
+    assert all(row["promotion_status"] in {"candidate", "quarantined"} for row in candidates)
+
+
+def test_extract_technique_candidates_is_idempotent_and_deterministic(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+
+    first = mature_learning.extract_technique_candidates(db_path=db_path)
+    second = mature_learning.extract_technique_candidates(db_path=db_path)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    con = mature_learning.connect(db_path)
+    candidate_ids = [
+        row[0]
+        for row in con.execute(
+            "SELECT candidate_id FROM technique_candidates ORDER BY candidate_id"
+        )
+    ]
+    evidence_ids = [
+        row[0]
+        for row in con.execute("SELECT evidence_id FROM candidate_evidence ORDER BY evidence_id")
+    ]
+    assert len(candidate_ids) == len(set(candidate_ids)) == 4
+    assert len(evidence_ids) == len(set(evidence_ids)) == 4
+    assert con.execute("SELECT count(*) FROM technique_candidates").fetchone()[0] == 4
+    assert con.execute("SELECT count(*) FROM candidate_evidence").fetchone()[0] == 4
+
+
+def test_extract_technique_candidates_preserves_creator_visibility_boundaries(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    rows = con.execute(
+        """
+        SELECT visibility, split, creator_visible
+        FROM candidate_evidence
+        ORDER BY visibility, split
+        """
+    ).fetchall()
+    assert ("creator_visible", "train_context", 1) in [tuple(row) for row in rows]
+    assert ("evaluator_only", "eval_holdout", 0) in [tuple(row) for row in rows]
+    assert ("quarantined", "quarantine", 0) in [tuple(row) for row in rows]
+
+
+def test_extract_technique_candidates_derives_counts_from_evidence_rows(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    first = _raw_case(sourceRef="fixture://spark-a")
+    second = _raw_case(
+        sourceRef="fixture://spark-b",
+        damageTypes=["LIGHTNING"],
+        deliveryTags=["projectile", "spell"],
+        defenseTags=["RECHARGE", "energy_shield"],
+        mechanicTags=["shock", "crit"],
+        keypoints=["Another coarse Spark mature-case summary from a separate source."],
+    )
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "counting", "cases": [first, second]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(fixture_path, db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    candidates = con.execute("SELECT * FROM technique_candidates").fetchall()
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["support_count"] == 2
+    assert candidate["source_count"] == 2
+    assert candidate["contradiction_count"] == 0
+
+
+def test_extract_technique_candidates_records_lifecycle_risk_fields(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    row = con.execute(
+        """
+        SELECT required_prerequisites, starter_risk_reason, transition_gate_summary,
+               unsafe_before_stage
+        FROM technique_candidates
+        WHERE lifecycle_stage = 'endgame_final'
+        LIMIT 1
+        """
+    ).fetchone()
+    assert json.loads(row["required_prerequisites"])
+    assert "starter" in row["starter_risk_reason"].lower()
+    assert "transition" in row["transition_gate_summary"].lower()
+    assert row["unsafe_before_stage"] in {"maps_entry", "endgame_budget", "endgame_final"}
+
+
+def test_extract_technique_candidates_keeps_same_semantic_holdout_in_separate_bucket(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    creator = _raw_case(sourceRef="fixture://same-semantic-creator")
+    evaluator = _raw_case(
+        sourceRef="fixture://same-semantic-evaluator",
+        visibility="evaluator_only",
+        split="eval_holdout",
+    )
+    quarantined = _raw_case(
+        sourceRef="fixture://same-semantic-quarantine",
+        visibility="quarantined",
+        split="quarantine",
+    )
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "fixtureSet": "same-semantic-boundary",
+                "cases": [creator, evaluator, quarantined],
+            }
+        ),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(fixture_path, db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    rows = con.execute(
+        """
+        SELECT tc.candidate_id, tc.knowledge_scope, tc.promotion_status, tc.source_count,
+               ce.visibility, ce.split, ce.creator_visible
+        FROM technique_candidates tc
+        JOIN candidate_evidence ce ON ce.candidate_id = tc.candidate_id
+        ORDER BY ce.visibility, ce.split
+        """
+    ).fetchall()
+    assert len({row["candidate_id"] for row in rows}) == 3
+    assert all(row["source_count"] == 1 for row in rows)
+    by_visibility = {row["visibility"]: row for row in rows}
+    assert by_visibility["creator_visible"]["knowledge_scope"] == "global_seed"
+    assert by_visibility["creator_visible"]["creator_visible"] == 1
+    assert by_visibility["evaluator_only"]["knowledge_scope"] == "eval_ephemeral"
+    assert by_visibility["evaluator_only"]["creator_visible"] == 0
+    assert by_visibility["quarantined"]["knowledge_scope"] == "eval_ephemeral"
+    assert by_visibility["quarantined"]["promotion_status"] == "quarantined"
+    assert by_visibility["quarantined"]["creator_visible"] == 0
+
+
+def test_evaluator_only_candidates_do_not_become_global_creator_context(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    evaluator_candidate_ids = [
+        row["candidate_id"]
+        for row in con.execute(
+            """
+            SELECT DISTINCT candidate_id
+            FROM candidate_evidence
+            WHERE visibility = 'evaluator_only'
+            """
+        )
+    ]
+    assert evaluator_candidate_ids
+    scopes = {
+        row["knowledge_scope"]
+        for row in con.execute(
+            "SELECT knowledge_scope FROM technique_candidates WHERE candidate_id IN ({})".format(
+                ",".join("?" for _ in evaluator_candidate_ids)
+            ),
+            evaluator_candidate_ids,
+        )
+    }
+    assert scopes == {"eval_ephemeral"}
+
+
+def test_extract_technique_candidates_recomputes_counts_from_evidence(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+    assert mature_learning.extract_technique_candidates(db_path=db_path)["ok"] is True
+    con = mature_learning.connect(db_path)
+    con.execute(
+        "UPDATE technique_candidates SET source_count = 99, support_count = 99, contradiction_count = 99"
+    )
+    con.commit()
+    con.close()
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    counts = con.execute(
+        "SELECT DISTINCT source_count, support_count, contradiction_count FROM technique_candidates"
+    ).fetchall()
+    assert {tuple(row) for row in counts} == {(1, 1, 0)}
+
+
+def test_extract_technique_candidates_moves_evidence_when_case_visibility_changes(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    creator = _raw_case(sourceRef="fixture://mutable-visibility")
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "mutable", "cases": [creator]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(fixture_path, db_path=db_path)["ok"] is True
+    assert mature_learning.extract_technique_candidates(db_path=db_path)["ok"] is True
+
+    evaluator = _raw_case(
+        sourceRef="fixture://mutable-visibility",
+        visibility="evaluator_only",
+        split="eval_holdout",
+    )
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "mutable", "cases": [evaluator]}),
+        encoding="utf-8",
+    )
+    assert mature_learning.import_fixture_file(fixture_path, db_path=db_path)["ok"] is True
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    evidence_rows = con.execute(
+        """
+        SELECT visibility, split, creator_visible
+        FROM candidate_evidence
+        ORDER BY evidence_id
+        """
+    ).fetchall()
+    assert [tuple(row) for row in evidence_rows] == [("evaluator_only", "eval_holdout", 0)]
+    positive_counts = con.execute(
+        """
+        SELECT knowledge_scope, support_count
+        FROM technique_candidates
+        WHERE support_count > 0
+        """
+    ).fetchall()
+    assert [tuple(row) for row in positive_counts] == [("eval_ephemeral", 1)]
+
+
+def test_extract_technique_candidates_preserves_manual_promotion_status(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    assert mature_learning.import_fixture_file(db_path=db_path)["ok"] is True
+    assert mature_learning.extract_technique_candidates(db_path=db_path)["ok"] is True
+    con = mature_learning.connect(db_path)
+    candidate_id = con.execute(
+        """
+        SELECT candidate_id
+        FROM technique_candidates
+        WHERE promotion_status = 'candidate'
+        LIMIT 1
+        """
+    ).fetchone()["candidate_id"]
+    con.execute(
+        "UPDATE technique_candidates SET promotion_status = 'rejected' WHERE candidate_id = ?",
+        (candidate_id,),
+    )
+    con.commit()
+    con.close()
+
+    mature_learning.extract_technique_candidates(db_path=db_path)
+
+    con = mature_learning.connect(db_path)
+    assert (
+        con.execute(
+            "SELECT promotion_status FROM technique_candidates WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()["promotion_status"]
+        == "rejected"
+    )

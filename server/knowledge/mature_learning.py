@@ -20,6 +20,8 @@ from .. import paths
 
 SCHEMA_VERSION = 1
 SANITIZER_VERSION = "phase3n1-v1"
+EXTRACTOR_VERSION = "phase3n2-v1"
+EXTRACTION_METHOD = "deterministic_mature_case_summary"
 
 FORBIDDEN_COPYABLE_FIELDS = {
     "pobCode",
@@ -318,6 +320,31 @@ def _now() -> str:
 def _stable_hash(payload: Any) -> str:
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _json_loads(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalized_scalar(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _normalized_tag_list(value: Any, *, max_items: int = 24) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    normalized: set[str] = set()
+    for item in values[:max_items]:
+        text = _normalized_scalar(item).replace(" ", "_")
+        if text:
+            normalized.add(text[:80])
+    return sorted(normalized)
 
 
 def _as_string_list(value: Any, *, max_items: int = 12) -> list[str]:
@@ -804,3 +831,428 @@ def _insert_sanitized_fixture(
             sanitized["last_seen_at"],
         ),
     )
+
+
+def _case_tags(row: sqlite3.Row, column: str) -> list[str]:
+    return _normalized_tag_list(_json_loads(row[column], []))
+
+
+def _candidate_visibility_bucket(row: sqlite3.Row) -> str:
+    if row["visibility"] == "creator_visible" and row["split"] == "train_context":
+        return "creator_context"
+    if row["visibility"] == "evaluator_only" and row["split"] == "eval_holdout":
+        return "evaluator_holdout"
+    return "quarantine"
+
+
+def _candidate_knowledge_scope(row: sqlite3.Row) -> str:
+    bucket = _candidate_visibility_bucket(row)
+    if bucket != "creator_context":
+        return "eval_ephemeral"
+    return str(row["knowledge_scope"])
+
+
+def _candidate_category_tags(row: sqlite3.Row) -> list[str]:
+    damage = _case_tags(row, "damage_types")
+    delivery = _case_tags(row, "delivery_tags")
+    defenses = _case_tags(row, "defense_tags")
+    mechanics = _case_tags(row, "mechanic_tags")
+    stage = str(row["lifecycle_stage"])
+    budget = _normalized_scalar(row["budget_band"])
+    modelability = str(row["pob_modelability"])
+
+    tags = {"ascendancy", "skill_gem"}
+    if damage:
+        tags.add("damage_scaling")
+    if defenses:
+        tags.add("defense_layer")
+    if "projectile" in delivery or "projectile" in mechanics:
+        tags.add("projectile")
+    if "minion" in delivery or "minion" in mechanics or "minion_screen" in defenses:
+        tags.add("minion")
+    if "crit" in mechanics:
+        tags.add("crit")
+    if {"shock", "ignite", "freeze", "chill", "poison", "bleed"} & set(mechanics):
+        tags.add("ailment")
+    if "spirit" in mechanics:
+        tags.add("spirit")
+    if stage in {"endgame_budget", "endgame_final"}:
+        tags.add("transition_gate")
+        tags.add("endgame_only")
+    if budget == "expensive":
+        tags.add("expensive")
+    elif budget in {"cheap", "low", "budget", "moderate"}:
+        tags.add("budget_friendly")
+    if modelability != "full":
+        tags.add("pob_model_uncertain")
+    return sorted(tags)
+
+
+def _mechanism_role(row: sqlite3.Row) -> str:
+    mechanics = set(_case_tags(row, "mechanic_tags"))
+    defenses = _case_tags(row, "defense_tags")
+    budget = _normalized_scalar(row["budget_band"])
+    stage = str(row["lifecycle_stage"])
+
+    if "spirit" in mechanics:
+        return "enabler"
+    if "mana_sustain" in mechanics or "mana" in mechanics:
+        return "sustain_solution"
+    if defenses and not _case_tags(row, "damage_types"):
+        return "defensive_core"
+    if budget == "expensive" or stage == "endgame_final":
+        return "threshold"
+    if "cooldown" in mechanics:
+        return "quality_of_life"
+    return "scaler"
+
+
+def _required_prerequisites(row: sqlite3.Row) -> list[str]:
+    mechanics = set(_case_tags(row, "mechanic_tags"))
+    delivery = set(_case_tags(row, "delivery_tags"))
+    stage = str(row["lifecycle_stage"])
+    budget = _normalized_scalar(row["budget_band"])
+    prerequisites: list[str] = []
+
+    if stage == "endgame_final":
+        prerequisites.append("endgame-final passive, ascendancy, and gear budget")
+    elif stage == "endgame_budget":
+        prerequisites.append("entry-endgame budget and stabilized mapping setup")
+    elif stage == "maps_entry":
+        prerequisites.append("campaign completion with capped core defenses")
+
+    if budget == "expensive":
+        prerequisites.append("expensive or build-defining item access")
+    elif budget in {"moderate", "budget", "cheap", "low"}:
+        prerequisites.append("basic trade or self-found upgrade budget")
+
+    if "spirit" in mechanics:
+        prerequisites.append("Spirit capacity and reservation plan")
+    if "crit" in mechanics:
+        prerequisites.append("critical strike foundation before scaling")
+    if {"shock", "ignite", "freeze", "chill", "poison", "bleed"} & mechanics:
+        prerequisites.append("reliable ailment application or scaling")
+    if "cooldown" in mechanics:
+        prerequisites.append("cooldown cadence or recovery support")
+    if "minion" in mechanics or "minion" in delivery:
+        prerequisites.append("minion level/count and Spirit support")
+    if "projectile" in delivery:
+        prerequisites.append("projectile coverage and scaling support")
+    if row["pob_modelability"] != "full":
+        prerequisites.append("PoB/engine caveat review before recommendation")
+
+    if not prerequisites:
+        prerequisites.append("stage-appropriate passive points, gems, and baseline gear")
+    return prerequisites
+
+
+def _starter_risk_reason(row: sqlite3.Row) -> str:
+    keypoints = " ".join(_json_loads(row["sanitized_keypoints"], []))
+    lower_keypoints = keypoints.lower()
+    stage = str(row["lifecycle_stage"])
+    budget = _normalized_scalar(row["budget_band"])
+    risks: list[str] = []
+
+    if stage in {"endgame_budget", "endgame_final"}:
+        risks.append(f"starter risk: mature evidence is scoped to {stage}, not campaign proof")
+    if budget == "expensive":
+        risks.append("starter risk: expensive budget can hide leveling weaknesses")
+    if any(word in lower_keypoints for word in ("starter-risk", "not a direct campaign", "caveat")):
+        risks.append("starter risk: sanitized evidence explicitly flags a transition caveat")
+    if row["pob_modelability"] != "full":
+        risks.append("starter risk: PoB/engine modelability is incomplete")
+
+    if not risks:
+        return "No specific starter risk recorded; still verify before treating as starter viable."
+    return "; ".join(risks) + "."
+
+
+def _transition_gate_summary(row: sqlite3.Row, prerequisites: list[str]) -> str:
+    preview = ", ".join(prerequisites[:4])
+    if len(prerequisites) > 4:
+        preview += ", ..."
+    return (
+        f"Transition only after reaching {row['lifecycle_stage']} and satisfying: {preview}. "
+        "If unmet, keep the starter route and re-evaluate."
+    )
+
+
+def _unsafe_before_stage(stage: str) -> str:
+    return {
+        "endgame_final": "endgame_budget",
+        "endgame_budget": "maps_entry",
+        "maps_entry": "campaign_late",
+        "campaign_late": "campaign_mid",
+        "campaign_mid": "campaign_early",
+        "campaign_early": "campaign_early",
+    }.get(stage, "unknown_lifecycle")
+
+
+def _candidate_from_case(row: sqlite3.Row) -> dict[str, Any]:
+    damage = _case_tags(row, "damage_types")
+    delivery = _case_tags(row, "delivery_tags")
+    defenses = _case_tags(row, "defense_tags")
+    mechanics = _case_tags(row, "mechanic_tags")
+    keypoints = _json_loads(row["sanitized_keypoints"], [])
+    category_tags = _candidate_category_tags(row)
+    mechanism_role = _mechanism_role(row)
+    prerequisites = _required_prerequisites(row)
+    visibility_bucket = _candidate_visibility_bucket(row)
+    knowledge_scope = _candidate_knowledge_scope(row)
+    compatibility = (
+        "quarantined" if visibility_bucket == "quarantine" else row["compatibility_status"]
+    )
+
+    # The semantic key intentionally excludes source refs, exact keypoints, and case ids. That lets
+    # multiple mature cases support one broad technique while the boundary bucket prevents holdout
+    # or quarantine evidence from being merged into creator-visible candidates.
+    semantic_key = {
+        "bucket": visibility_bucket,
+        "scope": knowledge_scope,
+        "class": _normalized_scalar(row["class"]),
+        "ascendancy": _normalized_scalar(row["ascendancy"]),
+        "main_skill": _normalized_scalar(row["main_skill"]),
+        "damage": damage,
+        "delivery": delivery,
+        "defenses": defenses,
+        "mechanics": mechanics,
+        "stage": row["lifecycle_stage"],
+        "budget": _normalized_scalar(row["budget_band"]),
+        "category_tags": category_tags,
+        "mechanism_role": mechanism_role,
+        "league": _normalized_scalar(row["league"]),
+        "game_patch": _normalized_scalar(row["game_patch"]),
+        "passive_tree_version": _normalized_scalar(row["passive_tree_version"]),
+    }
+    candidate_id = f"tc-{_stable_hash(semantic_key)[:16]}"
+    statement = (
+        f"{row['ascendancy']} {row['main_skill']} mature cases suggest a "
+        f"{mechanism_role} pattern for {row['lifecycle_stage']}."
+    )
+    summary = (
+        f"Research candidate only: {row['class']}/{row['ascendancy']} using "
+        f"{row['main_skill']} with tags {', '.join(category_tags[:8])}. "
+        "Validate with lifecycle gates and PoB before recommendation."
+    )
+    if keypoints:
+        summary += f" Sanitized note count: {len(keypoints)}."
+
+    return {
+        "candidate_id": candidate_id,
+        "knowledge_scope": knowledge_scope,
+        "statement": statement,
+        "summary_for_llm": summary,
+        "category_tags": category_tags,
+        "lifecycle_stage": row["lifecycle_stage"],
+        "mechanism_role": mechanism_role,
+        "evidence_type": row["evidence_type"],
+        "confidence": "low",
+        "promotion_status": "quarantined" if visibility_bucket == "quarantine" else "candidate",
+        "game_patch": row["game_patch"],
+        "passive_tree_version": row["passive_tree_version"],
+        "league": row["league"],
+        "freshness_status": row["freshness_status"],
+        "compatibility_status": compatibility,
+        "budget_band": row["budget_band"],
+        "pob_modelability": row["pob_modelability"],
+        "required_prerequisites": prerequisites,
+        "starter_risk_reason": _starter_risk_reason(row),
+        "transition_gate_summary": _transition_gate_summary(row, prerequisites),
+        "unsafe_before_stage": _unsafe_before_stage(str(row["lifecycle_stage"])),
+    }
+
+
+def _upsert_candidate(con: sqlite3.Connection, candidate: dict[str, Any], now: str) -> None:
+    con.execute(
+        """
+        INSERT INTO technique_candidates(
+            candidate_id, knowledge_scope, statement, summary_for_llm, category_tags,
+            lifecycle_stage, mechanism_role, evidence_type, source_count, support_count,
+            contradiction_count, confidence, promotion_status, game_patch,
+            passive_tree_version, league, freshness_status, compatibility_status,
+            budget_band, pob_modelability, required_prerequisites, starter_risk_reason,
+            transition_gate_summary, unsafe_before_stage, first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_id) DO UPDATE SET
+            statement = excluded.statement,
+            summary_for_llm = excluded.summary_for_llm,
+            category_tags = excluded.category_tags,
+            lifecycle_stage = excluded.lifecycle_stage,
+            mechanism_role = excluded.mechanism_role,
+            evidence_type = excluded.evidence_type,
+            confidence = excluded.confidence,
+            promotion_status = CASE
+                WHEN technique_candidates.promotion_status IN ('promoted', 'rejected', 'stale')
+                    THEN technique_candidates.promotion_status
+                WHEN excluded.promotion_status = 'quarantined'
+                    THEN 'quarantined'
+                ELSE excluded.promotion_status
+            END,
+            game_patch = excluded.game_patch,
+            passive_tree_version = excluded.passive_tree_version,
+            league = excluded.league,
+            freshness_status = excluded.freshness_status,
+            compatibility_status = excluded.compatibility_status,
+            budget_band = excluded.budget_band,
+            pob_modelability = excluded.pob_modelability,
+            required_prerequisites = excluded.required_prerequisites,
+            starter_risk_reason = excluded.starter_risk_reason,
+            transition_gate_summary = excluded.transition_gate_summary,
+            unsafe_before_stage = excluded.unsafe_before_stage,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (
+            candidate["candidate_id"],
+            candidate["knowledge_scope"],
+            candidate["statement"],
+            candidate["summary_for_llm"],
+            json.dumps(candidate["category_tags"], ensure_ascii=False),
+            candidate["lifecycle_stage"],
+            candidate["mechanism_role"],
+            candidate["evidence_type"],
+            candidate["confidence"],
+            candidate["promotion_status"],
+            candidate["game_patch"],
+            candidate["passive_tree_version"],
+            candidate["league"],
+            candidate["freshness_status"],
+            candidate["compatibility_status"],
+            candidate["budget_band"],
+            candidate["pob_modelability"],
+            json.dumps(candidate["required_prerequisites"], ensure_ascii=False),
+            candidate["starter_risk_reason"],
+            candidate["transition_gate_summary"],
+            candidate["unsafe_before_stage"],
+            now,
+            now,
+        ),
+    )
+
+
+def _upsert_candidate_evidence(
+    con: sqlite3.Connection, row: sqlite3.Row, candidate_id: str, now: str
+) -> str:
+    relation = "supports"
+    evidence_id = f"ev-{_stable_hash({'case_id': row['case_id'], 'relation': relation, 'extraction_method': EXTRACTION_METHOD})[:16]}"
+    creator_visible = 1 if _candidate_visibility_bucket(row) == "creator_context" else 0
+    con.execute(
+        """
+        INSERT INTO candidate_evidence(
+            evidence_id, candidate_id, case_id, source_snapshot_id, source_group_id,
+            relation, visibility, split, knowledge_scope, extraction_method,
+            extractor_version, confidence, creator_visible, created_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(evidence_id) DO UPDATE SET
+            candidate_id = excluded.candidate_id,
+            source_snapshot_id = excluded.source_snapshot_id,
+            source_group_id = excluded.source_group_id,
+            relation = excluded.relation,
+            visibility = excluded.visibility,
+            split = excluded.split,
+            knowledge_scope = excluded.knowledge_scope,
+            extraction_method = excluded.extraction_method,
+            extractor_version = excluded.extractor_version,
+            confidence = excluded.confidence,
+            creator_visible = excluded.creator_visible,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (
+            evidence_id,
+            candidate_id,
+            row["case_id"],
+            row["source_snapshot_id"],
+            row["source_group_id"],
+            relation,
+            row["visibility"],
+            row["split"],
+            row["knowledge_scope"],
+            EXTRACTION_METHOD,
+            EXTRACTOR_VERSION,
+            0.55,
+            creator_visible,
+            now,
+            now,
+        ),
+    )
+    return evidence_id
+
+
+def _delete_stale_candidate_evidence(con: sqlite3.Connection, evidence_ids: set[str]) -> None:
+    """Remove evidence emitted by this extractor when its source case is no longer scanned."""
+    if evidence_ids:
+        placeholders = ",".join("?" for _ in evidence_ids)
+        con.execute(
+            f"""
+            DELETE FROM candidate_evidence
+            WHERE extraction_method = ?
+              AND evidence_id NOT IN ({placeholders})
+            """,
+            (EXTRACTION_METHOD, *sorted(evidence_ids)),
+        )
+        return
+    con.execute(
+        "DELETE FROM candidate_evidence WHERE extraction_method = ?",
+        (EXTRACTION_METHOD,),
+    )
+
+
+def _refresh_candidate_counts(con: sqlite3.Connection) -> None:
+    # Candidate counters are cached projections only. Evidence rows remain the authority so tests
+    # can deliberately corrupt counters and verify the next extraction restores them.
+    con.execute(
+        """
+        UPDATE technique_candidates
+        SET
+            source_count = (
+                SELECT count(DISTINCT ce.source_group_id)
+                FROM candidate_evidence ce
+                WHERE ce.candidate_id = technique_candidates.candidate_id
+                  AND ce.relation = 'supports'
+            ),
+            support_count = (
+                SELECT count(*)
+                FROM candidate_evidence ce
+                WHERE ce.candidate_id = technique_candidates.candidate_id
+                  AND ce.relation = 'supports'
+            ),
+            contradiction_count = (
+                SELECT count(*)
+                FROM candidate_evidence ce
+                WHERE ce.candidate_id = technique_candidates.candidate_id
+                  AND ce.relation = 'contradicts'
+            )
+        """
+    )
+
+
+def extract_technique_candidates(db_path: Path | None = None) -> dict[str, Any]:
+    """Extract low-trust technique candidates from sanitized mature cases.
+
+    Phase 3N.2 deliberately does not expose retrieval or route-synthesis behavior. The function only
+    creates deterministic candidate/evidence rows so later phases can add visibility-safe retrieval.
+    """
+    initialize_store(db_path)
+    con = connect(db_path)
+    try:
+        rows = con.execute("SELECT * FROM mature_build_cases ORDER BY case_id").fetchall()
+        now = _now()
+        candidate_ids: set[str] = set()
+        evidence_ids: set[str] = set()
+        for row in rows:
+            candidate = _candidate_from_case(row)
+            _upsert_candidate(con, candidate, now)
+            evidence_id = _upsert_candidate_evidence(con, row, candidate["candidate_id"], now)
+            candidate_ids.add(candidate["candidate_id"])
+            evidence_ids.add(evidence_id)
+        _delete_stale_candidate_evidence(con, evidence_ids)
+        _refresh_candidate_counts(con)
+        con.commit()
+    finally:
+        con.close()
+    return {
+        "ok": True,
+        "casesScanned": len(rows),
+        "candidatesUpserted": len(candidate_ids),
+        "evidenceUpserted": len(evidence_ids),
+        "extractorVersion": EXTRACTOR_VERSION,
+    }

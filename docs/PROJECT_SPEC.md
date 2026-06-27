@@ -118,6 +118,33 @@ Pre-review fixes folded into the Phase 3N.1 plan:
 - Fixture manifests must use structured popularity/currentness/diversity fields.
 - Seed fixture import must reject `user_feedback_local` even when scoped as `local_user`.
 
+Current Phase 3N.2 target:
+
+- 从已净化成熟案例中确定性抽取 `technique_candidates`。 (implemented, reviewed)
+- 为每个候选写入 `candidate_evidence`，保留 `visibility` / `split` / `knowledge_scope`
+  边界。 (implemented, reviewed)
+- 从 evidence 表回算 `source_count`、`support_count`、`contradiction_count`。 (implemented,
+  reviewed)
+- 推导 `required_prerequisites`、`starter_risk_reason`、`transition_gate_summary` 和
+  `unsafe_before_stage`，用于后续生命周期研究。 (implemented, reviewed)
+- 开发前预审要求：候选 ID 必须包含 creator/evaluator/quarantine 边界 bucket；非 creator
+  候选必须降为 `eval_ephemeral`；同语义跨边界样本必须拆成不同 candidate，避免 holdout
+  证据撑大 creator candidate。 (implemented, reviewed)
+- 代码审查修复：`candidate_evidence.evidence_id` 改为 case 级稳定键
+  `{case_id, relation, extraction_method}`，避免同一 case 从 creator 改 evaluator 时旧
+  creator-visible evidence 残留；candidate upsert 保留已有 `promoted` / `rejected` /
+  `stale` 状态。
+- 不改变 route synthesis、MCP 输出、检索、自动晋升或知识过期行为。
+- 局部技术文档：
+  `docs/architecture/phase-03n2-mature-candidate-extraction.md`；实施计划：
+  `docs/superpowers/plans/2026-06-27-mature-learning-candidate-extraction-3n2.md`。
+- Verification so far: `.\.tools\uv\uv.exe run pytest tests\test_mature_learning.py -q` and
+  `.\scripts\verify.ps1 quick` pass after formatting.
+- Code review and narrow evidence-boundary re-review passed after the stale-evidence fix.
+- Follow-up risks for later slices: Phase 3N.3 retrieval must filter by creator-visible evidence
+  instead of bare candidate rows; zero-support generated candidates should be hidden or cleaned; any
+  future incremental extraction must not reuse the full-scan stale-evidence deletion behavior.
+
 Confirmation gates:
 
 - Ask the user before implementing any active knowledge expiration/downweighting policy.
