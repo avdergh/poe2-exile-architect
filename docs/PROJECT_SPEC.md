@@ -1,6 +1,6 @@
 # PoE2 BD Creator Project Spec
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 This is the local handoff document for context compaction or session switching. It summarizes the
 project goal, completed capabilities, current work, review policy, and likely next backlog. Keep it
@@ -57,29 +57,41 @@ and learn from user feedback without turning unverified anecdotes into durable r
 - Phase 3J: safe meta archetype trend adapter.
 - Phase 3K: feedback-informed lifecycle memory context.
 - Phase 3L: lifecycle route evaluation harness.
+- Phase 3M: lifecycle numeric range evaluation for engine-computed endgame stage snapshots.
 
 ## Current work
 
-### Phase 3M: lifecycle numeric range evaluation
+### Phase 3N: mature build learning pipeline design
 
-Status: completed; focused tests, quick verification, noncompute verification, code review, and
-spec/evidence-boundary review passed after regression fixes.
+Status: design in progress; pre-design subagent review completed; formal design spec drafted in
+`docs/superpowers/specs/2026-06-27-mature-build-learning-design.md`; implementation plan and code
+must wait for user approval of the design.
 
-Goal: extend lifecycle route evaluation so already engine-computed endgame stage snapshots can be
-compared against safe reference numeric distributions without running PoB or copying reference
-builds.
+Goal: add a current-season mature build learning layer that samples popular mature BD cases,
+sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
+prepares a later teacher-student evaluation loop without copying mature builds.
 
 Scope:
 
-- Keep the public MCP function as `evaluate_lifecycle_route`.
-- Add `evidenceReview.numericRangeReview` to the existing evaluation output.
-- Compare only endgame stages with stage-local `engine-computed` verification observations.
-- Accept safe reference distributions from `numericRanges` or existing `benchmark_build` output.
-- Keep numeric range input separate from cohort alignment input; numeric-only profiles must not
-  replace route `cohortAnalysis`.
-- Compare `FullDPS` only when an explicit `FullDPS` reference range exists.
-- Do not run PoB compute, network fetches, or memory writes.
-- Treat below-range values as calibration warnings, not permission to copy reference builds.
+- Use SQLite as the trusted fact store for mature learning data, with JSON payload fields, edge
+  tables for graph-like relationships, and later optional FTS/vector recall as derived retrieval
+  layers.
+- Store source snapshots, sanitized mature build cases, technique candidates, and technique edges.
+- Preserve `creator_visible` / `evaluator_only` and `train_context` / `eval_holdout` boundaries so
+  Phase 3O can evaluate generated routes without leaking answers to the creator.
+- Add multi-dimensional tags for passive tree, gear, skills, defenses, scaling, sustain, lifecycle
+  stage, mechanism role, source evidence, budget, and PoB modelability.
+- Keep user feedback local; do not write user-specific lessons into global seed knowledge.
+- Do not auto-promote candidates, alter route synthesis, or implement active knowledge expiration in
+  Phase 3N.
+
+Confirmation gates:
+
+- Ask the user before implementing any active knowledge expiration/downweighting policy.
+- Ask the user before adding an automated live periodic fetcher.
+- Ask the user before using mature candidates to directly influence route synthesis.
+- Ask the user before auto-promoting candidates to durable technique cards.
+- Ask the user before adding vector DB or external graph DB infrastructure.
 
 ## Review and verification policy
 
@@ -103,6 +115,10 @@ Scope:
 
 - Mature build sample ingestion: safe, fresh provider/corpus pipeline for poe.ninja/pobb.in/forum
   samples without copying raw build content into recommendations.
+- Teacher-student mature build evaluation loop: creator subagent generates lifecycle routes from
+  sanitized briefs; evaluator compares against held-out mature evidence and distills gap candidates.
+- Candidate promotion and revalidation: promote only with multi-source evidence, engine delta, or
+  explicit review; stale/downweight strategy requires user confirmation.
 - Passive tree research: graph/search strategy for large passive tree, non-connected selections,
   jewel radius effects, and threshold interactions.
 - Technique memory relevance: cap/sort durable technique cards by patch compatibility and route
