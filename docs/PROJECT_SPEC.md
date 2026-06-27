@@ -76,7 +76,10 @@ Scope:
 - Use SQLite as the trusted fact store for mature learning data, with JSON payload fields, edge
   tables for graph-like relationships, and later optional FTS/vector recall as derived retrieval
   layers.
-- Store source snapshots, sanitized mature build cases, technique candidates, and technique edges.
+- Store source groups, source snapshots, sanitized mature build cases, candidate evidence,
+  technique candidates, and technique edges.
+- Require explicit popular/latest sampling eligibility, fixture provenance manifests, sanitizer
+  allowlists, and copyability/reconstruction tests before ingesting mature samples.
 - Preserve `creator_visible` / `evaluator_only` and `train_context` / `eval_holdout` boundaries so
   Phase 3O can evaluate generated routes without leaking answers to the creator.
 - Add multi-dimensional tags for passive tree, gear, skills, defenses, scaling, sustain, lifecycle
@@ -84,6 +87,8 @@ Scope:
 - Keep user feedback local; do not write user-specific lessons into global seed knowledge.
 - Do not auto-promote candidates, alter route synthesis, or implement active knowledge expiration in
   Phase 3N.
+- Split Phase 3N into smaller slices: schema/sanitizer/fixtures, deterministic candidate extraction
+  and evidence bridge, retrieval/FTS/provenance, then optional edge population.
 
 Confirmation gates:
 
