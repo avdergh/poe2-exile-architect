@@ -1715,7 +1715,7 @@ Expected: commit succeeds.
 - Modify: `docs/PROJECT_SPEC.md`
 - Modify: `docs/superpowers/plans/2026-06-27-mature-build-learning-3n1.md`
 
-- [ ] **Step 1: Add failing boundary tests**
+- [x] **Step 1: Add failing boundary tests**
 
 Append these tests to `tests/test_mature_learning.py`:
 
@@ -1781,7 +1781,7 @@ def test_expiration_metadata_is_inert_in_phase_3n1(tmp_path):
 
 `import json` should already be present from the Task 2 test scaffold.
 
-- [ ] **Step 2: Run RED or confirm existing GREEN coverage**
+- [x] **Step 2: Run RED or confirm existing GREEN coverage**
 
 Run:
 
@@ -1793,7 +1793,7 @@ Expected: If the earlier implementation already covers these boundaries, this ma
 immediately. If any test fails, implement only the missing boundary behavior described by the
 failure.
 
-- [ ] **Step 3: Confirm no route synthesis or MCP surface changes**
+- [x] **Step 3: Confirm no route synthesis or MCP surface changes**
 
 Do not add route synthesis hooks, MCP tools, ranking, or retrieval helpers in this task. This slice
 must not modify `server/main.py` or lifecycle route synthesis modules. Run:
@@ -1812,7 +1812,7 @@ server/knowledge/mature_learning.py
 If `server/main.py`, `server/knowledge/lifecycle.py`, or retrieval/ranking modules appear in the
 diff, stop and remove that behavior from this slice.
 
-- [ ] **Step 4: Update project spec completion map**
+- [x] **Step 4: Update project spec completion map**
 
 In `docs/PROJECT_SPEC.md`, add Phase 3N.1 to the completed or in-progress capability map after the
 tests pass. State explicitly:
@@ -1822,7 +1822,7 @@ tests pass. State explicitly:
 - expiration fields are inert;
 - candidate extraction/retrieval/route influence remain pending.
 
-- [ ] **Step 5: Run focused GREEN**
+- [x] **Step 5: Run focused GREEN**
 
 Run:
 

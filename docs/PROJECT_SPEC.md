@@ -72,7 +72,8 @@ into the plan. Task 1 local architecture documentation has started in
 `docs/architecture/phase-03n1-mature-build-learning-store.md`. Task 2 SQLite schema/path work is
 implemented with focused tests passing. Task 3 sanitizer/copyability guard is implemented with
 focused tests passing. Task 4 structured fixture manifest and deterministic import are implemented
-with focused tests passing.
+with focused tests passing. Task 5 boundary tests for visibility/scope/copy-safety/inert expiration
+are implemented with focused tests passing, and no route/MCP surface files are touched.
 
 Goal: add a current-season mature build learning layer that samples popular mature BD cases,
 sanitizes them, stores structured technique candidates with provenance/tags/freshness metadata, and
@@ -103,8 +104,8 @@ Current Phase 3N.1 target:
 - Add a tiny curated fixture manifest and deterministic sanitized fixture import. (implemented)
 - Add an allowlist sanitizer and copyability/reconstruction tests. (implemented)
 - Enforce `visibility` / `split` / `knowledge_scope` boundaries and prove local user feedback
-  cannot enter global seed knowledge.
-- Keep expiration metadata inert and do not change route synthesis behavior.
+  cannot enter global seed knowledge. (implemented)
+- Keep expiration metadata inert and do not change route synthesis behavior. (implemented)
 
 Pre-review fixes folded into the Phase 3N.1 plan:
 

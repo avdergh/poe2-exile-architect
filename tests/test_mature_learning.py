@@ -480,3 +480,62 @@ def test_seed_fixture_import_rejects_user_feedback_even_when_local_scope(tmp_pat
     assert result["ok"] is False
     assert result["importedCases"] == 0
     assert result["rejected"][0]["error"] == "seed_fixture_cannot_use_user_feedback"
+
+
+def test_invalid_visibility_split_is_rejected_by_sanitizer():
+    result = mature_learning.sanitize_mature_case(
+        _raw_case(visibility="creator_visible", split="eval_holdout")
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_visibility_split"
+
+
+def test_user_feedback_local_cannot_enter_global_seed():
+    result = mature_learning.sanitize_mature_case(
+        _raw_case(evidenceType="user_feedback_local", knowledgeScope="global_seed")
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "local_feedback_must_stay_local"
+
+
+def test_persisted_fixture_rows_do_not_contain_raw_copyable_content(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    raw = _raw_case(
+        sourceRef="fixture://safe-case",
+        keypoints=["Broad coarse keypoint about an endgame-only scaling lane."],
+    )
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "copy-safety", "cases": [raw]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+
+    result = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+
+    assert result["ok"] is True
+    raw_db_bytes = db_path.read_bytes()
+    assert b"pobCode" not in raw_db_bytes
+    assert b"passiveTree" not in raw_db_bytes
+    assert b"Ring 1" not in raw_db_bytes
+    assert b"fullGemLinks" not in raw_db_bytes
+
+
+def test_expiration_metadata_is_inert_in_phase_3n1(tmp_path):
+    fixture_path = tmp_path / "fixtures.json"
+    raw = _raw_case(freshnessStatus="stale", compatibilityStatus="stale")
+    fixture_path.write_text(
+        json.dumps({"schemaVersion": 1, "fixtureSet": "stale-inert", "cases": [raw]}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "mature.sqlite"
+
+    result = mature_learning.import_fixture_file(fixture_path, db_path=db_path)
+
+    assert result["ok"] is True
+    con = sqlite3.connect(db_path)
+    row = con.execute(
+        "SELECT freshness_status, compatibility_status FROM mature_build_cases"
+    ).fetchone()
+    assert tuple(row) == ("stale", "stale")
