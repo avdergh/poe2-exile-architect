@@ -48,7 +48,7 @@ def validate_sample_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
             "paths": forbidden_paths,
         }
 
-    copyability_flags = copy_safety.copyability_flags(manifest, long_text_limit=1600)
+    copyability_flags = copy_safety.copyability_flags(manifest)
     if copyability_flags:
         return {
             "ok": False,

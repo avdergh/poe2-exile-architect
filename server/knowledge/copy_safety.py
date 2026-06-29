@@ -36,8 +36,8 @@ def find_forbidden_paths(value: Any, *, path: str = "") -> list[str]:
     return sorted(found)
 
 
-def copyability_flags(value: Any, *, long_text_limit: int = 5000) -> list[str]:
-    """Return conservative copyability flags for free-text payloads."""
+def copyability_flags(value: Any) -> list[str]:
+    """Return conservative copyability flags for reconstructable build details."""
     text = "\n".join(all_text(value))
     lower = text.lower()
     flags: set[str] = set()
@@ -63,8 +63,6 @@ def copyability_flags(value: Any, *, long_text_limit: int = 5000) -> list[str]:
         lower,
     ):
         flags.add("slot_exact_gear_like")
-    if len(text) > long_text_limit:
-        flags.add("long_raw_text_like")
     return sorted(flags)
 
 
