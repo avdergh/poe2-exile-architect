@@ -19,3 +19,11 @@ def test_verification_script_exposes_layered_profiles():
     assert "tests/test_server.py" in script
     assert "--ignore=tests/test_compute.py" in script
     assert "tests/test_compute.py" in script
+
+
+def test_compute_profile_documents_long_runtime_timeout_budget():
+    script = Path("scripts/verify.ps1").read_text(encoding="utf-8")
+
+    assert "$ComputePytestTimeoutSeconds = 1800" in script
+    assert "$ComputeMinimumOuterTimeoutMs = 1800000" in script
+    assert "--timeout=$ComputePytestTimeoutSeconds" in script

@@ -54,17 +54,64 @@ end
 -- helpers
 -- ---------------------------------------------------------------------------
 local DEFAULT_STATS = {
-	"TotalDPS", "FullDPS", "CombinedDPS", "AverageDamage", "Speed", "HitChance",
-	"CritChance", "CritMultiplier", "ManaCost", "Life", "Mana", "EnergyShield",
-	"TotalEHP", "Ward", "Armour", "Evasion", "Str", "Dex", "Int", "ProjectileCount",
+	"TotalDPS", "FullDPS", "CombinedDPS", "AverageDamage", "Speed", "MovementSpeedMod",
+	"EffectiveMovementSpeedMod", "MovementSpeedWhileUsingSkill", "HitChance",
+	"CritChance", "CritMultiplier", "ManaCost", "Life", "LifeUnreserved", "LifeReserved",
+	"LifeUnreservedPercent", "Mana", "ManaUnreserved", "ManaUnreservedPercent", "EnergyShield",
+	"LifeRegenRecovery", "LifeLeechGainRate",
+	"LifeOnHitRate", "LifeLeechGainPerHit", "LifeRecharge", "EnergyShieldRegenRecovery",
+	"EnergyShieldLeechGainRate", "EnergyShieldOnHitRate", "EnergyShieldRecharge",
+	"ManaRegenRecovery", "ManaLeechGainRate", "ManaLeechGainPerHit", "ManaOnHitRate",
+	"NetManaRegen", "ExtraPoints", "WeaponSetPassivePoints", "PassivePointsToWeaponSetPoints",
+	"TotalEHP", "Ward", "Armour", "Evasion", "Str", "Dex", "Int", "ReqStr", "ReqDex", "ReqInt",
+	"Spirit", "SpiritReserved", "SpiritUnreserved", "SpiritUnreservedPercent", "ProjectileCount",
+	"EvadeChance", "MeleeEvadeChance", "ProjectileEvadeChance", "SpellEvadeChance",
+	"SpellProjectileEvadeChance", "AvoidAllDamageFromHitsChance", "AvoidPhysicalDamageChance",
+	"AvoidFireDamageChance", "AvoidColdDamageChance", "AvoidLightningDamageChance",
+	"AvoidChaosDamageChance", "AvoidProjectilesChance", "BlockChance", "SpellBlockChance",
+	"EffectiveBlockChance", "EffectiveSpellBlockChance", "EffectiveAverageBlockChance",
+	"SpellSuppressionChance", "EffectiveSpellSuppressionChance",
+	"MinionCombinedDPS", "MinionTotalDPS", "ActiveMinionLimit",
 }
+
+local function asNumber(v)
+	if type(v) == "number" then
+		return v
+	elseif type(v) == "string" then
+		return tonumber(v) or 0
+	elseif type(v) == "boolean" then
+		return v and 1 or 0
+	end
+	return 0
+end
+
+local function outputValue(out, key)
+	out = out or {}
+	local v = out[key]
+	if v ~= nil then
+		return v
+	end
+	local minion = out.Minion
+	if type(minion) == "table" then
+		if key == "MinionCombinedDPS" then
+			return minion.CombinedDPS
+		elseif key == "MinionTotalDPS" then
+			return minion.TotalDPS
+		elseif key == "ActiveMinionLimit" then
+			return minion.ActiveMinionLimit or out.ActiveMinionLimit
+		elseif minion[key] ~= nil then
+			return minion[key]
+		end
+	end
+	return nil
+end
 
 local function collectStats(keys)
 	local out = (build.calcsTab and build.calcsTab.mainOutput) or {}
 	local res = {}
 	local list = (type(keys) == "table") and keys or DEFAULT_STATS
 	for _, k in ipairs(list) do
-		local v = out[k]
+		local v = outputValue(out, k)
 		local t = type(v)
 		if t == "number" or t == "string" or t == "boolean" then
 			res[k] = v
@@ -86,18 +133,155 @@ local function availablePoints()
 			qp = act.questPoints or qp
 		end
 	end
-	return math.max(0, level - 1 + qp)
+	local out = (build.calcsTab and build.calcsTab.mainOutput) or {}
+	return math.max(0, level - 1 + qp + asNumber(out.ExtraPoints))
 end
 
-local function mainSkillName()
-	local sg = build.skillsTab.socketGroupList[build.mainSocketGroup or 1]
-	if sg and sg.displaySkillList and sg.mainActiveSkill then
-		local s = sg.displaySkillList[sg.mainActiveSkill]
+local function skillNameAt(groupIndex, activeIndex)
+	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
+	if sg and sg.displaySkillList then
+		local s = sg.displaySkillList[activeIndex or sg.mainActiveSkill or 1]
 		if s and s.activeEffect and s.activeEffect.grantedEffect then
 			return s.activeEffect.grantedEffect.name
 		end
 	end
 	return nil
+end
+
+local function mainSkillName()
+	return skillNameAt(build.mainSocketGroup or 1)
+end
+
+local function gemSummaryForSocketGroup(groupIndex)
+	local gems = {}
+	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
+	if sg then
+		for _, g in ipairs(sg.gemList or {}) do
+			local nm = g.nameSpec
+			if (not nm or nm == "") and g.gemData and g.gemData.grantedEffect then
+				nm = g.gemData.grantedEffect.name
+			end
+			if nm and nm ~= "" then
+				local ge = (g.gemData and g.gemData.grantedEffect) or g.grantedEffect
+				local isSupport = (ge and ge.support) or (g.gemData and g.gemData.tags and g.gemData.tags.support) or false
+				table.insert(gems, {
+					name = nm,
+					level = g.level,
+					quality = g.quality,
+					isSupport = isSupport and true or false,
+					isActive = not isSupport,
+					supportKnown = isSupport and true or false,
+				})
+			end
+		end
+	end
+	return gems
+end
+
+local function sortedKeys(map)
+	local out = {}
+	if type(map) == "table" then
+		for key, value in pairs(map) do
+			if value then
+				out[#out + 1] = tostring(key)
+			end
+		end
+	end
+	table.sort(out)
+	return out
+end
+
+local function addUnique(list, seen, value)
+	if value and value ~= "" and not seen[value] then
+		seen[value] = true
+		list[#list + 1] = value
+	end
+end
+
+local function activeWeaponTypes(active)
+	local typesByRequirement = {}
+	local function addRequirement(types)
+		local keys = sortedKeys(types)
+		if #keys > 0 then
+			typesByRequirement[#typesByRequirement + 1] = keys
+		end
+	end
+	local ge = active and active.activeEffect and active.activeEffect.grantedEffect
+	addRequirement(ge and ge.weaponTypes)
+	for _, effect in ipairs((active and active.supportList) or {}) do
+		local supportGe = effect and effect.grantedEffect
+		if supportGe and supportGe.support and supportGe.weaponTypes then
+			addRequirement(supportGe.weaponTypes)
+		end
+	end
+	local flat, seen = {}, {}
+	for _, group in ipairs(typesByRequirement) do
+		for _, weaponType in ipairs(group) do
+			addUnique(flat, seen, weaponType)
+		end
+	end
+	table.sort(flat)
+	return flat, typesByRequirement
+end
+
+local function equippedWeaponTypes()
+	local env = build.calcsTab and build.calcsTab.mainEnv
+	local actor = env and env.player
+	local out, seen = {}, {}
+	for _, weaponData in ipairs({ actor and actor.weaponData1, actor and actor.weaponData2 }) do
+		if weaponData then
+			addUnique(out, seen, weaponData.type ~= "None" and weaponData.type or nil)
+			if weaponData.countsAsAll1H then
+				for _, weaponType in ipairs({ "Claw", "Dagger", "One Hand Axe", "One Hand Mace", "One Hand Sword", "Spear" }) do
+					addUnique(out, seen, weaponType)
+				end
+			end
+			if type(weaponData.asThoughUsing) == "table" then
+				for weaponType, enabled in pairs(weaponData.asThoughUsing) do
+					if enabled then
+						addUnique(out, seen, tostring(weaponType))
+					end
+				end
+			end
+		end
+	end
+	local useSecond = build.itemsTab and build.itemsTab.activeItemSet
+		and build.itemsTab.activeItemSet.useSecondWeaponSet
+	local weaponSlots = useSecond and { "Weapon 1 Swap", "Weapon 2 Swap" } or { "Weapon 1", "Weapon 2" }
+	for _, slotName in ipairs(weaponSlots) do
+		local slot = build.itemsTab and build.itemsTab.slots and build.itemsTab.slots[slotName]
+		local item = slot and slot.selItemId and slot.selItemId ~= 0 and build.itemsTab.items[slot.selItemId]
+		if item and item.base and item.base.type then
+			addUnique(out, seen, item.base.type)
+		end
+	end
+	table.sort(out)
+	return out
+end
+
+local function activeWeaponCheck(groupIndex, activeIndex)
+	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
+	activeIndex = activeIndex or (sg and (sg.mainActiveSkill or 1))
+	local active = sg and sg.displaySkillList and sg.displaySkillList[activeIndex]
+	if not active then
+		return nil
+	end
+	local flatTypes, groupedTypes = activeWeaponTypes(active)
+	local disableReason = active.disableReason
+	if not disableReason and active.activeEffect and active.activeEffect.statSetCalcs then
+		local flags = active.activeEffect.statSetCalcs.skillFlags
+		if flags and flags.disable then
+			disableReason = active.disableReason or "skill disabled by PoB"
+		end
+	end
+	return {
+		skillName = skillNameAt(groupIndex, activeIndex),
+		weaponTypes = flatTypes,
+		weaponTypeRequirements = groupedTypes,
+		equippedWeaponTypes = equippedWeaponTypes(),
+		disableReason = disableReason,
+		compatible = not disableReason,
+	}
 end
 
 -- An Attack skill computes ~no damage without a weapon; flag it so a 0-DPS result from a fresh
@@ -241,6 +425,312 @@ local function dpsNoteFor(out)
 	return nil
 end
 
+local selectMainSocketGroup
+
+local function socketGroupActiveGemCount(sg, activeIndex, active)
+	if not sg then
+		return 1
+	end
+	if sg.groupCount then
+		local groupCount = asNumber(sg.groupCount)
+		if groupCount > 0 then
+			return groupCount
+		end
+	end
+	local granted = active and active.activeEffect and active.activeEffect.grantedEffect
+	if granted and sg.gemList then
+		for _, gemData in ipairs(sg.gemList) do
+			local gd = gemData.gemData
+			if gd then
+				if gd.vaalGem and gd.grantedEffectList then
+					if granted == gd.grantedEffectList[1] or granted == gd.grantedEffectList[2] then
+						return asNumber(gemData.count) > 0 and asNumber(gemData.count) or 1
+					end
+				elseif (gd.grantedEffect and granted == gd.grantedEffect and not gd.grantedEffect.support)
+					or (gd.additionalGrantedEffects and isValueInArray(gd.additionalGrantedEffects, granted)) then
+					return asNumber(gemData.count) > 0 and asNumber(gemData.count) or 1
+				end
+			end
+		end
+	end
+	local seenActive = 0
+	for _, gemData in ipairs(sg.gemList or {}) do
+		local gd = gemData.gemData
+		local isSupport = gd and gd.grantedEffect and gd.grantedEffect.support
+		if not isSupport then
+			seenActive = seenActive + 1
+			if seenActive == (activeIndex or 1) then
+				local count = asNumber(gemData.count)
+				return count > 0 and count or 1
+			end
+		end
+	end
+	return 1
+end
+
+local function activeSkillSummary(groupIndex, activeIndex)
+	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
+	activeIndex = activeIndex or (sg and (sg.mainActiveSkill or 1))
+	local active = sg and sg.displaySkillList and sg.displaySkillList[activeIndex]
+	local ge = active and active.activeEffect and active.activeEffect.grantedEffect
+	local activeSkillCount = 1
+	local activeSkillCountAvailable = false
+	if active and calcs and calcs.getActiveSkillCount then
+		local ok, count = pcall(calcs.getActiveSkillCount, active)
+		if ok then
+			activeSkillCount = asNumber(count)
+			if activeSkillCount <= 0 then
+				activeSkillCount = 1
+			end
+			activeSkillCountAvailable = true
+		end
+	end
+	local fallbackCount = socketGroupActiveGemCount(sg, activeIndex, active)
+	if fallbackCount > activeSkillCount then
+		activeSkillCount = fallbackCount
+		activeSkillCountAvailable = true
+	end
+	local tags = {}
+	local utilityTags = {}
+	if ge and ge.skillTypes and type(SkillType) == "table" then
+		for _, name in ipairs({
+			"Attack",
+			"Spell",
+			"Damage",
+			"DamageOverTime",
+			"Minion",
+			"Buff",
+			"Aura",
+			"Herald",
+			"HasReservation",
+			"Projectile",
+			"Hex",
+			"Mark",
+			"Warcry",
+			"Travel",
+			"Banner",
+		}) do
+			if SkillType[name] and ge.skillTypes[SkillType[name]] then
+				tags[#tags + 1] = name
+			end
+		end
+	end
+	local function hasSkillTag(name)
+		return ge and ge.skillTypes and type(SkillType) == "table" and SkillType[name] and ge.skillTypes[SkillType[name]]
+	end
+	if hasSkillTag("Buff") then utilityTags[#utilityTags + 1] = "Buff" end
+	if hasSkillTag("Aura") then utilityTags[#utilityTags + 1] = "Aura" end
+	if hasSkillTag("Herald") then utilityTags[#utilityTags + 1] = "Herald" end
+	if hasSkillTag("HasReservation") then utilityTags[#utilityTags + 1] = "HasReservation" end
+	if hasSkillTag("Hex") then utilityTags[#utilityTags + 1] = "Hex" end
+	if hasSkillTag("Mark") then utilityTags[#utilityTags + 1] = "Mark" end
+	if hasSkillTag("Warcry") then utilityTags[#utilityTags + 1] = "Warcry" end
+	if hasSkillTag("Travel") then utilityTags[#utilityTags + 1] = "Travel" end
+	if hasSkillTag("Banner") then utilityTags[#utilityTags + 1] = "Banner" end
+	local hasDirectDamageTag = hasSkillTag("Damage") or hasSkillTag("DamageOverTime") or hasSkillTag("Attack") or hasSkillTag("Minion")
+	local utilityOnly = (#utilityTags > 0) and not hasDirectDamageTag
+	return {
+		groupIndex = groupIndex or build.mainSocketGroup or 1,
+		activeIndex = activeIndex,
+		skillName = skillNameAt(groupIndex, activeIndex),
+		tags = tags,
+		utilityTags = utilityTags,
+		isMinion = ge and hasType(ge, "Minion") or false,
+		isDamageTagged = ge and (hasType(ge, "Damage") or hasType(ge, "DamageOverTime") or hasType(ge, "Attack") or hasType(ge, "Minion")) or false,
+		utilityOnly = utilityOnly,
+		activeSkillCount = activeSkillCount,
+		activeSkillCountAvailable = activeSkillCountAvailable,
+		weaponCheck = activeWeaponCheck(groupIndex, activeIndex),
+	}
+end
+
+local function isBetterJudgeCandidate(candidate, best)
+	if not best then
+		return true
+	end
+	if candidate.dps ~= best.dps then
+		return candidate.dps > best.dps
+	end
+	local candidateUtility = candidate.utilityOnly and 1 or 0
+	local bestUtility = best.utilityOnly and 1 or 0
+	if candidateUtility ~= bestUtility then
+		return candidateUtility < bestUtility
+	end
+	local candidateDirect = candidate.hasDirectDamageTag and 1 or 0
+	local bestDirect = best.hasDirectDamageTag and 1 or 0
+	if candidateDirect ~= bestDirect then
+		return candidateDirect > bestDirect
+	end
+	return (candidate.activeIndex or 0) > (best.activeIndex or 0)
+end
+
+local function selectedDamageMetric(out, allowFullDPS, allowMinionOutput)
+	out = out or {}
+	local candidates = {
+		{ key = "CombinedDPS", value = asNumber(out.CombinedDPS) },
+		{ key = "WithPoisonDPS", value = asNumber(out.WithPoisonDPS) },
+		{ key = "WithIgniteDPS", value = asNumber(out.WithIgniteDPS) },
+		{ key = "WithBleedDPS", value = asNumber(out.WithBleedDPS) },
+		{ key = "WithImpaleDPS", value = asNumber(out.WithImpaleDPS) },
+		{ key = "WithDotDPS", value = asNumber(out.WithDotDPS) },
+		{ key = "TotalDPS", value = asNumber(out.TotalDPS) },
+		{ key = "TotalDot", value = asNumber(out.TotalDot) },
+		{ key = "TotalDotDPS", value = asNumber(out.TotalDotDPS) },
+	}
+	if allowMinionOutput then
+		candidates[#candidates + 1] = { key = "MinionCombinedDPS", value = asNumber(outputValue(out, "MinionCombinedDPS")) }
+		candidates[#candidates + 1] = { key = "MinionTotalDPS", value = asNumber(outputValue(out, "MinionTotalDPS")) }
+	end
+	if allowFullDPS then
+		table.insert(candidates, 1, { key = "FullDPS", value = asNumber(out.FullDPS) })
+	end
+	local best = { key = "TotalDPS", value = 0 }
+	for _, candidate in ipairs(candidates) do
+		if candidate.value and candidate.value > best.value then
+			best = candidate
+		end
+	end
+	return best
+end
+
+local function computeJudgeSelectedSkill()
+	local list = build.skillsTab.socketGroupList or {}
+	local originalGroup = build.mainSocketGroup or 1
+	local originalActive = {}
+	local originalFullDPS = {}
+	for i, sg in ipairs(list) do
+		originalActive[i] = sg.mainActiveSkill
+		originalFullDPS[i] = sg.includeInFullDPS
+	end
+	local best = nil
+	for i, sg in ipairs(list) do
+		if sg and sg.enabled ~= false and sg.displaySkillList and #sg.displaySkillList > 0 then
+			for activeIndex = 1, #sg.displaySkillList do
+				for j, other in ipairs(list) do
+					other.includeInFullDPS = (j == i)
+				end
+				selectMainSocketGroup(i, activeIndex)
+				local out = (build.calcsTab and build.calcsTab.mainOutput) or {}
+				local summary = activeSkillSummary(i, activeIndex)
+				local metric = selectedDamageMetric(out, true, summary.isMinion)
+				local rawValue = metric.value or 0
+				local effectiveValue = rawValue
+				local activeMinionLimit = asNumber(outputValue(out, "ActiveMinionLimit"))
+				local isMinionMetric = metric.key == "MinionCombinedDPS" or metric.key == "MinionTotalDPS"
+				local isMinionCandidate = summary.isMinion or isMinionMetric
+				local caveats = {}
+				if isMinionMetric and metric.key ~= "FullDPS" then
+					if summary.activeSkillCountAvailable and summary.activeSkillCount > 0 then
+						effectiveValue = rawValue * summary.activeSkillCount
+						caveats[#caveats + 1] = "minion_count_multiplier_caveat"
+					elseif activeMinionLimit > 0 then
+						effectiveValue = rawValue * activeMinionLimit
+						caveats[#caveats + 1] = "minion_count_multiplier_caveat"
+					end
+				end
+				local value = effectiveValue
+				if value > 0 or summary.isDamageTagged then
+					local candidate = {
+						groupIndex = i,
+						activeIndex = summary.activeIndex,
+						skillName = summary.skillName,
+						dps = value,
+						rawDps = rawValue,
+						effectiveDps = effectiveValue,
+						sourceMetric = metric.key,
+						projectileCount = asNumber(out.ProjectileCount),
+						activeSkillCount = summary.activeSkillCount,
+						tags = summary.tags,
+						utilityTags = summary.utilityTags,
+						utilityOnly = summary.utilityOnly,
+						hasDirectDamageTag = summary.isDamageTagged,
+						weaponCheck = summary.weaponCheck,
+						caveats = caveats,
+					}
+					if isMinionCandidate then
+						candidate.isMinion = true
+						candidate.activeMinionLimit = activeMinionLimit
+						candidate.caveats[#candidate.caveats + 1] = "minion_dps_unverified_caveat"
+					end
+					if asNumber(out.ProjectileCount) > 1 and metric.key ~= "FullDPS" then
+						candidate.caveats[#candidate.caveats + 1] = "lower_bound_dps_caveat"
+					end
+					if isBetterJudgeCandidate(candidate, best) then
+						best = candidate
+					end
+				end
+			end
+		end
+	end
+	selectMainSocketGroup(originalGroup, originalActive[originalGroup])
+	for i, sg in ipairs(list) do
+		if sg and originalActive[i] then
+			sg.mainActiveSkill = originalActive[i]
+			sg.mainActiveSkillCalcs = originalActive[i]
+		end
+		if sg then
+			sg.includeInFullDPS = originalFullDPS[i]
+		end
+	end
+	runCallback("OnFrame")
+	if best and best.groupIndex ~= originalGroup then
+		best.caveats[#best.caveats + 1] = "auto_selected_damage_skill_caveat"
+	end
+	return best
+end
+
+local function computeJudgeSkillCandidates()
+	local list = build.skillsTab.socketGroupList or {}
+	local originalGroup = build.mainSocketGroup or 1
+	local originalActive = {}
+	local originalFullDPS = {}
+	local outCandidates = {}
+	for i, sg in ipairs(list) do
+		originalActive[i] = sg.mainActiveSkill
+		originalFullDPS[i] = sg.includeInFullDPS
+	end
+	for i, sg in ipairs(list) do
+		if sg and sg.enabled ~= false and sg.displaySkillList and #sg.displaySkillList > 0 then
+			for activeIndex = 1, #sg.displaySkillList do
+				for j, other in ipairs(list) do
+					other.includeInFullDPS = (j == i)
+				end
+				selectMainSocketGroup(i, activeIndex)
+				local calcsOut = (build.calcsTab and build.calcsTab.mainOutput) or {}
+				local summary = activeSkillSummary(i, activeIndex)
+				local metric = selectedDamageMetric(calcsOut, true, summary.isMinion)
+				outCandidates[#outCandidates + 1] = {
+					groupIndex = i,
+					activeIndex = activeIndex,
+					skillName = summary.skillName,
+					tags = summary.tags,
+					isDamageTagged = summary.isDamageTagged,
+					isMinion = summary.isMinion,
+					sourceMetric = metric.key,
+					rawMetricValue = metric.value,
+					totalDPS = asNumber(calcsOut.TotalDPS),
+					fullDPS = asNumber(calcsOut.FullDPS),
+					combinedDPS = asNumber(calcsOut.CombinedDPS),
+					projectileCount = asNumber(calcsOut.ProjectileCount),
+					weaponCheck = summary.weaponCheck,
+				}
+			end
+		end
+	end
+	selectMainSocketGroup(originalGroup, originalActive[originalGroup])
+	for i, sg in ipairs(list) do
+		if sg and originalActive[i] then
+			sg.mainActiveSkill = originalActive[i]
+			sg.mainActiveSkillCalcs = originalActive[i]
+		end
+		if sg then
+			sg.includeInFullDPS = originalFullDPS[i]
+		end
+	end
+	runCallback("OnFrame")
+	return outCandidates
+end
+
 -- Standard {mainSkill, stats} response, with a warning attached when one applies.
 local function statResult(keys)
 	local r = { mainSkill = mainSkillName(), stats = collectStats(keys) }
@@ -273,13 +763,14 @@ local function normalizeSkillText(text)
 	return table.concat(lines, "\n")
 end
 
-local function selectMainSocketGroup(index)
+function selectMainSocketGroup(index, activeIndex)
 	index = index or 1
 	build.mainSocketGroup = index
 	local sg = build.skillsTab.socketGroupList[index]
 	if sg then
-		sg.mainActiveSkill = 1
-		sg.mainActiveSkillCalcs = 1
+		local active = activeIndex or 1
+		sg.mainActiveSkill = active
+		sg.mainActiveSkillCalcs = active
 	end
 	if build.calcsTab and build.calcsTab.input then
 		build.calcsTab.input.skill_number = index
@@ -397,7 +888,12 @@ function methods.load_build_xml(p)
 	assert(p and p.xml, "load_build_xml requires params.xml")
 	loadBuildFromXML(p.xml, p.name or "imported")
 	runCallback("OnFrame")
-	return { mainSkill = mainSkillName(), stats = collectStats(p.keys) }
+	return {
+		mainSkill = mainSkillName(),
+		treeVersion = build.spec and build.spec.treeVersion,
+		latestTreeVersion = latestTreeVersion,
+		stats = collectStats(p.keys),
+	}
 end
 
 -- Set the build's MAIN skill from PoB's paste format ("<Gem> 20/0  1", one gem per line). This
@@ -481,8 +977,12 @@ function methods.add_skill_group(p)
 end
 
 function methods.set_main_socket_group(p)
-	selectMainSocketGroup(p and p.index or 1)
+	selectMainSocketGroup(p and p.index or 1, p and p.activeIndex or 1)
 	return statResult(p and p.keys)
+end
+
+function methods.debug_judge_skill_candidates()
+	return { candidates = computeJudgeSkillCandidates() }
 end
 
 function methods.get_stats(p)
@@ -848,19 +1348,7 @@ function methods.get_build()
 	table.sort(keystones)
 	table.sort(asc)
 
-	local gems = {}
-	local sg = build.skillsTab.socketGroupList[build.mainSocketGroup or 1]
-	if sg and sg.gemList then
-		for _, g in ipairs(sg.gemList) do
-			local nm = g.nameSpec
-			if (not nm or nm == "") and g.gemData and g.gemData.grantedEffect then
-				nm = g.gemData.grantedEffect.name
-			end
-			if nm and nm ~= "" then
-				table.insert(gems, { name = nm, level = g.level, quality = g.quality })
-			end
-		end
-	end
+	local gems = gemSummaryForSocketGroup(build.mainSocketGroup or 1)
 
 	local gear = {}
 	for slotName, slot in pairs(build.itemsTab.slots) do
@@ -871,27 +1359,57 @@ function methods.get_build()
 		end
 	end
 
-	-- CountAllocNodes returns regular-passive count FIRST, ascendancy SECOND (they're separate point
-	-- budgets in PoE2). pointsUsed/Available are PASSIVE only; ascendancy is its own 8-point pool.
-	local used, ascUsed = spec:CountAllocNodes()
+	-- CountAllocNodes includes nodes allocated to weapon-set variants. PoB's own budget display
+	-- subtracts the shared weapon-set overlap from normal passive usage, then validates each weapon
+	-- set against its separate pool.
+	local used, ascUsed, secondaryAscUsed, socketsUsed, weaponSet1Used, weaponSet2Used = spec:CountAllocNodes()
 	local avail = availablePoints()
-	local unspent = math.max(0, avail - used)
+	local mainOutput = ((build.calcsTab or {}).mainOutput or {})
+	local weaponSetAvail = (build.maxWeaponSets or 0)
+		+ asNumber(mainOutput.PassivePointsToWeaponSetPoints)
+	local normalPassiveUsed = used - math.min(weaponSet1Used or 0, weaponSet2Used or 0)
+	local unspent = math.max(0, avail - normalPassiveUsed)
+	local judgeSelectedSkill = computeJudgeSelectedSkill()
 	local r = {
 		class = spec.curClassName,
 		ascendancy = spec.curAscendClassName,
 		level = build.characterLevel,
+		treeVersion = spec.treeVersion,
+		latestTreeVersion = latestTreeVersion,
 		mainSkill = mainSkillName(),
+		mainSkillWeaponCheck = activeWeaponCheck(build.mainSocketGroup or 1),
+		judgeSelectedSkill = judgeSelectedSkill,
+		judgeSelectedSkillGroup = judgeSelectedSkill and gemSummaryForSocketGroup(judgeSelectedSkill.groupIndex) or nil,
 		mainSkillGroup = gems,
 		notables = notables,
 		keystones = keystones,
 		ascendancyNotables = asc,
 		gear = gear,
 		customMods = (build.configTab and build.configTab.input.customMods) or "",
+		attributes = {
+			strength = asNumber(mainOutput.Str),
+			dexterity = asNumber(mainOutput.Dex),
+			intelligence = asNumber(mainOutput.Int),
+		},
+		attributeRequirements = {
+			strength = asNumber(mainOutput.ReqStr),
+			dexterity = asNumber(mainOutput.ReqDex),
+			intelligence = asNumber(mainOutput.ReqInt),
+		},
+		spiritUsed = asNumber(mainOutput.SpiritReserved),
+		spiritAvailable = asNumber(mainOutput.Spirit),
+		spiritUnreserved = asNumber(mainOutput.SpiritUnreserved),
 		pointsUsed = used,
+		normalPassivePointsUsed = normalPassiveUsed,
 		pointsAvailable = avail,
 		unspentPoints = unspent,
 		ascendancyPointsUsed = ascUsed,
 		ascendancyPointsMax = ASCENDANCY_POINT_MAX,
+		secondaryAscendancyPointsUsed = secondaryAscUsed,
+		socketPointsUsed = socketsUsed,
+		weaponSet1PointsUsed = weaponSet1Used,
+		weaponSet2PointsUsed = weaponSet2Used,
+		weaponSetPointsAvailable = weaponSetAvail,
 		skillGroupCount = #(build.skillsTab.socketGroupList or {}),
 		stats = collectStats(),
 	}
@@ -912,7 +1430,7 @@ function methods.get_build()
 			.. " passive points are unspent (available "
 			.. avail
 			.. ", used "
-			.. used
+			.. normalPassiveUsed
 			.. "). Allocate them (optimize_passives / alloc_passive) or tell the user why "
 			.. "they're parked — an export with unspent points looks incomplete."
 	end

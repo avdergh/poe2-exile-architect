@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-06-29
+最后更新：2026-06-30
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -35,6 +35,16 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 - 更好的 Spirit、抗性、属性和天赋点预算合法性；
 - 更安全的 non-copyable 知识提取；
 - repair loop 更快收敛。
+
+在这个验证哲学下，Judge 的职责不是“为所有 PoE2 机制强行算出一个看似精确的真 DPS /
+真 EHP”，而是先建立物理边界与证据边界：
+
+- 对已被 Headless PoB 稳定表达、且有明确 provenance 的数值，Judge 可以给出可比较分数；
+- 对 `FullDPS` rollup、召唤/指令复合输出、多段触发链、高规避/条件 sustain 等 PoB 原生表
+  达盲区，Judge 必须优先输出 caveat、confidence 和 reward-strength，而不是伪造高置信度
+  真值；
+- “知道哪些不能装作算准”与“知道哪些可以进入强 reward”本身就是 Phase 1 的核心交付，而
+  不是失败。
 
 ## 系统闭环
 
@@ -96,7 +106,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase | 状态 | 依赖关系 | 概括工作 | 细节文档 |
 | --- | --- | --- | --- | --- |
 | Phase 0 | 已完成 | 无 | 清理旧方向文档，建立中文 spec、phase docs、schema docs，以及双语 architecture。 | `docs/phases/00_cleanup.md` |
-| Phase 1 | 未开始 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
+| Phase 1 | 进行中：代码基线完成，待真实样本人工验收 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
 | Phase 2 | 未开始 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射。 | `docs/phases/02_graph_cold.md` |
 | Phase 3 | 未开始 | Phase 2 | 选择 graph backend，并通过 typed tools 暴露图查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 未开始 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph 和 memory。 | `docs/phases/04_research_memory.md` |
@@ -110,6 +120,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 
 - 不要实现新的数值 BD 引擎。数值声明必须来自 Headless PathOfBuilding-PoE2，或明确标
   记为 unverified/unmodelled。
+- 不要为了降低 gap 数量而发明第二套主观数值真值。对证据不足的 offense / defense /
+  recovery / mobility，只能降低 confidence、限制 reward、或转交后续语义阶段处理。
 - 项目不拥有内部 autonomous LLM provider loop。Agent 工作通过 explicit packets 和
   schemas 交给 Codex、Claude Code 或其他外部成熟 agent。
 - 真实成熟 BD 是研究/校准来源，不是复制模板。
@@ -122,6 +134,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 - Agent 访问图必须使用 typed tools，不能使用 raw graph-query text。
 - 官方 `.build` export 必须有可解析 GGG ID，并明确 unsupported-field caveats。
 - 禁止游戏内交互、overlay、内存读取、自动化或 live-screen parsing。
+- 非常重要的一点！每个阶段的功能开发必须经过E2E测试，且由人类评分通过后才算真正的通过，每个phase的最终产物都必须经过这个过程
 
 ## 验证哲学
 
@@ -140,6 +153,26 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 - repair-loop score improvement；
 - rollback 和 early-stopping behavior；
 - reward-memory A/B uplift。
+
+Judge 的评分语义也必须接受分层验证，而不是只看单一 aggregate：
+
+- legality / validity：是否满足确定性硬约束；
+- raw score vector：PoB 当前可表达的 offense / defense / recovery / mobility；
+- evidence / confidence：这些 raw scores 是否来自 strong evidence、limited evidence、
+  还是 unmodelled / unsupported 机制；
+- reward eligibility：这些分数能否进入后续 comparison、Critic 和 reward memory。
+
+当 raw score 和 evidence / confidence 冲突时，以证据边界为先：宁可保守地把样本归到
+`judge_unsolved_modelability_gap`，也不能把有限证据写成强 reward 事实。
+
+验证耗时也是规格的一部分：
+
+- `quick` / `noncompute` 是日常开发和非引擎回归入口，应避免运行完整 PoB compute golden
+  suite。
+- `compute` / `full` 是重型 Headless PoB 认证入口，在 Windows 本地经常运行 15 分钟以上；
+  执行这些 profile 时，外层命令超时必须至少给到 30 分钟（`1800000ms`）。
+- `scripts/verify.ps1 compute` / `full` 会把 pytest 单测试超时提升到 30 分钟。10 分钟以内的
+  调用工具超时只能说明外层预算不足，不能直接判定 compute suite 失败。
 
 ## 文档模型
 

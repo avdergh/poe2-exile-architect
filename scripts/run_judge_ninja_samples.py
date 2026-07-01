@@ -1,0 +1,525 @@
+"""Run Judge against layered poe.ninja samples for Phase 1 calibration.
+
+This module keeps three responsibilities isolated:
+- list discovery from poe.ninja build pages
+- import-code extraction from rendered build pages
+- Judge execution and self-consistency classification
+
+Raw PoB codes and raw XML stay transient and are never written to the repo.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from server.knowledge import mature_ninja_payload  # noqa: E402
+from server.judge import sample_audit  # noqa: E402
+from server import paths  # noqa: E402
+from scripts.run_judge_user_samples import evaluate_source  # noqa: E402
+
+try:
+    import blackboxprotobuf  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised by runtime path, not unit tests.
+    blackboxprotobuf = None
+
+
+CHARACTER_LINK = re.compile(
+    r"/poe2/builds/(?P<league>[a-z0-9-]+)/character/(?P<account>[^\"'<>/?#]+)/(?P<name>[^\"'<>?#]+)",
+    re.IGNORECASE,
+)
+DEFAULT_BUILD_LIST_URL = "https://poe.ninja/poe2/builds/{league_url}?max-level={max_level}"
+PLAYWRIGHT_PACKAGE_PATH = (
+    Path.home()
+    / "AppData"
+    / "Local"
+    / "OpenAI"
+    / "Codex"
+    / "runtimes"
+    / "cua_node"
+    / "1b23c930bdf84ed6"
+    / "bin"
+    / "node_modules"
+    / "playwright"
+)
+DEFAULT_NODE_EXECUTABLE = (
+    Path.home()
+    / "AppData"
+    / "Local"
+    / "OpenAI"
+    / "Codex"
+    / "runtimes"
+    / "cua_node"
+    / "1b23c930bdf84ed6"
+    / "bin"
+    / "node.exe"
+)
+PLAYWRIGHT_CHROMIUM_PATH = (
+    Path.home()
+    / "AppData"
+    / "Local"
+    / "ms-playwright"
+    / "chromium-1228"
+    / "chrome-win64"
+    / "chrome.exe"
+)
+
+
+class NinjaSampleError(RuntimeError):
+    """Raised when poe.ninja sample discovery or extraction cannot continue."""
+
+
+def extract_character_links_from_rendered_html(
+    page_html: str, *, league_url: str
+) -> list[dict[str, Any]]:
+    if not isinstance(page_html, str) or not page_html.strip():
+        raise NinjaSampleError("page_html_required")
+    row_pattern = re.compile(
+        r"<tr[^>]*>.*?<a href=\"(?P<href>/poe2/builds/"
+        + re.escape(league_url)
+        + r"/character/(?P<account>[^\"/]+)/(?P<name>[^\"?#]+)[^\"]*)\"[^>]*>.*?</a>.*?"
+        r"<td[^>]*>.*?<div[^>]*>(?P<level>\d+)<img[^>]*alt=\"(?P<ascendancy>[^\"]+)\"",
+        re.IGNORECASE | re.DOTALL,
+    )
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for match in row_pattern.finditer(page_html):
+        account = match.group("account")
+        name = match.group("name")
+        key = (account, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "account": account,
+                "name": name,
+                "ascendancy": match.group("ascendancy"),
+                "level": int(match.group("level")),
+                "url": f"https://poe.ninja{html.unescape(match.group('href'))}",
+            }
+        )
+    if out:
+        return out
+
+    for match in CHARACTER_LINK.finditer(page_html):
+        if match.group("league").lower() != league_url.lower():
+            continue
+        account = match.group("account")
+        name = match.group("name")
+        key = (account, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "account": account,
+                "name": name,
+                "url": f"https://poe.ninja{html.unescape(match.group(0))}",
+            }
+        )
+    return out
+
+
+def build_character_url(league_url: str, row: dict[str, Any]) -> str:
+    return (
+        "https://poe.ninja/poe2/builds/"
+        f"{league_url}/character/{quote(str(row['account']))}/{quote(str(row['name']))}"
+    )
+
+
+def sample_rows(
+    rows: list[dict[str, Any]],
+    *,
+    target_count: int,
+    minimum_per_ascendancy: int = 2,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        buckets[str(row.get("ascendancy"))].append(row)
+    for bucket_rows in buckets.values():
+        bucket_rows.sort(key=lambda item: (-int(item.get("level") or 0), item.get("name") or ""))
+
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for ascendancy in sorted(buckets):
+        for row in buckets[ascendancy][:minimum_per_ascendancy]:
+            key = (str(row["account"]), str(row["name"]))
+            if key not in seen and len(selected) < target_count:
+                selected.append(row)
+                seen.add(key)
+
+    if len(selected) >= target_count:
+        return selected[:target_count]
+
+    round_index = minimum_per_ascendancy
+    while len(selected) < target_count:
+        progressed = False
+        for ascendancy in sorted(buckets):
+            bucket = buckets[ascendancy]
+            if round_index >= len(bucket):
+                continue
+            row = bucket[round_index]
+            key = (str(row["account"]), str(row["name"]))
+            if key not in seen:
+                selected.append(row)
+                seen.add(key)
+                progressed = True
+                if len(selected) >= target_count:
+                    break
+        if not progressed:
+            break
+        round_index += 1
+    return selected
+
+
+def extract_import_code_from_rendered_build_page(page_html: str) -> dict[str, Any]:
+    return mature_ninja_payload.extract_import_code_from_rendered_html(page_html)
+
+
+def extract_import_code_from_dom_snapshot(snapshot_text: str) -> dict[str, Any]:
+    return mature_ninja_payload.extract_import_code_from_dom_snapshot(snapshot_text)
+
+
+class PlaywrightHtmlDriver:
+    def __init__(
+        self,
+        *,
+        node_executable: str | Path = DEFAULT_NODE_EXECUTABLE,
+        playwright_package_path: Path = PLAYWRIGHT_PACKAGE_PATH,
+        chromium_path: Path = PLAYWRIGHT_CHROMIUM_PATH,
+    ) -> None:
+        self.node_executable = str(node_executable)
+        self.playwright_package_path = Path(playwright_package_path)
+        self.chromium_path = Path(chromium_path)
+
+    def fetch_html(self, url: str) -> str:
+        if not self.playwright_package_path.exists():
+            raise NinjaSampleError(f"playwright_package_missing:{self.playwright_package_path}")
+        if not self.chromium_path.exists():
+            raise NinjaSampleError(f"chromium_executable_missing:{self.chromium_path}")
+        script = f"""
+const {{ chromium }} = require({json.dumps(str(self.playwright_package_path))});
+(async () => {{
+  const browser = await chromium.launch({{
+    headless: true,
+    executablePath: {json.dumps(str(self.chromium_path))}
+  }});
+  const page = await browser.newPage();
+  await page.goto({json.dumps(url)}, {{ waitUntil: 'domcontentloaded', timeout: 180000 }});
+  await page.waitForTimeout(5000);
+  const html = await page.content();
+  process.stdout.write(html);
+  await browser.close();
+}})().catch(err => {{
+  process.stderr.write(String(err));
+  process.exit(1);
+}});
+""".strip()
+        completed = subprocess.run(
+            [self.node_executable, "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise NinjaSampleError(
+                f"playwright_fetch_failed:{completed.stderr.strip() or completed.stdout.strip()}"
+            )
+        return completed.stdout
+
+
+def evaluate_ninja_sample_row(
+    row: dict[str, Any],
+    *,
+    league_url: str,
+    browser_driver: Any,
+    snapshot_id: str,
+) -> dict[str, Any]:
+    if browser_driver is None:
+        raise NinjaSampleError("browser_driver_required")
+
+    character_url = row.get("url") or build_character_url(league_url, row)
+    page_html = browser_driver.fetch_html(str(character_url))
+    extracted = extract_import_code_from_rendered_build_page(page_html)
+    if not extracted.get("ok"):
+        raise NinjaSampleError(f"import_code_not_found:{character_url}")
+
+    result = evaluate_source(str(extracted["importCode"]), snapshot_id)
+    result["ninjaSample"] = {
+        "account": row.get("account"),
+        "name": row.get("name"),
+        "ascendancy": row.get("ascendancy"),
+        "level": row.get("level"),
+        "characterUrl": character_url,
+        "pob2DeepLink": extracted.get("pob2DeepLink"),
+    }
+    return finalize_sample_classification(result)
+
+
+def evaluate_ninja_sample_row_safely(
+    row: dict[str, Any],
+    *,
+    league_url: str,
+    browser_driver: Any,
+    snapshot_id: str,
+) -> dict[str, Any]:
+    try:
+        return evaluate_ninja_sample_row(
+            row,
+            league_url=league_url,
+            browser_driver=browser_driver,
+            snapshot_id=snapshot_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - batch runner must not abort on one sample.
+        return finalize_sample_classification(
+            {
+                "snapshotId": snapshot_id,
+                "summary": {
+                    "class": None,
+                    "ascendancy": row.get("ascendancy"),
+                    "mainSkill": None,
+                    "level": row.get("level"),
+                },
+                "pass": False,
+                "rewardEligible": False,
+                "rewardStrength": "none",
+                "hardFailures": ["pob_compute_failed"],
+                "physicalInvalidFailures": [],
+                "caveats": ["state_or_import_suspect_caveat", "source_data_problem_caveat"],
+                "modelability": {
+                    "status": "not_modelable",
+                    "coreBlocked": True,
+                    "failureCodes": ["pob_compute_failed"],
+                    "caveats": [],
+                },
+                "aggregateScore": {"value": 0.0},
+                "scoreVector": {
+                    "offense": {"value": 0.0, "blocked": True},
+                    "defense": {"value": 0.0, "blocked": True},
+                    "recovery": {"value": 0.0, "blocked": True},
+                    "mobility": {"value": 0.0, "blocked": True},
+                },
+                "errorKind": type(exc).__name__,
+                "errorSummary": str(exc)[:240],
+                "ninjaSample": {
+                    "account": row.get("account"),
+                    "name": row.get("name"),
+                    "ascendancy": row.get("ascendancy"),
+                    "level": row.get("level"),
+                    "characterUrl": row.get("url") or build_character_url(league_url, row),
+                },
+                "finalClassification": "source_data_problem",
+            }
+        )
+
+
+def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
+    return sample_audit.finalize_sample_classification(sample)
+
+
+def summarize_results(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    return sample_audit.summarize_results(samples)
+
+
+def run_browser_sampled_rows(
+    rows: list[dict[str, Any]],
+    *,
+    league_url: str,
+    browser_driver: Any,
+    snapshot_prefix: str = "ninja_sample",
+) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        result = evaluate_ninja_sample_row_safely(
+            row,
+            league_url=league_url,
+            browser_driver=browser_driver,
+            snapshot_id=f"{snapshot_prefix}_{idx:03d}",
+        )
+        samples.append(result)
+    return {"samples": samples, "summary": summarize_results(samples)}
+
+
+def _sanitize_ninja_report(report: dict[str, Any]) -> dict[str, Any]:
+    samples = []
+    for sample in report.get("samples") or []:
+        score_breakdown = sample.get("scoreBreakdown") or {}
+        offense = score_breakdown.get("offense") or {}
+        defense_model = sample.get("defenseModel") or {}
+        samples.append(
+            {
+                "snapshotId": sample.get("snapshotId"),
+                "summary": sample.get("summary"),
+                "pass": sample.get("pass"),
+                "finalClassification": sample.get("finalClassification"),
+                "scoreReviewNeeded": sample.get("scoreReviewNeeded"),
+                "scoreReviewReasons": sample.get("scoreReviewReasons"),
+                "aggregateScore": sample.get("aggregateScore"),
+                "scoreVector": sample.get("scoreVector"),
+                "offenseEvidence": {
+                    "provenance": offense.get("provenance"),
+                    "evidenceLevel": offense.get("evidenceLevel"),
+                    "sourceMetricDetail": offense.get("sourceMetricDetail"),
+                    "skillName": offense.get("skillName"),
+                    "rawValue": offense.get("rawValue"),
+                },
+                "defenseModel": {
+                    "poolModel": defense_model.get("poolModel"),
+                    "confidence": defense_model.get("confidence"),
+                },
+                "hardFailures": sample.get("hardFailures"),
+                "physicalInvalidFailures": sample.get("physicalInvalidFailures"),
+                "caveats": sample.get("caveats"),
+                "rewardEligible": sample.get("rewardEligible"),
+                "rewardStrength": sample.get("rewardStrength"),
+                "reproducibility": sample.get("reproducibility"),
+                "ninjaSample": {
+                    "ascendancy": (sample.get("ninjaSample") or {}).get("ascendancy"),
+                    "level": (sample.get("ninjaSample") or {}).get("level"),
+                    "characterUrl": (sample.get("ninjaSample") or {}).get("characterUrl"),
+                },
+                "errorKind": sample.get("errorKind"),
+            }
+        )
+    return {
+        "summary": report.get("summary"),
+        "samples": samples,
+    }
+
+
+def write_sanitized_ninja_report(report: dict[str, Any], *, filename: str) -> Path:
+    out_dir = paths.user_data_dir() / "runtime"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+    out_path.write_text(
+        json.dumps(_sanitize_ninja_report(report), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return out_path
+
+
+def write_dual_sanitized_ninja_reports(
+    *,
+    raw_report: dict[str, Any],
+    final_report: dict[str, Any],
+    stem: str,
+) -> tuple[Path, Path]:
+    raw_path = write_sanitized_ninja_report(raw_report, filename=f"{stem}_raw.json")
+    final_path = write_sanitized_ninja_report(final_report, filename=f"{stem}_final.json")
+    return raw_path, final_path
+
+
+def write_combined_calibration_report(
+    *,
+    historical_report: dict[str, Any],
+    ninja_raw_report: dict[str, Any],
+    ninja_final_report: dict[str, Any],
+    stem: str = "judge_phase1_calibration_116",
+) -> tuple[Path, Path]:
+    combined_raw = {
+        "summary": {
+            "historicalCount": len(historical_report.get("samples") or []),
+            "ninjaCount": len(ninja_raw_report.get("samples") or []),
+            "sampleCount": len(historical_report.get("samples") or [])
+            + len(ninja_raw_report.get("samples") or []),
+        },
+        "samples": (historical_report.get("samples") or [])
+        + (ninja_raw_report.get("samples") or []),
+    }
+    combined_final = {
+        "summary": {
+            "historicalCount": len(historical_report.get("samples") or []),
+            "ninjaCount": len(ninja_final_report.get("samples") or []),
+            "sampleCount": len(historical_report.get("samples") or [])
+            + len(ninja_final_report.get("samples") or []),
+        },
+        "samples": (historical_report.get("samples") or [])
+        + (ninja_final_report.get("samples") or []),
+    }
+    return write_dual_sanitized_ninja_reports(
+        raw_report=combined_raw,
+        final_report=combined_final,
+        stem=stem,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--league-url", default="runesofaldur")
+    parser.add_argument("--max-level", type=int, default=98)
+    parser.add_argument("--target-count", type=int, default=100)
+    parser.add_argument("--minimum-per-ascendancy", type=int, default=2)
+    parser.add_argument("--print-only", action="store_true")
+    args = parser.parse_args(argv)
+
+    browser = PlaywrightHtmlDriver()
+    build_list_url = DEFAULT_BUILD_LIST_URL.format(
+        league_url=args.league_url, max_level=args.max_level
+    )
+    build_list_html = browser.fetch_html(build_list_url)
+    discovered = extract_character_links_from_rendered_html(
+        build_list_html, league_url=args.league_url
+    )
+    sampled = sample_rows(
+        discovered,
+        target_count=args.target_count,
+        minimum_per_ascendancy=args.minimum_per_ascendancy,
+    )
+    if args.print_only:
+        print(
+            json.dumps(
+                {"buildListUrl": build_list_url, "sampledRows": sampled},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    report = run_browser_sampled_rows(
+        sampled,
+        league_url=args.league_url,
+        browser_driver=browser,
+    )
+    final_samples = [
+        sample_audit.finalize_sample_classification(sample) for sample in report["samples"]
+    ]
+    final_report = {
+        "samples": final_samples,
+        "summary": sample_audit.summarize_results(final_samples),
+    }
+    write_dual_sanitized_ninja_reports(
+        raw_report=report,
+        final_report=final_report,
+        stem=f"judge_ninja_samples_{args.league_url}_{args.max_level}_{args.target_count}",
+    )
+    print(
+        json.dumps(
+            {
+                "buildListUrl": build_list_url,
+                "sampledRows": sampled,
+                "summary": final_report["summary"],
+                "samples": final_report["samples"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
