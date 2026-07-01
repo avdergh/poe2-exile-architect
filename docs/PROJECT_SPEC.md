@@ -117,7 +117,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | --- | --- | --- | --- | --- |
 | Phase 0 | 已完成 | 无 | 清理旧方向文档，建立中文 spec、phase docs、schema docs，以及双语 architecture。 | `docs/phases/00_cleanup.md` |
 | Phase 1 | 已完成：Judge / modelability 基线、真实样本回归与评分合同收口完成 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
-| Phase 2 | 进行中 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射。 | `docs/phases/02_graph_cold.md` |
+| Phase 2 | 已完成：cold-start 合同、固定 E2E 样例验收与人工评分通过，待提交/合并 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射基础。 | `docs/phases/02_graph_cold.md` |
 | Phase 3 | 未开始 | Phase 2 | 选择 graph backend，并通过 typed tools 暴露图查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 未开始 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph 和 memory。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 未开始 | Phase 1、3、4 | 由外部 Architect Agent 提出方案，确定性 planner/solver 补全天赋、装备、support、Spirit 和合法性。 | `docs/phases/05_generation.md` |

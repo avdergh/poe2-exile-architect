@@ -11,7 +11,10 @@ venv/
 
 # Build artifacts / generated data (corpus is a release asset, not source)
 data/corpus.sqlite
-data/raw/
+data/raw/*
+!data/raw/official/
+data/raw/official/*
+!data/raw/official/inventories.min.json
 *.sqlite-wal
 *.sqlite-shm
 

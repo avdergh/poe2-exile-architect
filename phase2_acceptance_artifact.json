@@ -1,0 +1,1087 @@
+{
+  "bundle": {
+    "sample_count": 19,
+    "family_counts": {
+      "build_resolver_skill_support": 1,
+      "can_roll_mod": 1,
+      "caveat_component_set": 1,
+      "edge_provenance": 1,
+      "gem_grants_skill": 1,
+      "id_mapping_supported": 1,
+      "id_mapping_unsupported": 1,
+      "inventory_slot_mapping": 1,
+      "passive_allocation_options": 1,
+      "passive_allocation_overlay": 1,
+      "requirements_for_component": 1,
+      "resolver_ambiguous_alias": 1,
+      "resolver_missing_node": 1,
+      "resource_profile_for_component": 1,
+      "skill_weapon_requirement": 1,
+      "socket_support_legality": 1,
+      "support_skill_candidate": 1,
+      "unique_base_item": 1,
+      "unique_name_mapping": 1
+    },
+    "samples": [
+      {
+        "family": "gem_grants_skill",
+        "query": {
+          "gem_key": "gem:Metadata/Items/Gems/SkillGemLightningArrow"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "skill_keys": [
+              "skill:LightningArrowPlayer"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "skill_weapon_requirement",
+        "query": {
+          "skill_key": "skill:LightningArrowPlayer"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "weapon_type_keys": [
+              "weapon_type:bow"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "support_skill_candidate",
+        "query": {
+          "fact_type": "support_skill_candidate",
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "skill_key": "skill:LightningArrowPlayer"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+            "skill_key": "skill:LightningArrowPlayer",
+            "candidate_status": "hard_compatible",
+            "matched_skill_types": [
+              "attack",
+              "projectile"
+            ],
+            "shared_tags": []
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "socket_support_legality",
+        "query": {
+          "fact_type": "socket_support_legality",
+          "skill_key": "skill:LightningArrowPlayer",
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "socket_context": {}
+        },
+        "result": {
+          "status": "unsupported",
+          "facts": {
+            "skill_key": "skill:LightningArrowPlayer",
+            "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+            "legality_status": "unsupported",
+            "excluded_reasons": [
+              "duplicate_support"
+            ],
+            "support_candidate_status": "hard_compatible",
+            "socket_context": {
+              "max_support_count": 1,
+              "current_support_count": 1,
+              "socketed_support_keys": [
+                "support:Metadata/Items/Gems/SupportGemPierce"
+              ],
+              "socketed_support_families": [
+                "Pierce"
+              ],
+              "duplicate_support_policy": "reject_same_support_key"
+            },
+            "support_family": "Pierce"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "can_roll_mod",
+        "query": {
+          "fact_type": "can_roll_mod",
+          "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+          "mod_key": "mod:MovementSpeed1",
+          "item_level": 70
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+            "mod_key": "mod:MovementSpeed1",
+            "item_level": 70,
+            "required_level": 70,
+            "matching_tags": [
+              "default"
+            ],
+            "base_domain": "item",
+            "mod_domain": "item",
+            "generation_type": "suffix",
+            "can_roll": true
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "requirements_for_component",
+        "query": {
+          "fact_type": "requirements_for_component",
+          "component_key": "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+          "level_or_stage": "base"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "requirements": {
+              "level": 1,
+              "dex": 9
+            }
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "resource_profile_for_component",
+        "query": {
+          "fact_type": "resource_profile_for_component",
+          "component_key": "skill:LightningArrowPlayer",
+          "level_or_stage": "1"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "level_or_stage": "1",
+            "costs": {
+              "mana": 6
+            },
+            "reservations": {}
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "unique_base_item",
+        "query": {
+          "fact_type": "unique_base_item",
+          "unique_key": "unique:pob:the_anvil"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "unique_key": "unique:pob:the_anvil",
+            "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+            "base_item_name": "Bloodstone Amulet"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "passive_allocation_options",
+        "query": {
+          "passive_key": "passive:pob:0_5:100"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "passive_key": "passive:pob:0_5:100",
+            "choice_keys": [
+              "passive_choice:passive:pob:0_5:100:32183"
+            ],
+            "options": [
+              {
+                "option_key": "allocation_option:passive:pob:0_5:100:26297",
+                "choice_key": "passive_choice:passive:pob:0_5:100:32183",
+                "display_name": "Strength",
+                "stat_text": "+5 to Strength",
+                "allocation_states": [
+                  "normal"
+                ],
+                "caveat": null
+              }
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "passive_allocation_overlay",
+        "query": {
+          "passive_key": "passive:pob:0_5:100"
+        },
+        "result": {
+          "status": "ambiguous",
+          "facts": {
+            "passive_key": "passive:pob:0_5:100",
+            "allocation_states": [
+              "weapon_set_1"
+            ],
+            "documented_weapon_set_indices": [
+              0,
+              1,
+              2
+            ],
+            "weapon_set_point_conversion": 24,
+            "state_specific_reachability": true
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": "dual_weapon_state_limited_caveat"
+        }
+      },
+      {
+        "family": "caveat_component_set",
+        "query": {
+          "caveat_key": "caveat:dual_weapon_state_limited_caveat"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "caveat_key": "caveat:dual_weapon_state_limited_caveat",
+            "component_keys": [
+              "passive:pob:0_5:100",
+              "skill:LightningArrowPlayer"
+            ],
+            "trigger_condition": "weapon_set_passives_used_without_dual_state_scores",
+            "modelability_effect": "limited",
+            "reward_eligibility_effect": "limited"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        }
+      },
+      {
+        "family": "resolver_ambiguous_alias",
+        "query": {
+          "query": "Lightning Arrow"
+        },
+        "result": {
+          "status": "ambiguous",
+          "facts": {
+            "status": "ambiguous",
+            "resolved_key": null,
+            "candidate_keys": [
+              "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+              "skill:LightningArrowPlayer"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": "ambiguous_alias"
+        }
+      },
+      {
+        "family": "resolver_missing_node",
+        "query": {
+          "query": "Missing Node"
+        },
+        "result": {
+          "status": "missing",
+          "facts": {
+            "status": "missing",
+            "resolved_key": null,
+            "candidate_keys": []
+          },
+          "source_refs": [],
+          "caveat": null
+        }
+      },
+      {
+        "family": "build_resolver_skill_support",
+        "query": {
+          "node_key": "support:Metadata/Items/Gems/SupportGemPierce"
+        },
+        "result": {
+          "status": "resolved",
+          "node_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "component_type": "support_gem",
+          "display_name": "Pierce",
+          "metadata_id": "Metadata/Items/Gems/SupportGemPierce",
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "export_status": "exportable",
+          "caveats": []
+        }
+      },
+      {
+        "family": "id_mapping_supported",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "pob:passive_skill_node_id",
+          "external_id": "32183"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "pob:passive_skill_node_id",
+          "external_id": "32183",
+          "target_key": "passive:pob:0_5:100",
+          "caveat": null
+        }
+      },
+      {
+        "family": "id_mapping_unsupported",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:PassiveSkills",
+          "external_id": "strength89"
+        },
+        "result": {
+          "status": "unsupported",
+          "system": "ggg:PassiveSkills",
+          "external_id": "strength89",
+          "target_key": null,
+          "caveat": "official_passive_string_id_not_vendored"
+        }
+      },
+      {
+        "family": "inventory_slot_mapping",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:Inventories",
+          "external_id": "Weapon1"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "ggg:Inventories",
+          "external_id": "Weapon1",
+          "target_key": "inventory_slot:Weapon1",
+          "caveat": null
+        }
+      },
+      {
+        "family": "unique_name_mapping",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:Words:UniqueName",
+          "external_id": "The Anvil"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "ggg:Words:UniqueName",
+          "external_id": "The Anvil",
+          "target_key": "unique:pob:the_anvil",
+          "caveat": null
+        }
+      },
+      {
+        "family": "edge_provenance",
+        "query": {
+          "fact_type": "edge_provenance",
+          "edge_type": "connected_to",
+          "source_key": "passive:pob:0_5:100",
+          "target_key": "passive:pob:0_5:101"
+        },
+        "result": {
+          "status": "known",
+          "edge_type": "connected_to",
+          "source_key": "passive:pob:0_5:100",
+          "target_key": "passive:pob:0_5:101",
+          "evidence": [
+            {
+              "source_id": "fixture:phase2",
+              "kind": "fixture",
+              "source_file": "scripts/run_phase2_acceptance_artifact.py",
+              "claims": {
+                "passive_tree_version": "0_5"
+              },
+              "schema_version": null,
+              "source_url": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "acceptance_report": {
+    "sample_count": 19,
+    "family_counts": {
+      "build_resolver_skill_support": 1,
+      "can_roll_mod": 1,
+      "caveat_component_set": 1,
+      "edge_provenance": 1,
+      "gem_grants_skill": 1,
+      "id_mapping_supported": 1,
+      "id_mapping_unsupported": 1,
+      "inventory_slot_mapping": 1,
+      "passive_allocation_options": 1,
+      "passive_allocation_overlay": 1,
+      "requirements_for_component": 1,
+      "resolver_ambiguous_alias": 1,
+      "resolver_missing_node": 1,
+      "resource_profile_for_component": 1,
+      "skill_weapon_requirement": 1,
+      "socket_support_legality": 1,
+      "support_skill_candidate": 1,
+      "unique_base_item": 1,
+      "unique_name_mapping": 1
+    },
+    "status_counts": {
+      "ambiguous": 2,
+      "known": 10,
+      "missing": 1,
+      "resolved": 4,
+      "unsupported": 2
+    },
+    "review_counts": {
+      "pass": 19
+    },
+    "fail_reasons": [],
+    "families": {
+      "build_resolver_skill_support": {
+        "count": 1,
+        "statuses": {
+          "resolved": 1
+        },
+        "caveats": []
+      },
+      "can_roll_mod": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "caveat_component_set": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "edge_provenance": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "gem_grants_skill": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "id_mapping_supported": {
+        "count": 1,
+        "statuses": {
+          "resolved": 1
+        },
+        "caveats": []
+      },
+      "id_mapping_unsupported": {
+        "count": 1,
+        "statuses": {
+          "unsupported": 1
+        },
+        "caveats": [
+          "official_passive_string_id_not_vendored"
+        ]
+      },
+      "inventory_slot_mapping": {
+        "count": 1,
+        "statuses": {
+          "resolved": 1
+        },
+        "caveats": []
+      },
+      "passive_allocation_options": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "passive_allocation_overlay": {
+        "count": 1,
+        "statuses": {
+          "ambiguous": 1
+        },
+        "caveats": [
+          "dual_weapon_state_limited_caveat"
+        ]
+      },
+      "requirements_for_component": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "resolver_ambiguous_alias": {
+        "count": 1,
+        "statuses": {
+          "ambiguous": 1
+        },
+        "caveats": [
+          "ambiguous_alias"
+        ]
+      },
+      "resolver_missing_node": {
+        "count": 1,
+        "statuses": {
+          "missing": 1
+        },
+        "caveats": []
+      },
+      "resource_profile_for_component": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "skill_weapon_requirement": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "socket_support_legality": {
+        "count": 1,
+        "statuses": {
+          "unsupported": 1
+        },
+        "caveats": []
+      },
+      "support_skill_candidate": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "unique_base_item": {
+        "count": 1,
+        "statuses": {
+          "known": 1
+        },
+        "caveats": []
+      },
+      "unique_name_mapping": {
+        "count": 1,
+        "statuses": {
+          "resolved": 1
+        },
+        "caveats": []
+      }
+    },
+    "ready_for_human_review": true,
+    "ready_for_phase2_exit": true,
+    "samples": [
+      {
+        "family": "gem_grants_skill",
+        "query": {
+          "gem_key": "gem:Metadata/Items/Gems/SkillGemLightningArrow"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "skill_keys": [
+              "skill:LightningArrowPlayer"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "skill_weapon_requirement",
+        "query": {
+          "skill_key": "skill:LightningArrowPlayer"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "weapon_type_keys": [
+              "weapon_type:bow"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "support_skill_candidate",
+        "query": {
+          "fact_type": "support_skill_candidate",
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "skill_key": "skill:LightningArrowPlayer"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+            "skill_key": "skill:LightningArrowPlayer",
+            "candidate_status": "hard_compatible",
+            "matched_skill_types": [
+              "attack",
+              "projectile"
+            ],
+            "shared_tags": []
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "socket_support_legality",
+        "query": {
+          "fact_type": "socket_support_legality",
+          "skill_key": "skill:LightningArrowPlayer",
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "socket_context": {}
+        },
+        "result": {
+          "status": "unsupported",
+          "facts": {
+            "skill_key": "skill:LightningArrowPlayer",
+            "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+            "legality_status": "unsupported",
+            "excluded_reasons": [
+              "duplicate_support"
+            ],
+            "support_candidate_status": "hard_compatible",
+            "socket_context": {
+              "max_support_count": 1,
+              "current_support_count": 1,
+              "socketed_support_keys": [
+                "support:Metadata/Items/Gems/SupportGemPierce"
+              ],
+              "socketed_support_families": [
+                "Pierce"
+              ],
+              "duplicate_support_policy": "reject_same_support_key"
+            },
+            "support_family": "Pierce"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "can_roll_mod",
+        "query": {
+          "fact_type": "can_roll_mod",
+          "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+          "mod_key": "mod:MovementSpeed1",
+          "item_level": 70
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+            "mod_key": "mod:MovementSpeed1",
+            "item_level": 70,
+            "required_level": 70,
+            "matching_tags": [
+              "default"
+            ],
+            "base_domain": "item",
+            "mod_domain": "item",
+            "generation_type": "suffix",
+            "can_roll": true
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "requirements_for_component",
+        "query": {
+          "fact_type": "requirements_for_component",
+          "component_key": "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+          "level_or_stage": "base"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "requirements": {
+              "level": 1,
+              "dex": 9
+            }
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "resource_profile_for_component",
+        "query": {
+          "fact_type": "resource_profile_for_component",
+          "component_key": "skill:LightningArrowPlayer",
+          "level_or_stage": "1"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "level_or_stage": "1",
+            "costs": {
+              "mana": 6
+            },
+            "reservations": {}
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "unique_base_item",
+        "query": {
+          "fact_type": "unique_base_item",
+          "unique_key": "unique:pob:the_anvil"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "unique_key": "unique:pob:the_anvil",
+            "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+            "base_item_name": "Bloodstone Amulet"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "passive_allocation_options",
+        "query": {
+          "passive_key": "passive:pob:0_5:100"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "passive_key": "passive:pob:0_5:100",
+            "choice_keys": [
+              "passive_choice:passive:pob:0_5:100:32183"
+            ],
+            "options": [
+              {
+                "option_key": "allocation_option:passive:pob:0_5:100:26297",
+                "choice_key": "passive_choice:passive:pob:0_5:100:32183",
+                "display_name": "Strength",
+                "stat_text": "+5 to Strength",
+                "allocation_states": [
+                  "normal"
+                ],
+                "caveat": null
+              }
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "passive_allocation_overlay",
+        "query": {
+          "passive_key": "passive:pob:0_5:100"
+        },
+        "result": {
+          "status": "ambiguous",
+          "facts": {
+            "passive_key": "passive:pob:0_5:100",
+            "allocation_states": [
+              "weapon_set_1"
+            ],
+            "documented_weapon_set_indices": [
+              0,
+              1,
+              2
+            ],
+            "weapon_set_point_conversion": 24,
+            "state_specific_reachability": true
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": "dual_weapon_state_limited_caveat"
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "caveat_component_set",
+        "query": {
+          "caveat_key": "caveat:dual_weapon_state_limited_caveat"
+        },
+        "result": {
+          "status": "known",
+          "facts": {
+            "caveat_key": "caveat:dual_weapon_state_limited_caveat",
+            "component_keys": [
+              "passive:pob:0_5:100",
+              "skill:LightningArrowPlayer"
+            ],
+            "trigger_condition": "weapon_set_passives_used_without_dual_state_scores",
+            "modelability_effect": "limited",
+            "reward_eligibility_effect": "limited"
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "resolver_ambiguous_alias",
+        "query": {
+          "query": "Lightning Arrow"
+        },
+        "result": {
+          "status": "ambiguous",
+          "facts": {
+            "status": "ambiguous",
+            "resolved_key": null,
+            "candidate_keys": [
+              "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+              "skill:LightningArrowPlayer"
+            ]
+          },
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "caveat": "ambiguous_alias"
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "resolver_missing_node",
+        "query": {
+          "query": "Missing Node"
+        },
+        "result": {
+          "status": "missing",
+          "facts": {
+            "status": "missing",
+            "resolved_key": null,
+            "candidate_keys": []
+          },
+          "source_refs": [],
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "build_resolver_skill_support",
+        "query": {
+          "node_key": "support:Metadata/Items/Gems/SupportGemPierce"
+        },
+        "result": {
+          "status": "resolved",
+          "node_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "component_type": "support_gem",
+          "display_name": "Pierce",
+          "metadata_id": "Metadata/Items/Gems/SupportGemPierce",
+          "source_refs": [
+            "fixture:phase2"
+          ],
+          "export_status": "exportable",
+          "caveats": []
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "id_mapping_supported",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "pob:passive_skill_node_id",
+          "external_id": "32183"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "pob:passive_skill_node_id",
+          "external_id": "32183",
+          "target_key": "passive:pob:0_5:100",
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "id_mapping_unsupported",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:PassiveSkills",
+          "external_id": "strength89"
+        },
+        "result": {
+          "status": "unsupported",
+          "system": "ggg:PassiveSkills",
+          "external_id": "strength89",
+          "target_key": null,
+          "caveat": "official_passive_string_id_not_vendored"
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "inventory_slot_mapping",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:Inventories",
+          "external_id": "Weapon1"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "ggg:Inventories",
+          "external_id": "Weapon1",
+          "target_key": "inventory_slot:Weapon1",
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "unique_name_mapping",
+        "query": {
+          "fact_type": "resolve_id_mapping",
+          "system": "ggg:Words:UniqueName",
+          "external_id": "The Anvil"
+        },
+        "result": {
+          "status": "resolved",
+          "system": "ggg:Words:UniqueName",
+          "external_id": "The Anvil",
+          "target_key": "unique:pob:the_anvil",
+          "caveat": null
+        },
+        "review": {
+          "grade": "pass"
+        }
+      },
+      {
+        "family": "edge_provenance",
+        "query": {
+          "fact_type": "edge_provenance",
+          "edge_type": "connected_to",
+          "source_key": "passive:pob:0_5:100",
+          "target_key": "passive:pob:0_5:101"
+        },
+        "result": {
+          "status": "known",
+          "edge_type": "connected_to",
+          "source_key": "passive:pob:0_5:100",
+          "target_key": "passive:pob:0_5:101",
+          "evidence": [
+            {
+              "source_id": "fixture:phase2",
+              "kind": "fixture",
+              "source_file": "scripts/run_phase2_acceptance_artifact.py",
+              "claims": {
+                "passive_tree_version": "0_5"
+              },
+              "schema_version": null,
+              "source_url": null
+            }
+          ]
+        },
+        "review": {
+          "grade": "pass"
+        }
+      }
+    ]
+  }
+}
