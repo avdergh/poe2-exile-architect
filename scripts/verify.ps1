@@ -12,6 +12,9 @@ if (-not (Test-Path $Uv)) {
     $Uv = "uv"
 }
 
+$ComputePytestTimeoutSeconds = 1800
+$ComputeMinimumOuterTimeoutMs = 1800000
+
 function Invoke-Uv {
     param(
         [string]$Name,
@@ -74,17 +77,27 @@ try {
         }
         "compute" {
             # Heavy engine certification. Use when compute, PoB runtime, optimization, or item
-            # generation behavior changes.
+            # generation behavior changes. This profile commonly runs for 15+ minutes on Windows;
+            # callers that wrap this script must allow at least $ComputeMinimumOuterTimeoutMs ms.
+            Write-Host (
+                "    note: compute profile commonly runs 15+ minutes; " +
+                "use outer timeout >= $ComputeMinimumOuterTimeoutMs ms"
+            )
             Invoke-Uv "compute golden suite" @(
                 "pytest",
                 "tests/test_compute.py",
                 "-q",
-                "--timeout=300"
+                "--timeout=$ComputePytestTimeoutSeconds"
             )
         }
         "full" {
-            # Release/merge confidence gate. This is intentionally expensive.
-            Invoke-Uv "full pytest" @("pytest", "-q")
+            # Release/merge confidence gate. This is intentionally expensive and includes the
+            # compute suite, so it uses the same long per-test timeout budget.
+            Write-Host (
+                "    note: full profile includes compute; " +
+                "use outer timeout >= $ComputeMinimumOuterTimeoutMs ms"
+            )
+            Invoke-Uv "full pytest" @("pytest", "-q", "--timeout=$ComputePytestTimeoutSeconds")
             Invoke-StaticChecks
         }
         "lint" {

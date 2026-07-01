@@ -13,6 +13,10 @@ _Pob2 = re.compile(r"pob2://poeninja/overview/code\?[^\"'\s<>]+", re.IGNORECASE)
 _INPUT_VALUE = re.compile(
     r'aria-label="Import code for Path of Building"[^>]*value="([^"]+)"', re.IGNORECASE
 )
+_INPUT_TAG = re.compile(
+    r'<input[^>]*aria-label="Import code for Path of Building"[^>]*>', re.IGNORECASE | re.DOTALL
+)
+_VALUE_ATTR = re.compile(r'value="([^"]+)"', re.IGNORECASE)
 _SNAPSHOT_INPUT_VALUE = re.compile(
     r'aria-label=(?:\\")?Import code for Path of Building(?:\\")?.*?value=(?:\\")?([^\\"]+)(?:\\")?|'
     r'aria-label="Import code for Path of Building".*?value="([^"]+)"',
@@ -33,10 +37,17 @@ def extract_import_code_from_rendered_html(page_html: str) -> dict[str, Any]:
         return {"ok": False, "error": "not_a_poe_ninja_build_page"}
 
     match = _INPUT_VALUE.search(page_html)
-    if not match:
+    code = ""
+    if match:
+        code = html.unescape((match.group(1) or match.group(2) or "")).strip()
+    if not code:
+        tag_match = _INPUT_TAG.search(page_html)
+        if tag_match:
+            value_match = _VALUE_ATTR.search(tag_match.group(0))
+            if value_match:
+                code = html.unescape(value_match.group(1)).strip()
+    if not code:
         return {"ok": False, "error": "import_code_not_found"}
-
-    code = html.unescape((match.group(1) or match.group(2) or "")).strip()
     if not code.startswith("eNrt"):
         return {"ok": False, "error": "import_code_not_found"}
 

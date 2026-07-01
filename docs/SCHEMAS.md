@@ -59,11 +59,70 @@ Architect Agent 在 deterministic completion 前提出的方案。
 
 必要概念：
 
-- pass/fail 和 score；
+- pass/fail；
+- score scale：当前 Judge v2 使用 `0_to_1`；
+- score vector：当前最小实现包含 offense、defense、recovery、mobility；physical-invalid 时
+  这些维度必须标记 blocked；
+- score breakdown：每个维度应说明 raw value、hard floor、quality floor、target、
+  source metric 和 caveats；
+- judge selected skill：当 PoB/poe.ninja 导入的当前主技能只是 buff、战旗或辅助状态时，
+  Judge 可以使用 `judgeSelectedSkill` 暴露实际用于 offense 评分的技能摘要；只能包含技能名、
+  group index、source metric、projectile count 和 caveats，不能输出完整 gem/support links；
+  如果 source metric 是 `FullDPS`，必须标记为 socket-group rollup，而不是单技能精确 DPS；
+- offense evidence：`scoreBreakdown.offense` 必须包含 `provenance` 与 `evidenceLevel`。
+  `direct_pob_dps` 可以是 strong evidence；`isolated_full_dps_rollup` 和
+  `minion_pob_output` 默认只能是 limited evidence；无可用 DPS 时使用
+  `unknown_or_unavailable` / `none`。同时保留 `sourceMetricDetail`、`skillName`、
+  `skillGroupIndex`、`isMinion`、`activeSkillCount`、`activeMinionLimit`、`rawDps`、
+  `effectiveDps` 和 caveats，避免把 PoB 原始读数、数量修正和最终评分输入混在一起；
+- weapon check：`judgeSelectedSkill` 和主技能摘要可以包含 `weaponCheck`，仅暴露技能名、
+  PoB weapon requirements、当前装备武器类型、兼容状态和 PoB `disableReason`。当
+  `disableReason` 显示技能被当前武器禁用时，必须产生 `incompatible_weapon_skill_tags`；
+  不允许用 Python 技能名表替代 PoB 兼容性判断；
+- scenario fit：当前作为展示型 mapping/bossing/hybrid fit，不参与 aggregate；
+- aggregate score：必须包含 weight profile；当前 `judge_v2_reality_calibrated` 使用 offense
+  0.40、defense 0.40、recovery 0.15、mobility 0.05；
+- quality band：`invalid`、`barely_playable`、`entry_endgame`、`solid`、`strong`；
 - hard failures 和 warnings；
+- legality diagnostics：至少包含 `passiveBudget` 和 `weaponSetBudget` 的 used、available、
+  over 信息；诊断用于解释 hard failure，不能把超预算自动降级为合法；
 - PoB-computed metrics；
-- resistance、Spirit、attribute、support、weapon、passive-budget checks；
+- resistance、Spirit、attribute、support、weapon、weapon/skill tag、passive-budget checks；
+- failure codes：uncapped_resistance、attribute_requirement_unmet、passive_budget_exceeded、
+  attack_skill_without_weapon、incompatible_weapon_skill_tags、spirit_budget_exceeded、
+  invalid_class_ascendancy_pairing、invalid_socket_setup、support_limit_exceeded、
+  duplicate_support_gem、invalid_support_gem、pob_compute_failed、unmodelled_mechanic；
+- short-circuit state：physical-invalid failure 必须标记被 blocked 的 score dimensions；
+- reward eligibility：熔断 evaluation 不能产生 positive reward；
+- reward strength：`BuildEvaluation` / `BuildComparison` 使用 `rewardStrength` 区分
+  `strong`、`limited` 和 `none`。只有 strong 才能被后续 Phase 8 作为强 reward memory
+  消费；limited 只允许作为观察或弱信号；
+- 非终局空升华：campaign / maps-entry 样本缺失 ascendancy 可以追加
+  `missing_ascendancy_non_endgame_caveat` 并继续评估；endgame 样本缺失 ascendancy 仍是
+  `invalid_class_ascendancy_pairing`；
+- recovery 主池：生命侧使用 `LifeUnreserved`，不是 `Life`；`Life`、`LifeReserved` 和
+  `LifeUnreservedPercent` 仅用于诊断和 fallback；
+- CI：`Chaos Inoculation` 以 build keystone readback 为权威；CI 下 chaos score 直接按混沌
+  免疫处理，不使用 `ChaosMaximumHitTaken` 的 nil/0/超大值反推；
+- source hash：真实样本验收只输出 hash，不输出 raw source；
+- reproducibility：至少包含 evaluator version、tree version、latest tree version；版本不一致时
+  必须追加 `version_mismatch_caveat`；
+- state evaluations：single-state 时一个 active state，dual-state 时分别记录 state A/state B
+  的 metrics、hard checks 和 caveats；
+- defense model：`BuildEvaluation.defenseModel` 是诊断层，不直接替代 defense score。
+  `poolModel` 至少覆盖 `life`、`low_life`、`es`、`ci`、`mom`、`eb_mom_mana`、`ward`、
+  `hybrid`、`unknown`；`hitMitigationModel`、`avoidanceModel` 和 `sustainModel` 只能解释
+  PoB 已读出的防御层，不得把高闪避、高格挡或高 EHP 自动洗白为可承受一击；
 - modelability status；
+- limited evidence：缺少关键 PoB 指标、primary pool 不可得或 partial modelability 时，evaluation
+  可以用于 selection，但 `rewardEligible` 必须降为 `limited`，不能作为 strong reward 写入学习；
+- limited offense evidence：`lower_bound_dps_caveat`、`minion_dps_unverified_caveat`、
+  `minion_count_multiplier_caveat`、`full_dps_rollup_caveat` 等 caveat 必须限制 reward，
+  但不应阻止单个 BD 的 selection / 诊断评分；
+- dual-state limited evidence：Phase 1 如果检测到 weapon set passive usage，但尚未分别计算
+  State_A / State_B，必须追加 `dual_weapon_state_limited_caveat` 并将 reward 降为 `limited`；
+- compute failure：`pob_compute_failed` 可以输出 sanitized `errorKind`，不能输出 raw import
+  text、raw XML、完整异常 detail 或路径化敏感材料；
 - evidence tags；
 - 不包含 copied reference build material。
 
@@ -74,11 +133,21 @@ Candidate vs reference 或 candidate vs prior round。
 必要概念：
 
 - compared snapshot ids；
-- metric deltas；
+- metric deltas 和 score-vector deltas；
 - legal-state deltas；
 - reference placement；
 - structured gaps；
-- winner：`candidate`、`reference`、`prior`、`unknown`；
+- selection winner：`candidate`、`reference`、`prior`、`tie`、`unknown`；
+- reward winner：`candidate`、`reference`、`prior`、`tie`、`unknown`；
+- scenario / active-state comparison policy；
+- comparability/status：`comparable`、`partial_modelability`、`candidate_invalid`、
+  `reference_invalid`、`both_invalid`、`incomparable`；
+- incomparable reason：例如 unmodelled_mechanic、missing_metric、different_active_state_policy；
+- reward eligibility：full comparable 才能进入 strong reward；partial modelability 只能进入
+  limited reward；非法或 core-unmodelled comparison 不进入 reward memory；
+- limited evidence comparison：如果任一方只有 limited evidence，可以给出
+  `selectionWinner`，但 `rewardWinner` 必须是 `unknown`，`rewardStrength=limited`，防止把
+  FullDPS rollup、召唤物数量近似、投射物下界或关键指标缺失写成强学习信号；
 - modelability limitations。
 
 ## ResearchPacket

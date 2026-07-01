@@ -57,6 +57,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/PROJECT_SPEC.md`：中文唯一项目总纲，维护方向、边界、Phase 关系和 Phase 状态。
 - `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.CN.md`：高层架构和数据流，唯一双语文档。
 - `docs/SCHEMAS.md`：中文唯一核心数据结构合同。
+- `docs/JUDGE_SCORING_SYSTEM.md`：Judge 当前评分策略、证据分层、兼容逻辑和查询路径说明。
 - `docs/phases/`：中文唯一各阶段执行计划和验收标准。
 - `server/ASSISTANT_GUIDE.md`：通过 MCP 展示给 LLM client 的 runtime 指南。
 - `scripts/verify.ps1`：验证 profile。
@@ -79,7 +80,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - touched module 使用 focused tests；
 - knowledge/MCP/lifecycle/doc 改动使用 `.\scripts\verify.ps1 quick`；
 - 跨范围非 engine 改动使用 `.\scripts\verify.ps1 noncompute`；
-- engine、PoB、optimizer、runtime packaging 或 release gate 才使用 `compute` / `full`。
+- engine、PoB、optimizer、runtime packaging 或 release gate 才使用 `compute` / `full`；
+- `compute` / `full` 是重型 Headless PoB 认证入口，本地 Windows 经常运行 15 分钟以上。
+  调用这些 profile 时，外层命令超时必须至少给到 30 分钟（`1800000ms`）；10 分钟工具超时
+  只能说明外层预算不足，不能直接判定 compute suite 失败。`scripts/verify.ps1` 会为这些
+  profile 传入 30 分钟 pytest 单测试超时。
 
 ## 工具 / 文件地图
 
@@ -102,6 +107,37 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/compute/supportopt.py`：engine-measured support selection。
 - `server/compute/solver.py`：stat lever ranking 和 target solving。
 - `server/compute/skilltext.py`：skill text normalization 和 lever templates。
+
+### Judge 层
+
+- `server/judge/models.py`：Phase 1 judge 的 evaluator version、v2 metric keys 和 failure code
+  / caveat 常量。
+- `server/judge/rules.py`：class/ascendancy、support/socket v1、PoB weaponCheck 和
+  physical-invalid blocker；weapon/skill 兼容性以 PoB readback 的 `disableReason` 为权威，
+  不要在 Python 里按技能名硬编码武器需求。
+- `server/judge/scoring.py`：`judge_v2_reality_calibrated` 评分；hard floor 与 quality target
+  分离，动态可用主资源池 recovery、异构 Max Hit、CI 混沌免疫、EHP 物理短板补偿和扁平
+  aggregate 权重；`scoreBreakdown.offense` 必须输出 provenance、evidence level、raw/effective
+  DPS 和 minion/count 诊断。
+- `server/judge/modelability.py`：partial modelability、main socket group core blocker 和轻量
+  whitelist caveat。
+- `server/judge/evaluator.py`：从 active PoB readback 生成内部 `BuildEvaluation`；如果
+  `judgeSelectedSkill` 被用于 offense，socket/modelability/weaponCheck 也必须跟随 selected
+  skill group，而不是继续检查最后点击的 buff/战旗组；输出 `defenseModel` 只作诊断，不替代
+  PoB Max Hit / EHP 评分证据。
+- `server/judge/comparison.py`：候选与参考的 `selectionWinner` / `rewardWinner` /
+  `rewardStrength` 合同；limited evidence 可以 selection，但 `rewardWinner` 必须保持
+  `unknown`，不能写成强 reward。
+- `server/judge/runner.py`：dedicated engine safe-call，处理 import/evaluation timeout、EOF 和
+  crash recovery。
+- `server/judge/fixtures.py`、`server/judge/benchmark.py`：synthetic Phase 1 baseline，写入
+  user-data runtime，不进入仓库。
+- Judge 当前是内部基线，不在 `server/main.py` 注册 MCP tool。真实样本验收前不要把它包装
+  成用户可见工具。
+- Phase 1 对使用 weapon set passives 的 dual-state build 只给 limited reward；没有 State_A /
+  State_B 分别评分证据时，不能把单状态最高 DPS 写成强学习信号。
+- Phase 1 对 `FullDPS` rollup、召唤物 PoB output、投射物下界、关键 metric 缺失等 evidence
+  只给 limited reward；这些信号可以帮助单个 BD 诊断，但不能污染后续 reward memory。
 
 ### Knowledge 层
 
@@ -140,6 +176,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 ### Scripts 和 Data
 
 - `scripts/run_mature_source_probe.py`：本地 source-probe report 辅助脚本。它不运行 LLM。
+- `scripts/run_judge_user_samples.py`：Phase 1 真实 PoB code transient 验收脚本。输出
+  sanitized report，不持久化 raw PoB code/XML；允许输出 `judgeSelectedSkill` 摘要以便审查
+  buff/战旗/辅助技能导致的 0 DPS 误读，但禁止输出完整 gem/support links。输入支持整文件
+  XML、JSON/JSONL/manifest、显式分隔符和逐行 code；失败报告只输出 sanitized `errorKind`。
 - `scripts/smoke_*.py`：按子系统划分的 focused smoke checks。
 - `scripts/install_local_validated_runtime.py`：安装已认证 runtime data 到本地。
 - `scripts/build_bundle.py`：构建 `.mcpb` bundle。

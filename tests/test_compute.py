@@ -43,6 +43,7 @@ def test_import_reproduces_stats(engine):
     engine.new_build()
     res = engine.load_build_xml(xml)
     assert res["mainSkill"] == "Fireball"
+    assert res["treeVersion"]
     assert res["stats"]["TotalDPS"] == pytest.approx(FIREBALL_DPS, rel=1e-3)
 
 
@@ -120,8 +121,21 @@ def test_paste_tolerates_missing_count(engine):
     # Supports written without the trailing count must not be silently dropped (#4).
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1\nControlled Destruction 20/20\nLightning Penetration 20/20")
-    names = [g["name"] for g in engine.get_build()["mainSkillGroup"]]
+    b = engine.get_build()
+    names = [g["name"] for g in b["mainSkillGroup"]]
     assert "Controlled Destruction" in names and "Lightning Penetration" in names
+    assert b["treeVersion"] and b["latestTreeVersion"]
+    assert "normalPassivePointsUsed" in b
+    assert "weaponSet1PointsUsed" in b
+    assert "weaponSet2PointsUsed" in b
+    assert "weaponSetPointsAvailable" in b
+    assert set(b["attributes"]) == {"strength", "dexterity", "intelligence"}
+    assert set(b["attributeRequirements"]) == {"strength", "dexterity", "intelligence"}
+    assert "spiritUsed" in b
+    assert "spiritAvailable" in b
+    by_name = {g["name"]: g for g in b["mainSkillGroup"]}
+    assert by_name["Spark"]["isSupport"] is False
+    assert by_name["Controlled Destruction"]["isSupport"] is True
 
 
 def test_multiprojectile_dps_note(engine):
@@ -762,6 +776,99 @@ def test_get_build_surfaces_unspent_points(engine):
     assert b["pointsAvailable"] == 113  # 89 (level-1) + 24 campaign quest points
     assert b["unspentPoints"] == b["pointsAvailable"] - b["pointsUsed"]
     assert "pointsNote" in b  # a fresh tree flags its many unspent points
+
+
+def test_get_build_counts_extra_passive_and_weapon_set_points(engine):
+    # PoB's own progress estimator includes granted passive points in the normal passive budget.
+    # Weapon-set cap follows PoB's UI budget: PassivePointsToWeaponSetPoints extends the cap;
+    # WeaponSetPassivePoints is exposed for diagnostics but must not be treated as cap by itself.
+    engine.new_build()
+    engine.set_class("Witch", "Infernalist")
+    engine.set_level(90)
+    base = engine.get_build()
+    engine.set_config(
+        custom_mods="Grants 2 Passive Skill Points\n+2 Weapon Set Passive Skill Points"
+    )
+    b = engine.get_build()
+    assert b["pointsAvailable"] == base["pointsAvailable"] + 2
+    assert b["weaponSetPointsAvailable"] == base["weaponSetPointsAvailable"]
+    assert b["stats"]["ExtraPoints"] == 2
+    assert b["stats"]["WeaponSetPassivePoints"] == 2
+
+    engine.set_config(custom_mods="100 Passive Skill Points become Weapon Set Skill Points")
+    converted = engine.get_build()
+    assert converted["weaponSetPointsAvailable"] == base["weaponSetPointsAvailable"] + 100
+    assert converted["stats"]["PassivePointsToWeaponSetPoints"] == 100
+
+
+def test_get_build_auto_selects_best_damage_skill_when_main_group_is_buff(engine):
+    # Imported poe.ninja/PoB samples often preserve the last-clicked UI skill as main.
+    # A buff main group must not force Judge to score offense as 0 when another enabled
+    # damage group is computable.
+    engine.new_build()
+    engine.set_class("Witch", "Infernalist")
+    engine.set_level(90)
+    engine.paste_skill("Plague Bearer 20/20  1")
+    engine.add_skill_group("Fireball 20/20  1")
+
+    b = engine.get_build()
+
+    assert b["mainSkill"] == "Plague Bearer"
+    selected = b["judgeSelectedSkill"]
+    assert selected["skillName"] == "Fireball"
+    assert selected["dps"] > 0
+    assert "auto_selected_damage_skill_caveat" in selected["caveats"]
+    selected_group_names = [g["name"] for g in b["judgeSelectedSkillGroup"]]
+    assert selected_group_names == ["Fireball"]
+
+
+def test_get_build_exposes_weapon_requirement_mismatch_for_selected_skill(engine):
+    engine.new_build()
+    engine.set_class("Mercenary", "Witchhunter")
+    engine.set_level(90)
+    engine.paste_skill("Lightning Spear 20/20  1")
+    engine.add_item(
+        "Rarity: Rare\nW\nDueling Wand\n--------\nAdds 1 to 85 Lightning Damage to Spells",
+        slot="Weapon 1",
+    )
+
+    selected = engine.get_build()["judgeSelectedSkill"]
+
+    assert selected["skillName"] == "Lightning Spear"
+    assert selected["weaponCheck"]["weaponTypes"] == ["Spear"]
+    assert selected["weaponCheck"]["equippedWeaponTypes"] == ["Wand"]
+    assert "not usable with this skill" in selected["weaponCheck"]["disableReason"]
+
+
+def test_judge_selected_skill_uses_isolated_full_dps_per_group(engine):
+    # FullDPS is a build-level aggregation over groups marked includeInFullDPS. Judge must isolate
+    # each candidate group during selection, or it will bind the global aggregate to one skill.
+    _spark_caster(engine)
+    engine.paste_skill("Spark 20/20  1")
+    single_full = engine.get_stats(["FullDPS"])["stats"]["FullDPS"]
+    engine.add_skill_group("Spark 20/20  1", include_in_full_dps=True)
+    global_full = engine.get_stats(["FullDPS"])["stats"]["FullDPS"]
+
+    selected = engine.get_build()["judgeSelectedSkill"]
+
+    assert global_full > single_full * 1.5
+    assert selected["sourceMetric"] == "FullDPS"
+    assert selected["dps"] == pytest.approx(single_full, rel=0.05)
+    assert selected["dps"] < global_full * 0.75
+
+
+def test_judge_selected_skill_exposes_active_skill_count_for_minion_math(engine):
+    engine.new_build()
+    engine.set_class("Witch", "Infernalist")
+    engine.set_level(90)
+    engine.paste_skill("Fireball 20/20  3")
+
+    selected = engine.get_build()["judgeSelectedSkill"]
+
+    assert selected["skillName"] == "Fireball"
+    assert selected["activeSkillCount"] == 3
+    assert selected["rawDps"] == pytest.approx(selected["dps"], rel=1e-6)
+    assert selected["effectiveDps"] == pytest.approx(selected["dps"], rel=1e-6)
 
 
 def test_rank_levers_marginal_gain(fireball):
