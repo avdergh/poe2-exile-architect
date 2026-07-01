@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-06-30
+最后更新：2026-07-01
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -78,6 +78,16 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 
 已有底座不等于产品能力已经验证；能力必须通过 benchmark 证明。
 
+其中，Phase 1 当前已经形成可运行的内部 Judge 基线：
+
+- `server/judge/*` 提供 legality、score vector、modelability、comparison 和 sample-audit；
+- `scripts/run_judge_user_samples.py` 与 `scripts/run_judge_ninja_samples.py` 提供真实样本验收；
+- `docs/JUDGE_SCORING_SYSTEM.md` 维护当前评分策略、证据分层、兼容逻辑和查询路径说明。
+
+这不表示“所有 PoE2 机制都已被数值精确建模”，而是表示：Judge 已经能稳定区分
+strong evidence、limited evidence、source-data problem 与 unsolved modelability gap，
+并阻止有限证据污染强 reward。
+
 ## Phase 关系
 
 Phase 不是平行愿望清单，而是一条验证优先的依赖链：
@@ -106,8 +116,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase | 状态 | 依赖关系 | 概括工作 | 细节文档 |
 | --- | --- | --- | --- | --- |
 | Phase 0 | 已完成 | 无 | 清理旧方向文档，建立中文 spec、phase docs、schema docs，以及双语 architecture。 | `docs/phases/00_cleanup.md` |
-| Phase 1 | 进行中：代码基线完成，待真实样本人工验收 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
-| Phase 2 | 未开始 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射。 | `docs/phases/02_graph_cold.md` |
+| Phase 1 | 已完成：Judge / modelability 基线、真实样本回归与评分合同收口完成 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
+| Phase 2 | 进行中 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射。 | `docs/phases/02_graph_cold.md` |
 | Phase 3 | 未开始 | Phase 2 | 选择 graph backend，并通过 typed tools 暴露图查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 未开始 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph 和 memory。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 未开始 | Phase 1、3、4 | 由外部 Architect Agent 提出方案，确定性 planner/solver 补全天赋、装备、support、Spirit 和合法性。 | `docs/phases/05_generation.md` |
@@ -179,6 +189,7 @@ Judge 的评分语义也必须接受分层验证，而不是只看单一 aggrega
 - `PROJECT_SPEC.md`：中文唯一项目总纲，维护方向、边界、Phase 关系和 Phase 状态。
 - `ARCHITECTURE.md` / `ARCHITECTURE.CN.md`：仅此架构文档维护英文和中文两版。
 - `SCHEMAS.md`：中文唯一核心数据结构合同。
+- `JUDGE_SCORING_SYSTEM.md`：Judge 当前评分合同、证据分层、兼容逻辑和查询路径说明。
 - `phases/*.md`：中文唯一阶段执行计划、验收标准和阶段内进度。
 
 保持 `PROJECT_SPEC.md` 和 `ARCHITECTURE*.md` 紧凑，不要把它们写成详细阶段 task list。
