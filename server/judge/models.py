@@ -24,6 +24,8 @@ LIMITED_REWARD_CAVEATS = {
     "skill_speed_mobility_fallback_caveat",
     "primary_pool_unavailable_caveat",
     "dual_weapon_state_limited_caveat",
+    "state_or_import_suspect_caveat",
+    "defense_state_unverified_caveat",
     "source_data_problem_caveat",
 }
 

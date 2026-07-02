@@ -1009,6 +1009,41 @@ def test_metric_unavailable_keeps_selection_but_limits_reward_eligibility():
     assert result["rewardEligible"] == "limited"
 
 
+def test_trusted_reference_suspect_defense_state_limits_reward_strength():
+    engine = _StubEngine(
+        _build(level=100),
+        _stats(
+            TotalDPS=900_000,
+            FullDPS=0,
+            EffectiveMovementSpeedMod=2.5,
+            PhysicalMaximumHitTaken=10_000,
+            FireMaximumHitTaken=25_000,
+            ColdMaximumHitTaken=25_000,
+            LightningMaximumHitTaken=25_000,
+            ChaosMaximumHitTaken=18_000,
+            Life=1,
+            LifeUnreserved=1,
+            EnergyShield=0,
+            TotalEHP=50_000,
+        ),
+        _defenses(),
+    )
+
+    result = evaluator.evaluate_readback(
+        engine.get_build(),
+        engine.get_stats(models.JUDGE_METRIC_KEYS)["stats"],
+        engine.get_defenses(),
+        snapshot_id="trusted-suspect-defense-state",
+        source_context="trusted_reference",
+    )
+
+    assert result["pass"] is True
+    assert "defense_state_unverified_caveat" in result["caveats"]
+    assert "state_or_import_suspect_caveat" in result["caveats"]
+    assert result["rewardEligible"] == "limited"
+    assert result["rewardStrength"] == "limited"
+
+
 def test_evaluator_marks_passed_low_scoring_reference_as_needing_score_review():
     engine = _StubEngine(
         _build(level=98),

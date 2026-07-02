@@ -44,6 +44,72 @@ def test_safe_evaluate_converts_factory_error_to_pob_compute_failed():
     assert result["errorKind"] == "PobEngineError"
 
 
+def test_safe_evaluate_closes_engine_after_threaded_success():
+    engines = []
+
+    class _SuccessfulEngine:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def factory():
+        engine = _SuccessfulEngine()
+        engines.append(engine)
+        return engine
+
+    original_eval = runner.evaluator.evaluate_active_build
+
+    try:
+
+        def fake_eval(engine, snapshot_id, source_context):
+            return {"snapshotId": snapshot_id, "pass": True, "hardFailures": []}
+
+        runner.evaluator.evaluate_active_build = fake_eval
+        result = runner.safe_evaluate_active_build(factory, snapshot_id="ok")
+    finally:
+        runner.evaluator.evaluate_active_build = original_eval
+
+    assert result["snapshotId"] == "ok"
+    assert engines[0].closed is True
+
+
+def test_safe_evaluate_closes_engine_after_non_timeout_success():
+    engines = []
+
+    class _SuccessfulEngine:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def factory():
+        engine = _SuccessfulEngine()
+        engines.append(engine)
+        return engine
+
+    original_eval = runner.evaluator.evaluate_active_build
+
+    try:
+
+        def fake_eval(engine, snapshot_id, source_context):
+            return {"snapshotId": snapshot_id, "pass": True, "hardFailures": []}
+
+        runner.evaluator.evaluate_active_build = fake_eval
+        result = runner.safe_evaluate_active_build(
+            factory,
+            snapshot_id="ok-no-thread",
+            timeout_seconds=None,
+        )
+    finally:
+        runner.evaluator.evaluate_active_build = original_eval
+
+    assert result["snapshotId"] == "ok-no-thread"
+    assert engines[0].closed is True
+
+
 def test_safe_evaluate_times_out_factory():
     def factory():
         time.sleep(0.2)

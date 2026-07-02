@@ -21,6 +21,7 @@ def safe_evaluate_active_build(
         box: dict[str, Any] = {}
 
         def _run() -> None:
+            engine = None
             try:
                 engine = engine_factory()
                 box["engine"] = engine
@@ -36,6 +37,9 @@ def safe_evaluate_active_build(
                 box["error"] = exc
             except Exception as exc:  # noqa: BLE001 - prevent timed-out daemon worker noise.
                 box["error"] = exc
+            finally:
+                if not box.get("cancelled"):
+                    _close_engine(engine)
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
@@ -56,11 +60,11 @@ def safe_evaluate_active_build(
         engine = engine_factory()
         return evaluator.evaluate_active_build(engine, snapshot_id, source_context=source_context)
     except (PobEngineError, EOFError, TimeoutError, OSError) as exc:
-        _close_engine(engine)
         return compute_failed_evaluation(snapshot_id, type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 - factory/import failures must be sanitized.
-        _close_engine(engine)
         return compute_failed_evaluation(snapshot_id, type(exc).__name__)
+    finally:
+        _close_engine(engine)
 
 
 def compute_failed_evaluation(snapshot_id: str, error_kind: str) -> dict[str, Any]:
