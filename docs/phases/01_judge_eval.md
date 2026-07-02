@@ -2,8 +2,10 @@
 
 ## 阶段状态
 
-代码基线已实现，并已接入多组 poe.ninja 100 级样本做第一轮人工验收回归；仍需继续用
-更多真实样本校准 offense / defense 标准和 modelability 盲区，用户认可后才能标记为完成。
+已完成。当前 Phase 1 以 `judge_phase1_v3` / `judge_v3_evidence_aware` 作为内部 Judge
+基线：合法性仍由 hard checks 和 PoB readback 兜底，质量评分输出 evidence-aware score
+vector，并明确区分 strong evidence、limited evidence、source-data problem 和
+unsolved modelability gap。
 
 ## 目标
 
@@ -65,7 +67,7 @@
   - metric provenance；
   - evidence / confidence tier；
   - reward eligibility / reward strength。
-- Judge v2 必须区分 hard floor 和 quality target：
+- Judge v3 必须区分 hard floor 和 quality target：
   - hard floor 只用于判断低到不可运行的 failure；
   - quality floor / target 用于成熟 BD 质量评分，不能让合法 BD 直接失败，也不能把高于
     hard floor 的可计算 BD 直接归零；
@@ -125,9 +127,9 @@
 ## 当前实现
 
 - 新增内部模块 `server/judge/`，暂不暴露 MCP tool：
-  - `models.py`：evaluator version、metric keys、failure code 常量；
+  - `models.py`：evaluator version、metric keys、failure code / caveat 常量；
   - `rules.py`：class/ascendancy、support/socket v1、physical-invalid blocker；
-  - `scoring.py`：`judge_v2_reality_calibrated`，包含 hard floor / quality target 分离、
+  - `scoring.py`：`judge_v3_evidence_aware`，包含 hard floor / quality target 分离、
     hard-floor 到 target 的对数连续评分、动态可用主资源池 recovery、异构 Max Hit、CI
     混沌免疫、EHP 物理短板补偿、uncapped resistance cap、offense evidence provenance
     和扁平 aggregate；

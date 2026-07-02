@@ -9,6 +9,11 @@
 让外部 Researcher Agents 从成熟 BD 中提取可复用、non-copyable 的知识，并且只把通过校
 验的 semantic knowledge 写入长期记忆。
 
+Phase 4 是双轨长期记忆开始真正写入的阶段：clean fragments 进入 semantic vector memory
+（语义向量记忆），通过校验的 semantic edge proposals 进入 symbolic / relational graph memory
+（符号/关系图记忆）。Phase 3 只提供 typed graph access，不负责把成熟 BD 文本或语义摘要
+写入记忆。
+
 ## 依赖
 
 - Phase 1 judge/modelability output。
@@ -33,6 +38,14 @@
   - transition gate proposals；
   - verification tasks；
   - modelability caveats。
+- 写入双轨记忆：
+  - clean fragments 可进入 semantic vector memory，用于机制理解、语义检索和上下文组装；
+  - semantic edge proposals 只能在 endpoint nodes resolve 到 physical graph 后进入 symbolic
+    graph；
+  - validated JSON fragments / template-shaped facts 必须先通过 copy-safety、source refs、
+    patch/version/status/confidence 校验，才能成为 planner 可消费的长期知识；
+  - raw PoB code、raw XML、完整装备表、完整 passive path、完整 gem/support links 仍只能
+    quarantine-only transient 使用。
 - 校验 semantic edge proposals：
   - endpoint nodes 必须 resolve 到 physical graph；
   - aliases 必须可追溯；
@@ -51,11 +64,11 @@
 - 不存在的 endpoints 会被拒绝。
 - Copyable mature-build material 会被拒绝。
 - Patch decay 可通过模拟版本变化测试。
-- Semantic graph 改善 retrieval benchmarks。
+- Semantic graph / vector memory 改善 Phase 4 retrieval benchmarks。
 
 ## 验证
 
-运行 mature extraction/memory tests 和 graph retrieval benchmark，然后运行：
+运行 mature extraction/memory tests 和 Phase 4 semantic graph / vector retrieval benchmark，然后运行：
 
 ```powershell
 .\.tools\uv\uv.exe run pytest tests/test_mature_fragment_extraction.py tests/test_mature_ninja_payload.py tests/test_mature_pobb_payload.py tests/test_mature_source_intake.py tests/test_mature_source_probe_runner.py tests/test_mature_sources.py tests/test_mature_sample_contract.py tests/test_mature_eval.py -q

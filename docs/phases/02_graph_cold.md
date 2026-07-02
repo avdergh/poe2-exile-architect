@@ -16,7 +16,7 @@ choice / allocation option ingestion、`unique -> base item` query、最小 weap
 overlay query、component-set 级别 caveat context 原型，以及 19 个固定 E2E 样例 acceptance
 report。
 
-整体进度粗估：100%（待提交/合并）。已完成基础合同、source inventory、六类 raw ingestion 起步、十组关键
+整体进度粗估：100%（已提交并合入 `main`）。已完成基础合同、source inventory、六类 raw ingestion 起步、十组关键
 computed fact 原型，以及 JSON durable snapshot、SQLite snapshot index/store、candidate-aware
 基础 resolve、build-facing skill/support resolver payload skeleton、mini E2E report 骨架与第一版
 固定样例 bundle；当前固定 E2E artifact 已达到 19 个样例，并已按人工 review `pass` 更新
@@ -24,8 +24,8 @@ acceptance report。剩余更完整的 official ID 覆盖、真实 tree/unique �
 深化、caveat registry 扩展、完整 official inventory/passive tables acquisition 属于 Phase 3+
 增量或后续 source acquisition 工作，不阻塞 Phase 2 cold-start 出关。
 
-Phase 2 最终完成已经经过 deterministic tests、E2E 样例验收和人工评分通过；当前状态等待提交与
-合并。
+Phase 2 最终完成已经经过 deterministic tests、E2E 样例验收和人工评分通过，并已合入
+`main`，作为 Phase 3 的直接输入。
 
 ## 当前进度复核
 
@@ -67,9 +67,15 @@ Phase 2 的交付物是：
 - dynamic/computed physical fact contracts；
 - 不暴露 raw graph query 的内部查询/校验能力。
 
-Phase 2 不追求完整 agent-facing graph retrieval。Typed graph tools、graph retrieval benchmark
-和 backend 产品化属于 Phase 3；semantic graph 与 mature BD 知识属于 Phase 4；官方 `.build`
-artifact 生成属于 Phase 6。
+Phase 2 不追求完整 agent-facing graph retrieval。Typed graph tools、typed graph tool
+deterministic benchmark 和 backend 产品化属于 Phase 3；semantic graph 与 mature BD 知识属
+于 Phase 4；官方 `.build` artifact 生成属于 Phase 6。
+
+Phase 2 已经暴露若干 context-sensitive contract 的雏形，例如 `socket_support_legality` 的
+`socket_context`、weapon set allocation overlay 和 passive allocation caveat。Phase 3 接手时
+必须把这些零散上下文提升为统一的 `GraphToolContext` / context policy：无上下文的查询只能
+回答 source-backed static fact；涉及 item level、socket group、weapon set、已分配天赋或当前
+属性的查询必须显式声明所需 context，缺失时返回 structured `missing_context`，不能猜。
 
 ## 依赖
 
@@ -218,7 +224,7 @@ artifact 生成属于 Phase 6。
   - 可以是 SQLite-backed physical graph tables、generated JSON snapshot，或等价的可测试持久层；
   - 必须支持 ingestion、resolve、computed fact、explain source 和 deterministic rebuild；
   - 不要求支持 Phase 3 的 arbitrary traversal、weight adjustment、agent-facing typed tools 或
-    graph retrieval benchmark。
+    typed graph tool deterministic benchmark。
 - 当前实现优先落在 generated JSON snapshot：
   - 已支持 `build_snapshot()` -> `save_snapshot()` -> `load_snapshot()` round-trip；
   - 已支持 `register_snapshot()` -> `list_registered_snapshots()` -> `load_latest_snapshot()`
