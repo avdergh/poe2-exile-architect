@@ -1,0 +1,1198 @@
+{
+  "benchmark_id": "phase3_typed_graph_tools_v1",
+  "snapshot_id": "physical-graph-61792486905f62f9b6ba2c95",
+  "tool_families_covered": [
+    "build_planner_id_resolve",
+    "can_roll_mod",
+    "find_passive_topology_path",
+    "get_passive_subgraph_in_radius",
+    "requirements_for_component",
+    "resolve_graph_component",
+    "resource_profile_for_component",
+    "socket_support_legality",
+    "support_skill_candidate"
+  ],
+  "case_counts_by_status": {
+    "ambiguous": 1,
+    "error": 2,
+    "known": 8,
+    "missing_context": 2,
+    "stale": 1,
+    "unknown": 1,
+    "unsupported": 2
+  },
+  "expected_status_match_rate": 1.0,
+  "provenance_completeness_rate": 1.0,
+  "hallucinated_compatibility_count": 0,
+  "fact_mismatch_count": 0,
+  "structured_return_rate": 1.0,
+  "topology_macro_limits": {
+    "max_tool_calls": 1,
+    "max_hops": 6,
+    "max_nodes": 200,
+    "max_payload_bytes": 65536
+  },
+  "topology_limit_failures": [],
+  "pass": true,
+  "review_counts": {
+    "pass": 17
+  },
+  "ready_for_human_review": true,
+  "ready_for_phase3_exit": true,
+  "samples": [
+    {
+      "id": "resolve_ambiguous_alias",
+      "tool_name": "resolve_graph_component",
+      "expected_status": "ambiguous",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "resolve_graph_component",
+        "queryFamily": "resolve_graph_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "ambiguous",
+        "errorCode": null,
+        "resolvedSubject": null,
+        "facts": {
+          "query": "Lightning Arrow",
+          "candidate_keys": [
+            "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+            "skill:LightningArrowPlayer"
+          ],
+          "candidates": [
+            {
+              "stableKey": "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+              "nodeType": "skill_gem",
+              "displayName": "Lightning Arrow",
+              "confidence": 1.0,
+              "sourceRefs": [
+                "fixture:phase2"
+              ]
+            },
+            {
+              "stableKey": "skill:LightningArrowPlayer",
+              "nodeType": "active_skill",
+              "displayName": "Lightning Arrow",
+              "confidence": 1.0,
+              "sourceRefs": [
+                "fixture:phase2"
+              ]
+            }
+          ]
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+            "skill:LightningArrowPlayer"
+          ],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 0.5,
+        "caveats": [
+          "ambiguous_alias"
+        ],
+        "contextPolicy": "none",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "requirements_known",
+      "tool_name": "requirements_for_component",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "requirements_for_component",
+        "queryFamily": "requirements_for_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+          "nodeType": "skill_gem",
+          "displayName": "Lightning Arrow",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "requirements": {
+            "level": 1,
+            "dex": 9
+          }
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [
+            "requirements_for_component"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "resource_known",
+      "tool_name": "resource_profile_for_component",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "resource_profile_for_component",
+        "queryFamily": "resource_profile_for_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:LightningArrowPlayer",
+          "nodeType": "active_skill",
+          "displayName": "Lightning Arrow",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "level_or_stage": "1",
+          "costs": {
+            "mana": 6
+          },
+          "reservations": {}
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [
+            "resource_profile_for_component"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "resource_unknown_stage",
+      "tool_name": "resource_profile_for_component",
+      "expected_status": "unknown",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "resource_profile_for_component",
+        "queryFamily": "resource_profile_for_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "unknown",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:LightningArrowPlayer",
+          "nodeType": "active_skill",
+          "displayName": "Lightning Arrow",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "level_or_stage": "999",
+          "costs": {},
+          "reservations": {}
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [
+            "resource_profile_for_component"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "requirements_stale_context",
+      "tool_name": "requirements_for_component",
+      "expected_status": "stale",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "requirements_for_component",
+        "queryFamily": "requirements_for_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "stale",
+        "errorCode": null,
+        "resolvedSubject": null,
+        "facts": {
+          "version_context": {
+            "context_type": "version_context",
+            "passive_tree_version": "wrong_version"
+          },
+          "snapshot_version_context": {
+            "passive_tree_version": "0_5"
+          },
+          "mismatched_fields": [
+            "passive_tree_version"
+          ]
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [],
+          "sourceStatus": {},
+          "confidence": 0.0,
+          "caveats": [
+            "version_context_mismatch"
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [],
+        "confidence": 0.0,
+        "caveats": [
+          "version_context_mismatch"
+        ],
+        "contextPolicy": "version_only",
+        "contextUsed": {
+          "context_type": "version_context",
+          "passive_tree_version": "wrong_version"
+        },
+        "missingContext": [],
+        "contextCaveats": [
+          "version_context_mismatch:passive_tree_version"
+        ],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "socket_missing_context",
+      "tool_name": "socket_support_legality",
+      "expected_status": "missing_context",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "socket_support_legality",
+        "queryFamily": "socket_support_legality",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "missing_context",
+        "errorCode": null,
+        "resolvedSubject": null,
+        "facts": {},
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [],
+          "sourceStatus": {},
+          "confidence": 0.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [],
+        "confidence": 0.0,
+        "caveats": [],
+        "contextPolicy": "socket_context",
+        "contextUsed": {},
+        "missingContext": [
+          "socket_context"
+        ],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "socket_known",
+      "tool_name": "socket_support_legality",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "socket_support_legality",
+        "queryFamily": "socket_support_legality",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:LightningArrowPlayer",
+          "nodeType": "active_skill",
+          "displayName": "Lightning Arrow",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "skill_key": "skill:LightningArrowPlayer",
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "legality_status": "socket_compatible",
+          "excluded_reasons": [],
+          "support_candidate_status": "hard_compatible",
+          "socket_context": {
+            "max_support_count": 2,
+            "current_support_count": 0,
+            "socketed_support_keys": [],
+            "socketed_support_families": [],
+            "duplicate_support_policy": "reject_same_support_key"
+          },
+          "support_family": "Pierce"
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "skill:LightningArrowPlayer",
+            "support:Metadata/Items/Gems/SupportGemPierce"
+          ],
+          "edges": [],
+          "computedFactIds": [
+            "socket_support_legality"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "socket_context",
+        "contextUsed": {
+          "context_type": "socket_context",
+          "socketed_support_keys": [],
+          "socketed_support_families": [],
+          "current_support_count": 0,
+          "max_support_count": 2
+        },
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "can_roll_missing_context",
+      "tool_name": "can_roll_mod",
+      "expected_status": "missing_context",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "can_roll_mod",
+        "queryFamily": "can_roll_mod",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "missing_context",
+        "errorCode": null,
+        "resolvedSubject": null,
+        "facts": {},
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [],
+          "sourceStatus": {},
+          "confidence": 0.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [],
+        "confidence": 0.0,
+        "caveats": [],
+        "contextPolicy": "item_context",
+        "contextUsed": {},
+        "missingContext": [
+          "item_context.item_level"
+        ],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "can_roll_known",
+      "tool_name": "can_roll_mod",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "can_roll_mod",
+        "queryFamily": "can_roll_mod",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+          "nodeType": "item_base",
+          "displayName": "Bloodstone Amulet",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "base_item_key": "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+          "mod_key": "mod:MovementSpeed1",
+          "item_level": 70,
+          "required_level": 70,
+          "matching_tags": [
+            "default"
+          ],
+          "base_domain": "item",
+          "mod_domain": "item",
+          "generation_type": "suffix",
+          "can_roll": true
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "item_base:Metadata/Items/Amulets/BloodstoneAmulet",
+            "mod:MovementSpeed1"
+          ],
+          "edges": [],
+          "computedFactIds": [
+            "can_roll_mod"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "item_context",
+        "contextUsed": {
+          "context_type": "item_context",
+          "item_level": 70,
+          "tags": []
+        },
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "support_candidate_known",
+      "tool_name": "support_skill_candidate",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "support_skill_candidate",
+        "queryFamily": "support_skill_candidate",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:LightningArrowPlayer",
+          "nodeType": "active_skill",
+          "displayName": "Lightning Arrow",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "skill_key": "skill:LightningArrowPlayer",
+          "candidate_status": "hard_compatible",
+          "matched_skill_types": [
+            "attack",
+            "projectile"
+          ],
+          "shared_tags": []
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "skill:LightningArrowPlayer",
+            "support:Metadata/Items/Gems/SupportGemPierce"
+          ],
+          "edges": [],
+          "computedFactIds": [
+            "support_skill_candidate"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "support_candidate_unsupported",
+      "tool_name": "support_skill_candidate",
+      "expected_status": "unsupported",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "support_skill_candidate",
+        "queryFamily": "support_skill_candidate",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "unsupported",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:BenchmarkSpellOnly",
+          "nodeType": "active_skill",
+          "displayName": "Benchmark Spell Only",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "skill_key": "skill:BenchmarkSpellOnly",
+          "candidate_status": "unsupported",
+          "matched_skill_types": [],
+          "shared_tags": [],
+          "excluded_reason": "required_types_not_matched"
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "skill:BenchmarkSpellOnly",
+            "support:Metadata/Items/Gems/SupportGemPierce"
+          ],
+          "edges": [],
+          "computedFactIds": [
+            "support_skill_candidate"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "expected_candidate_status": "unsupported",
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "support_candidate_recommended",
+      "tool_name": "support_skill_candidate",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "support_skill_candidate",
+        "queryFamily": "support_skill_candidate",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "skill:BenchmarkRecommendedProjectileAttack",
+          "nodeType": "active_skill",
+          "displayName": "Benchmark Recommended Projectile Attack",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "support_key": "support:Metadata/Items/Gems/SupportGemPierce",
+          "skill_key": "skill:BenchmarkRecommendedProjectileAttack",
+          "candidate_status": "recommended",
+          "matched_skill_types": [
+            "attack",
+            "projectile"
+          ],
+          "shared_tags": []
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "skill:BenchmarkRecommendedProjectileAttack",
+            "support:Metadata/Items/Gems/SupportGemPierce"
+          ],
+          "edges": [],
+          "computedFactIds": [
+            "support_skill_candidate"
+          ],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "expected_candidate_status": "recommended",
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "support_candidate_missing_contract",
+      "tool_name": "support_skill_candidate",
+      "expected_status": "error",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "support_skill_candidate",
+        "queryFamily": "support_skill_candidate",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "error",
+        "errorCode": "invalid_reference",
+        "resolvedSubject": null,
+        "facts": {
+          "recoverable": true
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [],
+          "sourceStatus": {},
+          "confidence": 0.0,
+          "caveats": [
+            "missing support contract requirements: skill:BenchmarkMissingContractSupport"
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [],
+        "confidence": 0.0,
+        "caveats": [
+          "missing support contract requirements: skill:BenchmarkMissingContractSupport"
+        ],
+        "contextPolicy": "version_only",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "passive_path_known",
+      "tool_name": "find_passive_topology_path",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "find_passive_topology_path",
+        "queryFamily": "find_passive_topology_path",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "passive:pob:0_5:100",
+          "nodeType": "passive",
+          "displayName": "Attribute",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "start_key": "passive:pob:0_5:100",
+          "end_key": "passive:pob:0_5:101",
+          "path_keys": [
+            "passive:pob:0_5:100",
+            "passive:pob:0_5:101"
+          ],
+          "hop_count": 1,
+          "topology_only": true
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "passive:pob:0_5:100",
+            "passive:pob:0_5:101"
+          ],
+          "edges": [
+            {
+              "edgeType": "connected_to",
+              "sourceKey": "passive:pob:0_5:100",
+              "targetKey": "passive:pob:0_5:101"
+            }
+          ],
+          "computedFactIds": [],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [
+            "topology_only_path"
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [
+          "topology_only_path"
+        ],
+        "contextPolicy": "passive_context",
+        "contextUsed": {
+          "context_type": "passive_context",
+          "active_weapon_set": 1,
+          "allocated_passive_keys": []
+        },
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "passive_subgraph_known",
+      "tool_name": "get_passive_subgraph_in_radius",
+      "expected_status": "known",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "get_passive_subgraph_in_radius",
+        "queryFamily": "get_passive_subgraph_in_radius",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "known",
+        "errorCode": null,
+        "resolvedSubject": {
+          "stableKey": "passive:pob:0_5:100",
+          "nodeType": "passive",
+          "displayName": "Attribute",
+          "status": "valid",
+          "confidence": 1.0
+        },
+        "facts": {
+          "node_key": "passive:pob:0_5:100",
+          "hop_limit": 6,
+          "node_limit": 200,
+          "nodes": [
+            {
+              "stableKey": "passive:pob:0_5:100",
+              "distance": 0,
+              "displayName": "Attribute"
+            },
+            {
+              "stableKey": "passive:pob:0_5:101",
+              "distance": 1,
+              "displayName": "Path Node"
+            }
+          ],
+          "edges": [
+            {
+              "sourceKey": "passive:pob:0_5:100",
+              "targetKey": "passive:pob:0_5:101",
+              "edgeType": "connected_to"
+            }
+          ],
+          "node_count": 2,
+          "edge_count": 1,
+          "truncated": false,
+          "topology_only": true,
+          "payload_bytes": 1625
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [
+            "passive:pob:0_5:100",
+            "passive:pob:0_5:101"
+          ],
+          "edges": [
+            {
+              "edgeType": "connected_to",
+              "sourceKey": "passive:pob:0_5:100",
+              "targetKey": "passive:pob:0_5:101"
+            }
+          ],
+          "computedFactIds": [],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 1.0,
+          "caveats": [
+            "topology_only_subgraph"
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 1.0,
+        "caveats": [
+          "topology_only_subgraph"
+        ],
+        "contextPolicy": "passive_context",
+        "contextUsed": {
+          "context_type": "passive_context",
+          "active_weapon_set": 1,
+          "allocated_passive_keys": []
+        },
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "id_mapping_unsupported",
+      "tool_name": "build_planner_id_resolve",
+      "expected_status": "unsupported",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "build_planner_id_resolve",
+        "queryFamily": "build_planner_id_resolve",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "unsupported",
+        "errorCode": null,
+        "resolvedSubject": null,
+        "facts": {
+          "status": "unsupported",
+          "system": "ggg:PassiveSkills",
+          "external_id": "strength89",
+          "target_key": null,
+          "caveat": "official_passive_string_id_not_vendored"
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [
+            "fixture:phase2"
+          ],
+          "sourceStatus": {
+            "fixture:phase2": "fixture"
+          },
+          "confidence": 0.0,
+          "caveats": [
+            "official_passive_string_id_not_vendored"
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [
+          "fixture:phase2"
+        ],
+        "confidence": 0.0,
+        "caveats": [
+          "official_passive_string_id_not_vendored"
+        ],
+        "contextPolicy": "none",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    },
+    {
+      "id": "raw_query_rejected",
+      "tool_name": "resolve_graph_component",
+      "expected_status": "error",
+      "status_match": true,
+      "fact_match": true,
+      "result": {
+        "toolName": "resolve_graph_component",
+        "queryFamily": "resolve_graph_component",
+        "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+        "status": "error",
+        "errorCode": "invalid_schema",
+        "resolvedSubject": null,
+        "facts": {
+          "recoverable": true
+        },
+        "evidencePath": {
+          "snapshotId": "physical-graph-61792486905f62f9b6ba2c95",
+          "nodes": [],
+          "edges": [],
+          "computedFactIds": [],
+          "sourceRefs": [],
+          "sourceStatus": {},
+          "confidence": 0.0,
+          "caveats": [
+            "Tool input validation failed: raw graph query fields are not permitted (sql). Only use typed schema."
+          ],
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "sourceRefs": [],
+        "confidence": 0.0,
+        "caveats": [
+          "Tool input validation failed: raw graph query fields are not permitted (sql). Only use typed schema."
+        ],
+        "contextPolicy": "none",
+        "contextUsed": {},
+        "missingContext": [],
+        "contextCaveats": [],
+        "freshness": {
+          "versionContext": {
+            "passive_tree_version": "0_5"
+          }
+        },
+        "noRawQuery": true
+      },
+      "review": {
+        "grade": "pass"
+      }
+    }
+  ]
+}

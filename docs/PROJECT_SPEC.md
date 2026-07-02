@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-07-01
+最后更新：2026-07-02
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -60,6 +60,17 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
   -> reward events 调整 graph 和 memory 权重
 ```
 
+长期记忆采用双轨结构，而不是纯文本记忆：
+
+- symbolic / relational graph memory（符号/关系图记忆）：保存 source-backed physical facts、
+  通过校验的 semantic edges、官方 ID、天赋拓扑、requirements、support/socket legality、
+  装备词缀模板和其他可验证 JSON facts；
+- semantic vector memory（语义向量记忆）：保存通过 copy-safety 和版本校验的 clean fragments、
+  机制理解、研究摘要和可复用原则，用于语义检索与 Researcher / Architect 上下文组装。
+
+Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产物写入 semantic graph
+和 vector memory；Phase 8 才根据 reward events 调整 graph / memory ranking。
+
 ## 已有底座
 
 当前仓库已经有可复用底座：
@@ -117,8 +128,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | --- | --- | --- | --- | --- |
 | Phase 0 | 已完成 | 无 | 清理旧方向文档，建立中文 spec、phase docs、schema docs，以及双语 architecture。 | `docs/phases/00_cleanup.md` |
 | Phase 1 | 已完成：Judge / modelability 基线、真实样本回归与评分合同收口完成 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
-| Phase 2 | 已完成：cold-start 合同、固定 E2E 样例验收与人工评分通过，待提交/合并 | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射基础。 | `docs/phases/02_graph_cold.md` |
-| Phase 3 | 未开始 | Phase 2 | 选择 graph backend，并通过 typed tools 暴露图查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
+| Phase 2 | 已完成：cold-start 合同、固定 E2E 样例验收、人工评分通过，并已合入 `main` | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射基础。 | `docs/phases/02_graph_cold.md` |
+| Phase 3 | 已完成：read-only typed graph facade、NetworkX bounded topology、MCP `graph_tool_query`、deterministic benchmark 与人工验收通过 | Phase 2 | 通过 typed tools 暴露 source-backed graph 查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 未开始 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph 和 memory。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 未开始 | Phase 1、3、4 | 由外部 Architect Agent 提出方案，确定性 planner/solver 补全天赋、装备、support、Spirit 和合法性。 | `docs/phases/05_generation.md` |
 | Phase 6 | 未开始 | Phase 2、5 | 把支持的 BuildPlan 导出为官方 `.build` JSON，并维护 leveling progression。 | `docs/phases/06_build_export.md` |
@@ -158,7 +169,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 - modelability caveat correctness；
 - DPS/EHP/reference placement；
 - 抗性、Spirit、属性、support 和 passive-budget validity；
-- graph retrieval 相对 text retrieval 的质量；
+- typed graph tool 的确定性、provenance 完整度、上下文校验和防幻觉能力；
+- Phase 4 之后 graph / vector / text retrieval 组合相对纯文本检索的质量；
 - copy-safety pass rate；
 - repair-loop score improvement；
 - rollback 和 early-stopping behavior；

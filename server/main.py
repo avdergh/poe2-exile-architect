@@ -31,6 +31,7 @@ from .knowledge import db as corpus
 from .knowledge import itemparse
 from .knowledge import lifecycle
 from .knowledge import lifecycle_eval
+from .knowledge import graph_tools
 from .knowledge import mechanics
 from .knowledge import refbuilds
 from .live import meta as live_meta
@@ -128,6 +129,14 @@ def _source_to_xml(source: str) -> str:
     if "PathOfBuilding" in src and "<" in src:
         return src  # already raw PoB XML
     return decode_code(src)  # otherwise assume a PoB import/share code
+
+
+def _default_graph_snapshot_index_path() -> Path:
+    return paths.user_data_dir() / "physical_graph" / "snapshot_index.sqlite"
+
+
+def _graph_query_service() -> graph_tools.GraphQueryService:
+    return graph_tools.service_from_snapshot_index(str(_default_graph_snapshot_index_path()))
 
 
 @mcp.tool()
@@ -1515,6 +1524,58 @@ def relevant_uniques(limit: int = 15) -> dict[str, Any]:
 def corpus_info() -> dict[str, Any]:
     """Report the bundled game-data corpus version and entity counts."""
     return corpus.corpus_info()
+
+
+@mcp.tool()
+def graph_tool_query(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Run a Phase 3 read-only typed graph query against the latest registered snapshot.
+
+    `tool_name` must be one of the Phase 3 typed graph query families, and `payload` must match
+    that family's schema. Raw Cypher, Gremlin, SQL, or other backend query strings are rejected by
+    the shared GraphQueryService and returned as structured public errors.
+    """
+    try:
+        return _graph_query_service().run_tool(tool_name, payload)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        return {
+            "toolName": tool_name,
+            "queryFamily": tool_name,
+            "snapshotId": None,
+            "status": "error",
+            "errorCode": "graph_snapshot_unavailable",
+            "resolvedSubject": None,
+            "facts": {"recoverable": True},
+            "evidencePath": None,
+            "sourceRefs": [],
+            "confidence": 0.0,
+            "caveats": [f"{type(exc).__name__}: graph snapshot unavailable"],
+            "contextPolicy": "none",
+            "contextUsed": {},
+            "missingContext": [],
+            "contextCaveats": [],
+            "freshness": {"versionContext": {}},
+            "noRawQuery": True,
+        }
+    except Exception as exc:
+        return {
+            "toolName": tool_name,
+            "queryFamily": tool_name,
+            "snapshotId": None,
+            "status": "error",
+            "errorCode": "graph_tool_runtime_error",
+            "resolvedSubject": None,
+            "facts": {"recoverable": True},
+            "evidencePath": None,
+            "sourceRefs": [],
+            "confidence": 0.0,
+            "caveats": [f"{type(exc).__name__}: graph tool failed"],
+            "contextPolicy": "none",
+            "contextUsed": {},
+            "missingContext": [],
+            "contextCaveats": [],
+            "freshness": {"versionContext": {}},
+            "noRawQuery": True,
+        }
 
 
 # --------------------------------------------------------------------------------------
