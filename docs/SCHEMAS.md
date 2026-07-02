@@ -60,7 +60,7 @@ Architect Agent 在 deterministic completion 前提出的方案。
 必要概念：
 
 - pass/fail；
-- score scale：当前 Judge v2 使用 `0_to_1`；
+- score scale：当前 Judge v3 使用 `0_to_1`；
 - score vector：当前最小实现包含 offense、defense、recovery、mobility；physical-invalid 时
   这些维度必须标记 blocked；
 - score breakdown：每个维度应说明 raw value、hard floor、quality floor、target、
@@ -80,7 +80,7 @@ Architect Agent 在 deterministic completion 前提出的方案。
   `disableReason` 显示技能被当前武器禁用时，必须产生 `incompatible_weapon_skill_tags`；
   不允许用 Python 技能名表替代 PoB 兼容性判断；
 - scenario fit：当前作为展示型 mapping/bossing/hybrid fit，不参与 aggregate；
-- aggregate score：必须包含 weight profile；当前 `judge_v2_reality_calibrated` 使用 offense
+- aggregate score：必须包含 weight profile；当前 `judge_v3_evidence_aware` 使用 offense
   0.40、defense 0.40、recovery 0.15、mobility 0.05；
 - quality band：`invalid`、`barely_playable`、`entry_endgame`、`solid`、`strong`；
 - hard failures 和 warnings；
@@ -208,10 +208,175 @@ Physical 或 semantic knowledge node。
 - game patch、passive tree version、PoB version/commit；
 - status；
 - confidence；
-- weight；
+- weight（semantic / reward edges 使用；source-backed physical edge 可以为空或固定默认值）；
 - modelability。
 
 Semantic edges 必须在两个 endpoint nodes 都能 resolve 后才能创建。
+
+## GraphToolInput
+
+Phase 3 typed graph tools 的通用输入外壳。所有 graph tool 都必须使用 typed payload，不能把
+raw Cypher / Gremlin / SQL 作为字符串传入。
+
+必要概念：
+
+- tool name / query family；
+- typed payload；
+- optional `GraphToolContext`；
+- context policy：`none`、`version_only`、`item_context`、`socket_context`、
+  `passive_context`、`build_state_context`；
+- snapshot selection：latest 或 explicit snapshot id；
+- result limits：例如 hop limit、node limit、candidate limit；
+- no-raw-query guarantee。
+
+Context policy 由工具声明，而不是由 agent 自由猜测。缺少必需 context 时，工具必须返回
+`status: "missing_context"` 和 `missingContext` 字段，不能用默认值伪造状态化结论。
+输入 schema 必须拒绝 raw query 字段，例如 `raw_query`、`query_string`、`cypher`、`gremlin`
+或 `sql`。schema validation failure 不能把 Pydantic traceback 或 Python stack trace 暴露给
+agent；必须转换为 public error envelope：`status: "error"`、`errorCode: "invalid_schema"`、
+`noRawQuery: true` 和可读 caveat。
+
+## GraphToolContext
+
+状态化 graph query 的可选上下文。它不是完整 BuildSnapshot，也不能替代 PoB/Judge；只用于
+让 graph tools 明确自己回答的是哪个静态/半静态场景。
+
+可用字段：
+
+- discriminator：`context_type`，必须显式传入；Pydantic 使用
+  `Field(discriminator="context_type")` 解析 union；
+- version context：game patch、passive tree version、PoB version / commit；
+- ruleset context：league、ruleset、lifecycle stage、level/stage label；
+- character context：class、ascendancy、level；
+- item context：item level、item base key、domain、tags、rarity、slot；
+- socket context：skill key、support keys、current support count、max support count、
+  duplicate policy、socket group kind；
+- passive context：start node、target node、active weapon set、allocated passive keys、
+  weapon set point budget、normal point budget、hop / node limits；
+- build-state context：current attributes、Spirit / reservation summary、equipped weapon types、
+  relevant caveats。
+
+不同 query family 只能读取自己声明需要的 context slice。工具返回值必须说明 `contextUsed`；
+如果输入上下文不足或与 snapshot/version 冲突，必须返回 `status: "missing_context"`、
+`missingContext` 或 `contextCaveats`。
+当前 context discriminator 取值为：`version_context`、`item_context`、`socket_context`、
+`passive_context`、`build_state_context`。
+
+## GraphResolveResult
+
+Phase 3 typed graph tools 的通用 resolve 结果。
+
+必要概念：
+
+- component display name / alias / typed query payload；
+- snapshot id；
+- status：`resolved`、`missing`、`ambiguous`、`unsupported`、`stale`、`error`；
+- resolved stable key；
+- resolved node type；
+- display name；
+- aliases matched；
+- candidates（仅在 ambiguous 时返回安全摘要）；
+- confidence；
+- caveats；
+- source refs。
+
+Resolver 可以接受玩家可读的 component name、alias 或 typed payload；不能接受 raw Cypher /
+Gremlin / SQL，也不能把原生图查询字符串包装成普通文本。
+
+## GraphQueryResult
+
+Phase 3 read-only typed graph query 的通用结果外壳。具体 fact payload 由工具类型决定，但外
+层字段必须稳定。
+
+必要概念：
+
+- tool name / query family；
+- typed input echo（只回显安全、非 raw query 的输入）；
+- snapshot id；
+- status：`known`、`unknown`、`ambiguous`、`unsupported`、`stale`、`missing_context`、`error`；
+- resolved subject / object stable keys；
+- structured facts；
+- evidence path；
+- provenance / source refs；
+- confidence；
+- caveats；
+- `contextPolicy`；
+- `contextUsed`；
+- `missingContext`；
+- `contextCaveats`；
+- freshness / version context；
+- no-raw-query guarantee。
+
+Graph tools 不能返回 raw Cypher / Gremlin / SQL，也不能把 raw graph rows 当作 public
+contract。不存在的 endpoint、unsupported official ID 和 ambiguous alias 必须结构化返回，不能
+静默创建或猜测事实。
+
+## GraphEvidencePath
+
+用于解释一个 graph answer 为什么成立。
+
+必要概念：
+
+- snapshot id；
+- nodes；
+- edges；
+- computed fact ids；
+- source refs；
+- source status；
+- confidence；
+- caveats；
+- patch / passive tree / PoB version context。
+
+Evidence path 只解释 source-backed 或 computed fact 链路，不暴露可复刻成熟 BD 的 raw source
+材料。
+
+## GraphToolError
+
+Phase 3 typed graph tools 的结构化错误合同。错误必须可解释、可测试，不能把 Python traceback
+或 raw graph backend error 暴露给 agent。
+
+必要概念：
+
+- status：`missing_context`、`ambiguous`、`unsupported`、`stale`、`error`；
+- error code；
+- message；
+- `missingContext`；
+- candidate summaries（仅 ambiguous 时返回安全摘要）；
+- source refs（如果错误来自 source-backed unsupported/stale 状态）；
+- caveats；
+- recoverable flag；
+- suggested next typed tool（可选）。
+
+`invalid_schema` 是 `errorCode`，不是新的 result status。MCP adapter 和 `GraphQueryService`
+入口必须捕获 schema validation error，把未知字段、缺少 discriminator 或错误 context type 转成
+结构化 `GraphToolError`。
+
+## GraphToolDeterministicBenchmarkResult
+
+Phase 3 typed graph tool deterministic benchmark 的报告结构。它验证工具确定性、上下文校验、
+provenance 完整度和防幻觉能力；不要求和 Phase 4 的 semantic vector / text retrieval 做质量对比。
+
+必要概念：
+
+- benchmark id；
+- snapshot id；
+- tool families covered；
+- case counts by status：`known`、`unknown`、`ambiguous`、`unsupported`、`stale`、
+  `missing_context`、`error`；
+- expected status match rate；
+- provenance completeness rate；
+- hallucinated compatibility count；
+- missing / ambiguous / unsupported structured-return rate；
+- topology macro limits：max tool calls、max nodes、max hops、max payload bytes；
+- pass/fail；
+- caveats；
+- reproducibility context。
+
+Passive topology macro tools 只返回 source-backed static topology。`find_passive_topology_path`
+的 path 是纯拓扑最短路径，不计算已分配节点的 0-cost 跃迁、normal/weapon-set 点数预算或最终
+build-state allocation legality；这些预算和分配成本属于 Phase 5 planner。Phase 3 path/subgraph
+默认上限为 `hop_limit <= 6`、`node_limit <= 200`、payload 不超过 64KB，并在跨 weapon-set
+exclusive state 时返回 `unsupported` 与 `conflicting_weapon_set_caveat`。
 
 ## RewardEvent
 

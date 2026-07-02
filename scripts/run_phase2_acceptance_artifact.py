@@ -73,6 +73,27 @@ def _inventory_source():
 def build_artifact(*, default_review_grade: str | None = None) -> dict[str, object]:
     from server.knowledge import physical_graph as pg
 
+    snapshot, fixture_keys = build_snapshot_fixture_with_keys()
+    return pg.build_phase2_acceptance_artifact(
+        snapshot=snapshot,
+        gem_key=fixture_keys["gem_key"],
+        skill_key=fixture_keys["skill_key"],
+        support_key=fixture_keys["support_key"],
+        passive_key=fixture_keys["passive_key"],
+        unique_key=fixture_keys["unique_key"],
+        caveat_key=fixture_keys["caveat_key"],
+        default_review_grade=default_review_grade,
+    )
+
+
+def build_snapshot_fixture():
+    snapshot, _fixture_keys = build_snapshot_fixture_with_keys()
+    return snapshot
+
+
+def build_snapshot_fixture_with_keys():
+    from server.knowledge import physical_graph as pg
+
     source = _fixture_source()
     inventory_source = _inventory_source()
     inventory_ingestion = pg.ingest_inventory_slots(
@@ -386,17 +407,14 @@ def build_artifact(*, default_review_grade: str | None = None) -> dict[str, obje
             ),
         ),
     )
-
-    return pg.build_phase2_acceptance_artifact(
-        snapshot=snapshot,
-        gem_key=gem.stable_key,
-        skill_key=skill.stable_key,
-        support_key=support.stable_key,
-        passive_key=passive.stable_key,
-        unique_key=unique.stable_key,
-        caveat_key=caveat.stable_key,
-        default_review_grade=default_review_grade,
-    )
+    return snapshot, {
+        "gem_key": gem.stable_key,
+        "skill_key": skill.stable_key,
+        "support_key": support.stable_key,
+        "passive_key": passive.stable_key,
+        "unique_key": unique.stable_key,
+        "caveat_key": caveat.stable_key,
+    }
 
 
 def render_markdown_report(artifact: dict[str, object]) -> str:

@@ -33,7 +33,7 @@ def test_workflow_prompts_registered():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 78
+    assert len(tools) == 79
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -63,7 +63,18 @@ def test_tool_surface_intact():
         "audit_lifecycle_route",
         "evaluate_lifecycle_route",
         "get_meta_archetype_trends",
+        "graph_tool_query",
     } <= names
+
+
+def test_graph_tool_query_exposes_typed_payload_schema():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    schema = tools["graph_tool_query"].inputSchema
+
+    assert schema["properties"]["tool_name"]["type"] == "string"
+    assert schema["properties"]["payload"]["type"] == "object"
+    assert set(schema["required"]) == {"tool_name", "payload"}
 
 
 def test_freshness_report_tool_exposes_force_refresh_schema():
@@ -73,6 +84,28 @@ def test_freshness_report_tool_exposes_force_refresh_schema():
 
     assert schema["properties"]["force_refresh"]["type"] == "boolean"
     assert schema["properties"]["force_refresh"]["default"] is False
+
+
+def test_graph_tool_query_forwards_to_cached_service(monkeypatch):
+    from server import main
+
+    captured: dict[str, object] = {}
+
+    class FakeGraphService:
+        def run_tool(self, tool_name, payload):
+            captured["tool_name"] = tool_name
+            captured["payload"] = payload
+            return {"status": "known", "noRawQuery": True}
+
+    monkeypatch.setattr(main, "_graph_query_service", lambda: FakeGraphService())
+
+    result = main.graph_tool_query("resolve_graph_component", {"query": "Lightning Arrow"})
+
+    assert result == {"status": "known", "noRawQuery": True}
+    assert captured == {
+        "tool_name": "resolve_graph_component",
+        "payload": {"query": "Lightning Arrow"},
+    }
 
 
 def test_evaluate_lifecycle_route_tool_schema():

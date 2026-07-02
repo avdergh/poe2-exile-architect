@@ -5,6 +5,8 @@ description = "MCP server for Path of Exile 2: queryable game corpus + Path-of-B
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.2",
+    "networkx>=3",
+    "pydantic>=2",
 ]
 
 [dependency-groups]
