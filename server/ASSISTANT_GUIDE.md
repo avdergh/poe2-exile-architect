@@ -70,11 +70,115 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `audit_lifecycle_route`,
   `evaluate_lifecycle_route`, `list_transition_gates`,
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
-  `promote_technique_memory`). Static facts to *find* options; the engine *values* them.
+  `promote_technique_memory`, plus Phase 4 research-memory tools
+  (`build_research_packet`, `validate_researcher_output`, `query_research_memory`,
+  `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
+  `propose_build_patterns`, `submit_revalidation_result`,
+  `inspect_rejected_research_proposals`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
   `get_meta_archetype_trends`, `lookup_mechanic` (live wiki fallback for topics not in the corpus),
   `check_data_version`, `check_for_updates`/`apply_updates`, `update_corpus`. Approximate,
   time-sensitive; if one returns "unavailable," carry on and say so.
+
+## Phase 4 research memory workflow
+
+Phase 4 tools are for external Researcher Agent workflows, not for copying mature builds. The
+user-facing product entry is `/poe-bd-research` / `$poe-bd-research`; internal phase names are not
+user commands.
+
+- Product skill flow:
+  `/poe-bd-research --limit 50 --worker-count 5` or
+  `$poe-bd-research --limit 50 --worker-count 5` queues mature samples, then the host agent claims
+  one case per Researcher worker, renders the worker's transient prompt, runs the tool-driven
+  Researcher SOP, and accepts the safe proposal/review through the gate.
+- Treat `/poe-bd-research` as a chat-level skill invocation, not a shell command for the user to
+  run. The host agent should execute the internal scripts with its tools. Do not ask Codex Desktop
+  users to paste PowerShell/Python commands into the chat box.
+- If `/poe-bd-research` is invoked with no arguments, ask for the run mode before any network crawl
+  or dry-run. If the host exposes an interactive choice/confirmation UI, use it. Offer: preflight 5
+  samples (recommended, `limit=5`, `worker-count=1`, `--dry-run`), small extraction (`limit=20`,
+  `worker-count=5`), large extraction (`limit=50`, `worker-count=5`), or resume existing queue.
+  `--resume` is an independent recovery mode and must not be tied only to the large-batch option.
+  If no choice UI is available, present the same options as plain text and wait for the user's
+  reply.
+- `/poe-bd-research` is a runtime product workflow, not a development task. While executing it, do
+  not edit repository source, tests, docs, schemas, installers, or plugin manifests; do not invoke
+  debugging/TDD/code-modification skills. If queue/collector/tooling fails, report the safe
+  `collector_failed` / `source_unavailable` / `runtime_failed` result and stop.
+- Script flow used by the skill:
+  - `scripts/research_mature_builds.py queue`
+  - `scripts/research_mature_builds.py claim`
+  - `scripts/research_mature_builds.py worker-brief --lease-token <leaseToken>`
+  - `scripts/research_mature_builds.py prompt --lease-token <leaseToken>`
+  - `scripts/research_mature_builds.py accept --lease-token <leaseToken> --review-file <safe-review.json>`
+  - `scripts/research_mature_builds.py status`
+- After `claim`, send the safe `workerPrompt` from `worker-brief` verbatim to the Researcher
+  worker. Do not send only a local `SKILL.md` path or ad-hoc prose. If the worker does not see MCP
+  proposal tools, it should write the safe review artifact described by `workerPrompt`; the host
+  then runs `accept`.
+- `--worker-count` means concurrent Researcher agent lanes. It does not mean pre-generating N raw
+  prompts for the main orchestrator. Codex can run multiple worker lanes; hosts without
+  programmatic subagents must report `requestedWorkers`, `effectiveWorkers=1`, and the fallback
+  reason, then run serially.
+- Batch mode is still one build sample per Researcher turn. Do not paste multiple complete PoB
+  samples into one prompt. Do not reuse raw-rich Researcher transcripts across cases; reuse only
+  the queue, skill instructions, scripts, and MCP tools.
+- Queue/status/claim/accept outputs are safe-only. The `prompt` subcommand is the only place raw
+  mature-build material may appear, and only for the worker holding a valid lease. Do not save it
+  into the repo, durable reports, or chat summaries.
+- Treat programmatic diagnostics, safe summaries, resolver shortlists, imported main skill, and
+  selected-skill probes as non-authoritative hints. They must not constrain the Researcher's
+  analysis or filter away useful raw-evidence signals. If the raw quarantine evidence suggests a
+  mechanism that the programmatic summary missed, analyze it safely and mark uncertainty or
+  verification tasks instead of discarding it.
+- Build raw-rich research context only with `build_research_packet`; raw PoB code/XML/full gear/full
+  passive path/full gem links may exist only in the transient packet.
+- Use the `research_mature_build_case` prompt to run a tool-driven Researcher flow. The Researcher
+  must not print final `ResearcherOutput schema_version=4` JSON as chat text; it submits findings
+  through `propose_research_fragments`, `propose_build_patterns`, and `propose_semantic_edges`.
+- Always call `query_research_memory` first; use its `dedupeQueryRef` before
+  `propose_research_fragments`.
+  If a similar fragment already exists, call `append_evidence_to_fragment` instead of creating a
+  duplicate.
+- Before constructing any semantic edge, call `graph_tool_query` with
+  `tool_name="resolve_graph_component"` for every source and target entity. `propose_semantic_edges`
+  may reference only resolver-returned Phase 3 stable keys. It never creates physical graph nodes
+  and never proves build legality.
+- Resolve secondary endpoints before proposing planner-visible edges. Concrete heralds, supports,
+  charges, ailment components, companion skills, reservation/spirit components, projectile delivery
+  skills, and cooldown support-like components must be resolver-backed if they appear in an edge.
+  Abstract layer labels are not graph endpoints; keep them as caveats or verification tasks unless
+  they can be converted into a concrete source-backed component.
+- If endpoint resolution is `ambiguous`, make at most 2 narrowed resolver attempts using explicit
+  type/context clues. If it remains ambiguous, report `requires_manual_endpoint_mapping`; never
+  choose the most likely candidate. If resolution is `missing` / `source_coverage_gap`, request a
+  static source refresh and keep `hallucinationVerdict=not_assessed`.
+- Each semantic edge must include `source_resolution` and `target_resolution` compact evidence from
+  `resolve_graph_component` (`tool_name`, `status`, `stable_key`, `snapshot_id`,
+  `evidence_path_nodes`, `source_refs`). Missing, mismatched, or stale resolver evidence is rejected.
+- For Phase 4.5 build-pattern extraction, submit `BuildDesignObservation` and typed pattern
+  proposals through `propose_build_patterns` before forcing a relationship into semantic edges.
+  Observations should capture BD design axes such as character shell, primary/secondary skill
+  package, passive tree shape, itemization, scaling axis, resource/Spirit engine, defense layers,
+  mechanic chain, rotation, transition gates, failure modes, and modelability caveats.
+- The Phase 4.5 extraction checklist is explicit: evaluate ascendancy + primary skill, primary +
+  secondary skill roles, skill + notable/keystone/passive anchors, unique + passive/skill relations,
+  support + active skill single pairs, scaling axes, weapon/base/stat priorities,
+  Spirit/reservation packages, defense package + content goal, generator -> transformer -> payoff
+  chains, transition gates, failure modes, variant relations, and modelability caveats. Do not
+  force an item just to fill the checklist; unsupported axes become unclear/deferred caveats.
+- Co-occurrence tiers are evidence-limited: one sample is only `case_observation`; do not call a
+  combination common/usual unless the pattern payload carries sufficient sample/source counts.
+  Pattern context is advisory for Phase 5 and never hard legality. Patterns can be patch-decayed
+  into `needs_revalidation`; stale or non-planner-visible patterns must not be used as strong
+  generation evidence until revalidated.
+- Do not use `validate_researcher_output` as a routine preflight; the propose tools perform
+  validation and return structured rejection envelopes. Keep `validate_researcher_output` for
+  explicit debugging, dry-run, and CI fixtures.
+- Use `submit_revalidation_result` after patch/freshness review. If knowledge is still valid, renew
+  it; if scope changed, let the backend create successor/deprecated state.
+- All Phase 4 outputs must keep `noRawMatureBuildMaterial`; never echo raw mature-build material in
+  messages, logs, reports, or creator-visible context.
 
 ## One active build (shared session state)
 

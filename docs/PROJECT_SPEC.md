@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-07-02
+最后更新：2026-07-08
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -130,12 +130,12 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 1 | 已完成：Judge / modelability 基线、真实样本回归与评分合同收口完成 | Phase 0 | 证明 Headless PoB 与确定性规则能判断 BD 合法性、质量和 modelability。 | `docs/phases/01_judge_eval.md` |
 | Phase 2 | 已完成：cold-start 合同、固定 E2E 样例验收、人工评分通过，并已合入 `main` | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射基础。 | `docs/phases/02_graph_cold.md` |
 | Phase 3 | 已完成：read-only typed graph facade、NetworkX bounded topology、MCP `graph_tool_query`、deterministic benchmark 与人工验收通过 | Phase 2 | 通过 typed tools 暴露 source-backed graph 查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
-| Phase 4 | 未开始 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph 和 memory。 | `docs/phases/04_research_memory.md` |
+| Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 未开始 | Phase 1、3、4 | 由外部 Architect Agent 提出方案，确定性 planner/solver 补全天赋、装备、support、Spirit 和合法性。 | `docs/phases/05_generation.md` |
 | Phase 6 | 未开始 | Phase 2、5 | 把支持的 BuildPlan 导出为官方 `.build` JSON，并维护 leveling progression。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
 | Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
-| Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和 public README。 | `docs/phases/09_scale_productization.md` |
+| Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
 
 ## 硬边界
 
@@ -208,8 +208,10 @@ Judge 的评分语义也必须接受分层验证，而不是只看单一 aggrega
 
 ## Public README 政策
 
-开发阶段有意不保留 `README.md`。只有当 learning/generation/evaluation loop 有
-benchmark 证据并且外部叙事稳定后，才重建 public README。
+根 `README.md` 现在允许存在，但定位很窄：它是安装/自动化 README，只写安装、skill
+自动化入口、成熟 BD 研究命令、平台能力矩阵和安全边界。它不能把 Phase 5 之后的生成、
+导出、Critic loop 或 reward memory 写成已完成产品。完整 public product narrative 仍等
+learning/generation/evaluation loop 有 benchmark 证据后再扩展。
 
 ## 接续指南
 

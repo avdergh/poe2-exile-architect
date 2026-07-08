@@ -179,6 +179,52 @@ Candidate vs reference 或 candidate vs prior round。
 - modelability；
 - verification tasks。
 
+## BuildDesignObservation
+
+Phase 4.5 的成熟 BD 设计观察中间层。它用于先记录“这个 BD 为什么成立”，不急着把所有
+内容图化为 semantic edge。
+
+必要概念：
+
+- observation type：build archetype、cooccurrence、transition gate、failure pattern、
+  planner hint 或 modelability caveat；
+- title / summary；
+- BD 设计轴：identity、character shell、primary / secondary skill package、passive tree
+  shape、itemization、scaling axis、resource / Spirit engine、defense layers、mechanic chain、
+  rotation / playstyle、transition gates、failure modes、variant relations、modelability caveats；
+- components：每个 component 必须是 resolver-backed stable key，并带 role，例如
+  primary_damage、clear_skill、boss_skill、generator、payoff、reservation、defensive_buff、
+  ascendancy_shell、movement、trigger_host、support_modifier、unique_enabler、transition_gate、passive_anchor、
+  keystone_transformer、weapon_base、scaling_stat、defense_layer、resource_engine；
+- `ascendancy_shell` 只表示 resolver-backed 职业/升华壳，用作 planner advisory context；
+  不代表完整升华点路径，也不是 hard legality。具体升华 notable / keystone 若作为机制锚点，
+  必须单独用 `passive_anchor` / `keystone_transformer` 组件并携带 resolver evidence；
+- source case refs 和 safe evidence refs；
+- game patch、passive tree version、PoB version/commit；
+- visibility / split / knowledge scope；
+- 不包含 raw PoB code、raw XML、完整装备表、完整天赋路径或完整 gem/support links。
+
+## BuildPattern
+
+Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 planner-visible advisory pattern。
+
+必要概念：
+
+- pattern type：BuildArchetypePattern、CooccurrencePattern、TransitionGate、FailurePattern、
+  PlannerHint；
+- component keys 和 component roles；
+- confidence tier：case_observation、recurring_observation、likely_pattern、
+  common_within_archetype、strong_ranking_hint；
+- sample count、family count、source diversity count 和可选 denominator；
+- typed context requirements；
+- planner hint 和 verification tasks；
+- patch/tree/PoB version、visibility/split/scope、status、copy-safety state、current version context；
+- pattern 必须由同批、同 visibility/split/scope/version 且完整覆盖 component keys 的
+  `BuildDesignObservation` 支撑；patch decay 后进入 `needs_revalidation` 并移出 planner-visible
+  context，复核仍有效时才能恢复；
+- 所有 pattern 都是 advisory research context，不能替代 Phase 2/3 hard source facts、
+  support/socket legality、Phase 5 deterministic planner 或 Phase 1 Judge。
+
 ## GraphNode
 
 Physical 或 semantic knowledge node。
@@ -377,6 +423,54 @@ Passive topology macro tools 只返回 source-backed static topology。`find_pas
 build-state allocation legality；这些预算和分配成本属于 Phase 5 planner。Phase 3 path/subgraph
 默认上限为 `hop_limit <= 6`、`node_limit <= 200`、payload 不超过 64KB，并在跨 weapon-set
 exclusive state 时返回 `unsupported` 与 `conflicting_weapon_set_caveat`。
+
+## Phase4ResearchMemory
+
+Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、non-copyable、typed proposal。
+它不是成熟 BD 模板库，也不是 physical graph fact source。
+
+核心概念：
+
+- `ResearcherOutput`：strict Pydantic schema，`schema_version = 4`，包含 clean fragments、
+  semantic edge proposals、`BuildDesignObservation` 和 `BuildPattern` proposals。
+- `CleanFragmentProposal`：机制级可复用原则，必须带 title、summary、reusable principle、
+  safe evidence refs、source case refs、confidence、copyability risk、lifecycle、modelability、
+  verification tasks、patch/tree/PoB version 和 visibility/split/scope。
+- `SemanticEdgeProposal`：只引用已存在 physical graph stable keys；必须带
+  `source_resolution` / `target_resolution` resolver evidence、typed `context_requirements`、
+  affected component keys、version/status/confidence/modelability 和 copy-safety state。
+- `EndpointResolutionEvidence`：来自 `resolve_graph_component` 的紧凑证据，至少包含
+  `tool_name="resolve_graph_component"`、`status="resolved"`、`stable_key`、`snapshot_id`、
+  `evidence_path_nodes` 和 safe `source_refs`。后端必须复核它与 proposed endpoint stable key
+  和当前 graph snapshot 一致；缺失、错配或 stale evidence 必须拒绝。
+- `ResearchContextRequirement`：discriminated union，不允许开放 `Dict[str, Any]`。它只复用 Phase 3
+  `GraphToolContext` 中可持久化、结构封闭的 `version_context`、`item_context`、`socket_context`
+  和 `passive_context`，并补充 research-only 的 lifecycle stage、transition gate、verification
+  gate、resource threshold、Spirit reservation、item role、weapon set 和 socket/support 前提。
+  Phase 3 graph tool 的 `build_state_context` 可用于瞬时查询，但不能进入 durable research proposal。
+- `ResearchFragmentEvidence`：对已有 fragment 追加 safe evidence refs；不能把 evaluator-only /
+  holdout / quarantined evidence 追加到 creator-visible fragment。
+- `ResearchRevalidationEvent`：patch decay 后的复核结果；`still_valid` 可恢复 `valid`，
+  `changed_scope` 需要 successor，旧知识变为 `deprecated` / `stale`。
+
+工程约束：
+
+- SQLite FTS5 tokenizer 必须保留 stable key 冒号：`tokenize="unicode61 tokenchars ':'"`。
+- stable key 精确过滤走 indexed metadata / JSON metadata，不只依赖 FTS `MATCH`。
+- `synergizes_with` 无向 edge id 使用 canonical JSON payload hash，不能裸字符串拼接。
+- directional short-cycle 同步检测上限为 `max_depth=3`。
+- rejected proposals 必须幂等 upsert，重复提交只增加 `retry_count`。
+- 所有 public tool envelope 必须包含 `noRawQuery: true` 和 `noRawMatureBuildMaterial: true`。
+
+禁止输出或持久化：
+
+- raw PoB code；
+- raw XML；
+- full equipment table；
+- full passive path；
+- full gem/support links；
+- raw account / character / profile URL；
+- long copied guide text。
 
 ## RewardEvent
 

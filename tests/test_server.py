@@ -7,6 +7,7 @@ LLM client receives beyond per-tool docstrings. They run without booting the eng
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -28,12 +29,52 @@ def test_instructions_are_delivered():
 
 def test_workflow_prompts_registered():
     prompts = {p.name for p in asyncio.run(mcp.list_prompts())}
-    assert {"start_build_session", "analyze_build", "build_from_goal", "audit_defenses"} <= prompts
+    assert {
+        "start_build_session",
+        "analyze_build",
+        "build_from_goal",
+        "audit_defenses",
+        "research_mature_build_case",
+    } <= prompts
+
+
+def test_research_mature_build_case_prompt_is_tool_driven():
+    from server import main
+
+    packet = {
+        "packetId": "rp-test",
+        "safeHash": "abc123",
+        "safeMetadata": {"case_id": "case-lightning-arrow"},
+        "rawContext": {"pobCode": "eNrt" + "A" * 180},
+        "requestedOutputSchema": "ResearcherOutput schema_version=4",
+    }
+
+    text = main.research_mature_build_case(
+        packet_json=json.dumps(packet),
+        current_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert "MUST NOT output the final JSON as regular text" in text
+    assert "query_research_memory" in text
+    assert "graph_tool_query" in text
+    assert "resolve_graph_component" in text
+    assert "propose_research_fragments" in text
+    assert "propose_semantic_edges" in text
+
+
+def test_research_mature_build_case_requires_real_packet_json():
+    from server import main
+
+    text = main.research_mature_build_case()
+
+    assert "Call build_research_packet first" in text
+    assert "Begin immediately with STEP 1" not in text
 
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 79
+    assert len(tools) == 88
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -64,6 +105,15 @@ def test_tool_surface_intact():
         "evaluate_lifecycle_route",
         "get_meta_archetype_trends",
         "graph_tool_query",
+        "build_research_packet",
+        "validate_researcher_output",
+        "query_research_memory",
+        "propose_research_fragments",
+        "append_evidence_to_fragment",
+        "propose_semantic_edges",
+        "propose_build_patterns",
+        "submit_revalidation_result",
+        "inspect_rejected_research_proposals",
     } <= names
 
 
@@ -108,6 +158,152 @@ def test_graph_tool_query_forwards_to_cached_service(monkeypatch):
     }
 
 
+def test_research_memory_tools_expose_public_schemas():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert tools["build_research_packet"].inputSchema["properties"]["case"]["type"] == "object"
+    assert (
+        tools["validate_researcher_output"].inputSchema["properties"]["payload"]["type"] == "object"
+    )
+    assert tools["query_research_memory"].inputSchema["properties"]["query"]["type"] == "string"
+    assert (
+        tools["propose_research_fragments"].inputSchema["properties"]["payload"]["type"] == "object"
+    )
+    assert (
+        tools["append_evidence_to_fragment"].inputSchema["properties"]["fragment_id"]["type"]
+        == "string"
+    )
+    assert tools["propose_semantic_edges"].inputSchema["properties"]["payload"]["type"] == "object"
+    assert tools["propose_build_patterns"].inputSchema["properties"]["payload"]["type"] == "object"
+    assert (
+        tools["submit_revalidation_result"].inputSchema["properties"]["target_kind"]["type"]
+        == "string"
+    )
+
+
+def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
+    from server import main
+
+    calls: list[tuple[str, object]] = []
+
+    class FakeResearchService:
+        def query_research_memory(self, query, *, component_keys=None, limit=10):
+            calls.append(("query", (query, component_keys, limit)))
+            return {"status": "known", "noRawMatureBuildMaterial": True}
+
+        def propose_research_fragments(self, payload, *, dedupe_query_ref=None):
+            calls.append(("fragments", (payload, dedupe_query_ref)))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+        def append_evidence_to_fragment(self, **kwargs):
+            calls.append(("append", kwargs))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+        def propose_semantic_edges(self, payload):
+            calls.append(("edges", payload))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+        def propose_build_patterns(self, payload):
+            calls.append(("patterns", payload))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+        def submit_revalidation_result(self, **kwargs):
+            calls.append(("revalidate", kwargs))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+    monkeypatch.setattr(main, "_research_memory_service", lambda: FakeResearchService())
+    monkeypatch.setattr(main, "_research_memory_service_with_graph", lambda: FakeResearchService())
+
+    assert (
+        main.query_research_memory("projectile", ["skill:LightningArrowPlayer"], 5)["status"]
+        == "known"
+    )
+    assert main.propose_research_fragments({"schema_version": 4}, "dq-1")["status"] == "accepted"
+    assert (
+        main.append_evidence_to_fragment(
+            "rf-1",
+            ["case:1"],
+            ["safe:1"],
+            "0.5.4",
+            "0_5",
+            "unknown",
+            "creator_visible",
+            "train_context",
+            "global_seed",
+            "medium",
+        )["status"]
+        == "accepted"
+    )
+    assert main.propose_semantic_edges({"schema_version": 4})["status"] == "accepted"
+    assert main.propose_build_patterns({"schema_version": 4})["status"] == "accepted"
+    assert (
+        main.submit_revalidation_result(
+            "fragment",
+            "rf-1",
+            "still_valid",
+            {"game_patch": "0.6.0"},
+            ["safe:review"],
+            ["skill:LightningArrowPlayer"],
+        )["status"]
+        == "accepted"
+    )
+    assert [name for name, _payload in calls] == [
+        "query",
+        "fragments",
+        "append",
+        "edges",
+        "patterns",
+        "revalidate",
+    ]
+
+
+def test_research_memory_fragment_tools_do_not_require_graph_snapshot(monkeypatch, tmp_path):
+    from server import main
+
+    monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+
+    def missing_graph():
+        raise ValueError("missing latest snapshot")
+
+    monkeypatch.setattr(main, "_graph_query_service", missing_graph)
+
+    fragment_query = main.query_research_memory("projectile", ["skill:LightningArrowPlayer"], 5)
+    edge_payload = {
+        "schema_version": 4,
+        "fragments": [],
+        "semantic_edges": [
+            {
+                "source_key": "skill:LightningArrowPlayer",
+                "target_key": "support:Scattershot",
+                "edge_type": "synergizes_with",
+                "rationale": "Safe mechanism-level relationship.",
+                "source_case_refs": ["case:safe"],
+                "safe_evidence_refs": ["safe:edge"],
+                "game_patch": "0.5.4",
+                "passive_tree_version": "0_5",
+                "pob_version_or_commit": "unknown",
+                "status": "valid",
+                "confidence": "medium",
+                "modelability": "partial",
+                "copy_safety_state": "passed",
+                "context_requirements": [
+                    {"context_type": "lifecycle_stage_requirement", "stages": ["endgame_budget"]}
+                ],
+                "affected_component_keys": ["skill:LightningArrowPlayer", "support:Scattershot"],
+                "visibility": "creator_visible",
+                "split": "train_context",
+                "knowledge_scope": "global_seed",
+                "directionality": "associative",
+            }
+        ],
+    }
+    edge_write = main.propose_semantic_edges(edge_payload)
+
+    assert fragment_query["status"] == "known"
+    assert edge_write["status"] == "rejected"
+    assert edge_write["errorCode"] == "graph_service_unavailable"
+
+
 def test_evaluate_lifecycle_route_tool_schema():
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
@@ -132,6 +328,30 @@ def test_get_freshness_report_forwards_force_refresh(monkeypatch):
 
     assert main.get_freshness_report(force_refresh=True) == {"decision": "verified_current"}
     assert captured == {"force_refresh": True}
+
+
+def test_server_startup_runs_research_packet_gc_before_mcp(monkeypatch):
+    from server import main
+
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        main.research_packet,
+        "cleanup_expired_packets",
+        lambda: events.append("packet_gc") or {"removed": 0},
+    )
+    monkeypatch.setattr(
+        main.threading,
+        "Thread",
+        lambda *args, **kwargs: type(
+            "FakeThread", (), {"start": lambda self: events.append("thread")}
+        )(),
+    )
+    monkeypatch.setattr(main.mcp, "run", lambda: events.append("mcp"))
+
+    main.main()
+
+    assert events == ["packet_gc", "thread", "mcp"]
 
 
 def test_suggest_build_lifecycle_uses_freshness_and_meta(monkeypatch, tmp_path):

@@ -1,0 +1,20 @@
+{
+  "name": "poe-bd-creator",
+  "displayName": "PoE BD Creator",
+  "description": "Verification-first Path of Exile 2 build research and generation tooling",
+  "version": "0.4.5",
+  "author": {
+    "name": "PoE BD Creator contributors"
+  },
+  "homepage": "https://github.com/Egonex-AI/poe-bd-creator",
+  "repository": "https://github.com/Egonex-AI/poe-bd-creator",
+  "license": "MIT",
+  "keywords": [
+    "path-of-exile-2",
+    "build-research",
+    "knowledge-graph",
+    "mcp"
+  ],
+  "skills": "./poe-bd-creator-plugin/skills/",
+  "agents": "./poe-bd-creator-plugin/agents/"
+}

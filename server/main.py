@@ -34,6 +34,10 @@ from .knowledge import lifecycle_eval
 from .knowledge import graph_tools
 from .knowledge import mechanics
 from .knowledge import refbuilds
+from .knowledge import research_memory
+from .knowledge import research_models
+from .knowledge import research_packet
+from .knowledge import research_prompt
 from .live import meta as live_meta
 from .live import prices as live_prices
 from .live import update as live_update
@@ -137,6 +141,18 @@ def _default_graph_snapshot_index_path() -> Path:
 
 def _graph_query_service() -> graph_tools.GraphQueryService:
     return graph_tools.service_from_snapshot_index(str(_default_graph_snapshot_index_path()))
+
+
+def _research_memory_service() -> research_memory.ResearchMemoryService:
+    return research_memory.ResearchMemoryService()
+
+
+def _research_memory_service_with_graph() -> research_memory.ResearchMemoryService:
+    try:
+        graph_service = _graph_query_service()
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        graph_service = None
+    return research_memory.ResearchMemoryService(graph_service=graph_service)
 
 
 @mcp.tool()
@@ -1537,14 +1553,26 @@ def graph_tool_query(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         return _graph_query_service().run_tool(tool_name, payload)
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        endpoint_assessment = {
+            "classification": "graph_snapshot_unavailable",
+            "hallucinationVerdict": "not_assessed",
+            "candidateEndpointKeys": [],
+            "missingEndpointKeys": [],
+            "reason": (
+                "No graph snapshot was available, so endpoint reality could not be assessed. "
+                "Do not classify mature-build entities as hallucinations from this result alone."
+            ),
+            "requiresStaticSourceReview": True,
+        }
         return {
             "toolName": tool_name,
             "queryFamily": tool_name,
             "snapshotId": None,
             "status": "error",
             "errorCode": "graph_snapshot_unavailable",
+            "endpointAssessment": endpoint_assessment,
             "resolvedSubject": None,
-            "facts": {"recoverable": True},
+            "facts": {"recoverable": True, "endpointAssessment": endpoint_assessment},
             "evidencePath": None,
             "sourceRefs": [],
             "confidence": 0.0,
@@ -1576,6 +1604,152 @@ def graph_tool_query(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "freshness": {"versionContext": {}},
             "noRawQuery": True,
         }
+
+
+@mcp.tool()
+def build_research_packet(
+    case: dict[str, Any],
+    persist_for_transport: bool = False,
+    ttl_seconds: int = 3600,
+) -> dict[str, Any]:
+    """Build a transient Phase 4 external-Researcher packet."""
+    return research_packet.build_research_packet(
+        case,
+        persist_for_transport=persist_for_transport,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+@mcp.tool()
+def validate_researcher_output(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a strict Phase 4 Researcher output proposal without writing memory."""
+    return research_models.validate_researcher_output(payload)
+
+
+@mcp.tool()
+def query_research_memory(
+    query: str,
+    component_keys: list[str] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Query creator-visible, copy-safe Phase 4 research memory and return a dedupe ref."""
+    return _research_memory_service().query_research_memory(
+        query,
+        component_keys=component_keys or [],
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def propose_research_fragments(
+    payload: dict[str, Any],
+    dedupe_query_ref: str | None = None,
+) -> dict[str, Any]:
+    """Submit typed clean fragment proposals after query-before-propose dedupe."""
+    return _research_memory_service().propose_research_fragments(
+        payload,
+        dedupe_query_ref=dedupe_query_ref,
+    )
+
+
+@mcp.tool()
+def append_evidence_to_fragment(
+    fragment_id: str,
+    source_case_refs: list[str],
+    safe_evidence_refs: list[str],
+    game_patch: str,
+    passive_tree_version: str,
+    pob_version_or_commit: str,
+    visibility: str,
+    split: str,
+    knowledge_scope: str,
+    confidence: str,
+) -> dict[str, Any]:
+    """Append safe evidence refs to an existing clean fragment without duplicating knowledge."""
+    return _research_memory_service().append_evidence_to_fragment(
+        fragment_id=fragment_id,
+        source_case_refs=source_case_refs,
+        safe_evidence_refs=safe_evidence_refs,
+        game_patch=game_patch,
+        passive_tree_version=passive_tree_version,
+        pob_version_or_commit=pob_version_or_commit,
+        visibility=visibility,
+        split=split,
+        knowledge_scope=knowledge_scope,
+        confidence=confidence,
+    )
+
+
+@mcp.tool()
+def propose_semantic_edges(payload: dict[str, Any]) -> dict[str, Any]:
+    """Submit typed semantic edge proposals; endpoints must already exist in the physical graph."""
+    return _research_memory_service_with_graph().propose_semantic_edges(payload)
+
+
+@mcp.tool()
+def propose_build_patterns(payload: dict[str, Any]) -> dict[str, Any]:
+    """Submit typed build design observations and pattern proposals for Phase 5 context."""
+    return _research_memory_service_with_graph().propose_build_patterns(payload)
+
+
+@mcp.tool()
+def submit_revalidation_result(
+    target_kind: str,
+    target_id: str,
+    outcome: str,
+    new_version_context: dict[str, str],
+    safe_evidence_refs: list[str],
+    affected_component_keys: list[str],
+) -> dict[str, Any]:
+    """Submit a Phase 4 patch revalidation result for a fragment, semantic edge, or build pattern."""
+    return _research_memory_service().submit_revalidation_result(
+        target_kind=target_kind,
+        target_id=target_id,
+        outcome=outcome,
+        new_version_context=new_version_context,
+        safe_evidence_refs=safe_evidence_refs,
+        affected_component_keys=affected_component_keys,
+    )
+
+
+@mcp.tool()
+def inspect_rejected_research_proposals(limit: int = 20) -> dict[str, Any]:
+    """Return safe summaries of rejected Phase 4 research proposals."""
+    con = research_memory.mature_learning.connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT rejection_id, error_code, visibility, split, knowledge_scope, retry_count,
+                   caveats, suggested_repair, first_seen_at, last_seen_at
+            FROM research_rejected_proposals
+            ORDER BY last_seen_at DESC, rejection_id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        rejected = [
+            {
+                "rejectionId": row["rejection_id"],
+                "errorCode": row["error_code"],
+                "visibility": row["visibility"],
+                "split": row["split"],
+                "knowledgeScope": row["knowledge_scope"],
+                "retryCount": row["retry_count"],
+                "caveats": json.loads(row["caveats"]),
+                "suggestedRepair": row["suggested_repair"],
+                "firstSeenAt": row["first_seen_at"],
+                "lastSeenAt": row["last_seen_at"],
+            }
+            for row in rows
+        ]
+    finally:
+        con.close()
+    return {
+        "status": "known",
+        "rejected": rejected,
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -1801,7 +1975,40 @@ def audit_defenses() -> str:
     )
 
 
+@mcp.prompt()
+def research_mature_build_case(
+    packet_json: str = "",
+    current_patch: str = "",
+    passive_tree_version: str = "",
+    user_language: str = "zh-CN",
+) -> str:
+    """Drive an external Phase 4 Researcher Agent through tool-based mature-build extraction."""
+    if packet_json.strip():
+        try:
+            packet = json.loads(packet_json)
+        except json.JSONDecodeError as exc:
+            return (
+                "The supplied packet_json is not valid JSON. Call build_research_packet first, then "
+                f"pass its packet object as JSON here. JSON error: {exc.msg}"
+            )
+    else:
+        return (
+            "Call build_research_packet first with the quarantine-only mature case, then rerun "
+            "research_mature_build_case with the returned packet object serialized as packet_json. "
+            "Do not start Researcher extraction without a real transient packet."
+        )
+    if not isinstance(packet, dict):
+        return "packet_json must decode to a JSON object. Call build_research_packet and pass its packet object."
+    return research_prompt.render_researcher_prompt(
+        packet,
+        current_patch=current_patch or None,
+        passive_tree_version=passive_tree_version or None,
+        user_language=user_language,
+    )
+
+
 def main() -> None:
+    research_packet.cleanup_expired_packets()
     # Best-effort, throttled auto-update in the background; never blocks startup.
     threading.Thread(target=live_update.auto_update, args=(_reset_engine,), daemon=True).start()
     mcp.run()

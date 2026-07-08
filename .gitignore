@@ -15,8 +15,20 @@ data/raw/*
 !data/raw/official/
 data/raw/official/*
 !data/raw/official/inventories.min.json
+data/runtime/
+data/mature_build_learning/research_memory.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Local mature-build research runs and phase reports
+/.phase45_runs/
+/.poe-bd-research/
+/phase4_*.json
+/phase4_*.md
+/phase4_*.sqlite
+/phase4_*.html
+/phase45_*.json
+/phase45_*.md
 
 # Vendored PoB working copy — tracked via pob/PINNED.md (submodule at CI time), not as files
 pob/PathOfBuilding-PoE2/

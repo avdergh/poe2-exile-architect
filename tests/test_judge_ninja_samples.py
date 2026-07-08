@@ -497,7 +497,8 @@ def test_write_sanitized_ninja_report_omits_account_and_name(monkeypatch, tmp_pa
     assert out_path.name == "calibration.json"
     assert "acctA" not in saved
     assert "CharA" not in saved
-    assert "https://poe.ninja/x" in saved
+    assert "https://poe.ninja/x" not in saved
+    assert "characterUrlRef" in saved
 
 
 def test_write_dual_sanitized_ninja_reports_writes_raw_and_final(monkeypatch, tmp_path):
@@ -600,21 +601,69 @@ def test_main_print_only_uses_browser_discovery(monkeypatch, capsys):
         == 0
     )
 
-    output = json.loads(capsys.readouterr().out)
-    assert output["buildListUrl"] == "https://poe.ninja/poe2/builds/runesofaldur?max-level=98"
-    assert output["sampledRows"] == [
-        {
-            "account": "acctB",
-            "name": "CharB",
-            "ascendancy": "Deadeye",
-            "level": 97,
-            "url": "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB",
-        },
-        {
-            "account": "acctA",
-            "name": "CharA",
-            "ascendancy": "Stormweaver",
-            "level": 98,
-            "url": "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA",
-        },
-    ]
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout)
+    assert output["buildListRef"].startswith("ninja-list-hash:")
+    assert [row["ascendancy"] for row in output["sampledRows"]] == ["Deadeye", "Stormweaver"]
+    assert [row["level"] for row in output["sampledRows"]] == [97, 98]
+    assert all(row["rowRef"].startswith("ninja-row-hash:") for row in output["sampledRows"])
+    assert all(
+        row["characterUrlRef"].startswith("ninja-url-hash:") for row in output["sampledRows"]
+    )
+    assert "acctA" not in stdout
+    assert "CharA" not in stdout
+    assert "https://poe.ninja/poe2/builds/runesofaldur/character" not in stdout
+
+
+def test_main_stdout_omits_sample_identity_after_evaluation(monkeypatch, capsys):
+    class _FakeBrowser:
+        def fetch_html(self, url: str) -> str:
+            if "character" not in url:
+                return """
+<html>
+  <body>
+    <tr>
+      <td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>98<img alt="Stormweaver" /></div></td>
+    </tr>
+  </body>
+</html>
+"""
+            return """
+<html>
+  <head><title>Builds - CharA - Path of Exile 2 - poe.ninja</title></head>
+  <body>
+    <input aria-label="Import code for Path of Building" type="text" value="eNrtExampleImportCode123" />
+  </body>
+</html>
+"""
+
+    def fake_evaluate_source(source: str, snapshot_id: str):
+        return {
+            "snapshotId": snapshot_id,
+            "summary": {"class": "Monk", "ascendancy": "Stormweaver", "level": 98},
+            "pass": True,
+            "hardFailures": [],
+            "physicalInvalidFailures": [],
+            "caveats": [],
+        }
+
+    monkeypatch.setattr(run_judge_ninja_samples, "PlaywrightHtmlDriver", _FakeBrowser)
+    monkeypatch.setattr(run_judge_ninja_samples, "evaluate_source", fake_evaluate_source)
+    monkeypatch.setattr(
+        run_judge_ninja_samples,
+        "write_dual_sanitized_ninja_reports",
+        lambda **_kwargs: (None, None),
+    )
+
+    assert (
+        run_judge_ninja_samples.main(["--league-url", "runesofaldur", "--target-count", "1"]) == 0
+    )
+
+    stdout = capsys.readouterr().out
+    output = json.loads(stdout)
+    assert output["buildListRef"].startswith("ninja-list-hash:")
+    assert output["sampledRows"][0]["rowRef"].startswith("ninja-row-hash:")
+    assert "acctA" not in stdout
+    assert "CharA" not in stdout
+    assert "https://poe.ninja/poe2/builds/runesofaldur/character" not in stdout

@@ -38,16 +38,32 @@ def find_forbidden_paths(value: Any, *, path: str = "") -> list[str]:
 
 def copyability_flags(value: Any) -> list[str]:
     """Return conservative copyability flags for reconstructable build details."""
-    text = "\n".join(all_text(value))
+    fragments = all_text(value)
+    text = "\n".join(fragments)
     lower = text.lower()
     flags: set[str] = set()
     if re.search(r"\beNrt[A-Za-z0-9+/_=-]{40,}", text):
         flags.add("pob_code_like_blob")
     if re.search(r"(?:https?://)?(?:www\.)?(?:pobb\.in|pastebin\.com)/[A-Za-z0-9+/_=-]{4,}", text):
         flags.add("copyable_build_link")
+    if re.search(r"(?:https?://)?(?:www\.)?poe\.ninja/(?:poe2/)?pob/[^\s)]+", lower):
+        flags.add("copyable_build_link")
+    if re.search(
+        r"(?:https?://)?(?:www\.)?poe\.ninja/(?:poe2/)?builds?/[^\s)]*/character/[^\s)]+",
+        lower,
+    ):
+        flags.add("copyable_build_link")
+    if re.search(
+        r"(?:https?://)?(?:www\.)?pathofexile\.com/(?:account/view-profile|character-window)/[^\s)]+",
+        lower,
+    ):
+        flags.add("raw_account_or_character_url")
     if re.search(r"(?:supports?|support gems?)\s*:\s*[^.\n,]+(?:,\s*[^.\n,]+){4,}", lower):
         flags.add("full_support_link_like")
-    if re.search(r"\b[\w' ]{1,32}\s*(?:[-+>]\s*[\w' ]{1,32}\s*){4,}", text):
+    if re.search(
+        r"\b[\w' ]{1,32}\s*(?:(?:->|=>|/|[-+>])\s*[\w' ]{1,32}\s*){4,}",
+        text,
+    ):
         flags.add("full_gem_link_like")
     if re.search(
         r"(passive path|node\s+\d+).{0,80}(->|,|\bthen\b).{0,80}node\s+\d+",
@@ -63,6 +79,8 @@ def copyability_flags(value: Any) -> list[str]:
         lower,
     ):
         flags.add("slot_exact_gear_like")
+    if any(len(fragment) > 1200 for fragment in fragments):
+        flags.add("long_guide_prose_like")
     return sorted(flags)
 
 

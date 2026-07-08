@@ -1,0 +1,37 @@
+{
+  "name": "poe-bd-creator",
+  "version": "0.4.5",
+  "description": "Verification-first Path of Exile 2 build research and generation tooling",
+  "author": {
+    "name": "PoE BD Creator contributors"
+  },
+  "homepage": "https://github.com/Egonex-AI/poe-bd-creator",
+  "repository": "https://github.com/Egonex-AI/poe-bd-creator",
+  "license": "MIT",
+  "keywords": [
+    "path-of-exile-2",
+    "build-research",
+    "knowledge-graph",
+    "mcp"
+  ],
+  "skills": "./poe-bd-creator-plugin/skills/",
+  "interface": {
+    "displayName": "PoE BD Creator",
+    "shortDescription": "Research mature PoE2 builds safely through agent skills and MCP gates.",
+    "longDescription": "Queues mature PoE2 build samples, lets external agents analyze one case at a time, and accepts only copy-safe, resolver-backed knowledge into durable memory.",
+    "developerName": "PoE BD Creator contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Research",
+      "Automation",
+      "Local"
+    ],
+    "websiteURL": "https://github.com/Egonex-AI/poe-bd-creator",
+    "defaultPrompt": [
+      "/poe-bd-research --limit 20 --worker-count 5",
+      "/poe-bd-research --source-batch-file samples.txt",
+      "/poe-bd-research --ascendancy Deadeye --limit 30"
+    ],
+    "brandColor": "#2563EB"
+  }
+}

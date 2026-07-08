@@ -62,8 +62,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/ASSISTANT_GUIDE.md`：通过 MCP 展示给 LLM client 的 runtime 指南。
 - `scripts/verify.ps1`：验证 profile。
 
-开发阶段有意不保留 `README.md`。等 learning/generation/evaluation loop 有 benchmark
-证据后再重建。
+根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的
+生成、导出、Critic loop 或 reward-memory 能力；详细阶段细节仍维护在 `docs/phases/`。
 
 ## 命令
 

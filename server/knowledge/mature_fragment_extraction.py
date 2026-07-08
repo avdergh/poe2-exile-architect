@@ -1,8 +1,13 @@
-"""Raw-rich mature research contracts for external agent workflows.
+"""Legacy v3 raw-rich mature research contracts for external agent workflows.
 
 Codex, Claude Code, or another mature agent may inspect richer build material transiently.
 This module only builds the research packet and validates the clean fragments that are allowed to
 survive after that agent work. It does not call a model provider or run an internal agent loop.
+
+Phase 4's current primary ingestion SOP is the v4 tool-driven flow in
+``server/knowledge/research_prompt.py`` plus ``ResearchMemoryService`` proposal tools. This v3
+fragment-only helper is retained for legacy fixtures and focused sanitizer checks; do not treat its
+"Return one JSON object" prompt as the current MCP write path.
 """
 
 from __future__ import annotations

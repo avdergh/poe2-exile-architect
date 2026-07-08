@@ -445,20 +445,35 @@ class GraphQueryService:
         )
         resolved_key = resolution.get("resolved_key")
         resolved_subject = self._node_summary(str(resolved_key)) if resolved_key else None
-        return self._envelope(
-            query_family="resolve_graph_component",
-            status=status,
-            facts={
+        endpoint_assessment = None
+        if status in {"missing", "unknown"} and not candidate_keys:
+            endpoint_assessment = _endpoint_assessment(
+                "source_coverage_gap",
+                candidate_endpoint_names=[typed_input.query],
+            )
+            facts = {
                 "query": typed_input.query,
                 "candidate_keys": candidate_keys,
                 "candidates": candidates,
-            },
+                "endpointAssessment": endpoint_assessment,
+            }
+        else:
+            facts = {
+                "query": typed_input.query,
+                "candidate_keys": candidate_keys,
+                "candidates": candidates,
+            }
+        return self._envelope(
+            query_family="resolve_graph_component",
+            status=status,
+            facts=facts,
             resolved_subject=resolved_subject,
             source_refs=source_refs,
             evidence_path=self._evidence_path(nodes=candidate_keys, source_refs=source_refs),
             confidence=1.0 if status == "resolved" else 0.5 if status == "ambiguous" else 0.0,
             caveats=["ambiguous_alias"] if status == "ambiguous" else [],
             context=_context_payload(typed_input.context),
+            endpoint_assessment=endpoint_assessment,
         )
 
     def _explain_graph_evidence(self, typed_input: ExplainGraphEvidenceInput) -> dict[str, Any]:
@@ -1010,9 +1025,10 @@ class GraphQueryService:
         context: dict[str, Any] | None = None,
         missing_context: list[str] | tuple[str, ...] = (),
         context_caveats: list[str] | tuple[str, ...] = (),
+        endpoint_assessment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         source_refs_list = sorted({str(ref) for ref in source_refs})
-        return {
+        envelope = {
             "toolName": query_family,
             "queryFamily": query_family,
             "snapshotId": self.snapshot.snapshot_id,
@@ -1036,6 +1052,9 @@ class GraphQueryService:
             "freshness": {"versionContext": self._version_context()},
             "noRawQuery": True,
         }
+        if endpoint_assessment is not None:
+            envelope["endpointAssessment"] = endpoint_assessment
+        return envelope
 
 
 @lru_cache(maxsize=8)
@@ -1078,6 +1097,29 @@ def _context_payload(context: GraphToolContext | None) -> dict[str, Any]:
     if context is None:
         return {}
     return context.model_dump(exclude_none=True)
+
+
+def _endpoint_assessment(
+    classification: str,
+    *,
+    candidate_endpoint_names: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "classification": classification,
+        "hallucinationVerdict": "not_assessed",
+        "candidateEndpointKeys": [],
+        "missingEndpointKeys": [],
+        "safeMetadataCandidateNames": sorted(
+            {str(name) for name in candidate_endpoint_names or [] if str(name).strip()}
+        ),
+        "candidateNameProvenance": "resolver_query_unresolved_label",
+        "reason": (
+            "No graph candidate matched this resolver query in the current physical graph snapshot. "
+            "This can be a static source coverage gap for a real game entity, so it is not evidence "
+            "of hallucination by itself."
+        ),
+        "requiresStaticSourceReview": True,
+    }
 
 
 def _validation_caveat(exc: ValidationError) -> str:

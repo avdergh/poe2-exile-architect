@@ -835,8 +835,6 @@ def ingest_passive_tree(
             )
         options_payload = node_record.get("options")
         if options_payload is not None:
-            if not isinstance(options_payload, list):
-                raise ValueError(f"{node_id} options must be a list")
             choice_id = str(node_record.get("skill") or node_id)
             choice_key = f"passive_choice:{passive_key}:{choice_id}"
             passive_choices[choice_key] = PassiveChoice(
@@ -846,7 +844,7 @@ def ingest_passive_tree(
                 stat_text=_first_stat_text(node_record.get("stats")),
                 source_refs=(source.source_id,),
             )
-            for option in options_payload:
+            for option in _passive_options(options_payload, node_id=node_id):
                 if not isinstance(option, dict):
                     raise ValueError(f"{node_id} option entry must be an object")
                 option_id = _required_text(str(option.get("id")), f"{node_id} option id")
@@ -4111,6 +4109,26 @@ def _first_stat_text(value: object) -> str | None:
         return None
     values = _string_list(value, "stat text")
     return values[0] if values else None
+
+
+def _passive_options(value: object, *, node_id: str) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, list):
+        return tuple(value)
+    if isinstance(value, dict):
+        options: list[dict[str, Any]] = []
+        for key, payload in value.items():
+            if payload is not None and not isinstance(payload, dict):
+                raise ValueError(f"{node_id} option entry must be an object")
+            record = dict(payload or {})
+            option_name = _required_text(str(record.get("name") or key), f"{node_id} option name")
+            option_id = str(record.get("id") or option_name.replace(" ", "_"))
+            record["id"] = option_id
+            record["name"] = option_name
+            if "stats" not in record:
+                record["stats"] = [f"selector:{option_name}"]
+            options.append(record)
+        return tuple(options)
+    raise ValueError(f"{node_id} options must be a list or object")
 
 
 def _unique_item_blocks(text: str) -> list[list[str]]:

@@ -2859,6 +2859,75 @@ def test_ingest_passive_tree_builds_passive_official_ids_and_allocation_options(
     assert snapshot.allocation_options[1].stat_text == "+5 to Strength"
 
 
+def test_ingest_passive_tree_accepts_pob_dict_allocation_options(tmp_path):
+    tree_file = tmp_path / "tree.json"
+    tree_file.write_text(
+        json.dumps(
+            {
+                "classes": [
+                    {
+                        "name": "Witch",
+                        "integerId": 3,
+                        "ascendancies": [{"name": "Abyssal Lich", "id": "AbyssalLich"}],
+                    }
+                ],
+                "groups": [{"nodes": [59], "orbits": [0], "x": 0, "y": 0}],
+                "nodes": {
+                    "59": {
+                        "connections": [],
+                        "group": 1,
+                        "icon": "ascendancy.dds",
+                        "name": "Abyssal Lich Choice",
+                        "options": {
+                            "Abyssal Lich": {
+                                "ascendancyName": "Abyssal Lich",
+                                "nodeOverlay": {
+                                    "alloc": "Allocated",
+                                    "path": "CanAllocate",
+                                    "unalloc": "Normal",
+                                },
+                            }
+                        },
+                        "orbit": 0,
+                        "orbitIndex": 0,
+                        "skill": 59,
+                        "stats": [],
+                    }
+                },
+                "tree": "0_5",
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = pg.GraphSource(
+        source_id="pob:passive_tree",
+        kind="pob_tree",
+        source_file="TreeData/0_5/tree.json",
+        claims=(pg.SourceClaim("passive_tree_version", "0_5"),),
+        expected_count=1,
+    )
+
+    ingestion = pg.ingest_passive_tree(tree_file, source=source)
+    snapshot = pg.build_snapshot(
+        sources=(source,),
+        nodes=ingestion.nodes,
+        edges=ingestion.edges,
+        aliases=ingestion.aliases,
+        id_mappings=ingestion.id_mappings,
+        passive_choices=ingestion.passive_choices,
+        allocation_options=ingestion.allocation_options,
+    )
+
+    assert [choice.choice_key for choice in snapshot.passive_choices] == [
+        "passive_choice:passive:pob:0_5:59:59"
+    ]
+    assert [option.option_key for option in snapshot.allocation_options] == [
+        "allocation_option:passive:pob:0_5:59:Abyssal_Lich"
+    ]
+    assert snapshot.allocation_options[0].display_name == "Abyssal Lich"
+    assert snapshot.allocation_options[0].stat_text == "selector:Abyssal Lich"
+
+
 def test_passive_neighbors_returns_known_and_ambiguous_results(tmp_path):
     tree_file = tmp_path / "tree.json"
     tree_file.write_text(

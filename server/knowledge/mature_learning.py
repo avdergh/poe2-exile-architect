@@ -18,7 +18,7 @@ from typing import Any
 
 from .. import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SANITIZER_VERSION = "phase3n1-v1"
 EXTRACTOR_VERSION = "phase3n2-v1"
 EXTRACTION_METHOD = "deterministic_mature_case_summary"
@@ -292,6 +292,285 @@ CREATE TABLE IF NOT EXISTS technique_edges (
 INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1');
 """
 
+_PHASE4_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS research_fragments (
+    fragment_id TEXT PRIMARY KEY,
+    dedupe_key TEXT NOT NULL,
+    fragment_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    reusable_principle TEXT NOT NULL,
+    chunk_text TEXT NOT NULL,
+    component_keys TEXT NOT NULL,
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    copyability_risk TEXT NOT NULL,
+    lifecycle_stages TEXT NOT NULL,
+    modelability TEXT NOT NULL,
+    verification_tasks TEXT NOT NULL,
+    conditions TEXT NOT NULL,
+    risks TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    copy_safety_state TEXT NOT NULL,
+    current_version_context TEXT NOT NULL,
+    affected_component_keys TEXT NOT NULL,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    embedding_model TEXT,
+    embedding_dim INTEGER,
+    embedding_ref TEXT,
+    embedding_status TEXT NOT NULL DEFAULT 'not_configured',
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_validated_at TEXT,
+    superseded_by_id TEXT,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
+    CHECK (status IN ('valid', 'needs_revalidation', 'stale', 'rejected', 'deprecated', 'quarantined')),
+    CHECK (copy_safety_state IN ('passed', 'needs_review', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_fragments_bucket
+ON research_fragments(visibility, split, knowledge_scope, status);
+
+CREATE INDEX IF NOT EXISTS idx_research_fragments_dedupe
+ON research_fragments(dedupe_key, visibility, split, knowledge_scope);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS research_fragment_fts USING fts5(
+    fragment_id,
+    chunk_text,
+    component_keys,
+    content='research_fragments',
+    content_rowid='rowid',
+    tokenize="unicode61 tokenchars ':'"
+);
+
+CREATE TRIGGER IF NOT EXISTS research_fragments_ai
+AFTER INSERT ON research_fragments BEGIN
+    INSERT INTO research_fragment_fts(rowid, fragment_id, chunk_text, component_keys)
+    VALUES (new.rowid, new.fragment_id, new.chunk_text, new.component_keys);
+END;
+
+CREATE TRIGGER IF NOT EXISTS research_fragments_ad
+AFTER DELETE ON research_fragments BEGIN
+    INSERT INTO research_fragment_fts(
+        research_fragment_fts, rowid, fragment_id, chunk_text, component_keys
+    ) VALUES ('delete', old.rowid, old.fragment_id, old.chunk_text, old.component_keys);
+END;
+
+CREATE TRIGGER IF NOT EXISTS research_fragments_au
+AFTER UPDATE ON research_fragments BEGIN
+    INSERT INTO research_fragment_fts(
+        research_fragment_fts, rowid, fragment_id, chunk_text, component_keys
+    ) VALUES ('delete', old.rowid, old.fragment_id, old.chunk_text, old.component_keys);
+    INSERT INTO research_fragment_fts(rowid, fragment_id, chunk_text, component_keys)
+    VALUES (new.rowid, new.fragment_id, new.chunk_text, new.component_keys);
+END;
+
+CREATE TABLE IF NOT EXISTS research_fragment_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    fragment_id TEXT NOT NULL REFERENCES research_fragments(fragment_id),
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
+);
+
+CREATE TABLE IF NOT EXISTS research_semantic_edges (
+    edge_id TEXT PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    canonical_source_key TEXT NOT NULL,
+    canonical_target_key TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    status TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    modelability TEXT NOT NULL,
+    copy_safety_state TEXT NOT NULL,
+    context_requirements TEXT NOT NULL,
+    affected_component_keys TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    directionality TEXT NOT NULL,
+    planner_visible INTEGER NOT NULL DEFAULT 1,
+    current_version_context TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_validated_at TEXT,
+    superseded_by_id TEXT,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
+    CHECK (directionality IN ('directional', 'associative')),
+    CHECK (planner_visible IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_edges_directional
+ON research_semantic_edges(
+    visibility, split, knowledge_scope, edge_type, source_key, target_key, directionality, planner_visible
+);
+
+CREATE TABLE IF NOT EXISTS research_build_design_observations (
+    observation_id TEXT PRIMARY KEY,
+    observation_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    axes TEXT NOT NULL,
+    components TEXT NOT NULL,
+    component_keys TEXT NOT NULL,
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    copy_safety_state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
+    CHECK (copy_safety_state IN ('passed', 'needs_review', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_observations_bucket
+ON research_build_design_observations(visibility, split, knowledge_scope, observation_type);
+
+CREATE TABLE IF NOT EXISTS research_build_patterns (
+    pattern_id TEXT PRIMARY KEY,
+    pattern_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    component_keys TEXT NOT NULL,
+    component_roles TEXT NOT NULL,
+    confidence_tier TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    family_count INTEGER NOT NULL,
+    source_diversity_count INTEGER NOT NULL,
+    denominator INTEGER,
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    context_requirements TEXT NOT NULL,
+    planner_hint TEXT,
+    verification_tasks TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'valid',
+    copy_safety_state TEXT NOT NULL,
+    current_version_context TEXT NOT NULL DEFAULT '{}',
+    planner_visible INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_validated_at TEXT,
+    superseded_by_id TEXT,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
+    CHECK (status IN ('valid', 'needs_revalidation', 'stale', 'deprecated', 'quarantined')),
+    CHECK (copy_safety_state IN ('passed', 'needs_review', 'rejected')),
+    CHECK (planner_visible IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_patterns_bucket
+ON research_build_patterns(visibility, split, knowledge_scope, pattern_type, planner_visible);
+
+CREATE TABLE IF NOT EXISTS research_rejected_proposals (
+    rejection_id TEXT PRIMARY KEY,
+    proposal_hash TEXT NOT NULL,
+    error_code TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 1,
+    caveats TEXT NOT NULL,
+    suggested_repair TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_dedupe_queries (
+    dedupe_query_ref TEXT PRIMARY KEY,
+    query_hash TEXT NOT NULL,
+    query_text_preview TEXT NOT NULL,
+    component_keys TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_revalidation_events (
+    event_id TEXT PRIMARY KEY,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    old_version_context TEXT NOT NULL,
+    new_version_context TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    affected_component_keys TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern')),
+    CHECK (outcome IN ('still_valid', 'invalidated', 'changed_scope', 'needs_review'))
+);
+
+CREATE TABLE IF NOT EXISTS research_decay_events (
+    event_id TEXT PRIMARY KEY,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    decay_scope TEXT NOT NULL,
+    old_status TEXT NOT NULL,
+    new_status TEXT NOT NULL,
+    changed_component_keys TEXT NOT NULL,
+    new_version_context TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 def mature_learning_path() -> Path:
     return paths.mature_learning_path()
@@ -316,6 +595,16 @@ def initialize_store(db_path: Path | None = None) -> Path:
                 f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
             )
         con.executescript(_SCHEMA_SQL)
+        con.executescript(_PHASE4_SCHEMA_SQL)
+        _migrate_phase4_additive_schema(con)
+        con.execute(
+            """
+            INSERT INTO meta(key, value) VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(SCHEMA_VERSION),),
+        )
+        con.commit()
     finally:
         con.close()
     return path
@@ -327,6 +616,92 @@ def schema_version(con: sqlite3.Connection) -> int:
     except sqlite3.OperationalError:
         return 0
     return int(row[0]) if row else 0
+
+
+def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "status",
+        "TEXT NOT NULL DEFAULT 'valid'",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "current_version_context",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "last_validated_at",
+        "TEXT",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "superseded_by_id",
+        "TEXT",
+    )
+    _migrate_revalidation_events_target_kind_check(con)
+
+
+def _add_column_if_missing(
+    con: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    try:
+        columns = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.OperationalError:
+        return
+    if column not in columns:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _migrate_revalidation_events_target_kind_check(con: sqlite3.Connection) -> None:
+    row = con.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'research_revalidation_events'
+        """
+    ).fetchone()
+    sql = str(row["sql"] if row else "")
+    if "target_kind IN ('fragment', 'semantic_edge')" not in sql:
+        return
+    con.execute(
+        "ALTER TABLE research_revalidation_events RENAME TO research_revalidation_events_old"
+    )
+    con.execute(
+        """
+        CREATE TABLE research_revalidation_events (
+            event_id TEXT PRIMARY KEY,
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            old_version_context TEXT NOT NULL,
+            new_version_context TEXT NOT NULL,
+            safe_evidence_refs TEXT NOT NULL,
+            affected_component_keys TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern')),
+            CHECK (outcome IN ('still_valid', 'invalidated', 'changed_scope', 'needs_review'))
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO research_revalidation_events(
+            event_id, target_kind, target_id, outcome, old_version_context,
+            new_version_context, safe_evidence_refs, affected_component_keys, created_at
+        )
+        SELECT event_id, target_kind, target_id, outcome, old_version_context,
+               new_version_context, safe_evidence_refs, affected_component_keys, created_at
+        FROM research_revalidation_events_old
+        """
+    )
+    con.execute("DROP TABLE research_revalidation_events_old")
 
 
 def _now() -> str:

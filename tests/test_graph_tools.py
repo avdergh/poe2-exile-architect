@@ -273,6 +273,18 @@ def test_resolve_graph_component_returns_ambiguous_with_source_backed_candidates
     assert result["sourceRefs"] == ["fixture:graph_tools"]
 
 
+def test_resolve_graph_component_unknown_is_not_assessed_not_hallucinated():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"query": "Vivid Stampede"},
+    )
+
+    assert result["status"] == "missing"
+    assert result["endpointAssessment"]["classification"] == "source_coverage_gap"
+    assert result["endpointAssessment"]["hallucinationVerdict"] == "not_assessed"
+    assert result["facts"]["endpointAssessment"] == result["endpointAssessment"]
+
+
 def test_invalid_schema_is_returned_as_public_error_without_traceback():
     result = _service().run_tool(
         "resolve_graph_component",
@@ -590,6 +602,9 @@ def test_graph_tool_query_wraps_snapshot_load_failures(monkeypatch):
 
     assert result["status"] == "error"
     assert result["errorCode"] == "graph_snapshot_unavailable"
+    assert result["endpointAssessment"]["classification"] == "graph_snapshot_unavailable"
+    assert result["endpointAssessment"]["hallucinationVerdict"] == "not_assessed"
+    assert result["facts"]["endpointAssessment"] == result["endpointAssessment"]
     assert result["noRawQuery"] is True
     assert "Traceback" not in str(result)
 

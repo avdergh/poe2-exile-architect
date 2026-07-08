@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 import html
 import re
 
@@ -24,7 +25,7 @@ _SNAPSHOT_INPUT_VALUE = re.compile(
 )
 _SNAPSHOT_POB2 = re.compile(r"pob2://poeninja/overview/code\?[^\s\"']+", re.IGNORECASE)
 _SNAPSHOT_PROFILE = re.compile(
-    r'heading\s+(?:\\")?([^\\"]+)(?:\\")?\s+\[level=1\][\s\S]{0,200}?Level\s+([0-9]+)\s+([^\n]+)',
+    r'heading\s+(?:"|\\")?([^"\\\n]+)(?:"|\\")?\s+\[level=1\][\s\S]{0,200}?Level\s+([0-9]+)\s+([^\n]+)',
     re.IGNORECASE,
 )
 
@@ -48,14 +49,14 @@ def extract_import_code_from_rendered_html(page_html: str) -> dict[str, Any]:
                 code = html.unescape(value_match.group(1)).strip()
     if not code:
         return {"ok": False, "error": "import_code_not_found"}
-    if not code.startswith("eNrt"):
+    if not _is_supported_import_code_shape(code):
         return {"ok": False, "error": "import_code_not_found"}
 
-    deep_link_match = _Pob2.search(page_html)
+    deep_link = _safe_deep_link(_Pob2.search(page_html))
     return {
         "ok": True,
         "importCode": code,
-        "pob2DeepLink": deep_link_match.group(0) if deep_link_match else None,
+        "pob2DeepLinkRef": _safe_ref(deep_link, prefix="pob2-hash") if deep_link else None,
     }
 
 
@@ -69,28 +70,32 @@ def extract_import_code_from_dom_snapshot(snapshot_text: str) -> dict[str, Any]:
         return {"ok": False, "error": "import_code_not_found"}
 
     code = html.unescape((match.group(1) or match.group(2) or "")).strip()
-    if not code.startswith("eNrt"):
+    if not _is_supported_import_code_shape(code):
         return {"ok": False, "error": "import_code_not_found"}
 
-    deep_link_match = _SNAPSHOT_POB2.search(snapshot_text)
+    deep_link = _safe_deep_link(_SNAPSHOT_POB2.search(snapshot_text))
     profile_match = _SNAPSHOT_PROFILE.search(snapshot_text)
     profile = None
     if profile_match:
+        character_name = profile_match.group(1)
         profile = {
-            "characterName": profile_match.group(1),
+            "characterRef": _safe_ref(character_name, prefix="character-hash"),
             "level": int(profile_match.group(2)),
             "ascendancyOrClass": profile_match.group(3).strip(),
         }
     return {
         "ok": True,
         "importCode": code,
-        "pob2DeepLink": deep_link_match.group(0) if deep_link_match else None,
+        "pob2DeepLinkRef": _safe_ref(deep_link, prefix="pob2-hash") if deep_link else None,
         "profileSummary": profile,
     }
 
 
 def build_payload_row_from_import_code(
-    *, source_ref: str, import_code: str, pob2_deep_link: str | None = None
+    *,
+    source_ref: str,
+    import_code: str,
+    quarantine_pob2_deep_link: str | None = None,
 ) -> dict[str, Any]:
     """Convert an extracted poe.ninja import code into a raw payload row."""
     if not isinstance(source_ref, str) or not source_ref.strip():
@@ -109,12 +114,41 @@ def build_payload_row_from_import_code(
             "payloadSource": "poe_ninja_page_import_code",
             "sourceType": "poe_ninja",
             "sourceRef": source_ref.strip(),
+            "sourceHashRef": _safe_ref(source_ref.strip(), prefix="source-hash"),
             "pobModelability": "partial",
             "sourcePayload": {
                 "kind": "poe_ninja_import_code",
-                "deepLink": pob2_deep_link,
+                "pob2DeepLinkRef": _safe_ref(
+                    quarantine_pob2_deep_link,
+                    prefix="pob2-hash",
+                )
+                if quarantine_pob2_deep_link
+                else None,
+                "quarantinePob2DeepLink": quarantine_pob2_deep_link,
             },
             "rawImportCode": import_code.strip(),
             "rawXml": xml,
         },
     }
+
+
+def _is_supported_import_code_shape(code: str) -> bool:
+    """Accept historical fixtures plus real PoB codes with non-eNrt deflate headers."""
+    text = str(code or "").strip()
+    if text.startswith("eNrt"):
+        return True
+    try:
+        pob_code.to_xml(text)
+    except pob_code.PobCodeError:
+        return False
+    return True
+
+
+def _safe_deep_link(match: re.Match[str] | None) -> str | None:
+    if match is None:
+        return None
+    return html.unescape(match.group(0)).strip()
+
+
+def _safe_ref(value: str | None, *, prefix: str) -> str:
+    return f"{prefix}:{hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()[:16]}"

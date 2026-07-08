@@ -11,6 +11,7 @@ Raw PoB codes and raw XML stay transient and are never written to the repo.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -265,7 +266,7 @@ def evaluate_ninja_sample_row(
         "ascendancy": row.get("ascendancy"),
         "level": row.get("level"),
         "characterUrl": character_url,
-        "pob2DeepLink": extracted.get("pob2DeepLink"),
+        "pob2DeepLinkRef": extracted.get("pob2DeepLinkRef"),
     }
     return finalize_sample_classification(result)
 
@@ -387,11 +388,7 @@ def _sanitize_ninja_report(report: dict[str, Any]) -> dict[str, Any]:
                 "rewardEligible": sample.get("rewardEligible"),
                 "rewardStrength": sample.get("rewardStrength"),
                 "reproducibility": sample.get("reproducibility"),
-                "ninjaSample": {
-                    "ascendancy": (sample.get("ninjaSample") or {}).get("ascendancy"),
-                    "level": (sample.get("ninjaSample") or {}).get("level"),
-                    "characterUrl": (sample.get("ninjaSample") or {}).get("characterUrl"),
-                },
+                "ninjaSample": _safe_ninja_sample(sample.get("ninjaSample") or {}),
                 "errorKind": sample.get("errorKind"),
             }
         )
@@ -399,6 +396,30 @@ def _sanitize_ninja_report(report: dict[str, Any]) -> dict[str, Any]:
         "summary": report.get("summary"),
         "samples": samples,
     }
+
+
+def _safe_ninja_sample(value: dict[str, Any]) -> dict[str, Any]:
+    character_url = str(value.get("characterUrl") or value.get("url") or "")
+    row_identity = "|".join(
+        str(value.get(key) or "") for key in ("account", "name", "characterUrl", "url")
+    )
+    return {
+        "rowRef": _safe_ref(row_identity, prefix="ninja-row-hash") if row_identity else None,
+        "ascendancy": value.get("ascendancy"),
+        "level": value.get("level"),
+        "characterUrlRef": _safe_ref(character_url, prefix="ninja-url-hash")
+        if character_url
+        else None,
+        "pob2DeepLinkRef": value.get("pob2DeepLinkRef"),
+    }
+
+
+def _safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_safe_ninja_sample(row) for row in rows]
+
+
+def _safe_ref(value: str, *, prefix: str) -> str:
+    return f"{prefix}:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
 
 
 def write_sanitized_ninja_report(report: dict[str, Any], *, filename: str) -> Path:
@@ -482,7 +503,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_only:
         print(
             json.dumps(
-                {"buildListUrl": build_list_url, "sampledRows": sampled},
+                {
+                    "buildListRef": _safe_ref(build_list_url, prefix="ninja-list-hash"),
+                    "sampledRows": _safe_rows(sampled),
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -509,10 +533,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         json.dumps(
             {
-                "buildListUrl": build_list_url,
-                "sampledRows": sampled,
+                "buildListRef": _safe_ref(build_list_url, prefix="ninja-list-hash"),
+                "sampledRows": _safe_rows(sampled),
                 "summary": final_report["summary"],
-                "samples": final_report["samples"],
+                "samples": _sanitize_ninja_report(final_report)["samples"],
             },
             ensure_ascii=False,
             indent=2,
