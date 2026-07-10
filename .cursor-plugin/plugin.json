@@ -1,13 +1,13 @@
 {
   "name": "poe-bd-creator",
-  "displayName": "PoE BD Creator",
+  "displayName": "Exile Architect",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "version": "0.4.5",
   "author": {
-    "name": "PoE BD Creator contributors"
+    "name": "avdergh"
   },
-  "homepage": "https://github.com/Egonex-AI/poe-bd-creator",
-  "repository": "https://github.com/Egonex-AI/poe-bd-creator",
+  "homepage": "https://github.com/avdergh/poe2-exile-architect",
+  "repository": "https://github.com/avdergh/poe2-exile-architect",
   "license": "MIT",
   "keywords": [
     "path-of-exile-2",

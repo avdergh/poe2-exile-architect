@@ -3,10 +3,10 @@
   "version": "0.4.5",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
-    "name": "PoE BD Creator contributors"
+    "name": "avdergh"
   },
-  "homepage": "https://github.com/Egonex-AI/poe-bd-creator",
-  "repository": "https://github.com/Egonex-AI/poe-bd-creator",
+  "homepage": "https://github.com/avdergh/poe2-exile-architect",
+  "repository": "https://github.com/avdergh/poe2-exile-architect",
   "license": "MIT",
   "keywords": [
     "path-of-exile-2",
@@ -17,17 +17,17 @@
   ],
   "skills": "./poe-bd-creator-plugin/skills/",
   "interface": {
-    "displayName": "PoE BD Creator",
+    "displayName": "Exile Architect",
     "shortDescription": "Research mature PoE2 builds safely through agent skills and MCP gates.",
     "longDescription": "Queues mature PoE2 build samples, lets external agents analyze one case at a time, and accepts only copy-safe, resolver-backed knowledge into durable memory.",
-    "developerName": "PoE BD Creator contributors",
+    "developerName": "avdergh",
     "category": "Developer Tools",
     "capabilities": [
       "Research",
       "Automation",
       "Local"
     ],
-    "websiteURL": "https://github.com/Egonex-AI/poe-bd-creator",
+    "websiteURL": "https://github.com/avdergh/poe2-exile-architect",
     "defaultPrompt": [
       "/poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD",
       "/poe-bd-research --limit 20 --worker-count 5",

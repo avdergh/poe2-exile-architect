@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PoE BD Creator installer (macOS / Linux)
+# Exile Architect installer (macOS / Linux)
 
 set -euo pipefail
 
-REPO_URL="${POE_BD_CREATOR_REPO_URL:-https://github.com/avdergh/poe-bd-creator.git}"
+REPO_URL="${POE_BD_CREATOR_REPO_URL:-https://github.com/avdergh/poe2-exile-architect.git}"
 REPO_DIR="${POE_BD_CREATOR_DIR:-$HOME/.poe-bd-creator/repo}"
 PLUGIN_LINK="$HOME/.poe-bd-creator-plugin"
 DRY_RUN=0
@@ -39,7 +39,7 @@ skill_list_root() {
 
 usage() {
   cat <<USAGE
-PoE BD Creator installer
+Exile Architect installer
 
 Usage:
   install.sh [<platform>]            Install for <platform> (or prompt if omitted)
@@ -366,7 +366,7 @@ cmd_install() {
   if [[ "$id" == "codex" ]]; then
     register_codex_mcp_server
   fi
-  say "Installed PoE BD Creator skills for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
+  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
 }
 
 cmd_uninstall() {

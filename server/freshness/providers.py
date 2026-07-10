@@ -24,7 +24,7 @@ from .pob import (
 )
 
 
-RELEASES_URL = "https://github.com/avdergh/poe-bd-creator/releases"
+RELEASES_URL = "https://github.com/avdergh/poe2-exile-architect/releases"
 
 
 @dataclass(frozen=True, slots=True)

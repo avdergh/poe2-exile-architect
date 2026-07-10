@@ -14,8 +14,8 @@ from server.live import update
 
 
 def test_default_update_source_matches_this_repository():
-    assert "avdergh/poe-bd-creator" in update.MANIFEST_URL
-    assert "avdergh/poe-bd-creator" in update.RELEASES_PAGE
+    assert "avdergh/poe2-exile-architect" in update.MANIFEST_URL
+    assert "avdergh/poe2-exile-architect" in update.RELEASES_PAGE
 
 
 def _engine_zip() -> bytes:

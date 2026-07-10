@@ -1,4 +1,4 @@
-# How to use the Path of Exile 2 Build Assistant
+# How to use Exile Architect
 
 You have a PoE2 toolset with two halves: a **knowledge corpus** (offline game facts) and a
 **Path of Building compute engine** (real build math). Read this once — it's how the tools fit

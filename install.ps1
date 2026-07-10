@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-  PoE BD Creator installer for Windows.
+  Exile Architect installer for Windows.
 
 .DESCRIPTION
-  Clones/updates the project checkout, links the PoE BD Creator skills into
+  Clones/updates the project checkout, links the Exile Architect skills into
   the selected agent host, and registers the local MCP server for Codex. It
   refuses to overwrite real user directories and uninstall removes only
   installer-owned links/config blocks.
@@ -25,7 +25,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } else { 'https://github.com/avdergh/poe-bd-creator.git' }
+$RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } else { 'https://github.com/avdergh/poe2-exile-architect.git' }
 $RepoDir = if ($env:POE_BD_CREATOR_DIR) { $env:POE_BD_CREATOR_DIR } else { Join-Path $HOME '.poe-bd-creator\repo' }
 $PluginLink = Join-Path $HOME '.poe-bd-creator-plugin'
 $ScriptRepoDir = Split-Path -Parent $PSCommandPath
@@ -45,7 +45,7 @@ $Platforms = [ordered]@{
 
 function Show-Usage {
 @"
-PoE BD Creator installer (Windows)
+Exile Architect installer (Windows)
 
 Usage:
   install.ps1 [<platform>]          Install for <platform> (or prompt if omitted)
@@ -325,7 +325,7 @@ function Cmd-Install([string]$Id) {
     Write-Host 'Linking universal plugin root'
     Link-Plugin-Root
     if ($Id -eq 'codex') { Register-Codex-McpServer }
-    Write-Host "Installed PoE BD Creator skills for $Id. Restart the host to discover /poe-bd-research and /poe-bd-create."
+    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research and /poe-bd-create."
 }
 
 function Cmd-Uninstall([string]$Id) {

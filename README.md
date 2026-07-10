@@ -1,6 +1,6 @@
-# PoE BD Creator
+# Exile Architect
 
-PoE BD Creator 是一个 verification-first 的 Path of Exile 2 BD 研究与生成工具基座。它不尝试在项目内部重新训练或内置一个模型循环，而是让 Codex、Claude Code 等成熟 agent 负责研究与推理；仓库负责确定性工具、MCP 合同、图谱、记忆、安全边界和验收。
+Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生成工具基座。它不尝试在项目内部重新训练或内置一个模型循环，而是让 Codex、Claude Code 等成熟 agent 负责研究与推理；仓库负责确定性工具、MCP 合同、图谱、记忆、安全边界和验收。
 
 当前可用的两条产品入口是成熟 BD 研究提取和 Agent 主导的 BD 生成原型：前者把安全机制知识写入
 长期记忆，后者让 Agent 查询这些知识、搭建活动 PoB、运行 Judge 并进行有限内部修正。
