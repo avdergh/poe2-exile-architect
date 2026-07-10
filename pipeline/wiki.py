@@ -26,7 +26,7 @@ API = "https://www.poe2wiki.net/api.php"
 PAGE_URL = "https://www.poe2wiki.net/wiki/{}"
 LICENSE = "CC BY-NC-SA 3.0"
 SOURCE = "PoE2 Wiki (poe2wiki.net)"
-UA = {"User-Agent": "poe2-build-mcp/0.1 (+https://github.com/MaxWilk/poe2-build-mcp)"}
+UA = {"User-Agent": "poe-bd-creator/0.1 (+https://github.com/avdergh/poe-bd-creator)"}
 MAX_CHARS = 9000  # keep each page lean; the lead + mechanics are what matter
 
 # Curated mechanics pages (foundation + common + documented "weird" ones). Titles are the

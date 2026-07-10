@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-REPO_URL="${POE_BD_CREATOR_REPO_URL:-https://github.com/Egonex-AI/poe-bd-creator.git}"
+REPO_URL="${POE_BD_CREATOR_REPO_URL:-https://github.com/avdergh/poe-bd-creator.git}"
 REPO_DIR="${POE_BD_CREATOR_DIR:-$HOME/.poe-bd-creator/repo}"
 PLUGIN_LINK="$HOME/.poe-bd-creator-plugin"
 DRY_RUN=0

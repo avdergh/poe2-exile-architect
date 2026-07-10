@@ -25,7 +25,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } else { 'https://github.com/Egonex-AI/poe-bd-creator.git' }
+$RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } else { 'https://github.com/avdergh/poe-bd-creator.git' }
 $RepoDir = if ($env:POE_BD_CREATOR_DIR) { $env:POE_BD_CREATOR_DIR } else { Join-Path $HOME '.poe-bd-creator\repo' }
 $PluginLink = Join-Path $HOME '.poe-bd-creator-plugin'
 $ScriptRepoDir = Split-Path -Parent $PSCommandPath
