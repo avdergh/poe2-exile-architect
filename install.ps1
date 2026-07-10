@@ -3,9 +3,10 @@
   PoE BD Creator installer for Windows.
 
 .DESCRIPTION
-  Clones/updates the project checkout and links the poe-bd-research skill into
-  the selected agent host. It refuses to overwrite real user directories and
-  uninstall removes only symlinks/junctions created by this installer.
+  Clones/updates the project checkout, links the PoE BD Creator skills into
+  the selected agent host, and registers the local MCP server for Codex. It
+  refuses to overwrite real user directories and uninstall removes only
+  installer-owned links/config blocks.
 
 .EXAMPLE
   .\install.ps1 codex
@@ -28,6 +29,8 @@ $RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } el
 $RepoDir = if ($env:POE_BD_CREATOR_DIR) { $env:POE_BD_CREATOR_DIR } else { Join-Path $HOME '.poe-bd-creator\repo' }
 $PluginLink = Join-Path $HOME '.poe-bd-creator-plugin'
 $ScriptRepoDir = Split-Path -Parent $PSCommandPath
+$ManagedMcpBegin = '# BEGIN poe-bd-creator managed MCP server'
+$ManagedMcpEnd = '# END poe-bd-creator managed MCP server'
 
 $Platforms = [ordered]@{
     codex    = @{ Target = (Join-Path $HOME '.codex\skills');   Style = 'per-skill' }
@@ -123,7 +126,7 @@ function Get-SkillNamesForUninstall {
     if (Test-Path $root) {
         return @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     }
-    return @('poe-bd-research')
+    return @('poe-bd-research', 'poe-bd-create')
 }
 
 function Test-IsReparse([string]$Path) {
@@ -148,6 +151,12 @@ function Normalize-PathText([string]$PathText) {
     if (-not $PathText) { return '' }
     try { return ([System.IO.Path]::GetFullPath($PathText)).TrimEnd('\', '/') }
     catch { return $PathText.TrimEnd('\', '/') }
+}
+
+function Format-TomlString([string]$Value) {
+    if ($Value -notlike "*'*") { return "'$Value'" }
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
 }
 
 function Test-TargetWithin([string]$TargetPath, [string]$RootPath) {
@@ -239,20 +248,91 @@ function Link-Plugin-Root {
     New-SafeJunction $PluginLink $src
 }
 
+function Get-Codex-ConfigPath { Join-Path $HOME '.codex\config.toml' }
+
+function Resolve-UvCommand {
+    $localUv = Join-Path (Normalize-PathText $RepoDir) '.tools\uv\uv.exe'
+    if (Test-Path $localUv) { return $localUv }
+    $installed = Get-Command uv -ErrorAction SilentlyContinue
+    if ($installed -and $installed.Source) { return $installed.Source }
+    Write-Error 'Codex MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer.'
+}
+
+function Remove-Managed-McpBlock([string]$Text) {
+    $begin = [regex]::Escape($ManagedMcpBegin)
+    $end = [regex]::Escape($ManagedMcpEnd)
+    $pattern = "(?ms)^$begin\r?\n.*?^$end\r?\n?"
+    return [regex]::Replace($Text, $pattern, '')
+}
+
+function Register-Codex-McpServer {
+    $configPath = Get-Codex-ConfigPath
+    $repoRoot = Normalize-PathText $RepoDir
+    $command = Resolve-UvCommand
+    $args = @("run", "python", "-m", "server.main")
+
+    if ($DryRun) {
+        Write-Host "[dry-run] register Codex MCP server poe2_build_mcp in $configPath"
+        return
+    }
+
+    $configDir = Split-Path -Parent $configPath
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
+
+    $existing = if (Test-Path $configPath) { Get-Content -LiteralPath $configPath -Raw } else { '' }
+    if ($existing -match '(?m)^\[mcp_servers\.poe2_build_mcp\]\s*$' -and $existing -notlike "*$ManagedMcpBegin*") {
+        Write-Warning "Codex MCP server poe2_build_mcp already exists but is not installer-managed; leaving it unchanged."
+        return
+    }
+
+    $clean = (Remove-Managed-McpBlock $existing).TrimEnd()
+    $tomlArgs = '["' + (($args | ForEach-Object { $_.Replace('"', '\"') }) -join '", "') + '"]'
+    $block = @(
+        $ManagedMcpBegin,
+        '[mcp_servers.poe2_build_mcp]',
+        ('command = {0}' -f (Format-TomlString $command)),
+        ('args = {0}' -f $tomlArgs),
+        ('cwd = {0}' -f (Format-TomlString $repoRoot)),
+        'startup_timeout_sec = 120',
+        '',
+        '[mcp_servers.poe2_build_mcp.env]',
+        ('PYTHONPATH = {0}' -f (Format-TomlString $repoRoot)),
+        $ManagedMcpEnd
+    ) -join [Environment]::NewLine
+
+    $next = if ($clean) { $clean + [Environment]::NewLine + [Environment]::NewLine + $block + [Environment]::NewLine } else { $block + [Environment]::NewLine }
+    Set-Content -LiteralPath $configPath -Value $next -Encoding UTF8
+    Write-Host "Registered Codex MCP server poe2_build_mcp in $configPath"
+}
+
+function Unregister-Codex-McpServer {
+    $configPath = Get-Codex-ConfigPath
+    if (-not (Test-Path $configPath)) { return }
+    $existing = Get-Content -LiteralPath $configPath -Raw
+    if ($existing -notlike "*$ManagedMcpBegin*") { return }
+    if ($DryRun) { Write-Host "[dry-run] remove Codex MCP server poe2_build_mcp from $configPath"; return }
+    $next = (Remove-Managed-McpBlock $existing).TrimEnd() + [Environment]::NewLine
+    Set-Content -LiteralPath $configPath -Value $next -Encoding UTF8
+    Write-Host "Removed installer-managed Codex MCP server poe2_build_mcp from $configPath"
+}
+
 function Cmd-Install([string]$Id) {
     $cfg = Resolve-Platform $Id
+    if ($Id -eq 'codex' -and -not $DryRun) { $null = Resolve-UvCommand }
     Clone-Or-Update
     Write-Host "Linking skills for $Id ($($cfg.Style) -> $($cfg.Target))"
     Link-Skills $cfg.Target $cfg.Style
     Write-Host 'Linking universal plugin root'
     Link-Plugin-Root
-    Write-Host "Installed PoE BD Creator skill for $Id. Restart the host to discover /poe-bd-research."
+    if ($Id -eq 'codex') { Register-Codex-McpServer }
+    Write-Host "Installed PoE BD Creator skills for $Id. Restart the host to discover /poe-bd-research and /poe-bd-create."
 }
 
 function Cmd-Uninstall([string]$Id) {
     $cfg = Resolve-Platform $Id
     Write-Host "Removing skill links for $Id"
     Unlink-Skills $cfg.Target $cfg.Style
+    if ($Id -eq 'codex') { Unregister-Codex-McpServer }
     Remove-Reparse $PluginLink | Out-Null
     Write-Host "Checkout kept at $RepoDir."
 }

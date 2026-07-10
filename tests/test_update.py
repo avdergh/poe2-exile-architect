@@ -13,6 +13,11 @@ from server import paths
 from server.live import update
 
 
+def test_default_update_source_matches_this_repository():
+    assert "Egonex-AI/poe-bd-creator" in update.MANIFEST_URL
+    assert "Egonex-AI/poe-bd-creator" in update.RELEASES_PAGE
+
+
 def _engine_zip() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:

@@ -14,7 +14,9 @@
 
 PoE2 BD Creator 是 verification-first 的 Path of Exile 2 BD 研究与生成工具基座。
 Codex、Claude Code 等外部成熟 agent 负责研究、推理、比较、反思和 BD 合成。仓库本
-身提供确定性工具、结构化记忆、图知识、安全边界和评估合同。
+身提供可重复执行的工具、结构化记忆、图知识、安全边界和评估合同。BD 创造不能变成
+“Agent 给 plan，程序自动补完整 BD”的流程；整个构筑创造、查询取舍和失败修正仍由
+Agent 主导。
 
 长期闭环是：
 
@@ -23,8 +25,9 @@ Codex、Claude Code 等外部成熟 agent 负责研究、推理、比较、反�
   -> quarantine-only raw intake
   -> 外部 Researcher Agent
   -> clean fragments + graph knowledge + long-term memory
-  -> 外部 Architect Agent
-  -> deterministic planners 与 Headless PoB judge
+  -> 外部 Architect Agent 按需查询图、记忆、语料和 PoB/计算工具
+  -> Agent 主导候选 BD 创造和可评估临时状态搭建
+  -> Headless PoB judge 与安全报告
   -> reference comparison 与 Critic Agent gaps
   -> rollback / repair / early stopping
   -> reward events 调整 graph 和 memory 权重
@@ -132,8 +135,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   crash recovery。
 - `server/judge/fixtures.py`、`server/judge/benchmark.py`：synthetic Phase 1 baseline，写入
   user-data runtime，不进入仓库。
-- Judge 当前是内部基线，不在 `server/main.py` 注册 MCP tool。真实样本验收前不要把它包装
-  成用户可见工具。
+- Judge 核心仍是内部基线；Phase 5 只在 `server/main.py` 公开受限的
+  `evaluate_generation_candidate` 入口，用于评价 Agent 已搭建的活动构筑。不要公开可接受任意
+  原始输入的通用 Judge 工具。
 - Phase 1 对使用 weapon set passives 的 dual-state build 只给 limited reward；没有 State_A /
   State_B 分别评分证据时，不能把单状态最高 DPS 写成强学习信号。
 - Phase 1 对 `FullDPS` rollup、召唤物 PoB output、投射物下界、关键 metric 缺失等 evidence
@@ -193,8 +197,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/02_graph_cold.md`：physical graph cold start 和 official ID mapping。
 - `docs/phases/03_graph_tools.md`：graph backend 和 typed graph tools。
 - `docs/phases/04_research_memory.md`：Researcher extraction 进入 semantic graph 和 memory。
-- `docs/phases/05_generation.md`：Architect generation、OR-Tools gear solver、Spirit planning。
-- `docs/phases/06_build_export.md`：官方 `.build` export 和 leveling progression。
+- `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
+- `docs/phases/06_build_export.md`：官方 `.build` export。
 - `docs/phases/07_critic_loop.md`：rollback、repair 和 early stopping。
 - `docs/phases/08_reward_memory.md`：RLAIF-lite reward memory。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。

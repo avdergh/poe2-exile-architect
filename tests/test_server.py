@@ -74,13 +74,14 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 88
+    assert len(tools) == 89
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
         "equip_jewel",
         "apply_combat_profile",
         "pinnacle_readiness",
+        "evaluate_generation_candidate",
         "list_reference_builds",
         "benchmark_build",
         "rank_upgrades",

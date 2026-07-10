@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-07-08
+最后更新：2026-07-10
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -22,8 +22,8 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 
 为了实现上述愿景，并最大限度压制外部 Agent（Codex、Claude Code 或其他成熟 agent）
 的幻觉，本项目采用 Verification-first 的工程基座架构：外部 agent 负责研究、推理、
-反思、BD 合成和批判；仓库本身提供确定性工具、图知识、长期记忆、copy-safety 和评估
-合同。
+反思、BD 合成和批判；仓库本身提供可重复执行的工具、图知识、长期记忆、安全边界和评估
+合同。程序不能把 Agent 的构筑思路接管成“自动补完整 BD”的流程。
 
 开发阶段不追求“看起来合理”的文本建议，而是通过循环学习过程，在固定 benchmark 上可
 量化地逼近高质量 BD 的标准：
@@ -53,8 +53,9 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
   -> quarantine-only raw intake
   -> 外部 Researcher Agent
   -> clean fragments + physical/semantic graph + long-term memory
-  -> 外部 Architect Agent
-  -> deterministic planners + Headless PoB judge
+  -> 外部 Architect Agent 按需查询图、记忆、语料和 PoB/计算工具
+  -> Agent 主导候选 BD 创造和可评估临时状态搭建
+  -> Headless PoB Judge + 安全报告
   -> reference comparison + 外部 Critic Agent
   -> rollback / repair / early stopping
   -> reward events 调整 graph 和 memory 权重
@@ -109,8 +110,8 @@ Phase 0 文档与边界
   -> Phase 2 物理图冷启动
   -> Phase 3 Typed graph tools
   -> Phase 4 Researcher 语义记忆
-  -> Phase 5 约束驱动生成
-  -> Phase 6 官方 .build 与 leveling progression
+  -> Phase 5 Agent 主导的生成原型
+  -> Phase 6 官方 .build 导出
   -> Phase 7 Critic loop / rollback / early stopping
   -> Phase 8 RLAIF-lite reward memory
   -> Phase 9 scale / revalidation / productization
@@ -119,6 +120,28 @@ Phase 0 文档与边界
 其中 Phase 1 是所有“好坏判断”的前置门槛；Phase 2 和 Phase 3 是图记忆可用性的前置
 门槛；Phase 4 负责把成熟 BD 研究变成可复用长期知识；Phase 5 之后才开始验证生成能
 力；Phase 7 和 Phase 8 只有在生成与 judge 可用后才有意义。
+
+### 待优化提示：复合输出与多场景评估
+
+PoE2 BD 通常不是单一技能、单一面板和单一战斗场景。清图、Boss、触发、伤害兑现、条件性
+附加效果和防御维持可能由多个技能共同完成。当前 Judge 仍是可运行基线，不应把一次选中的
+最高伤害组件解释成整个 BD 的唯一主技能或完整强度。
+
+该问题按以下阶段持续收敛：
+
+- Phase 1 / Judge 持续维护：区分 PoB 当前计算组、多个伤害组件、条件性附加效果和技能组
+  合法性；逐步补充清图、单体、持续输出、触发/兑现和组合同时生效关系的证据合同。无法可靠
+  建模时输出 caveat / confidence，不伪造组合 DPS。
+- Phase 5 P5.1-P5.3：已用 Agent 实际生成的候选发现并修复条件性内部效果误选、插槽误判和
+  逐轮可信核对问题；Agent 说明各技能职责，可信报告保存足够诊断。完整轮转和组合建模继续作为
+  后续跨阶段优化，不在 Phase 5 手写全知评分器。
+- Phase 7：消费已经可信的分场景 Judge 诊断做 Critic、修复、回滚和提前停止；不负责发明缺失
+  的底层数值真值。
+- Phase 8：只有场景证据和 confidence 足够时才允许写 reward memory；多技能组合或时序关系未
+  解决时必须限制或禁止强奖励。
+
+这是一项跨阶段待优化能力，不因 Phase 1 基线状态为“已完成”而视为已经解决。后续优先由
+Phase 5 真实失败样例驱动，不提前手写一套脱离 PoB 和游戏机制的全知评分器。
 
 ## Phase 状态
 
@@ -131,8 +154,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 2 | 已完成：cold-start 合同、固定 E2E 样例验收、人工评分通过，并已合入 `main` | Phase 1 | 从静态权威数据冷启动 physical graph，并建立官方 `.build` 需要的 ID 映射基础。 | `docs/phases/02_graph_cold.md` |
 | Phase 3 | 已完成：read-only typed graph facade、NetworkX bounded topology、MCP `graph_tool_query`、deterministic benchmark 与人工验收通过 | Phase 2 | 通过 typed tools 暴露 source-backed graph 查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
-| Phase 5 | 未开始 | Phase 1、3、4 | 由外部 Architect Agent 提出方案，确定性 planner/solver 补全天赋、装备、support、Spirit 和合法性。 | `docs/phases/05_generation.md` |
-| Phase 6 | 未开始 | Phase 2、5 | 把支持的 BuildPlan 导出为官方 `.build` JSON，并维护 leveling progression。 | `docs/phases/06_build_export.md` |
+| Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
+| Phase 6 | 未开始 | Phase 2、5 | 把 Phase 5 已由 Agent 设计并可验证或部分可验证的候选状态转换为官方 `.build` JSON；只处理导出格式、官方 ID 和导出校验，不负责重新设计生命周期或补完整 BD。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
 | Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
@@ -145,6 +168,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
   recovery / mobility，只能降低 confidence、限制 reward、或转交后续语义阶段处理。
 - 项目不拥有内部 autonomous LLM provider loop。Agent 工作通过 explicit packets 和
   schemas 交给 Codex、Claude Code 或其他外部成熟 agent。
+- Agent 给出的方案不能交给程序做全自动 BD 补全；整个 BD 创造、取舍、查询和失败修正仍由
+  Agent 主导，程序只提供工具、边界、评估和报告。
 - 真实成熟 BD 是研究/校准来源，不是复制模板。
 - Raw mature-build material 只允许 quarantine-only transient 使用。
 - 不要持久化或暴露 PoB code、raw XML、完整装备表、完整 passive path、完整
@@ -186,6 +211,15 @@ Judge 的评分语义也必须接受分层验证，而不是只看单一 aggrega
 
 当 raw score 和 evidence / confidence 冲突时，以证据边界为先：宁可保守地把样本归到
 `judge_unsolved_modelability_gap`，也不能把有限证据写成强 reward 事实。
+
+Phase 5 对 freshness 使用降级策略：如果当前游戏补丁、赛季和天赋树可确认，仅本地 PoB 引擎或
+数据落后，可以继续生成候选并运行过期 PoB 的有限证据诊断，但必须禁止“当前赛季已验证”声明。
+只有当前游戏规则、天赋树或所需核心机制资料冲突/未知时，才停止当前版本强验证或请求用户决定。
+通用 freshness 的 `blocked_stale` 不能被机械解释为“停止所有 BD 生成”。
+
+PoB 数据版本兼容性按赛季大版本比较，精确补丁号只用于来源追踪和注意事项。同一赛季内上游 PoB
+发布小版本只产生更新提醒，不自动撤销已经认证的本地运行时；跨赛季大版本或天赋树世代冲突仍
+必须阻断强验证。
 
 验证耗时也是规格的一部分：
 

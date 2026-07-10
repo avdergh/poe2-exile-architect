@@ -70,6 +70,9 @@ def evaluate_readback(
     )
     hard_failures.extend(socket_failures)
     caveats.extend(socket_caveats)
+    supplemental_components = _supplemental_damage_components(build)
+    if supplemental_components:
+        caveats.append("conditional_supplemental_damage_caveat")
     weapon_check = rules.check_weapon_skill_compatibility(_evaluation_weapon_check(build))
     if not weapon_check.get("ok"):
         hard_failures.append(str(weapon_check["failureCode"]))
@@ -187,6 +190,7 @@ def evaluate_readback(
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
         },
+        "supplementalDamageComponents": supplemental_components,
         "scoreVector": score["scoreVector"],
         "scoreBreakdown": score.get("scoreBreakdown"),
         "scoreScale": score.get("scoreScale"),
@@ -380,10 +384,35 @@ def _evaluation_skill_group(build: dict[str, Any]) -> list[dict[str, Any]] | Non
     if (
         isinstance(selected, dict)
         and _has_judge_selected_skill(selected)
+        and selected.get("socketLegalityApplicable") is not False
         and isinstance(selected_group, list)
     ):
         return selected_group
     return build.get("mainSkillGroup")
+
+
+def _supplemental_damage_components(build: dict[str, Any]) -> list[dict[str, Any]]:
+    components = build.get("judgeSupplementalSkills") or []
+    if not isinstance(components, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        name = str(component.get("skillName") or "").strip()
+        if not name:
+            continue
+        output.append(
+            {
+                "skillName": name,
+                "groupIndex": component.get("groupIndex"),
+                "groupOrigin": str(component.get("groupOrigin") or "unknown"),
+                "scenarioLimitations": [
+                    str(value) for value in component.get("scenarioLimitations") or [] if value
+                ],
+            }
+        )
+    return output
 
 
 def _evaluation_weapon_check(build: dict[str, Any]) -> dict[str, Any] | None:

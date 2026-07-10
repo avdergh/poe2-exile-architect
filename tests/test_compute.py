@@ -77,6 +77,54 @@ def test_import_code_fixture(engine):
     assert b["class"] == "Mercenary" and b["level"] == 90
 
 
+def test_witchhunter_on_kill_explosion_is_supplemental_not_primary(engine):
+    code = (Path(__file__).parent / "fixtures" / "witchhunter_detonate.pobcode").read_text().strip()
+    engine.new_build()
+    engine.load_build_code(code)
+
+    build = engine.get_build()
+
+    assert build["judgeSelectedSkill"]["skillName"] == "Detonate Living"
+    assert build["judgeSelectedSkill"]["groupOrigin"] == "socketed"
+    explosion = next(
+        component
+        for component in build["judgeSupplementalSkills"]
+        if component["groupOrigin"] == "synthetic_on_kill"
+    )
+    assert explosion["skillName"] == "On Kill Monster Explosion"
+    assert explosion["socketLegalityApplicable"] is False
+    assert explosion["scenarioLimitations"] == ["requires_kill"]
+
+
+def test_reactive_thorns_is_supplemental_not_primary(engine):
+    engine.new_build()
+    engine.set_class("Warrior")
+    engine.paste_skill("Fireball 1/0  1")
+    engine.add_item(
+        "Rarity: Rare\n"
+        "Test Shell\n"
+        "Thane Mail\n"
+        "--------\n"
+        "Armour: 100\n"
+        "Evasion Rating: 100\n"
+        "--------\n"
+        "101 to 220 Physical Thorns damage"
+    )
+
+    build = engine.get_build()
+
+    assert build["judgeSelectedSkill"]["skillName"] == "Fireball"
+    assert build["judgeSelectedSkill"]["groupOrigin"] == "socketed"
+    thorns = next(
+        component
+        for component in build["judgeSupplementalSkills"]
+        if component["groupOrigin"] == "synthetic_reactive"
+    )
+    assert thorns["skillName"] == "Thorns"
+    assert thorns["socketLegalityApplicable"] is False
+    assert thorns["scenarioLimitations"] == ["requires_enemy_hit"]
+
+
 def test_import_build_rejects_garbage():
     from server.main import import_build
 

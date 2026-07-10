@@ -17,6 +17,12 @@ def test_class_ascendancy_pairing_accepts_known_poe2_pair():
     assert result == {"ok": True}
 
 
+def test_class_ascendancy_pairing_treats_pob_none_as_unascended_campaign_character():
+    result = rules.check_class_ascendancy("Witch", "None", level_band="campaign")
+
+    assert result == {"ok": True, "caveat": "missing_ascendancy_non_endgame_caveat"}
+
+
 def test_class_ascendancy_pairing_allows_non_endgame_missing_ascendancy_with_caveat():
     result = rules.check_class_ascendancy("Mercenary", "", level_band="campaign")
 

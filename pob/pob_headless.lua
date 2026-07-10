@@ -468,6 +468,27 @@ local function socketGroupActiveGemCount(sg, activeIndex, active)
 	return 1
 end
 
+local function judgeSkillGroupOrigin(sg)
+	if not sg then
+		return "unknown"
+	end
+	if sg.source == "Explode" then
+		return "synthetic_on_kill"
+	end
+	if sg.source == "Thorns" then
+		return "synthetic_reactive"
+	end
+	if sg.source and sg.source ~= "" then
+		return "granted_or_generated"
+	end
+	return "socketed"
+end
+
+local function judgeSocketLegalityApplicable(sg)
+	local origin = judgeSkillGroupOrigin(sg)
+	return origin ~= "synthetic_on_kill" and origin ~= "synthetic_reactive"
+end
+
 local function activeSkillSummary(groupIndex, activeIndex)
 	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
 	activeIndex = activeIndex or (sg and (sg.mainActiveSkill or 1))
@@ -529,6 +550,13 @@ local function activeSkillSummary(groupIndex, activeIndex)
 	if hasSkillTag("Banner") then utilityTags[#utilityTags + 1] = "Banner" end
 	local hasDirectDamageTag = hasSkillTag("Damage") or hasSkillTag("DamageOverTime") or hasSkillTag("Attack") or hasSkillTag("Minion")
 	local utilityOnly = (#utilityTags > 0) and not hasDirectDamageTag
+	local groupOrigin = judgeSkillGroupOrigin(sg)
+	local scenarioLimitations = {}
+	if groupOrigin == "synthetic_on_kill" then
+		scenarioLimitations[#scenarioLimitations + 1] = "requires_kill"
+	elseif groupOrigin == "synthetic_reactive" then
+		scenarioLimitations[#scenarioLimitations + 1] = "requires_enemy_hit"
+	end
 	return {
 		groupIndex = groupIndex or build.mainSocketGroup or 1,
 		activeIndex = activeIndex,
@@ -541,6 +569,10 @@ local function activeSkillSummary(groupIndex, activeIndex)
 		activeSkillCount = activeSkillCount,
 		activeSkillCountAvailable = activeSkillCountAvailable,
 		weaponCheck = activeWeaponCheck(groupIndex, activeIndex),
+		groupOrigin = groupOrigin,
+		groupSource = sg and sg.source or nil,
+		socketLegalityApplicable = judgeSocketLegalityApplicable(sg),
+		scenarioLimitations = scenarioLimitations,
 	}
 end
 
@@ -603,6 +635,7 @@ local function computeJudgeSelectedSkill()
 		originalFullDPS[i] = sg.includeInFullDPS
 	end
 	local best = nil
+	local supplemental = {}
 	for i, sg in ipairs(list) do
 		if sg and sg.enabled ~= false and sg.displaySkillList and #sg.displaySkillList > 0 then
 			for activeIndex = 1, #sg.displaySkillList do
@@ -646,6 +679,10 @@ local function computeJudgeSelectedSkill()
 						hasDirectDamageTag = summary.isDamageTagged,
 						weaponCheck = summary.weaponCheck,
 						caveats = caveats,
+						groupOrigin = summary.groupOrigin,
+						groupSource = summary.groupSource,
+						socketLegalityApplicable = summary.socketLegalityApplicable,
+						scenarioLimitations = summary.scenarioLimitations,
 					}
 					if isMinionCandidate then
 						candidate.isMinion = true
@@ -655,7 +692,9 @@ local function computeJudgeSelectedSkill()
 					if asNumber(out.ProjectileCount) > 1 and metric.key ~= "FullDPS" then
 						candidate.caveats[#candidate.caveats + 1] = "lower_bound_dps_caveat"
 					end
-					if isBetterJudgeCandidate(candidate, best) then
+					if summary.groupOrigin == "synthetic_on_kill" or summary.groupOrigin == "synthetic_reactive" then
+						supplemental[#supplemental + 1] = candidate
+					elseif isBetterJudgeCandidate(candidate, best) then
 						best = candidate
 					end
 				end
@@ -676,7 +715,7 @@ local function computeJudgeSelectedSkill()
 	if best and best.groupIndex ~= originalGroup then
 		best.caveats[#best.caveats + 1] = "auto_selected_damage_skill_caveat"
 	end
-	return best
+	return best, supplemental
 end
 
 local function computeJudgeSkillCandidates()
@@ -1369,7 +1408,7 @@ function methods.get_build()
 		+ asNumber(mainOutput.PassivePointsToWeaponSetPoints)
 	local normalPassiveUsed = used - math.min(weaponSet1Used or 0, weaponSet2Used or 0)
 	local unspent = math.max(0, avail - normalPassiveUsed)
-	local judgeSelectedSkill = computeJudgeSelectedSkill()
+	local judgeSelectedSkill, judgeSupplementalSkills = computeJudgeSelectedSkill()
 	local r = {
 		class = spec.curClassName,
 		ascendancy = spec.curAscendClassName,
@@ -1379,6 +1418,7 @@ function methods.get_build()
 		mainSkill = mainSkillName(),
 		mainSkillWeaponCheck = activeWeaponCheck(build.mainSocketGroup or 1),
 		judgeSelectedSkill = judgeSelectedSkill,
+		judgeSupplementalSkills = judgeSupplementalSkills,
 		judgeSelectedSkillGroup = judgeSelectedSkill and gemSummaryForSocketGroup(judgeSelectedSkill.groupIndex) or nil,
 		mainSkillGroup = gems,
 		notables = notables,

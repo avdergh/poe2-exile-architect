@@ -250,7 +250,18 @@ Lua 里的 `computeJudgeSelectedSkill()` 会主动遍历所有 socket group（�
 4. 如果是 minion（召唤物）技能，尝试从 PoB 的 minion output（召唤物输出）路径取值。
 5. 选出当前最可信、数值最高、又不是纯功能技能的候选。
 
-这就是 `judgeSelectedSkill`。
+这就是 `judgeSelectedSkill`。它表示 Judge 本次用于 offense 评分的一个伤害组件，不等于整个 BD
+只有一个主技能，也不等于 `mainSocketGroup` 之外的技能都不重要。
+
+PoB 还会把部分升华、装备或机制产生的内部效果动态加入技能组列表。Judge 必须区分：
+
+- 玩家配置或来源明确的可用技能组；
+- PoB 当前计算组；
+- 条件性内部合成效果，例如只在击杀后发生的爆炸；
+- Judge 本次选中的伤害组件。
+
+条件性击杀爆炸保留为 `judgeSupplementalSkills`，并标记 `requires_kill`。它可以帮助解释清图能力，
+但不能代表 Boss 持续输出，也不能因为没有普通宝石插槽而触发 `invalid_socket_setup`。
 
 它会额外返回：
 
@@ -264,10 +275,17 @@ Lua 里的 `computeJudgeSelectedSkill()` 会主动遍历所有 socket group（�
 - `projectileCount`（投射物数量）
 - `weaponCheck`（武器兼容性）
 - `caveats`（警示）
+- `groupOrigin`（技能组来源类型）
+- `socketLegalityApplicable`（是否适用普通宝石插槽合法性）
+- `scenarioLimitations`（例如 `requires_kill`）
 
 如果最终选中的不是原始 `mainSkill`，会追加：
 
 - `auto_selected_damage_skill_caveat`
+
+如果存在未纳入主要 offense 数值的条件性附加伤害组件，追加：
+
+- `conditional_supplemental_damage_caveat`
 
 ### 7.2 offense 取值优先级
 

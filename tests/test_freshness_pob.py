@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from datetime import timedelta
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -35,7 +36,9 @@ NOW = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
 LOCAL_PIN = "a82a33b4"
 REMOTE_COMMIT = "dc409a7073e4e2752e9a642db7544af53551d006"
 POB_054_CANDIDATE = "7d1aa43c8c938d7be150d197ed9cdec8a4c1c620"
+POB_022_RELEASE = "860f4268299739ce9df87c4f373abe35824101cf"
 VERIFIED_COMMIT = "1234567890abcdef1234567890abcdef12345678"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_text(name: str) -> str:
@@ -44,6 +47,25 @@ def read_text(name: str) -> str:
 
 def read_json(name: str) -> Any:
     return json.loads(read_text(name))
+
+
+def test_pinned_pob_commit_is_consistent_across_release_inputs():
+    pinned = (REPO_ROOT / "pob" / "PINNED.md").read_text(encoding="utf-8")
+    pinned_match = re.search(r"Pinned commit \| `([0-9a-f]{40})`", pinned)
+    assert pinned_match is not None
+    pinned_commit = pinned_match.group(1)
+
+    compatibility = json.loads(
+        (REPO_ROOT / "data" / "compatibility" / "pob.json").read_text(encoding="utf-8")
+    )
+    certified_commits = {entry["commit"] for entry in compatibility["entries"]}
+    assert pinned_commit in certified_commits
+
+    for workflow in ("ci.yml", "release.yml"):
+        content = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        workflow_match = re.search(r"POB_COMMIT:\s*([0-9a-f]{40})", content)
+        assert workflow_match is not None
+        assert workflow_match.group(1) == pinned_commit
 
 
 class RouteTransport:
@@ -241,7 +263,7 @@ def test_certified_dev_export_candidate_is_not_stale_behind_older_release(tmp_pa
     )
 
 
-def test_dev_export_candidate_is_stale_when_release_is_not_older_than_certification(tmp_path):
+def test_newer_release_does_not_invalidate_certified_same_season_runtime(tmp_path):
     release = read_json("pob-release.json")
     release["published_at"] = "2026-06-26T02:59:55Z"
     commit = read_json("pob-release-commit.json")
@@ -280,7 +302,8 @@ def test_dev_export_candidate_is_stale_when_release_is_not_older_than_certificat
 
     result = provider.collect(now=NOW)
 
-    assert all(evidence.status is SourceStatus.STALE for evidence in result.evidence)
+    assert all(evidence.status is SourceStatus.CURRENT for evidence in result.evidence)
+    assert any("compatibility retained" in diagnostic for diagnostic in result.diagnostics)
 
 
 def test_remote_release_ahead_of_local_pin_marks_engine_and_data_stale(tmp_path):
@@ -389,7 +412,7 @@ def test_ambiguous_local_short_prefix_in_provider_emits_unknown(tmp_path):
     assert any("ambiguous" in diagnostic for diagnostic in result.diagnostics)
 
 
-def test_resolved_short_prefix_uses_full_manifest_commit_for_remote_comparison(tmp_path):
+def test_resolved_certified_short_prefix_remains_current_when_remote_is_newer(tmp_path):
     local_manifest_commit = "abcdef1111111111111111111111111111111111"
     remote_commit = "abcdef2222222222222222222222222222222222"
     release = read_json("pob-release.json")
@@ -418,9 +441,10 @@ def test_resolved_short_prefix_uses_full_manifest_commit_for_remote_comparison(t
 
     result = provider.collect(now=NOW)
 
-    assert all(evidence.status is SourceStatus.STALE for evidence in result.evidence)
+    assert all(evidence.status is SourceStatus.CURRENT for evidence in result.evidence)
     assert all(evidence.version == local_manifest_commit for evidence in result.evidence)
     assert any(local_manifest_commit in diagnostic for diagnostic in result.diagnostics)
+    assert any("compatibility retained" in diagnostic for diagnostic in result.diagnostics)
 
 
 def test_missing_local_commit_emits_unknown_without_claims(tmp_path):
@@ -529,7 +553,7 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     manifest = load_compatibility_manifest(Path("data/compatibility/pob.json"))
 
     assert manifest.schema_version == 1
-    assert len(manifest.entries) == 2
+    assert len(manifest.entries) == 3
 
     entries = {entry.commit: entry for entry in manifest.entries}
     release_entry = entries[REMOTE_COMMIT]
@@ -552,7 +576,14 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     )
     assert candidate_entry.verified_at.tzinfo is UTC
 
+    current_entry = entries[POB_022_RELEASE]
+    assert current_entry.pob_version == "0.22.0"
+    assert current_entry.game_patch == "0.5.4"
+    assert current_entry.passive_tree == "0_5"
+    assert current_entry.verified_at.tzinfo is UTC
+
     assert resolve_compatibility(POB_054_CANDIDATE, manifest) == candidate_entry
+    assert resolve_compatibility(POB_022_RELEASE, manifest) == current_entry
 
     # Certification remains exact: nearby or older PoB commits must not inherit these claims.
     assert resolve_compatibility(LOCAL_PIN, manifest) is None

@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-06-29
+Last updated: 2026-07-09
 
 本文档说明高层模块布局和数据流。详细实现工作放在 `docs/phases/`。Architecture 是当前
 唯一维护英文和中文两版的文档；project spec、schemas 和 phase plans 只维护中文。
@@ -23,7 +23,7 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         +-- knowledge: corpus, mature learning, copy-safety, lifecycle, schemas
         +-- graph/memory: physical facts, semantic edges, reward-weighted memory
         +-- judge: build evaluation, comparison, modelability, benchmark reporting
-        +-- planners: passive path, gear constraints, support selection, `.build` export
+        +-- agent helper tools: 查询、PoB 操作、候选状态整理、`.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
         v
@@ -33,7 +33,7 @@ data/* / user-data / pob/*
 Server 暴露 typed tools 和 contracts。外部 agent 负责创造性推理。仓库不运行自己的隐藏 LLM
 loop。`server/main.py` 应保持 thin MCP entrypoint：负责 tool 注册、参数适配和 response
 shaping。跨领域 workflow 应放进 router/service modules，避免 entrypoint 同时拥有 compute、
-graph、judge 和 planner 逻辑。持久 event bus 是后续规模化选项，不是 Phase 0 的架构要求。
+graph、judge 和跨层工作流逻辑。持久 event bus 是后续规模化选项，不是 Phase 0 的架构要求。
 
 ## 数据流
 
@@ -46,11 +46,11 @@ source probe
   -> validators + copy-safety + graph resolution
   -> long-term memory / semantic graph
 
-BuildBrief
-  -> graph + memory retrieval
-  -> Architect Agent BuildPlan
-  -> deterministic completion
-  -> BuildSnapshot
+用户需求 / BuildBrief 摘要
+  -> Architect Agent 按需查询 graph / memory / corpus / PoB tools
+  -> Agent 主导候选 BD 设计
+  -> Agent 使用工具搭建可评估临时构筑状态
+  -> BuildSnapshot / 本地临时状态引用
   -> Headless PoB Judge
   -> BuildEvaluation / BuildComparison
   -> Critic Agent gaps
@@ -80,7 +80,8 @@ BuildBrief
 
 - graph 和 memory 代码先放 knowledge layer，必要时再拆独立 package；
 - judge 必须 deterministic 且 compute-backed；
-- planners 产出结构化 artifacts，供 judge 验证；
+- Agent helper tools 只提供局部、可审查、可重复的查询或操作能力，不能接管成“Agent 出
+  plan，程序自动补完整 BD”的流程；
 - workflow orchestration 应在 `server/main.py` 变成 coordination bottleneck 前移入 router/service
   modules；
 - repair loops 应向 agent 传递压缩后的 `ContextPack`，完整 snapshots 和 round logs 保存在本地状态；
@@ -91,6 +92,7 @@ BuildBrief
 - PoB/compute 对数值声明负责。
 - Static data 对 physical graph facts 负责。
 - 外部 agent 负责推理和提出 semantic links，但不负责 validation。
+- 外部 Architect Agent 负责 BD 创造、查询取舍、临时状态搭建策略和失败修正方向。
 - Validators 负责 schema、copy-safety、graph-resolution 和 split-boundary enforcement。
 - Judge outputs 对 reward signals 负责。
 - State pruning 对 rollback/repair loop 的 agent-facing retry context 负责；完整本地历史不会自动重发给外部 agent。

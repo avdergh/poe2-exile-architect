@@ -80,6 +80,10 @@ def build_architect_research_context_report(
         "reportId": "phase4-architect-research-context-v1",
         "status": "ready_for_phase5_architect_context",
         "safeArtifactOnly": True,
+        "visibility": "creator_visible",
+        "split": "train_context",
+        "knowledgeScope": "generation_context",
+        "copySafetyState": "passed",
         "queryRef": retrieval.get("dedupeQueryRef"),
         "queryPreview": _safe_text(query),
         "componentKeys": component_keys,
@@ -286,6 +290,11 @@ def _fragment_context(row: Any) -> dict[str, Any]:
         "modelability": _safe_text(row["modelability"]),
         "gamePatch": _safe_text(row["game_patch"]),
         "passiveTreeVersion": _safe_text(row["passive_tree_version"]),
+        "pobVersionOrCommit": _safe_text(row["pob_version_or_commit"]),
+        "currentVersionContext": _safe_json(_loads(row["current_version_context"], {})),
+        "visibility": _safe_text(row["visibility"]),
+        "split": _safe_text(row["split"]),
+        "copySafetyState": _safe_text(row["copy_safety_state"]),
         "status": _safe_text(row["status"]),
     }
 
@@ -309,6 +318,9 @@ def _edge_context(row: Any) -> dict[str, Any]:
             _safe_text(item) for item in _loads(row["affected_component_keys"], [])
         ],
         "plannerVisible": bool(row["planner_visible"]),
+        "visibility": _safe_text(row["visibility"]),
+        "split": _safe_text(row["split"]),
+        "copySafetyState": _safe_text(row["copy_safety_state"]),
         "status": _safe_text(row["status"]),
     }
 
@@ -332,6 +344,10 @@ def _pattern_context(row: Any) -> dict[str, Any]:
         "gamePatch": _safe_text(row["game_patch"]),
         "passiveTreeVersion": _safe_text(row["passive_tree_version"]),
         "pobVersionOrCommit": _safe_text(row["pob_version_or_commit"]),
+        "currentVersionContext": _safe_json(_loads(row["current_version_context"], {})),
+        "visibility": _safe_text(row["visibility"]),
+        "split": _safe_text(row["split"]),
+        "copySafetyState": _safe_text(row["copy_safety_state"]),
     }
 
 

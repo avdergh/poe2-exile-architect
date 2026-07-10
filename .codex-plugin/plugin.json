@@ -11,6 +11,7 @@
   "keywords": [
     "path-of-exile-2",
     "build-research",
+    "build-brief",
     "knowledge-graph",
     "mcp"
   ],
@@ -28,6 +29,7 @@
     ],
     "websiteURL": "https://github.com/Egonex-AI/poe-bd-creator",
     "defaultPrompt": [
+      "/poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD",
       "/poe-bd-research --limit 20 --worker-count 5",
       "/poe-bd-research --source-batch-file samples.txt",
       "/poe-bd-research --ascendancy Deadeye --limit 30"

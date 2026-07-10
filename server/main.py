@@ -44,6 +44,7 @@ from .live import update as live_update
 from .live import version as live_version
 from .live import wiki as live_wiki
 from .freshness import service as freshness_service
+from .generation import evaluation as generation_evaluation
 
 # Operating guide handed to the LLM client (surfaced as "MCP Server Instructions").
 # Sourced from a bundled markdown file so it's both human-editable and actually delivered;
@@ -515,6 +516,32 @@ def evaluate_build(goals: dict[str, Any]) -> dict[str, Any]:
         all_ok = all_ok and ok
         results.append({"stat": stat, "value": value, "min": lo, "max": hi, "ok": ok})
     return {"pass": all_ok, "results": results}
+
+
+@mcp.tool()
+def evaluate_generation_candidate(
+    run_id: str,
+    run_token: str,
+    candidate_id: str,
+    version_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the Phase 1 Judge against the Agent-built active PoB state.
+
+    Call this only after the current generation candidate has been fully assembled with the
+    stateful PoB tools. The tool snapshots the active build, evaluates that immutable snapshot in
+    a dedicated Judge engine, writes a raw-free immutable attempt receipt bound to the generation
+    run, and returns `attemptIndex` plus the exact `transientBuildState` and
+    `judgeAdvisoryReport` objects required by the generation review helper. The same run accepts an
+    initial attempt and at most two Agent-led retries; it never fills gear, passives, skills, or
+    configuration for the Agent.
+    """
+    return generation_evaluation.evaluate_generation_candidate(
+        get_engine(),
+        run_id=run_id,
+        run_token=run_token,
+        candidate_id=candidate_id,
+        version_context=version_context,
+    )
 
 
 @mcp.tool()

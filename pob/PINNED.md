@@ -8,7 +8,7 @@ Compute 层通过 headless 方式驱动 Path of Building Community 的 **PoE2** 
 | --- | --- |
 | Repo | https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2 |
 | Branch | `dev` |
-| Pinned commit | `7d1aa43c8c938d7be150d197ed9cdec8a4c1c620`（2026-06-25，`dev` candidate：`0.5.4 Export` + `ModCache`） |
+| Pinned commit | `860f4268299739ce9df87c4f373abe35824101cf`（2026-07-01，正式版 `0.22.0`，对应游戏赛季大版本 `0.5`） |
 | License | MIT |
 | Game data | game patch `0.5.4`，passive tree version `0_5` |
 
@@ -22,7 +22,7 @@ git clone --filter=blob:none --no-checkout \
   https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git \
   pob/PathOfBuilding-PoE2
 git -C pob/PathOfBuilding-PoE2 config core.autocrlf false   # 保持 LF，方便 Windows 上应用 LF patch
-git -C pob/PathOfBuilding-PoE2 checkout 7d1aa43c8c938d7be150d197ed9cdec8a4c1c620
+git -C pob/PathOfBuilding-PoE2 checkout 860f4268299739ce9df87c4f373abe35824101cf
 # 然后应用我们 tracked 的 fork patches（见下方 "Local patches"）
 (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 ```

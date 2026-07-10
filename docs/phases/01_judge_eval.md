@@ -145,7 +145,10 @@ unsolved modelability gap。
   - `get_build()` 返回 `judgeSelectedSkill`，用于处理 poe.ninja / PoB 导入中“当前主技能
     只是最后点击的 buff/战旗/辅助状态”的情况；
   - `judgeSelectedSkill` 会扫描 socket group，临时隔离每组 `includeInFullDPS` 后选择最高
-    可计算输出，并返回 skill name、group index、source metric、projectile count 和 caveats；
+    可计算输出，并返回 skill name、group index、source metric、projectile count、技能组来源、
+    场景限制和 caveats；该字段只是本次 offense 计算组件，不表示整个 BD 只有一个主技能；
+  - PoB 内部生成的击杀爆炸保留为 `judgeSupplementalSkills` 条件伤害组件，标记
+    `requires_kill`，不冒充 Boss 持续输出，也不执行普通宝石插槽合法性检查；
   - 当 `judgeSelectedSkill` 的输出来自 `FullDPS` 时，报告必须把它标记为 socket-group rollup，
     不能把它误读为单个 active skill 的精确一段伤害；
   - `judgeSelectedSkill` 返回 `activeSkillCount`、`rawDps` 和 `effectiveDps`。`FullDPS`
@@ -156,7 +159,8 @@ unsolved modelability gap。
     的权威来源，不能在 Python 里按技能名硬编码武器表；
   - passive budget readback 会计入 PoB 输出的 `ExtraPoints`、`WeaponSetPassivePoints` 和
     `PassivePointsToWeaponSetPoints`。
-- `evaluator.py` 使用实际评估的 selected skill group 做 socket、modelability 和 weapon check；
+- `evaluator.py` 对适用普通插槽规则的 selected skill group 做 socket、modelability 和 weapon
+  check；条件性内部合成效果与插槽合法性解耦；
   即使 selected damage skill 的 DPS 为 0，只要 PoB 标记它是 damage skill 或带有 weaponCheck，
   也必须执行合法性检查，不能把“武器非法导致的 0 DPS”误判成普通低输出。
 - `BuildEvaluation` 增加 `legality` 诊断：

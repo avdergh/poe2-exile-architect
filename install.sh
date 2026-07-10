@@ -8,6 +8,8 @@ REPO_DIR="${POE_BD_CREATOR_DIR:-$HOME/.poe-bd-creator/repo}"
 PLUGIN_LINK="$HOME/.poe-bd-creator-plugin"
 DRY_RUN=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANAGED_MCP_BEGIN="# BEGIN poe-bd-creator managed MCP server"
+MANAGED_MCP_END="# END poe-bd-creator managed MCP server"
 
 platforms_table() {
   cat <<EOF
@@ -118,7 +120,7 @@ list_skills() {
   root="$(skill_list_root)"
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
-      printf '%s\n' "poe-bd-research"
+      printf '%s\n' "poe-bd-research" "poe-bd-create"
       return 0
     fi
     say "Skills directory not found: $root"
@@ -137,7 +139,7 @@ list_skills_for_uninstall() {
   if [[ -d "$root" ]]; then
     list_skills
   else
-    printf '%s\n' "poe-bd-research"
+    printf '%s\n' "poe-bd-research" "poe-bd-create"
   fi
 }
 
@@ -243,9 +245,117 @@ link_plugin_root() {
   safe_link "$(plugin_root)" "$PLUGIN_LINK"
 }
 
+toml_string() {
+  local value="$1"
+  if [[ "$value" != *"'"* ]]; then
+    printf "'%s'" "$value"
+  else
+    python - "$value" <<'PY'
+import sys
+print('"' + sys.argv[1].replace("\\", "\\\\").replace('"', '\\"') + '"')
+PY
+  fi
+}
+
+codex_config_path() {
+  printf '%s\n' "$HOME/.codex/config.toml"
+}
+
+resolve_uv_command() {
+  local local_uv="$REPO_DIR/.tools/uv/uv"
+  if [[ -x "$local_uv" ]]; then
+    printf '%s\n' "$local_uv"
+    return 0
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    command -v uv
+    return 0
+  fi
+  say "Codex MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer."
+  return 1
+}
+
+remove_managed_mcp_block() {
+  python - "$1" <<'PY'
+import re
+import sys
+
+begin = "# BEGIN poe-bd-creator managed MCP server"
+end = "# END poe-bd-creator managed MCP server"
+text = sys.argv[1]
+pattern = rf"(?ms)^{re.escape(begin)}\r?\n.*?^{re.escape(end)}\r?\n?"
+print(re.sub(pattern, "", text), end="")
+PY
+}
+
+register_codex_mcp_server() {
+  local config_path repo_root uv_path command clean block next
+  config_path="$(codex_config_path)"
+  repo_root="$(normalize_path_text "$REPO_DIR")"
+  command="$(resolve_uv_command)"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say "[dry-run] register Codex MCP server poe2_build_mcp in $config_path"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$config_path")"
+  local existing=""
+  [[ -f "$config_path" ]] && existing="$(cat "$config_path")"
+  if grep -q '^\[mcp_servers\.poe2_build_mcp\]$' <<<"$existing" && ! grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing"; then
+    say "Codex MCP server poe2_build_mcp already exists but is not installer-managed; leaving it unchanged."
+    return 0
+  fi
+
+  clean="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
+  block="$(cat <<EOF
+$MANAGED_MCP_BEGIN
+[mcp_servers.poe2_build_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.main"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe2_build_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+$MANAGED_MCP_END
+EOF
+)"
+
+  if [[ -n "$clean" ]]; then
+    next="$clean
+
+$block
+"
+  else
+    next="$block
+"
+  fi
+  printf '%s' "$next" > "$config_path"
+  say "Registered Codex MCP server poe2_build_mcp in $config_path"
+}
+
+unregister_codex_mcp_server() {
+  local config_path existing next
+  config_path="$(codex_config_path)"
+  [[ -f "$config_path" ]] || return 0
+  existing="$(cat "$config_path")"
+  grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing" || return 0
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say "[dry-run] remove Codex MCP server poe2_build_mcp from $config_path"
+    return 0
+  fi
+  next="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
+  printf '%s\n' "$next" > "$config_path"
+  say "Removed installer-managed Codex MCP server poe2_build_mcp from $config_path"
+}
+
 cmd_install() {
   local id="$1" row target style
   row="$(resolve_platform "$id")"
+  if [[ "$id" == "codex" && "$DRY_RUN" != "1" ]]; then
+    resolve_uv_command >/dev/null
+  fi
   target="$(printf '%s\n' "$row" | cut -d'|' -f2)"
   style="$(printf '%s\n' "$row" | cut -d'|' -f3)"
   clone_or_update
@@ -253,7 +363,10 @@ cmd_install() {
   link_skills "$target" "$style"
   say "Linking universal plugin root"
   link_plugin_root
-  say "Installed PoE BD Creator skill for $id. Restart the host to discover /poe-bd-research."
+  if [[ "$id" == "codex" ]]; then
+    register_codex_mcp_server
+  fi
+  say "Installed PoE BD Creator skills for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
 }
 
 cmd_uninstall() {
@@ -262,6 +375,9 @@ cmd_uninstall() {
   target="$(printf '%s\n' "$row" | cut -d'|' -f2)"
   style="$(printf '%s\n' "$row" | cut -d'|' -f3)"
   unlink_skills "$target" "$style"
+  if [[ "$id" == "codex" ]]; then
+    unregister_codex_mcp_server
+  fi
   remove_link "$PLUGIN_LINK"
   say "Checkout kept at $REPO_DIR."
 }

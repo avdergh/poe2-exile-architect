@@ -116,7 +116,7 @@ def test_stale_pob_blocks_current_verification():
     assert any("pob-release" in reason for reason in report.blockers)
 
 
-def test_conflict_has_priority_but_report_keeps_stale_blocker():
+def test_cross_season_conflict_has_priority_but_report_keeps_stale_blocker():
     manifest = current_manifest()
     stale_conflict = evidence(
         Component.POB_ENGINE,
@@ -124,7 +124,7 @@ def test_conflict_has_priority_but_report_keeps_stale_blocker():
         version="0.20.0",
         status=SourceStatus.STALE,
         claims=(
-            VersionClaim("game_patch", "0.5.2"),
+            VersionClaim("game_patch", "0.6.2"),
             VersionClaim("passive_tree", "0_5"),
         ),
     )
@@ -154,6 +154,37 @@ def test_cross_source_tree_claim_conflict_blocks_verification():
 
     assert report.decision is FreshnessDecision.BLOCKED_CONFLICT
     assert any("passive_tree" in reason for reason in report.blockers)
+
+
+def test_patch_detail_changes_within_same_season_are_compatible():
+    manifest = current_manifest()
+    newer_patch = evidence(
+        Component.GAME_PATCH,
+        "ggg-patch",
+        version="0.5.4b",
+        claims=(VersionClaim("game_patch", "0.5.4b"),),
+    )
+
+    report = evaluate_freshness(replace_component(manifest, newer_patch, Component.GAME_PATCH))
+
+    assert report.decision is FreshnessDecision.VERIFIED_CURRENT
+    assert report.blockers == ()
+    assert any("compatible season" in warning for warning in report.warnings)
+
+
+def test_game_season_version_conflict_blocks_verification():
+    manifest = current_manifest()
+    next_season = evidence(
+        Component.GAME_PATCH,
+        "ggg-patch",
+        version="0.6.0",
+        claims=(VersionClaim("game_patch", "0.6.0"),),
+    )
+
+    report = evaluate_freshness(replace_component(manifest, next_season, Component.GAME_PATCH))
+
+    assert report.decision is FreshnessDecision.BLOCKED_CONFLICT
+    assert any("game_patch claims conflict" in reason for reason in report.blockers)
 
 
 def test_missing_required_game_patch_is_unknown():

@@ -1,28 +1,53 @@
 # PoE2 BD Creator 数据结构合同
 
-最后更新：2026-06-29
+最后更新：2026-07-10
 
 本文档在产品层定义核心 artifact contracts。精确字段校验应放在代码和测试里。
 
-## BuildBrief
+## BuildBrief / AgentRefinedBuildPrompt
 
-用户/请求侧的生成约束。
+用户/请求侧的生成约束。Phase 5 原型中，程序不再用固定规则生成 `BuildBrief`；
+`BuildBrief` 只作为 Agent 可选择使用的结构化需求摘要概念。当前代码落地的 P5.1 合同是
+`AgentRefinedBuildPrompt`，由外部 Architect Agent 产出。
 
 必要概念：
 
 - goal 和目标玩法；
-- lifecycle stage；
+- lifecycle stage：本次输出/生成的阶段；
+- target lifecycle stage：设计时必须考虑的完整生命周期目标；
+- cross-stage locked dimensions：当前只允许 `class`，表示开荒、攻坚、终局之间可以换升华、
+  技能、天赋、装备和 support，但不能换职业；
 - economy mode：`trade`、`ssf`、`league_start`、`unknown`；
-- budget model：`low`、`medium`、`high`、`minmax`、`user_defined`；
-- price source status：`fresh`、`stale`、`unavailable`；
-- target scene：`mapping`、`bossing`、`hybrid`、`unknown`；
+- budget model：`low`、`medium`、`high`、`minmax`、`user_defined`、`unknown`；
+- price source status：`fresh`、`stale`、`unavailable`、`unknown`；
+- target scene：`mapping`、`bossing`、`hybrid`、`campaign`、`league_start`、`endgame`、
+  `unknown`；
 - preferred/required/forbidden skills、classes、mechanics、items；
 - weapon state mode：`single_state`、`dual_state_requested`；
 - leveling 和官方 `.build` export requirements。
 
+Phase 5 P5.1 当前要求：
+
+- `AgentRefinedBuildPrompt` 保存用户需求安全摘要、Agent 改写后的设计提示词摘要、字段来源、
+  默认假设、追问事项、未决项和 version / freshness context；
+- 公开 JSON 字段使用 `currentOutputStages` 这类驼峰形式；内部测试或代码也可以使用
+  `current_output_stages` 这类蛇形形式，helper 必须同时接受；
+- 不保存 raw request、完整 raw transcript、raw dialogue、hidden chain-of-thought、raw scratchpad
+  或中间推理日志；
+- 解释性字段必须包含 field source 标记：`user_explicit`、`agent_inferred`、`defaulted` 或
+  `unknown`；
+- 必须包含 freshness context：league / ruleset、game patch、passive tree version、PoB version /
+  commit、graph snapshot id 和 research memory ref；
+- `targetLifecycleStages` 必须覆盖 `currentOutputStages`；当用户只要求当前开荒输出但明确提出
+  后期洗点/攻坚/终局目标时，`currentOutputStages` 可以只含当前阶段，`targetLifecycleStages`
+  必须保留未来目标，供 Architect 选择职业和机制方向；
+- `crossStageLockedDimensions` 当前只能是 `["class"]`。
+
 ## BuildPlan
 
-Architect Agent 在 deterministic completion 前提出的方案。
+如果后续继续使用 `BuildPlan` 这个名称，它只表示 Architect Agent 产出的结构化设计摘要或
+候选构筑说明，不是交给程序自动补完整 BD 的任务单。Phase 5 原型不强制使用这个重型名称，
+可以优先使用更轻的候选摘要和人工验收材料。
 
 必要概念：
 
@@ -38,6 +63,20 @@ Architect Agent 在 deterministic completion 前提出的方案。
 - leveling milestones；
 - modelability caveats。
 
+如果后续重新引入 `BuildPlanProposal`，它也只能表示 Agent 对某个候选路线的结构化说明，
+不能表示程序接管后的自动补全输入。它必须：
+
+- 引用 resolver-backed components 和 Phase 4 used ids；
+- 表达 passive anchors、support intents、gear roles、Spirit / reservation assumptions 和
+  state assumptions；
+- 包含 `StagePlan` / progression assumptions / stage caveats，至少覆盖 `BuildBrief` 要求的
+  lifecycle stage；
+- `StagePlan.transitionGates` 可以表达平滑过渡点，也可以表达洗点、换技能、换装备或换升华后
+  的转型门槛；职业仍受 `crossStageLockedDimensions=["class"]` 约束；
+- 禁止输出 raw PoB code / XML、完整 passive path、完整装备表或完整 gem/support links；
+- 禁止把 advisory research context 当成 hard legality，或把单样本 observation 说成 common
+  pattern。
+
 ## BuildSnapshot
 
 用于评估的具体候选状态。
@@ -52,6 +91,116 @@ Architect Agent 在 deterministic completion 前提出的方案。
 - weapon state mode；
 - generated/loaded source；
 - freshness claims。
+
+Phase 5 的 `BuildCandidatePackage` 只能暴露 local opaque snapshot id、source hash 和 sanitized
+summary。PoB import/export material 只能作为 transient runtime artifact 存在于本地 opaque
+reference 后面，不能进入 durable report、普通聊天输出或 creator-visible artifact。
+
+## Phase5Generation
+
+Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”只约束安全摘要、工具边界、评估
+证据和人工验收材料；不定义“Agent 出方案，程序自动补完整 BD”的流程。
+
+当前核心产物：
+
+- `GenerationRunContext`：每次 `/poe-bd-create` 请求的一次性运行绑定，包含本次 `runId` 和随机
+  `runToken`。它由 `start-run` helper 生成，只用于防止旧候选、旧临时 JSON 或其他运行产物冒充
+  本次结果；成功生成 `HumanReviewPacket` 后立即失效。
+- `AgentRefinedBuildPrompt`：Agent 对用户自然语言需求的更具体设计提示词或最小 `BuildBrief`
+  摘要。它可以保存用户目标摘要、字段来源、默认假设、需要追问的问题和版本上下文；不能保存
+  模型隐藏思维链、完整对话记录、草稿推理区或未经清洗的原始提示词。
+- `PrototypeBuildCandidate`：Agent 产出的候选 BD 安全摘要。至少表达当前输出阶段、完整生命
+  周期目标、职业壳、跨阶段职业硬锁、主技能/辅助技能意图、机制和伤害缩放轴、防御层、
+  Spirit / 保留资源假设、装备角色、词缀方向、天赋锚点或区域意图、转型门槛、未解决注意事项
+  和使用过的工具/记忆引用。
+- `TransientBuildStateRef`：由 `evaluate_generation_candidate` 从真实活动 PoB 快照生成的临时
+  构筑状态引用；对外和持久报告里只能出现不透明本地引用、摘要和安全 hash，不能
+  展开 PoB 导入码、原始 XML、第三方成熟 BD 的完整装备表、完整天赋路径或原始技能连接。
+  当状态为 `available` 时，必须包含 `testedSkillGroups`，记录 Agent 实际测试的技能组编号、职责、
+  全部主动技能及数量、辅助技能和启用状态，使蓝耗、Spirit、伤害和可建模性结论可复核。
+  `mainSocketGroup` 只标记 PoB 当前计算组，不声明整个 BD 只有一个主技能。
+- `JudgeAdvisoryReport`：Phase 1 Judge 生成的参考评估。它表达硬阻断、分数、证据等级、可建模
+  注意事项和失败原因；可信报告还应提供 Judge 实际选择的技能、选中技能组的安全插槽诊断和
+  属性缺口摘要，使 Agent 与人工能定位硬阻断。条件性内部效果作为 supplemental component 单独
+  记录，不能因没有普通宝石插槽被判非法。它不是机制真值，也不替代 Agent 的失败核验。
+- P5.1 人工验收包里的 `JudgeAdvisoryReport` 只保留安全参考信号：Judge 出错时不能携带分数
+  或奖励强度；成功评估的分数必须在 0 到 1 之间，并且必须带 `evaluatedSnapshotId` 和
+  `evaluatedSourceHash` 以绑定对应 `TransientBuildStateRef`；P5.1 不透出 `strong` 奖励信号，
+  避免把原型人工验收包误用成奖励记忆输入。
+- `evaluate_generation_candidate` 在独立 Judge 引擎里复评不可变快照，并将安全结果作为可信凭据
+  绑定到 `runId` 和 `candidateId`；Judge 调用本身发生错误时使用 `error`，必须带受限
+  `errorCode`，并且不能携带构筑 `hardFailures`。`trustedEvaluationScope` 固定为
+  `snapshot_and_judge_only`，`versionContextTrusted=false`；这表示程序签住快照和 Judge 结果，
+  不表示调用者传入的赛季、补丁、图或记忆版本已经获得程序签名。
+- `HumanReviewPacket`：供人工验收使用的安全报告。至少包含用户需求摘要、Agent 改写后的提示词
+  或 `BuildBrief` 摘要、候选 BD 摘要、使用过的查询和工具引用、Judge 状态、硬阻断、注意事项、
+  人工评分字段和是否建议进入下一阶段。
+- `ToolFeedbackEvent`：开发/验收反馈，用于记录 Judge/工具无法评估、误判、覆盖缺口或接口难用；
+  它不自动调整 graph / memory 权重，不自动放宽安全边界，也不自动改变工具行为。
+- `FailureAuditSummary`：Agent 对某一轮 Judge 结果的可审查结论摘要，绑定本轮候选编号和快照编号，
+  只记录失败分类、重试/停止/接受决定、计划改动、保留注意事项和停止原因；不能保存逐步推理。
+- `GenerationAttemptRecord`：同一个生成运行中的一轮不可变评估记录，包含本轮 Agent 候选安全
+  摘要、可信临时状态引用、可信 Judge 报告和 `FailureAuditSummary`。轮次从 0 开始，最多为 2；
+  非最后一轮必须明确选择继续重试，最后一轮必须接受或说明停止原因。
+- `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它只比较同一用户请求下的安全摘要、
+  Judge 结果和人工可审查差异，不写奖励记忆，不做长期进化式学习。
+
+P5.2 研究记忆对照不新增持久对照报告。现有创建入口支持 `--no-memory`：普通模式必须调用研究
+记忆查询，无记忆模式禁止调用研究记忆但保留其他全部工具。人工用同一请求分别运行两种模式并
+直接审查结果；程序不自动宣布胜负。
+
+P5.1 证据可信度边界：
+
+- `ToolReference` 仍是 Agent 报告的查询引用；`TransientBuildStateRef` 和
+  `JudgeAdvisoryReport` 必须来自本次可信评估凭据；
+- helper 必须核对运行编号、候选编号、快照编号、来源 hash 和完整安全报告；缺失或被 Agent
+  改写时拒绝生成 `HumanReviewPacket`；
+- 可信 Judge 完成且没有硬阻断时可以使用 `ready_for_human_review`。该状态只表示材料可以交给人
+  判断，不表示人已经接受候选，也不表示 Judge 是绝对强度裁判；
+- `get_freshness_report` 引用是运行流程完整性要求，用于发现 Agent 明显跳步，不是可信调用回执。
+  版本上下文仍需人工结合本次 freshness 返回核验，不能仅凭 `trustedEvaluation=true` 宣称当前赛季
+  已验证。
+
+旧重型合同状态：
+
+- `ArchitectResearchContextForGeneration`、`ArchitectGenerationPacket`、`CandidateDesignSpace`、
+  `BuildPlanAcceptanceReport`、`PlannerCompletionResult`、`CandidateSelectionReport`、
+  `BuildCandidatePackageAcceptanceReport` 和完整 `BuildCandidatePackage` 属于上一版重型设计的参考
+  材料，当前主线不要求实现。
+- 如果后续真实失败样例证明需要重新引入其中一部分，也必须按当前方向改造：Agent 仍负责查询、
+  创造、临时状态搭建策略和失败修正；程序只提供工具调用、安全边界、Judge 执行和报告封装。
+
+安全边界：
+
+- 每次生成必须先建立新的 `GenerationRunContext`；内部产物的 `runContext`、`packetId`、
+  `promptId` 和 `requestRef` 必须与本次运行清单一致，且只能从 helper 根据 `runId` 定位的本次
+  运行目录进入；调用者不能给 helper 指定其他运行清单或 Agent 产物路径；
+- 成功验收的运行只能消费一次。历史 `agent-output.json`、`.tmp_agent_output_*`、旧人工验收包和
+  旧候选不能作为新请求的输入；未消费运行两小时后过期；
+- 同一运行在最终验收前可以写入初始评估和最多两次重试评估。每轮可信凭据独立保存且不可覆盖，
+  `trusted-evaluation.json` 只作为最新一轮兼容指针；最终 helper 必须逐轮核对 Agent 提交的
+  `generationAttempts` 与可信凭据；
+- 所有 schema 使用 strict typed models，不接受开放 `Dict[str, Any]` 作为持久合同；
+- 所有 durable artifact 必须带 version / freshness / snapshot context 和 no-raw-material safety
+  flags；
+- 原型报告的 version context 必须覆盖用户需求摘要、候选摘要、临时状态引用、Judge 报告和人工
+  验收材料；
+- `PrototypeBuildCandidate` 必须说明它覆盖的是哪个当前输出阶段；未来阶段目标可以先进入转型
+  门槛、默认假设和注意事项；
+- `TransientBuildStateRef` 的 graph snapshot id / PoB version / source hash 必须与 Judge 报告对齐；
+- 所有接触共享 PoB 构筑状态的计算工具必须串行；部分优化/测量工具内部会临时修改再恢复状态，
+  不能按工具名称判断为只读。只有不接触共享构筑状态的静态资料查询可以并行；
+- 用户可见报告必须区分 Agent 的设计判断和 PoB/Judge 工具验证结论；
+- `HumanReviewPacket.recommendedNextAction`：可信 Judge 完成且没有硬阻断时使用
+  `ready_for_human_review`；Judge 执行错误使用 `human_review_required`；构筑硬阻断使用
+  `blocked_by_hard_failure`；
+- Judge `error`、PoB 导入失败、硬阻断或无法搭建临时状态时，不能输出成“已验证
+  候选”；只能输出安全的不完整摘要、失败原因和人工复核材料；
+- 输出安全检查必须确认报告不包含 raw PoB code、raw XML、第三方成熟 BD 的原始完整材料、
+  raw account / character details、完整 URL、hidden chain-of-thought、transcript、dialogue 或
+  raw transcript；Agent 自己生成并实际测试的 `testedSkillGroups` 不属于第三方原始材料。
+- 可选导出就绪摘要只能表达“是否可能进入 Phase 6 导出”和不支持项，不能伪装成已经完成官方
+  `.build` 导出。
 
 ## BuildEvaluation
 
@@ -187,7 +336,7 @@ Phase 4.5 的成熟 BD 设计观察中间层。它用于先记录“这个 BD �
 必要概念：
 
 - observation type：build archetype、cooccurrence、transition gate、failure pattern、
-  planner hint 或 modelability caveat；
+  Agent 设计提示或 modelability caveat；
 - title / summary；
 - BD 设计轴：identity、character shell、primary / secondary skill package、passive tree
   shape、itemization、scaling axis、resource / Spirit engine、defense layers、mechanic chain、
@@ -196,7 +345,7 @@ Phase 4.5 的成熟 BD 设计观察中间层。它用于先记录“这个 BD �
   primary_damage、clear_skill、boss_skill、generator、payoff、reservation、defensive_buff、
   ascendancy_shell、movement、trigger_host、support_modifier、unique_enabler、transition_gate、passive_anchor、
   keystone_transformer、weapon_base、scaling_stat、defense_layer、resource_engine；
-- `ascendancy_shell` 只表示 resolver-backed 职业/升华壳，用作 planner advisory context；
+- `ascendancy_shell` 只表示 resolver-backed 职业/升华壳，用作 Agent 设计参考上下文；
   不代表完整升华点路径，也不是 hard legality。具体升华 notable / keystone 若作为机制锚点，
   必须单独用 `passive_anchor` / `keystone_transformer` 组件并携带 resolver evidence；
 - source case refs 和 safe evidence refs；
@@ -206,7 +355,7 @@ Phase 4.5 的成熟 BD 设计观察中间层。它用于先记录“这个 BD �
 
 ## BuildPattern
 
-Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 planner-visible advisory pattern。
+Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 Agent 可见设计参考模式。
 
 必要概念：
 
@@ -217,13 +366,13 @@ Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 planner-visi
   common_within_archetype、strong_ranking_hint；
 - sample count、family count、source diversity count 和可选 denominator；
 - typed context requirements；
-- planner hint 和 verification tasks；
+- Agent 设计提示和 verification tasks；
 - patch/tree/PoB version、visibility/split/scope、status、copy-safety state、current version context；
 - pattern 必须由同批、同 visibility/split/scope/version 且完整覆盖 component keys 的
-  `BuildDesignObservation` 支撑；patch decay 后进入 `needs_revalidation` 并移出 planner-visible
+  `BuildDesignObservation` 支撑；patch decay 后进入 `needs_revalidation` 并移出 Agent 可见
   context，复核仍有效时才能恢复；
 - 所有 pattern 都是 advisory research context，不能替代 Phase 2/3 hard source facts、
-  support/socket legality、Phase 5 deterministic planner 或 Phase 1 Judge。
+  support/socket legality、Phase 5 Agent 设计判断或 Phase 1 Judge。
 
 ## GraphNode
 
@@ -420,7 +569,8 @@ provenance 完整度和防幻觉能力；不要求和 Phase 4 的 semantic vecto
 
 Passive topology macro tools 只返回 source-backed static topology。`find_passive_topology_path`
 的 path 是纯拓扑最短路径，不计算已分配节点的 0-cost 跃迁、normal/weapon-set 点数预算或最终
-build-state allocation legality；这些预算和分配成本属于 Phase 5 planner。Phase 3 path/subgraph
+build-state allocation legality；这些预算和分配成本属于 Phase 5 的 Agent 构筑过程和 Judge 证据。
+Phase 3 path/subgraph
 默认上限为 `hop_limit <= 6`、`node_limit <= 200`、payload 不超过 64KB，并在跨 weapon-set
 exclusive state 时返回 `unsupported` 与 `conflicting_weapon_set_caveat`。
 

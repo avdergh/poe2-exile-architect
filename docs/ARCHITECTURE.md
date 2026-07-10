@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-06-29
+Last updated: 2026-07-09
 
 This document describes the high-level module layout and data flow. Detailed implementation work
 belongs in `docs/phases/`. Architecture is the only document family currently maintained in both
@@ -24,7 +24,7 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         +-- knowledge: corpus, mature learning, copy-safety, lifecycle, schemas
         +-- graph/memory: physical facts, semantic edges, reward-weighted memory
         +-- judge: build evaluation, comparison, modelability, benchmark reporting
-        +-- planners: passive path, gear constraints, support selection, `.build` export
+        +-- agent helper tools: lookup, PoB operations, candidate-state shaping, `.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
         v
@@ -35,7 +35,8 @@ The server exposes typed tools and contracts. External agents perform creative r
 repository does not run its own hidden LLM loop. `server/main.py` should stay a thin MCP entrypoint:
 tool registration, parameter adaptation, and response shaping. Cross-domain workflows should live in
 router/service modules so the entrypoint does not become the owner of compute, graph, judge, and
-planner logic. A durable event bus is a later scaling option, not a Phase 0 architecture requirement.
+cross-layer workflow logic. A durable event bus is a later scaling option, not a Phase 0 architecture
+requirement.
 
 ## Data Flow
 
@@ -48,11 +49,11 @@ source probe
   -> validators + copy-safety + graph resolution
   -> long-term memory / semantic graph
 
-BuildBrief
-  -> graph + memory retrieval
-  -> Architect Agent BuildPlan
-  -> deterministic completion
-  -> BuildSnapshot
+User request / BuildBrief summary
+  -> Architect Agent queries graph / memory / corpus / PoB tools as needed
+  -> Agent-led candidate build design
+  -> Agent uses tools to assemble an evaluable transient build state
+  -> BuildSnapshot / local transient state reference
   -> Headless PoB Judge
   -> BuildEvaluation / BuildComparison
   -> Critic Agent gaps
@@ -82,7 +83,8 @@ Planned modules should follow the same layering:
 
 - graph and memory code belongs in knowledge-layer modules until it needs its own package;
 - judge code should be deterministic and compute-backed;
-- planners should produce structured artifacts that the judge can verify;
+- agent helper tools should provide focused, auditable, repeatable lookup or mutation operations; they
+  must not become an "agent writes a plan, the program automatically completes the whole build" flow;
 - workflow orchestration should move into router/service modules before `server/main.py` becomes a
   coordination bottleneck;
 - repair loops should pass compact `ContextPack` inputs to agents while full snapshots and round
@@ -94,6 +96,8 @@ Planned modules should follow the same layering:
 - PoB/compute owns numeric claims.
 - Static data owns physical graph facts.
 - External agents own reasoning and proposed semantic links, but not validation.
+- The external Architect Agent owns build creation, query choices, transient-state assembly strategy,
+  and failure-correction direction.
 - Validators own schema, copy-safety, graph-resolution, and split-boundary enforcement.
 - Judge outputs own reward signals.
 - State pruning owns the agent-facing retry context for rollback/repair loops; full local history is

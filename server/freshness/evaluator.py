@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 
 from .models import (
     ClaimDimension,
@@ -13,6 +14,7 @@ from .models import (
     FreshnessReport,
     REQUIRED_CLAIMS,
     SourceStatus,
+    VersionClaim,
 )
 
 
@@ -73,11 +75,22 @@ def evaluate_freshness(manifest: FreshnessManifest) -> FreshnessReport:
     claim_values: dict[ClaimDimension, dict[str, list[str]]] = defaultdict(
         lambda: defaultdict(list)
     )
+    exact_patch_values: dict[str, list[str]] = defaultdict(list)
     for item in required_evidence:
         if item.status is SourceStatus.UNKNOWN:
             continue
         for claim in item.claims:
-            claim_values[claim.key][claim.value].append(item.source)
+            comparison_value = _claim_comparison_value(claim)
+            claim_values[claim.key][comparison_value].append(item.source)
+            if claim.key is ClaimDimension.GAME_PATCH:
+                exact_patch_values[claim.value].append(item.source)
+
+    if len(exact_patch_values) > 1 and len(claim_values[ClaimDimension.GAME_PATCH]) == 1:
+        rendered = ", ".join(
+            f"{value} ({', '.join(sorted(sources))})"
+            for value, sources in sorted(exact_patch_values.items())
+        )
+        warnings.append(f"game_patch details differ within compatible season: {rendered}")
 
     claim_conflicts: list[str] = []
     for key, values in sorted(claim_values.items()):
@@ -140,3 +153,12 @@ def evaluate_freshness(manifest: FreshnessManifest) -> FreshnessReport:
         warnings=tuple(warnings),
         evaluated_at=manifest.evaluated_at,
     )
+
+
+def _claim_comparison_value(claim: VersionClaim) -> str:
+    if claim.key is not ClaimDimension.GAME_PATCH:
+        return claim.value
+    parts = re.findall(r"\d+", claim.value)
+    if len(parts) < 2:
+        return claim.value
+    return ".".join(parts[:2])

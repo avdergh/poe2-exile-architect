@@ -24,7 +24,7 @@ from .pob import (
 )
 
 
-RELEASES_URL = "https://github.com/MaxWilk/poe2-build-mcp/releases"
+RELEASES_URL = "https://github.com/Egonex-AI/poe-bd-creator/releases"
 
 
 @dataclass(frozen=True, slots=True)

@@ -180,6 +180,108 @@ user commands.
 - All Phase 4 outputs must keep `noRawMatureBuildMaterial`; never echo raw mature-build material in
   messages, logs, reports, or creator-visible context.
 
+## Phase 5 create workflow
+
+Phase 5 generation is being built incrementally. The user-facing product entry is
+`/poe-bd-create` / `$poe-bd-create`. In the current Agent-led prototype, the Agent refines the user
+request, queries tools, designs the candidate, and assembles the complete active PoB state. The
+program snapshots that state, runs the Phase 1 Judge, and prepares a safe human review packet. It
+does not take over build completion.
+
+- Treat `/poe-bd-create` as a chat-level skill invocation, not a shell command for the user to run.
+  The host agent should execute the internal script with its tools and summarize the safe result.
+- If `/poe-bd-create` is invoked with no arguments, ask for the build goal and constraints before
+  doing anything else: starter vs mapping vs bossing vs high ceiling, class/ascendancy, main skill,
+  budget, trade/SSF, and defense/complexity preferences.
+- Generation helper flow: call `scripts/create_build.py start-run --memory-mode memory_assisted`
+  (or `--memory-mode no_memory` when the user explicitly invokes `/poe-bd-create --no-memory`);
+  assemble the active PoB; call
+  `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`; preserve its
+  `attemptIndex`, `transientBuildState`, and `judgeAdvisoryReport`; perform at most two Agent-led
+  retries in the same conversation and same run; write the final safe attempt list to the returned
+  `agentOutputFile`; then call
+  `scripts/create_build.py review-packet --run-id "<runId>" --run-token "<runToken>"`.
+- `trustedEvaluation` covers only the immutable snapshot and Judge result. The tool intentionally
+  returns `trustedEvaluationScope=snapshot_and_judge_only` and `versionContextTrusted=false`;
+  cross-check the supplied version context against this run's freshness result before making a
+  current-season verified claim.
+- Normal create mode must call `query_research_memory` and carry its safe references. No-memory mode
+  skips only that tool, keeps every other corpus/graph/mechanic/PoB/Judge tool available, uses empty
+  `memoryReferences`, and sets `researchMemoryRef=disabled:no_memory_baseline`. The product does not
+  automatically compare or choose between these modes; the user may run the same request both ways.
+- Probe MCP availability by actually calling `get_freshness_report`. Do not claim that the PoE2 MCP
+  tools are unavailable merely because they were not found through shell/file search or were not
+  shown in a UI group. If that MCP call is genuinely unavailable, stop the build-generation run;
+  do not substitute an old candidate or repository artifact.
+- A generic freshness decision of `blocked_stale` does not automatically stop Phase 5 generation.
+  Game-patch compatibility is compared by season family: patch details such as `0.5.3`, `0.5.4`,
+  and `0.5.4b` remain compatible with season `0.5`. Preserve the exact patch in provenance, but
+  do not stop generation solely because those details differ. A cross-season or passive-tree
+  conflict still blocks current verification.
+  If the current game patch, league, and passive tree are known and only local `pob_engine` or
+  `pob_data` is stale, continue in stale-PoB limited-evidence mode: assemble the build, run Judge,
+  and clearly forbid current-patch verified claims. Stop or clarify when the current game rules,
+  passive tree, or required core mechanic data is conflicted or unknown. Inspect component blockers;
+  never branch only on the top-level decision name.
+- Every generation request must use the new run binding returned by `start-run`. Never read or reuse
+  a previous `agent-output.json`, `.tmp_agent_output_*`, review packet, or historical candidate as
+  the current request's output. The helper rejects files outside the current run, mismatched run
+  credentials, and a second review of an already accepted run.
+- `evaluate_generation_candidate` is the only formal Phase 1 Judge entry for generated candidates.
+  `evaluate_build` and `pinnacle_readiness` are local numeric gates, not substitutes for Judge.
+- Its `version_context` must include `league`, `ruleset`, `gamePatch`, `passiveTreeVersion`,
+  `pobVersionOrCommit`, `graphSnapshotId`, and `researchMemoryRef` in one call, using values from
+  the current freshness, graph, and memory queries.
+- Before formal evaluation, reset with `new_build`, then assemble and read back a real active build:
+  class/ascendancy, level, main and support gems, secondary groups, gear, passives, combat config,
+  attributes, resistances, Spirit, and resource state. Do not submit a class-plus-skill skeleton.
+- The evaluation tool snapshots the active build, evaluates the immutable XML in a dedicated Judge
+  engine, and persists only a raw-free receipt bound to the run and candidate. Never invent or edit
+  its snapshot id, source hash, hard failures, caveats, or score.
+- The helper receives Agent-produced safe artifacts: `agentRefinedBuildPrompt`,
+  `prototypeBuildCandidate`, `transientBuildState`, `judgeAdvisoryReport`, and optional
+  `toolFeedbackEvents`.
+- Run every PoB/compute tool sequentially. Some tools that look read-only temporarily mutate and
+  restore the one active build while measuring alternatives, so tool names are not a safe basis for
+  parallelism. Only corpus, graph, mechanic, and other static queries that do not touch the active
+  build may run in parallel.
+- An available transient state must include `testedSkillGroups`, recording each tested group's index,
+  neutral PoB-current/additional role, all active skills and their count, actual supports, and enabled
+  state. `mainSocketGroup` is the PoB calculation focus, not proof that a build has only one main
+  damage skill. The trusted Judge report distinguishes the selected offense component from
+  conditional supplemental components and provides socket-group diagnostics and concrete attribute
+  shortfalls. Numeric claims such as mana cost or Spirit must be traceable to this tested configuration.
+- P5.1 output is safe-only and must not include hidden chain-of-thought, raw transcript, raw PoB
+  code/XML, account or character details, full URLs, or raw database/graph query text. Phase 5
+  candidates may contain Agent-generated skill packages, support packages, gear-slot summaries,
+  passive anchors, and transition routes; the helper must not reject them merely because they
+  resemble a strong or common build.
+- Interpret lifecycle fields carefully: `currentOutputStages` is the current stage set to output now,
+  while `targetLifecycleStages` is the broader lifecycle target that should shape class and design
+  direction. For "starter now, respec later into bossing/endgame", preserve future targets and keep
+  `crossStageLockedDimensions=["class"]`; later stages may change ascendancy, skills, passives,
+  gear, and supports.
+- Copyable build links or PoB-like material in the user request must be redacted before persistence
+  and carried only as caveats or clarification items.
+- Lifecycle helpers may return only stage structure, transition gates, and design principles. Missing
+  concrete skill names from a lifecycle helper is not a failure; the Agent should choose skills with
+  skill, mechanic, and compute tools.
+- `review-packet` requires the trusted receipt. It rejects a missing receipt, candidate mismatch, or
+  any Agent-side change to the returned transient state or Judge report. Acceptance means the
+  packet is ready for human review, not that the human accepted the build or that Judge is an
+  infallible power oracle.
+- A Judge `error` means the Judge invocation failed; it must not carry build hard failures. If the
+  snapshot tool rejects an incomplete active build, continue assembling it before review.
+- If Judge fails and the Agent identifies a concrete repair, modify the active build without starting
+  a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
+  `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
+  Each row carries a short failure-audit conclusion and planned changes, never hidden reasoning.
+  Stop after the safe human review packet; do not start a Phase 7 critic/rollback loop.
+- Separate design judgment from tool-verified evidence in user-facing text. Expected campaign feel
+  is an Agent judgment; PoB/Judge-verified defenses, sustain, and stage gates are evidence claims.
+- The sections below describe general compute-tool usage. For `/poe-bd-create`, formal evaluation
+  still ends with `evaluate_generation_candidate` and the safe human review packet.
+
 ## One active build (shared session state)
 
 All compute tools operate on a single in-memory build that persists across calls.

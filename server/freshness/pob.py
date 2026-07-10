@@ -246,10 +246,17 @@ def shape_pob_evidence(
             f"compatibility manifest matched PoB commit {compatibility.commit}"
         )
 
-    if remote_newer:
-        status = SourceStatus.STALE
-    elif compatibility is not None:
+    # A newer upstream PoB release is an update signal, not proof that a certified local
+    # runtime became incompatible. Game-patch and passive-tree claims decide compatibility;
+    # otherwise harmless same-season PoB releases would disable generation every few weeks.
+    if compatibility is not None:
         status = SourceStatus.CURRENT
+        if remote_newer:
+            shaped_diagnostics.append(
+                "newer upstream PoB release available; certified local compatibility retained"
+            )
+    elif remote_newer:
+        status = SourceStatus.STALE
     else:
         status = SourceStatus.UNKNOWN
 

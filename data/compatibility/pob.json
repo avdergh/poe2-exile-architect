@@ -16,6 +16,14 @@
       "passive_tree": "0_5",
       "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree", "pob-dev-export"],
       "verified_at": "2026-06-26T02:59:55Z"
+    },
+    {
+      "commit": "860f4268299739ce9df87c4f373abe35824101cf",
+      "pob_version": "0.22.0",
+      "game_patch": "0.5.4",
+      "passive_tree": "0_5",
+      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree"],
+      "verified_at": "2026-07-10T00:00:00Z"
     }
   ]
 }

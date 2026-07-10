@@ -824,6 +824,54 @@ def test_evaluator_checks_selected_damage_group_socket_legality():
     assert result["rewardEligible"] is False
 
 
+def test_evaluator_keeps_conditional_on_kill_damage_as_supplemental_evidence():
+    engine = _StubEngine(
+        _build(
+            mainSkill="Galvanic Shards",
+            mainSkillGroup=[
+                {"name": "Galvanic Shards", "isSupport": False},
+                {"name": "Rapid Attacks I", "isSupport": True, "supportKnown": True},
+            ],
+            judgeSelectedSkill={
+                "skillName": "Galvanic Shards",
+                "groupIndex": 1,
+                "dps": 500_000,
+                "sourceMetric": "TotalDPS",
+                "groupOrigin": "socketed",
+                "socketLegalityApplicable": True,
+            },
+            judgeSelectedSkillGroup=[
+                {"name": "Galvanic Shards", "isSupport": False},
+                {"name": "Rapid Attacks I", "isSupport": True, "supportKnown": True},
+            ],
+            judgeSupplementalSkills=[
+                {
+                    "skillName": "On Kill Monster Explosion",
+                    "groupIndex": 3,
+                    "groupOrigin": "synthetic_on_kill",
+                    "socketLegalityApplicable": False,
+                    "scenarioLimitations": ["requires_kill"],
+                }
+            ],
+        ),
+        _stats(),
+        _defenses(),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "conditional-supplemental")
+
+    assert "invalid_socket_setup" not in result["hardFailures"]
+    assert "conditional_supplemental_damage_caveat" in result["caveats"]
+    assert result["supplementalDamageComponents"] == [
+        {
+            "skillName": "On Kill Monster Explosion",
+            "groupIndex": 3,
+            "groupOrigin": "synthetic_on_kill",
+            "scenarioLimitations": ["requires_kill"],
+        }
+    ]
+
+
 def test_trusted_reference_attribute_shortfall_is_still_hard_failure():
     engine = _StubEngine(
         _build(

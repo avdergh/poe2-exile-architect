@@ -27,7 +27,7 @@ from server.freshness.pob import (  # noqa: E402
 )
 
 
-DEFAULT_VERSION = "0.1.39.1-local.20260626"
+DEFAULT_VERSION = "0.1.39.2-local.20260710"
 DEFAULT_APP_VERSION = "0.1.39"
 
 # Same art/media exclusions as bundle creation. The headless engine does not load these, and

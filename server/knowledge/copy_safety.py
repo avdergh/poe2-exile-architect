@@ -8,6 +8,7 @@ gem links.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 from typing import Any
@@ -42,7 +43,11 @@ def copyability_flags(value: Any) -> list[str]:
     text = "\n".join(fragments)
     lower = text.lower()
     flags: set[str] = set()
-    if re.search(r"\beNrt[A-Za-z0-9+/_=-]{40,}", text):
+    if any(marker in text for marker in ("PathOfBuilding", "<PathOfBuilding", "<Build", "<Skills")):
+        flags.add("raw_pob_xml_marker")
+    if any(marker in lower for marker in ("rawxml", "rawimportcode")):
+        flags.add("raw_pob_xml_marker")
+    if contains_pob_code_like_blob(text):
         flags.add("pob_code_like_blob")
     if re.search(r"(?:https?://)?(?:www\.)?(?:pobb\.in|pastebin\.com)/[A-Za-z0-9+/_=-]{4,}", text):
         flags.add("copyable_build_link")
@@ -73,11 +78,7 @@ def copyability_flags(value: Any) -> list[str]:
         lower,
     ):
         flags.add("ordered_passive_path")
-    if re.search(
-        r"(ring 1|ring 2|amulet|helmet|body armour|body armor|gloves|boots|weapon|"
-        r"offhand|quiver|belt|jewel)\s*:",
-        lower,
-    ):
+    if _contains_gear_slot_like(lower):
         flags.add("slot_exact_gear_like")
     if any(len(fragment) > 1200 for fragment in fragments):
         flags.add("long_guide_prose_like")
@@ -104,6 +105,32 @@ def all_text(value: Any) -> list[str]:
     return []
 
 
+def contains_pob_code_like_blob(text: str) -> bool:
+    """Detect URL-safe/base64 zlib streams used by PoB share codes.
+
+    The first two zlib bytes vary with compression level, so valid PoB codes may
+    start with eA, eF, eJ, or eN. Inspecting the zlib header avoids depending on
+    one encoder's compression level without inflating untrusted input.
+    """
+    candidates = re.finditer(
+        r"(?<![A-Za-z0-9+/_=-])([A-Za-z0-9+/_-]{40,}={0,2})(?![A-Za-z0-9+/_=-])",
+        text,
+    )
+    for match in candidates:
+        token = match.group(1)
+        prefix = token[:4].replace("-", "+").replace("_", "/")
+        try:
+            raw = base64.b64decode(prefix + "=" * ((-len(prefix)) % 4), validate=False)
+        except (ValueError, TypeError):
+            continue
+        if len(raw) < 2:
+            continue
+        cmf, flg = raw[0], raw[1]
+        if (cmf & 0x0F) == 8 and (cmf >> 4) <= 7 and ((cmf << 8) + flg) % 31 == 0:
+            return True
+    return False
+
+
 def is_empty(value: Any) -> bool:
     return value in (None, "", [], {})
 
@@ -124,6 +151,42 @@ def safe_url_ref(url: str) -> str:
     host = urlparse(url).netloc.lower() or "unknown-host"
     host_label = re.sub(r"[^a-z0-9.-]", "-", host)[:80]
     return f"source-url:{host_label}:{digest}"
+
+
+def _contains_gear_slot_like(text: str) -> bool:
+    slot_pattern = re.compile(
+        r"\b(ring 1|ring 2|amulet|helmet|body armour|body armor|gloves|boots|weapon|"
+        r"offhand|quiver|belt|jewel)\s*(?::|-|=)\s*([^\n,;}{]+)"
+    )
+    stable_key_values = {
+        "axe",
+        "belt",
+        "bow",
+        "claw",
+        "crossbow",
+        "dagger",
+        "focus",
+        "jewel",
+        "mace",
+        "quarterstaff",
+        "quiver",
+        "sceptre",
+        "shield",
+        "staff",
+        "sword",
+        "wand",
+    }
+    gear_prefixes = ("rare", "magic", "unique", "normal", "crafted", "fractured", "synthesised")
+    for match in slot_pattern.finditer(text):
+        value = match.group(2).strip()
+        if not value:
+            continue
+        first_token = re.split(r"\s+", value, maxsplit=1)[0]
+        if value == first_token and first_token in stable_key_values:
+            continue
+        if first_token in gear_prefixes or re.search(r"\s", value) or value == first_token:
+            return True
+    return False
 
 
 def _join_path(parent: str, segment: str) -> str:

@@ -64,6 +64,8 @@ def check_class_ascendancy(
 ) -> dict[str, Any]:
     cls = (class_name or "").strip()
     asc = (ascendancy or "").strip()
+    if asc.casefold() in {"none", "nil"}:
+        asc = ""
     if not cls:
         return {
             "ok": False,

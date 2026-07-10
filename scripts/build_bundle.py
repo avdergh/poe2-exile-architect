@@ -74,6 +74,10 @@ def main() -> int:
 
     # Bundled seed data
     _copy(corpus, stage / "data" / "corpus.sqlite")
+    _copy(
+        ROOT / "data" / "compatibility" / "pob.json",
+        stage / "data" / "compatibility" / "pob.json",
+    )
     (stage / "data" / "VERSION").write_text(args.version)
 
     # Reference/calibration build set (committed source, small) — ships beside the corpus so
