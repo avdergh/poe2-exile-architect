@@ -201,6 +201,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/04_research_memory.md`：Researcher extraction 进入 semantic graph 和 memory。
 - `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
 - `docs/phases/06_build_export.md`：官方 `.build` export。
+- `docs/phases/06_5_system_optimization.md`：进入 Phase 7 前的全链路调优和仓库拆分调研。
 - `docs/phases/07_critic_loop.md`：rollback、repair 和 early stopping。
 - `docs/phases/08_reward_memory.md`：RLAIF-lite reward memory。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。

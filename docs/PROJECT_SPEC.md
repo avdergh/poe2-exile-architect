@@ -112,6 +112,7 @@ Phase 0 文档与边界
   -> Phase 4 Researcher 语义记忆
   -> Phase 5 Agent 主导的生成原型
   -> Phase 6 官方 .build 导出
+  -> Phase 6.5 真实产物驱动的全链路调优与仓库拆分调研
   -> Phase 7 Critic loop / rollback / early stopping
   -> Phase 8 RLAIF-lite reward memory
   -> Phase 9 scale / revalidation / productization
@@ -156,6 +157,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
 | Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
+| Phase 6.5 | 筹划中：真实产物驱动的 Judge、知识提取、计算工具和生成流程调优，并调研从上游派生仓库拆为独立项目与外部 runtime 依赖 | Phase 1-6 | 在进入 Critic loop 前，用固定真实生成/导出样例修正全链路误差；定义主项目与 PoE2 runtime 的稳定边界、许可证和双仓迁移 spike，不直接搬迁或删除当前可运行仓库。 | `docs/phases/06_5_system_optimization.md` |
 | Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
 | Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
