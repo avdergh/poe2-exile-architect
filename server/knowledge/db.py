@@ -121,11 +121,20 @@ def get_item(name_or_id: str) -> dict | None:
 _ATTR_GATED_CLASSES = {"Body Armour", "Helmet", "Gloves", "Boots"}
 
 
-def pick_base(item_class: str, attr: str | None = None) -> str | None:
-    """Pick a sensible endgame base for an item_class — the highest-ilvl one, preferring the build's
-    attribute (`attr` in {"str","dex","int"}) for attribute-gated armour so it's wearable and gives
-    the matching defence layer. Returns the base name, or None if the class has no bases."""
-    rows = search_items(item_class=item_class, limit=25)  # highest drop_level first
+def pick_base(
+    item_class: str,
+    attr: str | None = None,
+    *,
+    max_drop_level: int | None = None,
+) -> str | None:
+    """Pick the strongest available base that is obtainable by the requested stage.
+
+    `max_drop_level` prevents campaign planners from silently using endgame-only bases. Attribute-
+    gated armour still prefers the build's dominant attribute within the eligible base set.
+    """
+    rows = search_items(item_class=item_class, limit=100)  # highest drop_level first
+    if max_drop_level is not None:
+        rows = [row for row in rows if int(row.get("drop_level") or 0) <= max_drop_level]
     if not rows:
         return None
     if attr and item_class in _ATTR_GATED_CLASSES:

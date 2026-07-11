@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from server.compute import completeness
+
 from . import modelability, models, rules, scoring
 
 
@@ -15,6 +17,13 @@ def evaluate_active_build(
     source_context: str = "generated_candidate",
 ) -> dict[str, Any]:
     build = engine.get_build()
+    try:
+        equipped_items = completeness.equipped_item_metadata(engine.get_xml())
+    except Exception:  # noqa: BLE001 - item metadata augments, but must not break, Judge readback.
+        equipped_items = {}
+    if equipped_items:
+        build = dict(build)
+        build["gear"] = equipped_items
     stats_response = engine.get_stats(keys=models.JUDGE_METRIC_KEYS)
     stats = stats_response.get("stats") if isinstance(stats_response, dict) else {}
     if not isinstance(stats, dict):
@@ -92,6 +101,9 @@ def evaluate_readback(
     attribute_shortfall = _has_attribute_shortfall(build)
     if attribute_shortfall:
         hard_failures.append("attribute_requirement_unmet")
+    item_requirements = rules.check_equipped_item_requirements(build)
+    if not item_requirements.get("ok"):
+        hard_failures.append("equipped_item_level_requirement_unmet")
     if (
         build.get("spiritUsed") is not None
         and build.get("spiritAvailable") is not None
@@ -189,6 +201,7 @@ def evaluate_readback(
         "legality": {
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
+            "itemRequirements": item_requirements,
         },
         "supplementalDamageComponents": supplemental_components,
         "scoreVector": score["scoreVector"],

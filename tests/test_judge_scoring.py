@@ -106,6 +106,56 @@ def test_single_chaos_shortboard_lowers_defense_without_forcing_catastrophic_fai
     assert result["scoreVector"]["defense"]["value"] < 0.5
 
 
+def test_campaign_nonnegative_chaos_does_not_dominate_defense_score():
+    metrics = {
+        "TotalDPS": 50_000,
+        "PhysicalMaximumHitTaken": 3_000,
+        "FireMaximumHitTaken": 5_000,
+        "ColdMaximumHitTaken": 5_000,
+        "LightningMaximumHitTaken": 5_000,
+        "ChaosMaximumHitTaken": 600,
+        "LifeUnreserved": 3_000,
+        "TotalEHP": 10_000,
+    }
+
+    result = scoring.score_metrics(
+        metrics,
+        level=58,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": 0},
+    )
+
+    assert "uncapped_resistance" not in result["failures"]
+    assert result["scoreVector"]["defense"]["value"] == 1.0
+    assert result["scoreBreakdown"]["chaos"]["excludedFromDefenseShortboard"] is True
+    assert result["scoreBreakdown"]["defense"]["scoreComponents"] == [
+        "physical",
+        "fire",
+        "cold",
+        "lightning",
+    ]
+    assert "campaign_chaos_resistance_opportunity_cost_caveat" in result["caveats"]
+
+
+def test_campaign_negative_chaos_still_fails_resistance_gate():
+    result = scoring.score_metrics(
+        {
+            "TotalDPS": 50_000,
+            "PhysicalMaximumHitTaken": 3_000,
+            "FireMaximumHitTaken": 5_000,
+            "ColdMaximumHitTaken": 5_000,
+            "LightningMaximumHitTaken": 5_000,
+            "ChaosMaximumHitTaken": 400,
+            "LifeUnreserved": 3_000,
+            "TotalEHP": 10_000,
+        },
+        level=58,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": -1},
+    )
+
+    assert "uncapped_resistance" in result["failures"]
+    assert "campaign_chaos_resistance_opportunity_cost_caveat" not in result["caveats"]
+
+
 def test_ci_keystone_scores_chaos_as_immune_without_chaos_max_hit():
     result = scoring.score_metrics(
         {

@@ -70,26 +70,61 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 6. 调用 `new_build()` 清空共享状态，然后串行使用 PoB/计算工具，把候选方向落实成当前请求所需的
    完整活动构筑。至少实际设置职业、升华、等级、主技能和辅助技能、其他技能组、装备、天赋和
    战斗配置，并检查属性、抗性、Spirit 与资源状态。不能拿只有职业和主技能的空骨架去验收。
-7. 调用 `get_build()` 复读活动构筑，确认 PoB 中的职业、技能、装备和天赋确实是本次候选；发现
+   装备目标必须匹配当前阶段：剧情/开荒使用 `plan_gear(stage="campaign")`，刚进图使用
+   `stage="maps_entry"`，终局才使用 `stage="endgame"`。元素抗性仍按阶段合法性补足；非 CI 混沌抗
+   默认目标分别是 0%、30%、60%，不是所有阶段都强行 75%。达到阶段目标后，应把后缀留给技能
+   等级、输出、属性、资源、移速或其他实际缺口；只有明确内容需求才覆盖到 75%。
+   `scaffold_gear` 只能让中途骨架可计算，所有 `Scaffold ...` 占位物品必须在最终评估前替换。
+   最终黄装必须带当前阶段合理的 `Item Level`，底材需求等级不能超过角色等级，词缀必须来自该
+   物品等级可用池。不要为了面板分数把剧情角色穿上终局底材或默认 ilvl 82 黄装。
+7. 补齐真实装备系统，而不是只填十个基础装备槽：
+   - 实际装备当前阶段生命药剂和魔力药剂；
+   - 根据腰带提供的护符槽选择并装备护符，或明确说明为什么当前阶段没有可用护符槽；
+   - 调用 `list_jewel_sockets`，由你判断当前阶段是否值得投入天赋珠宝；分配了珠宝孔就必须用
+     `optimize_jewel` / `equip_jewel` 填入真实可用珠宝，决定不投入时记录理由；
+   - 对可镶嵌装备检查符文/灵魂核心。剧情阶段只使用阶段可获得、预算合理且确有作用的方案，
+     不要机械套用带 Perfect Essence 和腐化的终局 `craft_item` 结果；不使用时记录理由。
+8. 调用 `inspect_build_completeness()`。修复其中的硬失败；对物品等级、占位装备、符文/灵魂核心、
+   天赋珠宝、药剂和护符提示逐项处理或记录明确设计理由。这个工具只做完整度诊断，不会替你设计
+   BD；不能仅因为 Judge 数值高就跳过。
+9. 调用 `get_build()` 复读活动构筑，确认 PoB 中的职业、技能、装备和天赋确实是本次候选；发现
    遗留状态或缺项时继续修正。
-8. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`。这个工具
+10. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`。这个工具
    会捕获当前 PoB 状态，在独立 Judge 引擎中运行正式评估，并把可信结果绑定到本次运行。不要用
    `evaluate_build`、`pinnacle_readiness` 或 Agent 自己整理的分数冒充正式 Judge。
-9. 将该工具返回的 `attemptIndex`、`transientBuildState` 和 `judgeAdvisoryReport` 原样保留。工具
+11. 将该工具返回的 `attemptIndex`、`transientBuildState` 和 `judgeAdvisoryReport` 原样保留。工具
    拒绝空骨架时继续完成构筑；工具返回 Judge 执行错误时保留错误报告，不要自行改写成已评估。
    `trustedEvaluation` 只表示活动快照和 Judge 结果由程序绑定；`versionContextTrusted=false` 表示
    版本上下文仍需与本次 `get_freshness_report` 返回核对，不能借此冒充当前赛季强验证。
-10. 对本轮结果做简短失败核验：区分真实构筑失败、PoB/Judge 建模缺口、Judge 选错技能、工具或
+12. 对本轮结果做简短失败核验：区分真实构筑失败、PoB/Judge 建模缺口、Judge 选错技能、工具或
     数据缺口、混合问题，或者当前没有实质失败。只保存结论摘要、修改计划和保留的注意事项，
     不保存逐步推理。
-11. 如果 Judge 未通过且存在明确可修正项，在当前会话、当前 `runId` 和当前需求上下文中直接修改
+    `passed=true` 只表示没有硬阻断，不等于候选值得推荐。如果 `qualityBand="barely_playable"`、
+    offense/recovery 等与用户目标直接相关的维度为 0，或仍有 `support_conflict_unverified_caveat`，
+    必须优先继续修正或核验。重试耗尽后可以交付给人工研究，但只能称为“弱原型/待完善候选”，
+    不能称为“推荐方案”“开荒顺畅已验证”或“成品 BD”。
+    对“开荒顺畅”请求，还必须检查清图职责、单体/Boss 职责和资源恢复；不能只证明三抗、属性和
+    插槽合法就接受。若一个技能同时承担清图与单体，必须有 PoB/机制证据或明确实战 caveat；否则
+    应补充独立单体技能/组合，或把结果降级为仅清图方向。
+13. 如果 Judge 未通过且存在明确可修正项，在当前会话、当前 `runId` 和当前需求上下文中直接修改
     活动构筑，再次调用 `evaluate_generation_candidate`。不要重新调用 `start-run`，也不要要求用户
     重复需求。最多重试两轮；程序返回 `retry_limit_reached` 后必须停止。
-12. 每轮生成一项 `generationAttempts` 记录。非最后一轮的 `retryDecision` 必须是 `retry`；最后
+14. 每轮生成一项 `generationAttempts` 记录。非最后一轮的 `retryDecision` 必须是 `retry`；最后
     一轮必须是 `accept` 或带明确停止原因的 `stop`。顶层候选、临时状态和 Judge 报告使用最后一轮。
-13. 只把本次生成的内容写入 `start-run` 返回的 `agentOutputFile`，并使用对应 `runId` 和
-   `runToken` 调用 `review-packet`。
-14. 向用户展示自然语言构筑结果、Judge 结论、内部重试改了什么和需要人工判断的点。
+15. 如果最后一轮 Judge 已评估、`passed=true`、没有硬阻断，且 Agent 判断该版本可以接受，必须在
+    调用 `review-packet` 前调用
+    `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`。这个工具只保存当前
+    最后一轮且仍与可信 Judge 快照完全一致的活动 PoB；失败轮次和旧 attempt 不保存完整 PoB。
+16. 只把本次生成的安全摘要写入 `start-run` 返回的 `agentOutputFile`，并使用对应 `runId` 和
+    `runToken` 调用 `review-packet`。最终 PoB XML 由专用 artifact 工具写入本地私有存储，不要写入
+    `agentOutputFile`。
+17. artifact 保存成功后，只调用一次
+    `export_final_build_package(artifact_id, name, author, description)`。这个工具固定尝试导出 PoB XML、
+    PoB 导入码文本和官方 `.build`，并返回完整 `artifacts` 清单。不要再自行分别调用多个导出工具
+    拼接交付结果；除非用户明确只补导某一种格式。
+18. 向用户展示自然语言构筑结果、Judge 结论、内部重试改了什么、最终 artifact id，并逐项列出
+    `export_final_build_package.artifacts` 中的全部三项。成功项必须给路径，失败项必须给 errorCode；
+    不得省略任何一项。不要展示 PoB XML 或导入码原文。
 
 内部重试不等于重新生成整个上下文。优先在当前活动构筑上做针对性修正；只有 Agent 判断设计方向
 本身需要推倒重建时，才可以在同一个 `runId` 内调用 `new_build` 重新搭建。无论哪种方式，前一轮
@@ -161,10 +196,27 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `search_passives(query, ...)` / `alloc_passive(node)`：查并分配关键天赋点。
 - `optimize_supports(skill, ...)`：用引擎测辅助技能组合。
 - `plan_gear(...)` / `optimize_item(...)` / `scaffold_gear(...)`：搭建或补足临时装备状态。
+- `plan_gear(stage=..., chaos_resist_target=...)`：整套装备规划必须传当前阶段。不要为提高 EHP/Judge
+  分数而在剧情阶段强行封顶混沌抗；显式 75% 只用于确有该需求的终局内容。
+- `inspect_build_completeness()`：Judge 前检查黄装物品等级、底材等级、Scaffold 占位装、符文/
+  灵魂核心决策、天赋珠宝、药剂和护符。除明确等级非法外是 advisory，不替 Agent 决定配装。
 - `get_defenses()` / `get_build_stats(keys=None)`：读取防御和伤害等计算结果。
-- `evaluate_build(goals)` / `pinnacle_readiness(...)`：做局部数值目标或门槛检查，不是正式 Judge。
+- `evaluate_build(goals)`：做当前阶段局部数值检查，不是正式 Judge。
+- `pinnacle_readiness(...)`：只用于用户明确要求的终局攻坚/巅峰候选；不得用于剧情或普通开荒
+  候选，否则会把混沌抗 75%、终局 EHP/DPS 等门槛错误套到早期构筑。
 - `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`：构筑完成后的正式
   Judge 入口。它只捕获和评价 Agent 已搭好的活动构筑，不会替 Agent 补技能、装备或天赋。
+- `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`：Agent 接受最后一轮通过
+  Judge 的活动 PoB 后保存最终本地产物；必须在 `review-packet` 前调用。
+- `list_final_build_artifacts()`：列出最终产物的安全元数据。
+- `load_final_build_artifact(artifact_id)`：把最终产物恢复到活动 PoB，不返回原始 XML。
+- `export_final_pob_artifact(artifact_id, format="both", name="")`：把最终可信产物写成本地 PoB XML
+  和/或导入码文本文件；响应只返回路径。默认 `both`，也可只选 `xml` 或 `import_code`。
+- `export_final_build_package(artifact_id, name, author, description, link)`：最终交付首选入口。一次生成
+  PoB XML、PoB 导入码文本和官方 `.build`，并固定列出三项的成功路径或失败错误码。
+- `get_build_planner_converter_status()`：检查固定版本的官方 `.build` 转换 provider 是否可用。
+- `export_final_build_artifact(artifact_id, name, author, description, link)`：把最终可信 PoB 导出为
+  官方单阶段 `.build` 文件，返回本地路径、provider 信息、转换统计和注意事项。
 - `export_build()` 只能用于本地临时状态，不要把导入码写进用户输出或持久报告。
 
 `evaluate_generation_candidate` 的 `version_context` 必须一次提供完整对象，字段使用下面这些名称；
@@ -340,7 +392,7 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 
 ## 安全输出
 
-不要输出或持久化：
+不要输出或写入普通报告、聊天、研究记忆：
 
 - PoB 导入码；
 - 原始 XML；
@@ -349,6 +401,10 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - 模型隐藏思维链；
 - 完整对话记录；
 - 草稿推理区。
+
+唯一允许持久化完整 PoB XML 的入口是 `save_final_build_artifact`。它只处理本系统自己生成、最后一轮
+可信 Judge 已通过且 Agent 明确接受的候选，并写入本地私有 artifact store；Agent 不读取、复制或
+转述其中 XML。
 
 不要直接复制第三方完整成熟 BD。这里约束的是抄袭和原始材料泄漏，不是禁止你输出自己设计出来的
 技能组合、辅助组合、装备槽位摘要、天赋锚点或转型路线。helper 会硬拦原始材料和隐私/来源信息，

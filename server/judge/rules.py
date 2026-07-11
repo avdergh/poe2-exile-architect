@@ -48,12 +48,31 @@ PHYSICAL_INVALID_FAILURES = {
     "duplicate_support_gem",
     "invalid_support_gem",
     "attribute_requirement_unmet",
+    "equipped_item_level_requirement_unmet",
     "incompatible_weapon_skill_tags",
     "attack_skill_without_weapon",
     "passive_budget_exceeded",
     "weapon_set_budget_exceeded",
     "spirit_budget_exceeded",
 }
+
+
+def check_equipped_item_requirements(build: dict[str, Any]) -> dict[str, Any]:
+    """Check requirements PoB exposes for equipped items without guessing item legality."""
+    level = int(build.get("level") or 0)
+    gear = build.get("gear") or {}
+    if not isinstance(gear, dict):
+        return {"ok": True, "underlevelledSlots": []}
+    underlevelled: list[dict[str, Any]] = []
+    for slot, item in gear.items():
+        if not isinstance(item, dict):
+            continue
+        required = item.get("levelRequirement")
+        if isinstance(required, (int, float)) and required > level:
+            underlevelled.append(
+                {"slot": str(slot), "requiredLevel": int(required), "characterLevel": level}
+            )
+    return {"ok": not underlevelled, "underlevelledSlots": underlevelled}
 
 
 def check_class_ascendancy(

@@ -258,6 +258,27 @@ function Resolve-UvCommand {
     Write-Error 'Codex MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer.'
 }
 
+function Install-BuildConverterProvider {
+    $uv = $null
+    $localUv = Join-Path (Normalize-PathText $RepoDir) '.tools\uv\uv.exe'
+    if (Test-Path $localUv) { $uv = $localUv }
+    if (-not $uv) {
+        $installedUv = Get-Command uv -ErrorAction SilentlyContinue
+        if ($installedUv -and $installedUv.Source) { $uv = $installedUv.Source }
+    }
+    if (-not $uv) {
+        Write-Warning 'Skipping Build Planner converter preparation because uv is unavailable. Core skill installation continues.'
+        return
+    }
+    $script = Join-Path $RepoDir 'scripts\install_build_converter_provider.py'
+    Invoke-Step 'Preparing pinned PoB to .build converter provider' {
+        & $uv run python $script
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Build Planner converter preparation failed. Core MCP features remain available; rerun scripts/install_build_converter_provider.py after installing Node.js and npm.'
+        }
+    }
+}
+
 function Remove-Managed-McpBlock([string]$Text) {
     $begin = [regex]::Escape($ManagedMcpBegin)
     $end = [regex]::Escape($ManagedMcpEnd)
@@ -324,6 +345,7 @@ function Cmd-Install([string]$Id) {
     Link-Skills $cfg.Target $cfg.Style
     Write-Host 'Linking universal plugin root'
     Link-Plugin-Root
+    Install-BuildConverterProvider
     if ($Id -eq 'codex') { Register-Codex-McpServer }
     Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research and /poe-bd-create."
 }

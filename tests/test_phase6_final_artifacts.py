@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+from uuid import uuid4
+
+from server.generation import artifacts, evaluation
+
+from tests.test_phase5_generation_evaluation import (
+    BUILD_XML,
+    _ActiveEngine,
+    _JudgeEngine,
+    _judge_result,
+    _version_context,
+)
+
+
+def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
+    runs_dir = tmp_path / "runs"
+    artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setenv("POE_BD_CREATE_RUNS_DIR", str(runs_dir))
+    monkeypatch.setenv("POE_BD_FINAL_ARTIFACTS_DIR", str(artifacts_dir))
+    run_id = str(uuid4())
+    token = "test-token"
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    manifest = {
+        "schemaVersion": 1,
+        "state": "active",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "runContext": {"runId": run_id, "runToken": token},
+        "requestRef": f"request:{run_id}",
+        "promptId": f"prompt:{run_id}",
+        "packetId": f"human-review:{run_id}",
+        "agentOutputFile": str(run_dir / "agent-output.json"),
+    }
+    (run_dir / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return run_id, token, run_dir
+
+
+def _evaluate_passing(tmp_path: Path, monkeypatch) -> tuple[str, str, dict[str, object]]:
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        return _judge_result(snapshot_id)
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+    return run_id, token, result
+
+
+class _RestoreEngine:
+    def __init__(self) -> None:
+        self.loaded_xml = ""
+
+    def load_build_xml(self, xml: str, name: str) -> dict[str, object]:
+        self.loaded_xml = xml
+        return {"mainSkill": "Lightning Arrow", "treeVersion": "0_5", "stats": {"Life": 1}}
+
+
+def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
+    run_id, token, evaluation_result = _evaluate_passing(tmp_path, monkeypatch)
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluation_result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "saved"
+    assert saved["containsRawPob"] is False
+    artifact_id = saved["finalBuildArtifact"]["artifactId"]
+    assert "PathOfBuilding" not in json.dumps(saved)
+    artifact_dir = tmp_path / "artifacts" / run_id
+    assert (artifact_dir / "build.xml").read_text(encoding="utf-8") == BUILD_XML
+    assert "PathOfBuilding" not in (artifact_dir / "manifest.json").read_text(encoding="utf-8")
+
+    listed = artifacts.list_final_build_artifacts()
+    assert [item["artifactId"] for item in listed["artifacts"]] == [artifact_id]
+    assert "PathOfBuilding" not in json.dumps(listed)
+
+    restore_engine = _RestoreEngine()
+    restored = artifacts.load_final_build_artifact(restore_engine, artifact_id=artifact_id)
+    assert restored["status"] == "loaded"
+    assert restored["activeBuild"] == {
+        "mainSkill": "Lightning Arrow",
+        "treeVersion": "0_5",
+    }
+    assert restore_engine.loaded_xml == BUILD_XML
+    assert "PathOfBuilding" not in json.dumps(restored)
+
+
+def test_save_rejects_changed_active_build(tmp_path, monkeypatch):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    changed = BUILD_XML.replace('level="68"', 'level="69"')
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(changed),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "active_build_changed_after_evaluation"
+    assert saved["caveats"] == []
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_rejects_failed_judge_and_does_not_persist_xml(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        result = _judge_result(snapshot_id)
+        result["pass"] = False
+        result["hardFailures"] = ["invalid_socket_setup"]
+        result["aggregateScore"] = {"value": 0.0}
+        return result
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:failed",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:failed",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["errorCode"] == "final_candidate_not_passed"
+    assert "PathOfBuilding" not in (run_dir / "trusted-evaluation.json").read_text(encoding="utf-8")
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_rejects_second_artifact_for_same_run(tmp_path, monkeypatch):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    args = {
+        "run_id": run_id,
+        "run_token": token,
+        "candidate_id": "candidate:test:final",
+        "attempt_index": int(result["attemptIndex"]),
+    }
+
+    first = artifacts.save_final_build_artifact(_ActiveEngine(), **args)
+    second = artifacts.save_final_build_artifact(_ActiveEngine(), **args)
+
+    assert first["status"] == "saved"
+    assert second["errorCode"] == "final_artifact_already_exists"
+
+
+def test_save_rejects_an_older_passing_attempt(tmp_path, monkeypatch):
+    run_id, token, first = _evaluate_passing(tmp_path, monkeypatch)
+    second_xml = BUILD_XML.replace('level="68"', 'level="69"')
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        return _judge_result(snapshot_id)
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    second = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(second_xml),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:second",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(second_xml),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(first["attemptIndex"]),
+    )
+
+    assert second["attemptIndex"] == 1
+    assert saved["errorCode"] == "final_attempt_required"
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_restore_rejects_corrupt_xml(tmp_path, monkeypatch):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+    artifact_id = saved["finalBuildArtifact"]["artifactId"]
+    (tmp_path / "artifacts" / run_id / "build.xml").write_text("<broken>", encoding="utf-8")
+
+    restored = artifacts.load_final_build_artifact(_RestoreEngine(), artifact_id=artifact_id)
+
+    assert restored["errorCode"] == "final_artifact_corrupt"
+
+
+def test_save_rejects_scaffold_gear_even_after_passing_judge(tmp_path, monkeypatch):
+    scaffold_xml = BUILD_XML.replace(
+        '  <Items activeItemSet="1">',
+        '  <Items activeItemSet="1">\n'
+        '    <Item id="1">Rarity: RARE\nScaffold Weapon 1\nAdvanced Dualstring Bow\n'
+        "Item Level: 68\nLevelReq: 65</Item>",
+    )
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        return _judge_result(snapshot_id)
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(scaffold_xml),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:scaffold",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(scaffold_xml),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:scaffold",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["errorCode"] == "final_artifact_contains_scaffold_gear"

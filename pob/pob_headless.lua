@@ -1394,7 +1394,17 @@ function methods.get_build()
 		local id = slot.selItemId
 		if id and id ~= 0 and build.itemsTab.items[id] then
 			local it = build.itemsTab.items[id]
-			gear[slotName] = { name = it.title, base = it.baseName }
+			gear[slotName] = {
+				name = it.title,
+				base = it.baseName,
+				rarity = it.rarity,
+				itemLevel = it.itemLevel,
+				levelRequirement = it.requirements and it.requirements.level or nil,
+				runeSockets = #(it.sockets or {}),
+				runes = it.runes or {},
+				charmSlots = it.charmLimit,
+				isScaffold = type(it.title) == "string" and it.title:match("^Scaffold ") ~= nil,
+			}
 		end
 	end
 

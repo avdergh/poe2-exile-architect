@@ -155,7 +155,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 3 | 已完成：read-only typed graph facade、NetworkX bounded topology、MCP `graph_tool_query`、deterministic benchmark 与人工验收通过 | Phase 2 | 通过 typed tools 暴露 source-backed graph 查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
-| Phase 6 | 未开始 | Phase 2、5 | 把 Phase 5 已由 Agent 设计并可验证或部分可验证的候选状态转换为官方 `.build` JSON；只处理导出格式、官方 ID 和导出校验，不负责重新设计生命周期或补完整 BD。 | `docs/phases/06_build_export.md` |
+| Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
 | Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
@@ -172,8 +172,10 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
   Agent 主导，程序只提供工具、边界、评估和报告。
 - 真实成熟 BD 是研究/校准来源，不是复制模板。
 - Raw mature-build material 只允许 quarantine-only transient 使用。
-- 不要持久化或暴露 PoB code、raw XML、完整装备表、完整 passive path、完整
-  gem/support links、raw account/character details 或长篇复制攻略文本。
+- 不要持久化或暴露第三方成熟 BD 的 PoB code、raw XML、完整装备表、完整 passive path、完整
+  gem/support links、raw account/character details 或长篇复制攻略文本。系统自己生成、经过可信
+  Judge、并由 Agent 明确接受的最终候选允许作为本地私有 `FinalBuildArtifact` 保存完整 PoB XML，
+  但不得进入聊天、人工验收包、研究记忆或 Git。
 - Creator/evaluator/holdout 边界必须强制执行。
 - 每个 durable memory item 都必须带 source、evidence、patch/tree/PoB version、status、
   confidence 和 copy-safety state。
@@ -243,9 +245,10 @@ PoB 数据版本兼容性按赛季大版本比较，精确补丁号只用于来�
 ## Public README 政策
 
 根 `README.md` 现在允许存在，但定位很窄：它是安装/自动化 README，只写安装、skill
-自动化入口、成熟 BD 研究命令、平台能力矩阵和安全边界。它不能把 Phase 5 之后的生成、
-导出、Critic loop 或 reward memory 写成已完成产品。完整 public product narrative 仍等
-learning/generation/evaluation loop 有 benchmark 证据后再扩展。
+自动化入口、成熟 BD 研究命令、已验证的单阶段生成/导出能力、平台能力矩阵和安全边界。它可以
+准确说明 Phase 5/6 已完成的 Agent 主导生成、最终 PoB 保存和官方 `.build` 导出，但不能据此
+宣称生成质量、复合技能评分、Critic loop 或 reward memory 已成为成熟产品。完整 public product
+narrative 仍等 learning/generation/evaluation loop 有 benchmark 证据后再扩展。
 
 ## 接续指南
 

@@ -1,0 +1,12 @@
+{
+  "providerId": "praedythxiv-poe2-build-converter",
+  "providerVersion": "0.3.0",
+  "providerCommit": "27f5dad0d0979aa23a604defd11fcf7ae4668444",
+  "upstream": "https://github.com/PraedythXIV/poe2-build-converter",
+  "license": "MIT",
+  "licensePath": "UPSTREAM_LICENSE.txt",
+  "runnerPath": "dist/runner.cjs",
+  "minimumNodeVersion": "20.0.0",
+  "officialFormat": "GGG Build Planner v1 experimental",
+  "gameDataPatch": "4.5.4.3"
+}

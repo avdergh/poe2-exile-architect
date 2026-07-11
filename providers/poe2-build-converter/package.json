@@ -1,0 +1,17 @@
+{
+  "name": "exile-architect-poe2-build-converter-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild runner.ts --bundle --platform=node --format=cjs --external:jsdom --outfile=dist/runner.cjs"
+  },
+  "dependencies": {
+    "jsdom": "29.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "poe2-build-converter": "https://github.com/PraedythXIV/poe2-build-converter/archive/27f5dad0d0979aa23a604defd11fcf7ae4668444.tar.gz"
+  }
+}

@@ -7,6 +7,8 @@ venv/
 .ruff_cache/
 .pytest_cache/
 .tools/
+providers/poe2-build-converter/node_modules/
+providers/poe2-build-converter/dist/
 .runtime-data/
 
 # Build artifacts / generated data (corpus is a release asset, not source)
@@ -30,6 +32,8 @@ data/mature_build_learning/research_memory.sqlite
 /phase45_*.json
 /phase45_*.md
 /.poe-bd-create/
+/final-build-artifacts/
+/pob-exports/
 /.tmp_agent_output_*
 /tmp/*agent-output*.json
 

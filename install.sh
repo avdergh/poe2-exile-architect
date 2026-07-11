@@ -275,6 +275,26 @@ resolve_uv_command() {
   return 1
 }
 
+install_build_converter_provider() {
+  local uv_path=""
+  if [[ -x "$REPO_DIR/.tools/uv/uv" ]]; then
+    uv_path="$REPO_DIR/.tools/uv/uv"
+  elif command -v uv >/dev/null 2>&1; then
+    uv_path="$(command -v uv)"
+  fi
+  if [[ -z "$uv_path" ]]; then
+    say "Skipping Build Planner converter preparation because uv is unavailable. Core skill installation continues."
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say "[dry-run] prepare pinned PoB to .build converter provider"
+    return 0
+  fi
+  if ! "$uv_path" run python "$REPO_DIR/scripts/install_build_converter_provider.py"; then
+    say "Build Planner converter preparation failed. Core MCP features remain available; rerun scripts/install_build_converter_provider.py after installing Node.js and npm."
+  fi
+}
+
 remove_managed_mcp_block() {
   python - "$1" <<'PY'
 import re
@@ -363,6 +383,7 @@ cmd_install() {
   link_skills "$target" "$style"
   say "Linking universal plugin root"
   link_plugin_root
+  install_build_converter_provider
   if [[ "$id" == "codex" ]]; then
     register_codex_mcp_server
   fi

@@ -12,11 +12,14 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 - 用 `/poe-bd-research` 或 `$poe-bd-research` 启动队列。
 - 用 `/poe-bd-create` 或 `$poe-bd-create` 启动 Phase 5 Agent 主导生成原型；Agent 负责理解、
   查询、候选设计和活动 PoB 搭建，程序负责运行绑定、快照捕获、Judge 调用和人工验收包生成。
+- 对最终通过且被 Agent 接受的候选，保存本地私有 PoB artifact，并导出桌面 PoB XML、PoB
+  导入码文本和官方单阶段 `.build` 文件。
 - 每个 Researcher worker 只读取一个 transient raw-rich prompt。
 - 通过 resolver、typed schema、copy-safety 和 proposal gate 后才入库。
 
-仍在建设中的能力包括官方 `.build` 导出、完整 Critic 修复/回滚/提前停止循环、分场景多技能
-组合评分和 reward memory。README 不把这些描述成已完成产品。
+仍在建设中的能力包括完整 Critic 修复/回滚/提前停止循环、分场景多技能组合评分和 reward
+memory。当前导出能力用于交付和暴露前置构筑问题，不代表 Agent 已能稳定创造所有类型的高水平
+BD，也不代表完整产品闭环已经成熟。
 
 ## 安装
 

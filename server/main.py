@@ -13,7 +13,7 @@ import json
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -22,6 +22,7 @@ from . import scaffold
 from .compute.engine import PobEngine
 from .compute import buildopt
 from .compute import craftopt
+from .compute import completeness
 from .compute import itemopt
 from .compute import solver
 from .compute import supportopt
@@ -44,7 +45,12 @@ from .live import update as live_update
 from .live import version as live_version
 from .live import wiki as live_wiki
 from .freshness import service as freshness_service
+from .generation import artifacts as generation_artifacts
 from .generation import evaluation as generation_evaluation
+from .generation import delivery as generation_delivery
+from .generation import pob_exports as generation_pob_exports
+from .build_planner import converter as build_planner_converter
+from .build_planner import exporter as build_planner_exporter
 
 # Operating guide handed to the LLM client (surfaced as "MCP Server Instructions").
 # Sourced from a bundled markdown file so it's both human-editable and actually delivered;
@@ -478,6 +484,18 @@ def list_jewel_sockets() -> dict[str, Any]:
 
 
 @mcp.tool()
+def inspect_build_completeness() -> dict[str, Any]:
+    """Inspect whether the active build is a playable loadout rather than a scoring skeleton.
+
+    Reports rare/magic item levels, under-level bases, scaffold placeholders, rune/soul-core
+    decisions, passive-tree jewel sockets, life/mana flasks, and belt-supported charms. Except for
+    explicit level-requirement violations, findings are advisory: the Agent chooses the build and
+    either fills each system or records why it is intentionally unused.
+    """
+    return completeness.inspect_build_completeness(get_engine())
+
+
+@mcp.tool()
 def equip_jewel(raw: str, socket: int | None = None) -> dict[str, Any]:
     """Socket a jewel (raw PoB item text) into a passive-tree jewel socket.
 
@@ -545,8 +563,120 @@ def evaluate_generation_candidate(
 
 
 @mcp.tool()
+def save_final_build_artifact(
+    run_id: str,
+    run_token: str,
+    candidate_id: str,
+    attempt_index: int,
+) -> dict[str, Any]:
+    """Save the final Agent-accepted, passing PoB candidate in local private storage.
+
+    The active build must still exactly match the trusted Judge snapshot for the supplied attempt.
+    Failed or changed attempts are rejected, and each generation run can save only one artifact.
+    The response never includes PoB XML or an import code.
+    """
+    return generation_artifacts.save_final_build_artifact(
+        get_engine(),
+        run_id=run_id,
+        run_token=run_token,
+        candidate_id=candidate_id,
+        attempt_index=attempt_index,
+    )
+
+
+@mcp.tool()
+def list_final_build_artifacts() -> dict[str, Any]:
+    """List safe metadata for locally saved final build artifacts; never returns PoB XML."""
+    return generation_artifacts.list_final_build_artifacts()
+
+
+@mcp.tool()
+def load_final_build_artifact(artifact_id: str) -> dict[str, Any]:
+    """Restore a saved final build artifact into the active Headless PoB session.
+
+    The artifact is verified against its source hash before loading. The response contains only a
+    safe summary, never the stored XML or PoB import code.
+    """
+    return generation_artifacts.load_final_build_artifact(get_engine(), artifact_id=artifact_id)
+
+
+@mcp.tool()
+def export_final_pob_artifact(
+    artifact_id: str,
+    format: Literal["xml", "import_code", "both"] = "both",
+    name: str = "",
+) -> dict[str, Any]:
+    """Export a verified final artifact to local files for desktop Path of Building.
+
+    `xml` writes the complete PoB XML build, `import_code` writes a text file containing the PoB
+    import code, and `both` writes both. The response returns only local paths and safe metadata;
+    it never includes the XML or import code itself.
+    """
+    return generation_pob_exports.export_final_pob_artifact(
+        artifact_id,
+        format=format,
+        name=name,
+    )
+
+
+@mcp.tool()
+def export_final_build_package(
+    artifact_id: str,
+    name: str = "",
+    author: str = "",
+    description: str = "",
+    link: str = "",
+) -> dict[str, Any]:
+    """Export the complete final delivery package with a fixed artifact inventory.
+
+    Produces local PoB XML, a PoB import-code text file, and an official `.build` file. The response
+    always lists all three expected artifacts with either an output path or a structured error, so
+    the Agent cannot accidentally omit a successful or failed deliverable from the user summary.
+    """
+    return generation_delivery.export_final_build_package(
+        artifact_id,
+        name=name,
+        author=author,
+        description=description,
+        link=link,
+    )
+
+
+@mcp.tool()
+def get_build_planner_converter_status() -> dict[str, Any]:
+    """Check whether the pinned, isolated PoB-to-official-`.build` provider is ready."""
+    return build_planner_converter.converter_status()
+
+
+@mcp.tool()
+def export_final_build_artifact(
+    artifact_id: str,
+    name: str = "",
+    author: str = "",
+    description: str = "",
+    link: str = "",
+) -> dict[str, Any]:
+    """Convert one verified final PoB artifact to an official single-stage `.build` file.
+
+    The stored PoB XML remains private. Conversion uses a pinned provider, validates the official
+    Build Planner shape, blocks error-level warnings, and returns the local output path plus safe
+    warnings for human in-game import review.
+    """
+    return build_planner_exporter.export_final_build_artifact(
+        artifact_id,
+        name=name,
+        author=author,
+        description=description,
+        link=link,
+    )
+
+
+@mcp.tool()
 def pinnacle_readiness(min_ehp: float = 20000, min_dps: float = 500000) -> dict[str, Any]:
     """Gate a build against the endgame/pinnacle checklist — defense beyond raw EHP, plus a DPS bar.
+
+    This is NOT a campaign/starter gate. Do not use it to optimize an early-stage build: its chaos
+    resistance, EHP, and DPS thresholds deliberately describe established endgame content.
 
     Engine-computed pass/fail for: elemental resists capped, chaos handled (capped OR Chaos
     Inoculation), a resist over-cap buffer (advisory, vs penetration/curses), EHP ≥ `min_ehp`, and
@@ -899,6 +1029,8 @@ def plan_gear(
     slots: list[str] | None = None,
     auto_base: bool = True,
     min_ehp: float | None = None,
+    stage: Literal["auto", "campaign", "maps_entry", "endgame"] = "auto",
+    chaos_resist_target: int | None = None,
 ) -> dict[str, Any]:
     """Plan a whole gear set that maximizes damage while capping resistances (budget allocation).
 
@@ -909,6 +1041,10 @@ def plan_gear(
     armour/jewellery slots with a sensible attribute-appropriate base, so it builds a WHOLE set from
     scratch (weapons stay yours — they define the archetype). `min_ehp` sets a survivability floor:
     defensive slots are re-crafted toward pure EHP until TotalEHP reaches it (reports `ehpFloorMet`).
+    `stage` defaults from character level and controls defense/offense trade-offs plus a non-CI chaos
+    resistance target: campaign 0%, maps entry 30%, endgame 60%. Once that target is reached, chaos
+    resistance stops competing for suffixes. Use `chaos_resist_target=75` only for a deliberate
+    pinnacle/content requirement, not as a universal starter baseline.
     Returns the per-slot plan + projected whole-build DPS/EHP/resists; equip the items with
     equip_item. A heavier call (~10-20s); greedy heuristic — refine individual slots with optimize_item.
     """
@@ -919,6 +1055,8 @@ def plan_gear(
         slots=slots,
         auto_base=auto_base,
         min_ehp=min_ehp,
+        stage=stage,
+        chaos_resist_target=chaos_resist_target,
     )
 
 
@@ -930,6 +1068,7 @@ def craft_item(
     goals: dict[str, float] | None = None,
     rolls: str = "realistic",
     rune_sockets: int = 2,
+    ilvl: int = 82,
     use_essences: bool = True,
     use_corruption: bool = True,
 ) -> dict[str, Any]:
@@ -953,6 +1092,7 @@ def craft_item(
         goals=goals,
         rolls=rolls,
         rune_sockets=rune_sockets,
+        ilvl=ilvl,
         use_essences=use_essences,
         use_corruption=use_corruption,
     )

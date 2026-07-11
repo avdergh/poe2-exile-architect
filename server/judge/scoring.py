@@ -366,6 +366,15 @@ def _score_defense(
                 breakdown["physical"]["ehpMultiplier"] = round(multiplier, 6)
 
     if scores:
+        chaos_resist = _num((resistances or {}).get("chaos"))
+        shortboard_scores = dict(scores)
+        if band == "campaign" and not ci_active and chaos_resist >= 0:
+            # Campaign gear should make chaos resistance non-negative, not sacrifice every suffix
+            # to cap it. Keep the chaos Max Hit diagnostic, but do not let it dominate 60% of the
+            # defense score once the campaign legality baseline is met.
+            shortboard_scores.pop("chaos", None)
+            caveats.append("campaign_chaos_resistance_opportunity_cost_caveat")
+            breakdown["chaos"]["excludedFromDefenseShortboard"] = True
         avoidance_proof = _has_avoidance_proof(metrics)
         low_elemental_count = 0
         for name, value in values.items():
@@ -394,8 +403,9 @@ def _score_defense(
                 caveats.append("quality_target_missed_caveat")
         if missing:
             caveats.append("metric_unavailable_caveat")
-        min_score = min(scores.values())
-        mean_score = sum(scores.values()) / len(scores)
+        score_basis = shortboard_scores or scores
+        min_score = min(score_basis.values())
+        mean_score = sum(score_basis.values()) / len(score_basis)
         observed_defense = (0.6 * min_score) + (0.4 * mean_score)
         defense = observed_defense
         score_policy = "max_hit_shortboard"
@@ -409,6 +419,7 @@ def _score_defense(
             "meanScore": round(mean_score, 6),
             "sourceMetric": "MaximumHitTaken",
             "scorePolicy": score_policy,
+            "scoreComponents": list(score_basis),
         }
         return defense
 

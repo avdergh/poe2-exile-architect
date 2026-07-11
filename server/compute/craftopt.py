@@ -29,6 +29,7 @@ def _build_item(
     affix_lines: list[str],
     runes: list[tuple[str, list[str]]],
     corruption_line: str | None,
+    item_level: int | None = None,
 ) -> str:
     """Assemble PoB item text from affixes + socketed runes + an optional corrupted implicit.
 
@@ -36,6 +37,8 @@ def _build_item(
     re-derives them on parse); a corruption is an implicit line on a `Corrupted` item.
     """
     parts = ["Rarity: Rare", "Crafted Item", base]
+    if item_level is not None:
+        parts.append(f"Item Level: {int(item_level)}")
     implicits: list[str] = []
     if runes:
         parts.append("Sockets: " + " ".join("S" for _ in runes))
@@ -56,8 +59,9 @@ def _build_item(
     return "\n".join(parts)
 
 
-def _bare(base: str) -> str:
-    return f"Rarity: Rare\nCrafted Item\n{base}\n--------\n"
+def _bare(base: str, item_level: int | None = None) -> str:
+    level_line = f"Item Level: {int(item_level)}\n" if item_level is not None else ""
+    return f"Rarity: Rare\nCrafted Item\n{base}\n{level_line}--------\n"
 
 
 def craft_item(
@@ -68,6 +72,7 @@ def craft_item(
     goals: dict[str, float] | None = None,
     rolls: str = "realistic",
     rune_sockets: int = 2,
+    ilvl: int = 82,
     use_essences: bool = True,
     use_corruption: bool = True,
     keep_resists_capped: bool = True,
@@ -99,7 +104,7 @@ def craft_item(
 
     snapshot = engine.get_xml()
     try:
-        engine.add_item(_bare(base), slot=slot)  # so crafting_options can read the base
+        engine.add_item(_bare(base, ilvl), slot=slot)  # so crafting_options can read the base
         co = engine.crafting_options(slot)
         if not co.get("ok"):
             return co
@@ -138,6 +143,7 @@ def craft_item(
             thorough=True,
             keep_resists_capped=keep_resists_capped,
             extra_mods=extra if (extra["prefixes"] or extra["suffixes"]) else None,
+            ilvl=ilvl,
         )
         if not opt.get("ok"):
             return opt
@@ -145,7 +151,7 @@ def craft_item(
         essences_used = sorted({essence_by_line[ln] for ln in affix_lines if ln in essence_by_line})
 
         # scoring: single metric = its value; goals = weighted gain relative to the rare baseline.
-        engine.add_item(_build_item(base, affix_lines, [], None), slot=slot)
+        engine.add_item(_build_item(base, affix_lines, [], None, ilvl), slot=slot)
         rare_stats = engine.get_stats(keys)["stats"]
         denom = {k: max(abs(rare_stats.get(k) or 0.0), 1.0) for k in keys}
 
@@ -175,7 +181,9 @@ def craft_item(
                 rune_cands.append((str(r.get("name")), mod_lines))
         if rune_cands and rune_sockets > 0:
             ranked = engine.eval_items(
-                slot, [_build_item(base, affix_lines, [rc], None) for rc in rune_cands], keys=keys
+                slot,
+                [_build_item(base, affix_lines, [rc], None, ilvl) for rc in rune_cands],
+                keys=keys,
             )["results"]
             top = [
                 rc
@@ -190,7 +198,9 @@ def craft_item(
             ]
             cur = rare_score
             for _ in range(rune_sockets):
-                texts = [_build_item(base, affix_lines, [*chosen_runes, rc], None) for rc in top]
+                texts = [
+                    _build_item(base, affix_lines, [*chosen_runes, rc], None, ilvl) for rc in top
+                ]
                 res = engine.eval_items(slot, texts, keys=keys)["results"]
                 best_score, best_rune = max(
                     ((score(s if isinstance(s, dict) else {}), rc) for s, rc in zip(res, top)),
@@ -203,11 +213,11 @@ def craft_item(
 
         # 4) Corruption: the best corrupted implicit on top of the (runed) item.
         chosen_corruption: str | None = None
-        runed_base = _build_item(base, affix_lines, chosen_runes, None)
+        runed_base = _build_item(base, affix_lines, chosen_runes, None, ilvl)
         runed_score = score(engine.eval_items(slot, [runed_base], keys=keys)["results"][0] or {})
         if use_corruption and (co.get("corruptions") or []):
             corr_lines = [_roll(str(c.get("line")), rolls) for c in co["corruptions"]]
-            texts = [_build_item(base, affix_lines, chosen_runes, cl) for cl in corr_lines]
+            texts = [_build_item(base, affix_lines, chosen_runes, cl, ilvl) for cl in corr_lines]
             cres = engine.eval_items(slot, texts, keys=keys)["results"]
             cbest_score, cbest_line = max(
                 ((score(s if isinstance(s, dict) else {}), cl) for s, cl in zip(cres, corr_lines)),
@@ -217,7 +227,7 @@ def craft_item(
                 chosen_corruption = cbest_line
 
         # 5) Final item + measured stats.
-        final = _build_item(base, affix_lines, chosen_runes, chosen_corruption)
+        final = _build_item(base, affix_lines, chosen_runes, chosen_corruption, ilvl)
         engine.add_item(final, slot=slot)
         final_stats = engine.get_stats(keys)["stats"]
     finally:
@@ -238,6 +248,7 @@ def craft_item(
         "ok": True,
         "slot": slot,
         "base": base,
+        "itemLevel": ilvl,
         "item": final,
         "affixes": affix_lines,
         "crafting": {

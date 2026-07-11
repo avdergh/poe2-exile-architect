@@ -49,8 +49,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 没有 copy-safety pass，就不能持久化成熟 BD 知识。
 - 没有 snapshot score improvement，就不能声称 loop 成功。
 - 没有 early stopping，就不能做 autonomous repair loop。
-- 不要持久化或暴露可复刻成熟 BD 的材料：PoB code、raw XML、完整装备表、完整
-  passive path、完整 gem/support links、raw account/character 细节或长篇复制攻略文本。
+- 不要持久化或暴露可复刻第三方成熟 BD 的材料：PoB code、raw XML、完整装备表、完整
+  passive path、完整 gem/support links、raw account/character 细节或长篇复制攻略文本。系统自己
+  生成、经过可信 Judge 且由 Agent 明确接受的最终候选，可以作为 Phase 6 本地私有
+  `FinalBuildArtifact` 保存完整 PoB XML，但不得进入聊天、人工验收包、研究记忆或 Git。
 - 禁止游戏内交互、overlay、内存读取、自动化或 live-screen parsing。
 
 ## 当前事实源

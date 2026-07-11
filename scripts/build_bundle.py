@@ -72,6 +72,23 @@ def main() -> int:
     _copy(ROOT / "manifest.json", stage / "manifest.json")
     _copy(ROOT / "assets" / "icon.png", stage / "assets" / "icon.png")
 
+    # Official Build Planner converter source. The user prepares its pinned runtime locally so the
+    # bundle stays portable and license/version checks remain explicit.
+    provider = ROOT / "providers" / "poe2-build-converter"
+    for name in (
+        "package.json",
+        "package-lock.json",
+        "provider.json",
+        "runner.ts",
+        "README.md",
+        "UPSTREAM_LICENSE.txt",
+    ):
+        _copy(provider / name, stage / "providers" / "poe2-build-converter" / name)
+    _copy(
+        ROOT / "scripts" / "install_build_converter_provider.py",
+        stage / "scripts" / "install_build_converter_provider.py",
+    )
+
     # Bundled seed data
     _copy(corpus, stage / "data" / "corpus.sqlite")
     _copy(

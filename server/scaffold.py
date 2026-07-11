@@ -35,9 +35,8 @@ _POOL_AMT = {"life": 90, "energy_shield": 80}
 _INT_CLASSES = {"Sorceress", "Witch"}
 
 
-def _base_for(item_class: str) -> str | None:
-    items = db.search_items(item_class=item_class, limit=1)  # A7: highest drop level first
-    return items[0]["name"] if items else None
+def _base_for(item_class: str, level: int) -> str | None:
+    return db.pick_base(item_class, max_drop_level=level)
 
 
 def scaffold_gear(
@@ -49,6 +48,7 @@ def scaffold_gear(
     """Fill empty defensive slots to close the build's resistance + pool gaps. See module docs."""
     before = engine.get_defenses()
     build = engine.get_build()
+    level = max(1, int(build.get("level") or 1))
     filled = set((build.get("gear") or {}).keys())
     want = [s for s in (slots or list(_SLOT_CLASS)) if s in _SLOT_CLASS and s not in filled]
     if not want:
@@ -74,7 +74,7 @@ def scaffold_gear(
 
     filled_out: list[dict[str, Any]] = []
     for slot in want:
-        base = _base_for(_SLOT_CLASS[slot])
+        base = _base_for(_SLOT_CLASS[slot], level)
         if not base:
             continue
         mods: list[str] = []
@@ -88,7 +88,9 @@ def scaffold_gear(
                 continue
             mods.append(f"+{roll}% to {el.capitalize()} Resistance")
             gaps[el] -= roll
-        raw = "Rarity: Rare\nScaffold {}\n{}\n{}".format(slot, base, "\n".join(mods))
+        raw = "Rarity: Rare\nScaffold {}\n{}\nItem Level: {}\n--------\n{}".format(
+            slot, base, level, "\n".join(mods)
+        )
         r = engine.add_item(raw, slot=slot)
         if r.get("ok"):
             filled_out.append({"slot": slot, "base": base, "mods": mods})

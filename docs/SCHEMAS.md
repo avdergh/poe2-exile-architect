@@ -657,9 +657,97 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、non-copy
 
 必要概念：
 
-- 带 `level_interval` 的 passives；
-- 带 `level_interval` 的 skills 和 support skills；
+- 单阶段 passives；
+- 单阶段 skills 和 support skills；
 - inventory slot hints；
 - 支持时包含 weapon set；
 - resolved GGG IDs；
-- unsupported-field caveats。
+- unsupported-field caveats；
+- converter provider identity、version/commit 和 validation result。
+
+Phase 6 MVP 不要求自动生成 `level_interval` 或多阶段生命周期。只有未来输入本身提供了多个完整
+阶段状态时，导出层才可以忠实表达等级区间，不能从单阶段 PoB 自动推导。
+
+## FinalBuildArtifact
+
+系统自己生成的最终可信 PoB 本地私有产物。它不是研究记忆，也不是用户可直接阅读的安全报告。
+
+必要字段：
+
+- `artifactId`；
+- `runId`；
+- `candidateId`；
+- `attemptIndex`；
+- `snapshotId`；
+- `sourceHash`；
+- 完整 PoB XML；
+- 可信 Judge 凭据引用；
+- version context；
+- created at；
+- local-only / no-chat / no-memory 边界标记。
+
+约束：
+
+- 只有可信 Judge `passed=true` 且 Agent 明确接受的候选可以创建；
+- 保存时必须重新读取活动 PoB 并验证 hash 与可信凭据一致；
+- 每个生成运行最多一个 artifact，不覆盖；
+- 失败轮次不保存完整 PoB XML；
+- XML 只能存在本地 artifact store，不能进入 `HumanReviewPacket`、聊天、研究记忆或 Git；
+- artifact 必须能在 MCP 重启后重新载入 Headless PoB。
+
+保存前的活动构筑还需要通过装备完整度诊断：黄装/魔法装带物品等级、底材等级可穿戴、没有
+`Scaffold ...` 占位装；符文/灵魂核心、天赋珠宝、药剂和护符由 Agent 填写或记录明确不使用理由。
+除底材等级非法外，这些是 Agent 接受候选前的 advisory，不是程序自动配装规则。
+
+## FinalPobExportReport
+
+最终可信 PoB 的本地用户导出报告。导出前必须复用 `FinalBuildArtifact` 的完整性和可信 Judge 校验。
+
+必要字段：
+
+- artifact id 和 source hash；
+- 导出格式：`xml`、`import_code` 或两者；
+- 每个本地输出文件的 format 和 output path；
+- exported at；
+- 响应不含 raw PoB，但本地输出文件明确含完整 PoB 材料的边界标记。
+
+MCP 响应、聊天和人工验收摘要不得携带 XML 或导入码原文。XML 文件供桌面 PoB 直接打开或导入；
+导入码文本供用户在 PoB 的 Import/Export 页面粘贴。两者都只能来自已验证的最终 artifact。
+
+## FinalBuildDeliveryPackage
+
+最终交付编排报告。它不参与 BD 设计，只保证交付格式完整且稳定。
+
+必要字段：
+
+- artifact id；
+- `artifacts` 固定包含 `pob_xml`、`pob_import_code`、`official_build` 三项；
+- 每项包含 `status`、`outputPath` 或 `errorCode`；
+- exported count 和 expected count；
+- overall status：全部成功为 `exported`，部分失败为 `partial`；
+- response 不包含 raw PoB。
+
+Agent 最终答复必须逐项转述这三项，不能因为某项失败或忘记调用而省略。
+
+## BuildPlannerConverterResult
+
+可插拔 PoB -> 官方 `.build` provider 的稳定边界。
+
+必要字段：
+
+- provider id；
+- provider version / fixed commit；
+- license / provenance reference；
+- source hash；
+- parsed Build JSON object；
+- serialized `.build` JSON；
+- warnings，包含 level、code 和 message；
+- conversion stats；
+- schema validation status；
+- output path（成功写出时）。
+
+最终 `BuildPlannerExportReport` 另外携带 artifact id、output path、导出时间和单阶段标记；provider
+边界本身不需要知道 artifact store 的内部结构。
+
+业务层不得依赖 provider 内部类型。provider 缺失、崩溃、输出非 JSON、输出 hash 不匹配或包含
+error-level warning 时，导出失败而不是静默切换到名称猜测。

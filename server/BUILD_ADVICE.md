@@ -171,8 +171,11 @@ over-stacking one stat.
    Uncapped resist isn't "less reduction," it's *more damage taken*: at 50% fire res you take
    **twice** the fire damage of someone at 75%. The campaign applies a stacking area penalty
    (−10% per act, ending around −60% at endgame), so you must gear ~+125–150% elemental res to
-   sit at the cap. **Chaos resistance** has its own 75% cap, no area penalty, and matters more
-   in the endgame — get it positive, ideally capped.
+   sit at the cap. **Chaos resistance** has its own 75% cap and no area penalty, but its opportunity
+   cost is stage-dependent: get it non-negative for campaign completion, build toward roughly
+   20–40% in early maps, and pursue 60–75% only when endgame content, the defensive identity, or
+   available suffix budget justifies it. Do not sacrifice core damage, resource sustain, movement,
+   or required attributes merely to make every resistance read 75%.
 2. **Run at least one mitigation/avoidance layer, and know its weakness:**
    - **Armour** reduces hit damage on a curve — roughly `reduction = Armour / (Armour + 12 ×
      hit)`, capping near 90%. It's excellent against many small hits and **weak against single

@@ -15,13 +15,49 @@ optimizes a goal the caller gives, it does not decide the goal.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from ..knowledge import db
 from .engine import PobEngine
 
 _RANGE = re.compile(r"\((\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\)")
 _RES_KEYS = ("fire", "cold", "lightning")
+_CHAOS_RESIST_RE = re.compile(r"chaos resistance", re.IGNORECASE)
+GearStage = Literal["auto", "campaign", "maps_entry", "endgame"]
+
+
+def gear_stage_profile(
+    level: int | float | None,
+    *,
+    stage: GearStage = "auto",
+    chaos_resist_target: int | None = None,
+) -> dict[str, Any]:
+    """Return stage-aware gear goals without treating pinnacle defenses as a universal baseline."""
+    if stage not in {"auto", "campaign", "maps_entry", "endgame"}:
+        raise ValueError("stage must be auto, campaign, maps_entry, or endgame")
+    resolved = stage
+    if resolved == "auto":
+        lvl = int(level or 0)
+        resolved = "campaign" if lvl < 70 else "maps_entry" if lvl < 80 else "endgame"
+    profiles = {
+        "campaign": {"defenseWeight": 0.65, "chaosResistTarget": 0},
+        "maps_entry": {"defenseWeight": 0.72, "chaosResistTarget": 30},
+        "endgame": {"defenseWeight": 0.78, "chaosResistTarget": 60},
+    }
+    profile = dict(profiles[resolved])
+    if chaos_resist_target is not None:
+        profile["chaosResistTarget"] = max(-60, min(75, int(chaos_resist_target)))
+    profile["stage"] = resolved
+    profile["elementalResistTarget"] = 75
+    return profile
+
+
+def _without_unneeded_chaos_resistance(
+    mods: list[dict[str, Any]], *, current_chaos: float, target_chaos: int
+) -> list[dict[str, Any]]:
+    if current_chaos < target_chaos:
+        return mods
+    return [mod for mod in mods if not _CHAOS_RESIST_RE.search(str(mod.get("text") or ""))]
 
 
 def _num(x: Any) -> bool:
@@ -44,9 +80,10 @@ def _roll(text: str, rolls: str) -> str:
     return _RANGE.sub(sub, text)
 
 
-def _item_text(base: str, lines: list[str], slot: str) -> str:
+def _item_text(base: str, lines: list[str], slot: str, *, ilvl: int | None = None) -> str:
     body = "\n".join(lines)
-    return f"Rarity: Rare\nOptimized {slot}\n{base}\n--------\n{body}"
+    level_line = f"Item Level: {int(ilvl)}\n" if ilvl is not None else ""
+    return f"Rarity: Rare\nOptimized {slot}\n{base}\n{level_line}--------\n{body}"
 
 
 def _craft_summary(
@@ -177,7 +214,7 @@ def optimize_item(
 
         def stats_of(line_sets: list[list[str]]) -> list[dict[str, Any]]:
             res = engine.eval_items(
-                slot, [_item_text(base, ls, slot) for ls in line_sets], keys=keys
+                slot, [_item_text(base, ls, slot, ilvl=ilvl) for ls in line_sets], keys=keys
             )["results"]
             return [r if isinstance(r, dict) else {} for r in res]
 
@@ -248,7 +285,7 @@ def optimize_item(
                     continue
 
         chosen = chosen_pre + chosen_suf
-        final = _item_text(base, lines(), slot)
+        final = _item_text(base, lines(), slot, ilvl=ilvl)
         engine.add_item(final, slot=slot)
         after_vals = engine.get_stats(keys)["stats"]
         warnings = []
@@ -287,6 +324,7 @@ def optimize_item(
         "ok": True,
         "slot": slot,
         "base": base,
+        "itemLevel": ilvl,
         "item": final,
         "affixes": [x["line"] for x in chosen],
         "attainability": [
@@ -539,24 +577,39 @@ def _attr_bias(engine: PobEngine) -> str:
 
 
 def _marginal_craft(
-    engine: PobEngine, slot: str, base: str, weights: dict[str, float], rolls: str
+    engine: PobEngine,
+    slot: str,
+    base: str,
+    weights: dict[str, float],
+    rolls: str,
+    *,
+    chaos_resist_target: int,
+    ilvl: int,
 ) -> str | None:
     """Fast per-slot craft: rank each affix by its marginal weighted gain (TWO batched evals — bare
     base, then all single-affix candidates), then take the top 3 prefix + 3 suffix (group-exclusive).
     Approximate (ignores affix interaction) but ~6x cheaper than the full greedy — used by plan_gear
     so a whole-set plan fits in one call."""
-    pool = db.affix_pool(base)
-    pre, suf = pool["prefixes"], pool["suffixes"]
+    pool = db.affix_pool(base, ilvl=ilvl)
+    current_chaos = float((engine.get_defenses().get("resistances") or {}).get("chaos") or 0)
+    pre = _without_unneeded_chaos_resistance(
+        pool["prefixes"], current_chaos=current_chaos, target_chaos=chaos_resist_target
+    )
+    suf = _without_unneeded_chaos_resistance(
+        pool["suffixes"], current_chaos=current_chaos, target_chaos=chaos_resist_target
+    )
     if not pre and not suf:
         return None
     keys = list(weights)
     meta = [(m, _roll(m["text"], rolls)) for m in pre + suf]
-    base_res = engine.eval_items(slot, [_item_text(base, [], slot)], keys=keys)["results"]
-    base_stats = base_res[0] if base_res and isinstance(base_res[0], dict) else {}
-    denom = {k: max(abs(base_stats.get(k) or 0.0), 1.0) for k in keys}
-    results = engine.eval_items(slot, [_item_text(base, [ln], slot) for _m, ln in meta], keys=keys)[
+    base_res = engine.eval_items(slot, [_item_text(base, [], slot, ilvl=ilvl)], keys=keys)[
         "results"
     ]
+    base_stats = base_res[0] if base_res and isinstance(base_res[0], dict) else {}
+    denom = {k: max(abs(base_stats.get(k) or 0.0), 1.0) for k in keys}
+    results = engine.eval_items(
+        slot, [_item_text(base, [ln], slot, ilvl=ilvl) for _m, ln in meta], keys=keys
+    )["results"]
     scored: list[tuple[float, dict[str, Any], str]] = []
     for (m, line), st in zip(meta, results):
         st = st if isinstance(st, dict) else {}
@@ -578,7 +631,7 @@ def _marginal_craft(
             chosen_lines.append(line)
             used.add(m["group"])
             n += 1
-    return _item_text(base, chosen_lines, slot) if chosen_lines else None
+    return _item_text(base, chosen_lines, slot, ilvl=ilvl) if chosen_lines else None
 
 
 def plan_gear(
@@ -588,6 +641,8 @@ def plan_gear(
     slots: list[str] | None = None,
     auto_base: bool = True,
     min_ehp: float | None = None,
+    stage: GearStage = "auto",
+    chaos_resist_target: int | None = None,
 ) -> dict[str, Any]:
     """Plan a whole gear set that maximizes damage while capping resists (budget-allocation heuristic).
 
@@ -604,14 +659,21 @@ def plan_gear(
     per-slot plan + projected whole-build DPS/EHP/resists; equip the items yourself. Greedy heuristic.
     """
     dps_weight = min(max(float(dps_weight), 0.0), 1.0)
+    build = engine.get_build()
+    profile = gear_stage_profile(
+        build.get("level"), stage=stage, chaos_resist_target=chaos_resist_target
+    )
+    character_level = max(1, int(build.get("level") or 1))
+    item_level = min(100, character_level)
     off_goal = (
         {"TotalDPS": dps_weight, "TotalEHP": round(1.0 - dps_weight, 3)}
         if dps_weight < 1.0
         else {"TotalDPS": 1.0}
     )
-    def_goal = {"TotalEHP": 0.8, "TotalDPS": 0.2}
+    defense_weight = float(profile["defenseWeight"])
+    def_goal = {"TotalEHP": defense_weight, "TotalDPS": round(1.0 - defense_weight, 3)}
     order = list(slots) if slots else list(_OFFENSE_SLOTS) + list(_DEFENSE_SLOTS)
-    gear = engine.get_build().get("gear") or {}
+    gear = build.get("gear") or {}
 
     snapshot = engine.get_xml()
     plan: list[dict[str, Any]] = []
@@ -625,10 +687,10 @@ def plan_gear(
                 base: str | None = cur["base"]
             elif auto_base and slot in _AUTO_BASE_CLASS:
                 # AUTO-BASE an empty armour/jewellery slot so a from-scratch build gets a whole set.
-                base = db.pick_base(_AUTO_BASE_CLASS[slot], attr)
+                base = db.pick_base(_AUTO_BASE_CLASS[slot], attr, max_drop_level=character_level)
                 if base:
                     engine.add_item(
-                        _item_text(base, [], slot), slot=slot
+                        _item_text(base, [], slot, ilvl=item_level), slot=slot
                     )  # bare base; crafted below
             else:
                 base = None
@@ -642,13 +704,21 @@ def plan_gear(
                 continue
             slot_base[slot] = base
             goal = off_goal if slot in _OFFENSE_SLOTS else def_goal
-            item = _marginal_craft(engine, slot, base, goal, rolls)
+            item = _marginal_craft(
+                engine,
+                slot,
+                base,
+                goal,
+                rolls,
+                chaos_resist_target=int(profile["chaosResistTarget"]),
+                ilvl=item_level,
+            )
             if not item:
                 skipped.append({"slot": slot, "reason": "no improving affix in pool"})
                 continue
             engine.add_item(item, slot=slot)  # persist so the next slot is crafted coherently
             affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
-            plan.append({"slot": slot, "item": item, "affixes": affixes})
+            plan.append({"slot": slot, "item": item, "itemLevel": item_level, "affixes": affixes})
         # EHP-floor recovery: if short of `min_ehp`, re-craft DEFENSE slots toward pure EHP (which
         # PoB's effective-HP also credits resists for) — the cheapest DPS to give up — until met.
         ehp_floor_met: bool | None = None
@@ -656,13 +726,23 @@ def plan_gear(
             for slot in [s for s in order if s in _DEFENSE_SLOTS and s in slot_base]:
                 if (engine.get_defenses().get("totalEHP") or 0) >= min_ehp:
                     break
-                item = _marginal_craft(engine, slot, slot_base[slot], {"TotalEHP": 1.0}, rolls)
+                item = _marginal_craft(
+                    engine,
+                    slot,
+                    slot_base[slot],
+                    {"TotalEHP": 1.0},
+                    rolls,
+                    chaos_resist_target=int(profile["chaosResistTarget"]),
+                    ilvl=item_level,
+                )
                 if not item:
                     continue
                 engine.add_item(item, slot=slot)
                 affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
                 plan[:] = [p for p in plan if p["slot"] != slot]
-                plan.append({"slot": slot, "item": item, "affixes": affixes})
+                plan.append(
+                    {"slot": slot, "item": item, "itemLevel": item_level, "affixes": affixes}
+                )
             ehp_floor_met = (engine.get_defenses().get("totalEHP") or 0) >= min_ehp
         stats = engine.get_stats(["TotalDPS", "FullDPS"])["stats"]
         d = engine.get_defenses()
@@ -680,6 +760,8 @@ def plan_gear(
         "resistances": res,
         "resistsCapped": res_capped,
         "chaosCapped": chaos_capped,
+        "chaosTarget": profile["chaosResistTarget"],
+        "chaosTargetMet": (res.get("chaos") or 0) >= profile["chaosResistTarget"],
     }
     if min_ehp:
         projected["minEHP"] = min_ehp
@@ -689,12 +771,15 @@ def plan_gear(
         "plan": plan,
         "skipped": skipped,
         "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
+        "stageProfile": profile,
+        "itemLevel": item_level,
         "projected": projected,
         "note": (
             "Budget-allocation heuristic: offense slots crafted damage-leaning, defense slots EHP-"
-            "leaning (which pulls missing resists onto the cheapest-DPS pieces), built slot-by-slot so "
-            "it's coherent. If resists still aren't capped, lower dps_weight or add resistance on a "
-            "ring/amulet. Read-only — equip the plan's items with equip_item. Greedy, not a global "
-            "optimum."
+            "leaning (which pulls missing elemental resists onto the cheapest-DPS pieces), built "
+            "slot-by-slot so it's coherent. Chaos resistance stops competing for suffixes once the "
+            f"{profile['stage']} target ({profile['chaosResistTarget']}%) is met; pass an explicit "
+            "chaos_resist_target only when the content or build identity warrants it. Read-only — "
+            "equip the plan's items with equip_item. Greedy, not a global optimum."
         ),
     }

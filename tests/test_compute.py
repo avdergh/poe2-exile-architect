@@ -730,6 +730,31 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
     assert engine.get_build()["mainSkill"] == "Spark"  # read-only: build restored
 
 
+def test_campaign_plan_gear_does_not_keep_chasing_capped_chaos_resistance(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Sorceress", "Stormweaver")
+    engine.set_level(58)
+    engine.paste_skill("Spark 20/20 1")
+    engine.add_item(
+        "Rarity: Rare\nW\nDueling Wand\n+3 to Level of all Lightning Spell Skills\n"
+        "Adds 20 to 250 Lightning Damage to Spells\n80% increased Spell Damage",
+        slot="Weapon 1",
+    )
+
+    result = itemopt.plan_gear(engine, dps_weight=0.7, stage="campaign")
+    chaos_affixes = [
+        affix for item in result["plan"] for affix in item["affixes"] if "Chaos Resistance" in affix
+    ]
+
+    assert result["stageProfile"]["chaosResistTarget"] == 0
+    assert result["projected"]["chaosTarget"] == 0
+    assert result["projected"]["chaosTargetMet"] is True
+    assert 0 <= result["projected"]["resistances"]["chaos"] < 75
+    assert len(chaos_affixes) <= 3
+
+
 def test_optimize_passives_respects_separate_ascendancy_budget(engine):
     # Ascendancy is a SEPARATE 8-point pool: optimize_passives must auto-allocate ascendancy notables
     # WITHOUT charging them to the passive budget (which had stranded passive points) and never exceed

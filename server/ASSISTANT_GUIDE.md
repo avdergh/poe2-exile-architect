@@ -1,4 +1,4 @@
-# How to use Exile Architect
+# How to use Exile Architect for Path of Exile 2
 
 You have a PoE2 toolset with two halves: a **knowledge corpus** (offline game facts) and a
 **Path of Building compute engine** (real build math). Read this once — it's how the tools fit
@@ -272,11 +272,23 @@ does not take over build completion.
   infallible power oracle.
 - A Judge `error` means the Judge invocation failed; it must not carry build hard failures. If the
   snapshot tool rejects an incomplete active build, continue assembling it before review.
+- Judge `passed=true` means hard legality passed, not that the build is recommendation-quality. A
+  `barely_playable` candidate, a goal-critical zero score (for example offense or recovery in a
+  starter request), or an unresolved support conflict should be repaired when retries remain. If
+  retries are exhausted, present it only as a weak prototype with explicit gaps, not a recommended
+  smooth starter. Starter review must cover clear speed, boss/single-target duty, and sustain.
 - If Judge fails and the Agent identifies a concrete repair, modify the active build without starting
   a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
   `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
   Each row carries a short failure-audit conclusion and planned changes, never hidden reasoning.
   Stop after the safe human review packet; do not start a Phase 7 critic/rollback loop.
+- If the final attempt passes and the Agent accepts it, call `save_final_build_artifact` before the
+  review helper consumes the run token. Only the latest trusted attempt can be saved. Failed and
+  older attempts keep safe Judge summaries but never persist full PoB XML. The artifact tool stores
+  XML privately and returns only safe metadata; never copy XML into chat or the review packet.
+- After saving, call `export_final_build_package` once. It always inventories the expected PoB XML,
+  import-code text, and official `.build` deliverables. Report every inventory row: successful rows
+  with paths, failed rows with error codes. Never silently omit a format or paste raw file contents.
 - Separate design judgment from tool-verified evidence in user-facing text. Expected campaign feel
   is an Agent judgment; PoB/Judge-verified defenses, sustain, and stage gates are evidence claims.
 - The sections below describe general compute-tool usage. For `/poe-bd-create`, formal evaluation
@@ -348,22 +360,33 @@ stage as ready.
    bosses"), and easy to forget when building from scratch. Then `optimize_passives` for the tree —
    `metric="balanced"`, or `goals={"TotalDPS":.5,"Life":.5}` for a weighted mix, or `require=[…]`
    to force keystones. `points=0` fills the budget.
-4. **Gear.** Fastest first pass: `plan_gear` crafts the WHOLE set at once (offense slots
-   damage-leaning, defense slots EHP-leaning so resists cap), then refine. Per slot: `optimize_item`
+4. **Gear.** Fastest first pass: `plan_gear(stage=...)` crafts the WHOLE set at once (offense slots
+   damage-leaning, defense slots EHP-leaning so elemental resists cap), then refine. Use `campaign`
+   below level 70, `maps_entry` for early maps, and `endgame` only for established endgame gear.
+   Stage defaults target non-CI chaos resistance at 0% / 30% / 60%; do not spend suffixes chasing
+   75% in a starter unless the requested content specifically needs it. Per slot: `optimize_item`
    with **`goals`** (e.g. `{"TotalDPS":0.6,"TotalEHP":0.4}`) so each craft blends offense AND defense
    — a single `metric` strips the other axis; `rank_upgrades` tells you which slot to recraft next.
    Craft jewels with `optimize_jewel`, then `equip_jewel` into allocated tree sockets
    (`list_jewel_sockets`) — jewels are real power, don't skip them. For a one-hand weapon, fill the
    **off-hand** (shield/focus) — a big, often-missed EHP/spirit lever. Pass an explicit `slot` for
    the second of a pair (`"Ring 2"`, `"Weapon 2"`) or it overwrites slot 1. `scaffold_gear` only
-   closes *defensive* gaps on a skeleton; `equip_item` for real drops. Re-check `get_defenses` after.
-5. `apply_combat_profile` to switch on the realistic fight (boss tier + shock/curse/charges the
+   closes *defensive* gaps on a skeleton; every `Scaffold ...` item must be replaced before final
+   acceptance. Stage-aware rare gear must carry an `Item Level`, use a base the character can wear,
+   and draw affixes from that ilvl pool. Equip stage-appropriate life/mana flasks, check the belt's
+   charm capacity and fill useful charms, and make an explicit rune/soul-core decision for socketable
+   gear. Re-check `get_defenses` after.
+5. Call `inspect_build_completeness` before the final gate. Fix hard level-requirement failures and
+   either fill or explicitly justify each advisory for scaffold gear, item levels, runes/soul cores,
+   passive jewels, flasks, and charms. It diagnoses omissions; it does not choose the build for you.
+6. `apply_combat_profile` to switch on the realistic fight (boss tier + shock/curse/charges the
    build maintains), **plus any build-specific enemy condition its ascendancy/keystones rely on**
    (scan `list_config_options`, e.g. Open Weakness, Critical Weakness; a conditional "more" stays
    invisible in DPS until you enable its condition — enable only what the build actually applies).
-   Then `get_defenses` (re-cap resists!) and gate with `pinnacle_readiness` +
-   `evaluate_build(goals)` against the player's content bar.
-6. `get_prices` to sanity-check cost → present, with `export_build`. **A build that fails the gate
+   Then `get_defenses` and `evaluate_build(goals)` against the current stage. Use
+   `pinnacle_readiness` only for explicit pinnacle/endgame requests; never make a campaign build
+   satisfy its chaos-resist, EHP, and DPS thresholds.
+7. `get_prices` to sanity-check cost → present, with `export_build`. **A build that fails the gate
    is flagged, not recommended.**
 
 Other workflows: **analyze** an import → `get_build`+`get_defenses`+`get_build_stats`+
@@ -380,7 +403,8 @@ realize it, then re-check defenses.
   to upgrade next → `rank_upgrades`. Shape the tree → `optimize_passives(goals=…)`.
 - Best support-gem set → `optimize_supports` (engine-measured — supports have no corpus magnitudes).
   Craft a jewel → `optimize_jewel` (then `equip_jewel`). Gear a whole set at once (damage-max with
-  resists capped) → `plan_gear`, then refine top slots with `rank_upgrades` + `optimize_item`.
+  elemental resists capped and a stage-aware chaos target) → `plan_gear(stage=...)`, then refine top
+  slots with `rank_upgrades` + `optimize_item`.
 - Assemble a WHOLE build at once (the synthesis the per-slot tools can't do) → `optimize_build`.
   Set class+ascendancy+main-skill (+a weapon base for attacks; set an endgame level) first; it then
   SEEDS the archetype's dominant levers from the reference set and, for each, commits that lever
@@ -392,7 +416,8 @@ realize it, then re-check defenses.
 - Which stat to chase next → `rank_levers`. How much of it to hit a target → `solve_for`
   (`list_levers` shows named levers). A/B two builds → `compare_to`.
 - "Is this build good?" → `evaluate_build` (numbers) + `build_advice("red flags")` (judgment).
-  Endgame/pinnacle defense gate → `pinnacle_readiness` (resists + chaos + EHP + DPS, not raw EHP).
+  Explicit endgame/pinnacle defense gate → `pinnacle_readiness` (resists + chaos + EHP + DPS, not
+  raw EHP). It is not a campaign or starter gate.
 - Open-ended "strong build" / "beginner-friendly endgame" → `suggest_build_lifecycle` first. Use
   the returned transition gate list to explain when to swap from starter to endgame; do not present
   final-form gear as a leveling path unless the classification is `starter_to_endgame`.
@@ -403,6 +428,9 @@ realize it, then re-check defenses.
   (`in_full_dps=True` for a second damage skill so FullDPS aggregates).
 - How does mechanic X work → `explain_mechanic`/`search_mechanics`; not in corpus → `lookup_mechanic`.
 - Complete a skeleton's defenses fast → `scaffold_gear`. Read an item's tiers → `parse_item`.
+- Is the active state a playable loadout rather than a scoring skeleton →
+  `inspect_build_completeness` (rare/magic ilvl, base requirements, scaffold placeholders, runes,
+  jewels, flasks, and charms).
 
 ## Known limitations & gotchas
 

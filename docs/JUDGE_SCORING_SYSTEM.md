@@ -507,6 +507,11 @@ Judge 不会因为单个 `phys max hit` 低就直接判死。
 
 原因是 poe.ninja / PoB 导入态经常存在配置态、切换态、临时态问题，不能立刻把 archetype（流派）打死。
 
+剧情阶段的非 CI 构筑在混沌抗已经达到 `0%` 后，混沌 Max Hit 仍保留为诊断，但不再参与
+`max_hit_shortboard` 的最低项和平均值计算。这样不会通过 Judge 分数诱导 Agent 把剧情装备后缀
+继续投入到混沌抗 75%，同时混沌抗为负时仍保留 `uncapped_resistance` 硬失败。进图和终局阶段仍
+完整计入混沌 Max Hit。
+
 ---
 
 ## 9. Recovery（恢复）评分
