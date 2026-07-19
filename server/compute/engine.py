@@ -24,10 +24,46 @@ _LUAJIT_FALLBACKS = (
     r"C:\msys64\ucrt64\bin\luajit.exe",
     r"C:\msys64\mingw64\bin\luajit.exe",
 )
+try:
+    _MAX_ENGINE_PROCESSES = max(1, int(os.environ.get("POE2_MCP_MAX_ENGINES", "5")))
+except ValueError:
+    _MAX_ENGINE_PROCESSES = 5
+_ENGINE_CAPACITY = threading.BoundedSemaphore(_MAX_ENGINE_PROCESSES)
+_ENGINE_CAPACITY_LOCK = threading.Lock()
+_ACTIVE_ENGINE_PROCESSES = 0
 
 
 class PobEngineError(RuntimeError):
     """Raised when the engine fails to start or returns an error for a call."""
+
+
+def available_engine_slots() -> int:
+    with _ENGINE_CAPACITY_LOCK:
+        return max(0, _MAX_ENGINE_PROCESSES - _ACTIVE_ENGINE_PROCESSES)
+
+
+def max_engine_processes() -> int:
+    return _MAX_ENGINE_PROCESSES
+
+
+def _acquire_engine_slot() -> None:
+    global _ACTIVE_ENGINE_PROCESSES
+    if not _ENGINE_CAPACITY.acquire(blocking=False):
+        raise PobEngineError(
+            f"PoB engine process limit reached ({_MAX_ENGINE_PROCESSES}); retry after another "
+            "compute operation or MCP session finishes"
+        )
+    with _ENGINE_CAPACITY_LOCK:
+        _ACTIVE_ENGINE_PROCESSES += 1
+
+
+def _release_engine_slot() -> None:
+    global _ACTIVE_ENGINE_PROCESSES
+    with _ENGINE_CAPACITY_LOCK:
+        if _ACTIVE_ENGINE_PROCESSES <= 0:
+            return
+        _ACTIVE_ENGINE_PROCESSES -= 1
+    _ENGINE_CAPACITY.release()
 
 
 def _find_luajit() -> str:
@@ -58,6 +94,33 @@ class PobEngine:
         src_dir: str | os.PathLike[str] | None = None,
         script: str | os.PathLike[str] | None = None,
         show_engine_logs: bool = False,
+    ) -> None:
+        _acquire_engine_slot()
+        self._slot_acquired = True
+        self._closed = False
+        try:
+            self._start(
+                luajit=luajit,
+                src_dir=src_dir,
+                script=script,
+                show_engine_logs=show_engine_logs,
+            )
+        except BaseException:
+            try:
+                self._terminate_failed_start()
+            except Exception:
+                pass
+            finally:
+                self._release_slot()
+            raise
+
+    def _start(
+        self,
+        *,
+        luajit: str | None,
+        src_dir: str | os.PathLike[str] | None,
+        script: str | os.PathLike[str] | None,
+        show_engine_logs: bool,
     ) -> None:
         self.luajit = luajit or _find_luajit()
         self.src_dir = Path(src_dir) if src_dir else paths.pob_src_dir()
@@ -277,6 +340,9 @@ class PobEngine:
 
     # -- lifecycle -----------------------------------------------------------
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             if self.proc.stdin:
                 self.proc.stdin.close()
@@ -286,6 +352,24 @@ class PobEngine:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            self.proc.wait(timeout=5)
+        finally:
+            self._release_slot()
+
+    def _release_slot(self) -> None:
+        if self._slot_acquired:
+            self._slot_acquired = False
+            _release_engine_slot()
+
+    def _terminate_failed_start(self) -> None:
+        proc = getattr(self, "proc", None)
+        if proc is None or proc.poll() is not None:
+            return
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
     def __enter__(self) -> "PobEngine":
         return self

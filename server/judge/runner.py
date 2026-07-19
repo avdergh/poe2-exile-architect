@@ -74,6 +74,9 @@ def compute_failed_evaluation(snapshot_id: str, error_kind: str) -> dict[str, An
         "rewardEligible": False,
         "hardFailures": ["pob_compute_failed"],
         "physicalInvalidFailures": [],
+        "playabilityFailures": [],
+        "qualityWarnings": [],
+        "scoreApplicability": {"status": "unavailable", "reason": "pob_compute_failed"},
         "caveats": ["engine_respawn_required"],
         "modelability": {
             "status": "not_modelable",

@@ -13,7 +13,9 @@ from typing import Any
 from . import copy_safety
 from . import graph_tools
 from . import mature_learning
+from . import research_identity
 from . import research_models
+from ..freshness import providers as freshness_providers
 
 SHORT_CYCLE_MAX_DEPTH = 3
 DIRECTIONAL_EDGE_TYPES = {
@@ -26,6 +28,54 @@ DIRECTIONAL_EDGE_TYPES = {
 }
 VALID_REVALIDATION_TARGET_KINDS = {"fragment", "semantic_edge", "build_pattern"}
 VALID_REVALIDATION_OUTCOMES = {"still_valid", "invalidated", "changed_scope", "needs_review"}
+BUILD_FAMILY_BACKFILL_VERSION = "4"
+RESEARCH_MEMORY_SCOPE_WEIGHTS = {
+    "exact_family": 1.0,
+    "same_primary_skill": 0.9,
+    "component": 0.8,
+    "global": 0.7,
+}
+TRANSFER_CONFIDENCE_WEIGHTS = {
+    "case_observation": 0.4,
+    "recurring_observation": 0.65,
+    "likely_pattern": 1.0,
+}
+
+
+def _normalize_deep_record_version_context(payload: dict[str, Any]) -> dict[str, Any]:
+    records = payload.get("deep_research_records")
+    if not isinstance(records, list) or not records:
+        return payload
+    compatibility = freshness_providers.current_local_compatibility()
+    if compatibility is None:
+        return payload
+    normalized = dict(payload)
+    normalized_records: list[Any] = []
+    for record in records:
+        if not isinstance(record, dict):
+            normalized_records.append(record)
+            continue
+        item = dict(record)
+        submitted_raw = _known_version(item.get("pob_version_or_commit"))
+        submitted_pob = freshness_providers.resolve_pob_version_enum(submitted_raw)
+        if submitted_raw and submitted_pob is None:
+            return {
+                **payload,
+                "__unsupported_pob_version__": submitted_raw,
+            }
+        item["game_patch"] = _known_version(item.get("game_patch")) or compatibility.game_patch
+        item["passive_tree_version"] = (
+            _known_version(item.get("passive_tree_version")) or compatibility.passive_tree
+        )
+        item["pob_version_or_commit"] = submitted_pob or compatibility.pob_version
+        normalized_records.append(item)
+    normalized["deep_research_records"] = normalized_records
+    return normalized
+
+
+def _known_version(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return "" if normalized.casefold() in {"", "unknown", "none", "null"} else normalized
 
 
 class ResearchMemoryService:
@@ -34,10 +84,348 @@ class ResearchMemoryService:
         *,
         db_path: Path | None = None,
         graph_service: graph_tools.GraphQueryService | None = None,
+        initialize_store: bool = True,
     ) -> None:
         self.db_path = db_path
         self.graph_service = graph_service
-        mature_learning.initialize_store(db_path)
+        self.last_build_family_backfill: dict[str, Any] = {"status": "not_run"}
+        if initialize_store:
+            mature_learning.initialize_store(db_path)
+            self.last_build_family_backfill = self.backfill_deep_research_knowledge()
+
+    def backfill_deep_research_knowledge(self, *, force: bool = False) -> dict[str, Any]:
+        """Assign high-confidence historical records to families and canonical knowledge units."""
+
+        con = mature_learning.connect(self.db_path)
+        try:
+            marker = con.execute(
+                "SELECT value FROM meta WHERE key = 'phase4_build_family_backfill_version'"
+            ).fetchone()
+            if not force and marker and str(marker[0]) == BUILD_FAMILY_BACKFILL_VERSION:
+                return {
+                    "status": "already_applied",
+                    "version": BUILD_FAMILY_BACKFILL_VERSION,
+                }
+
+            rows = con.execute(
+                """
+                SELECT * FROM deep_research_records
+                WHERE status IN ('valid', 'needs_revalidation')
+                  AND superseded_by_id IS NULL
+                ORDER BY research_group_id, record_id
+                """
+            ).fetchall()
+            stored_family_keys = {
+                str(row[0])
+                for row in con.execute(
+                    "SELECT build_family_key FROM research_build_families"
+                ).fetchall()
+                if str(row[0] or "")
+            }
+            stored_knowledge_keys = {
+                str(row[0])
+                for row in con.execute(
+                    "SELECT DISTINCT knowledge_key FROM deep_research_record_evidence"
+                ).fetchall()
+                if str(row[0] or "")
+            }
+            groups: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                groups.setdefault(str(row["research_group_id"]), []).append(row)
+
+            now = _now()
+            historical_hints = _historical_family_hints(con)
+            family_by_group: dict[str, research_identity.BuildFamilyIdentity] = {}
+            family_evidence_added_count = 0
+            for group_id, group_rows in groups.items():
+                source_refs = sorted(
+                    {
+                        source_ref
+                        for row in group_rows
+                        for source_ref in _loads(row["source_case_refs"], [])
+                    }
+                )
+                hint_mentions = sorted(
+                    {
+                        (role, component_key)
+                        for source_ref in source_refs
+                        for role, component_key in historical_hints.get(source_ref, set())
+                    }
+                )
+                identity_rows: list[Any] = list(group_rows)
+                if hint_mentions:
+                    identity_rows.append(
+                        {
+                            "component_mentions": [
+                                {"role": role, "component_key": component_key}
+                                for role, component_key in hint_mentions
+                            ]
+                        }
+                    )
+                family = research_identity.infer_build_family(
+                    identity_rows, allow_dominant_primary=True
+                )
+                if family is None:
+                    continue
+                family_by_group[group_id] = family
+                family_evidence_added_count += self._upsert_build_family(
+                    con,
+                    family=family,
+                    source_case_refs=source_refs,
+                    now=now,
+                )
+
+            clusters: dict[
+                str, list[tuple[sqlite3.Row, research_identity.BuildFamilyIdentity]]
+            ] = {}
+            unclassified_record_count = 0
+            unkeyed_record_count = 0
+            for row in rows:
+                family = family_by_group.get(str(row["research_group_id"]))
+                if family is None:
+                    unclassified_record_count += 1
+                    continue
+                key = research_identity.knowledge_key(row, family)
+                if key is None:
+                    unkeyed_record_count += 1
+                    con.execute(
+                        """
+                        UPDATE deep_research_records
+                        SET build_family_key = ?, knowledge_key = NULL, evidence_count = 0,
+                            status = CASE WHEN status = 'valid' THEN 'needs_revalidation' ELSE status END,
+                            last_seen_at = ?
+                        WHERE record_id = ?
+                        """,
+                        (family.key, now, row["record_id"]),
+                    )
+                    continue
+                clusters.setdefault(key, []).append((row, family))
+
+            superseded_record_count = 0
+            evidence_added_count = 0
+            canonical_record_count = 0
+            skipped_invalid_record_count = 0
+            for key, candidates in sorted(clusters.items()):
+                canonical_row, canonical_family = max(
+                    candidates,
+                    key=lambda item: (
+                        research_identity.record_quality(item[0]),
+                        str(item[0]["last_validated_at"] or ""),
+                        str(item[0]["record_id"]),
+                    ),
+                )
+                canonical_id = str(canonical_row["record_id"])
+                duplicates = [
+                    row for row, _family in candidates if row["record_id"] != canonical_id
+                ]
+                for duplicate in duplicates:
+                    con.execute(
+                        """
+                        UPDATE deep_research_records
+                        SET build_family_key = ?, knowledge_key = ?, status = 'deprecated',
+                            superseded_by_id = ?, last_seen_at = ?
+                        WHERE record_id = ?
+                        """,
+                        (
+                            canonical_family.key,
+                            key,
+                            canonical_id,
+                            now,
+                            duplicate["record_id"],
+                        ),
+                    )
+                superseded_record_count += len(duplicates)
+
+                source_refs: set[str] = set()
+                safe_refs: set[str] = set()
+                # Lower-quality rows are written first so the best representative wins per source.
+                for row, _family in sorted(
+                    candidates, key=lambda item: research_identity.record_quality(item[0])
+                ):
+                    proposal = _deep_record_proposal_from_row(row)
+                    if proposal is None:
+                        skipped_invalid_record_count += 1
+                        continue
+                    source_refs.update(proposal.source_case_refs)
+                    safe_refs.update(proposal.safe_evidence_refs)
+                    evidence_added_count += self._upsert_deep_record_evidence(
+                        con,
+                        knowledge_key=key,
+                        record=proposal,
+                        now=now,
+                    )
+                evidence_count = int(
+                    con.execute(
+                        """
+                        SELECT count(*) FROM deep_research_record_evidence
+                        WHERE knowledge_key = ?
+                        """,
+                        (key,),
+                    ).fetchone()[0]
+                )
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET build_family_key = ?, knowledge_key = ?, evidence_count = ?,
+                        source_case_refs = ?, safe_evidence_refs = ?, last_seen_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (
+                        canonical_family.key,
+                        key,
+                        evidence_count,
+                        _json(sorted(source_refs)),
+                        _json(sorted(safe_refs)),
+                        now,
+                        canonical_id,
+                    ),
+                )
+                canonical_record_count += 1
+
+            # Keep audit rows aligned with their active canonical representative after identities
+            # change, then remove evidence/families made obsolete by the new deterministic keys.
+            deprecated_rows = con.execute(
+                """
+                SELECT record_id, superseded_by_id FROM deep_research_records
+                WHERE superseded_by_id IS NOT NULL
+                """
+            ).fetchall()
+            for deprecated in deprecated_rows:
+                target = con.execute(
+                    """
+                    SELECT build_family_key, knowledge_key FROM deep_research_records
+                    WHERE record_id = ?
+                    """,
+                    (deprecated["superseded_by_id"],),
+                ).fetchone()
+                if target is None:
+                    continue
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET build_family_key = ?, knowledge_key = ?, last_seen_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (
+                        target["build_family_key"],
+                        target["knowledge_key"],
+                        now,
+                        deprecated["record_id"],
+                    ),
+                )
+
+            active_knowledge_keys = set(clusters)
+            for stale_key in sorted(stored_knowledge_keys - active_knowledge_keys):
+                still_referenced = con.execute(
+                    """
+                    SELECT 1 FROM deep_research_records
+                    WHERE knowledge_key = ? AND superseded_by_id IS NULL
+                      AND status != 'deprecated'
+                    LIMIT 1
+                    """,
+                    (stale_key,),
+                ).fetchone()
+                if still_referenced is None:
+                    con.execute(
+                        "DELETE FROM deep_research_record_evidence WHERE knowledge_key = ?",
+                        (stale_key,),
+                    )
+
+            active_family_keys = {family.key for family in family_by_group.values()}
+            for stale_key in sorted(stored_family_keys - active_family_keys):
+                still_referenced = con.execute(
+                    """
+                    SELECT 1 FROM deep_research_records
+                    WHERE build_family_key = ? AND superseded_by_id IS NULL
+                      AND status != 'deprecated'
+                    LIMIT 1
+                    """,
+                    (stale_key,),
+                ).fetchone()
+                if still_referenced is None:
+                    con.execute(
+                        "DELETE FROM research_build_family_evidence WHERE build_family_key = ?",
+                        (stale_key,),
+                    )
+                    con.execute(
+                        "DELETE FROM research_build_families WHERE build_family_key = ?",
+                        (stale_key,),
+                    )
+
+            family_by_source: dict[str, str] = {}
+            for group_id, family in family_by_group.items():
+                for row in groups[group_id]:
+                    for source_ref in _loads(row["source_case_refs"], []):
+                        family_by_source[str(source_ref)] = family.key
+            updated_pattern_origin_count = 0
+            pattern_rows = con.execute(
+                """
+                SELECT pattern_id, transfer_scope, source_case_refs, origin_family_keys
+                FROM research_build_patterns
+                WHERE status IN ('valid', 'needs_revalidation')
+                  AND superseded_by_id IS NULL
+                """
+            ).fetchall()
+            for pattern_row in pattern_rows:
+                origin_family_keys = sorted(
+                    {
+                        family_by_source[source_ref]
+                        for source_ref in _loads(pattern_row["source_case_refs"], [])
+                        if source_ref in family_by_source
+                    }
+                )
+                if not origin_family_keys or origin_family_keys == sorted(
+                    _loads(pattern_row["origin_family_keys"], [])
+                ):
+                    continue
+                family_count = (
+                    len(origin_family_keys)
+                    if str(pattern_row["transfer_scope"]) == "component"
+                    else None
+                )
+                con.execute(
+                    """
+                    UPDATE research_build_patterns
+                    SET origin_family_keys = ?,
+                        family_count = CASE WHEN ? IS NULL THEN family_count ELSE ? END,
+                        last_seen_at = ?
+                    WHERE pattern_id = ?
+                    """,
+                    (
+                        _json(origin_family_keys),
+                        family_count,
+                        family_count,
+                        now,
+                        pattern_row["pattern_id"],
+                    ),
+                )
+                updated_pattern_origin_count += 1
+
+            con.execute(
+                """
+                INSERT INTO meta(key, value) VALUES ('phase4_build_family_backfill_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (BUILD_FAMILY_BACKFILL_VERSION,),
+            )
+            con.commit()
+            return {
+                "status": "applied",
+                "version": BUILD_FAMILY_BACKFILL_VERSION,
+                "scannedRecordCount": len(rows),
+                "classifiedFamilyCount": len({family.key for family in family_by_group.values()}),
+                "classifiedResearchGroupCount": len(family_by_group),
+                "canonicalRecordCount": canonical_record_count,
+                "supersededRecordCount": superseded_record_count,
+                "unclassifiedRecordCount": unclassified_record_count,
+                "unkeyedRecordCount": unkeyed_record_count,
+                "skippedInvalidRecordCount": skipped_invalid_record_count,
+                "evidenceAddedCount": evidence_added_count,
+                "familyEvidenceAddedCount": family_evidence_added_count,
+                "updatedPatternOriginCount": updated_pattern_origin_count,
+            }
+        finally:
+            con.close()
 
     def query_research_memory(
         self,
@@ -45,11 +433,75 @@ class ResearchMemoryService:
         *,
         component_keys: list[str] | None = None,
         limit: int = 10,
+        detail_level: str = "summary",
+        record_ids: list[str] | None = None,
+        include_transferable: bool = False,
+        research_axes: list[str] | None = None,
+        ascendancy_key: str | None = None,
+        primary_skill_key: str | None = None,
+        build_family_keys: list[str] | None = None,
+        record_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
+        if detail_level not in {"summary", "record"}:
+            return research_models.public_error(
+                "invalid_detail_level", ["detail_level must be summary or record"]
+            )
         component_keys = sorted({str(key) for key in component_keys or [] if str(key).strip()})
+        research_axes = sorted({str(axis) for axis in research_axes or [] if str(axis).strip()})
+        ascendancy_key = str(ascendancy_key or "").strip() or None
+        primary_skill_key = str(primary_skill_key or "").strip() or None
+        build_family_keys = sorted(
+            {str(key).strip() for key in build_family_keys or [] if str(key).strip()}
+        )
+        record_kinds = sorted(
+            {
+                str(record_kind).strip()
+                for record_kind in record_kinds or []
+                if str(record_kind).strip()
+            }
+        )
+        invalid_axes = sorted(set(research_axes) - research_models.OBSERVATION_AXES)
+        if invalid_axes:
+            return research_models.public_error(
+                "invalid_research_axes",
+                ["research_axes must use canonical observation axes: " + ", ".join(invalid_axes)],
+            )
+        invalid_record_kinds = sorted(
+            set(record_kinds) - research_models.DEEP_RESEARCH_RECORD_KINDS
+        )
+        if invalid_record_kinds:
+            return research_models.public_error(
+                "invalid_record_kinds",
+                [
+                    "record_kinds must use canonical deep research record kinds: "
+                    + ", ".join(invalid_record_kinds)
+                ],
+            )
+        component_key_groups = self._component_key_groups(component_keys)
+        primary_skill_keys = (
+            sorted(
+                {key for group in self._component_key_groups([primary_skill_key]) for key in group}
+            )
+            if primary_skill_key
+            else []
+        )
+        record_ids = sorted({str(item) for item in record_ids or [] if str(item).strip()})
         dedupe_ref = (
             "dq-"
-            + _stable_hash({"query": _normalize_text(query), "component_keys": component_keys})[:16]
+            + _stable_hash(
+                {
+                    "query": _normalize_text(query),
+                    "component_keys": component_keys,
+                    "detail_level": detail_level,
+                    "record_ids": record_ids,
+                    "include_transferable": include_transferable,
+                    "research_axes": research_axes,
+                    "ascendancy_key": ascendancy_key,
+                    "primary_skill_key": primary_skill_key,
+                    "build_family_keys": build_family_keys,
+                    "record_kinds": record_kinds,
+                }
+            )[:16]
         )
         con = mature_learning.connect(self.db_path)
         try:
@@ -61,8 +513,90 @@ class ResearchMemoryService:
                 component_keys=component_keys,
                 now=now,
             )
-            rows = self._query_rows(con, query, component_keys, limit)
+            rows = (
+                []
+                if record_ids and not query.strip() and not component_keys
+                else self._query_rows(con, query, component_key_groups, limit)
+            )
             results = [self._fragment_result(row) for row in rows]
+            explicit_family_filter = bool(ascendancy_key or primary_skill_key or build_family_keys)
+            family_rows = (
+                self._query_build_family_rows(
+                    con,
+                    ascendancy_key=ascendancy_key,
+                    primary_skill_keys=primary_skill_keys,
+                    build_family_keys=build_family_keys,
+                    limit=min(max(1, limit), 12),
+                )
+                if explicit_family_filter
+                else []
+            )
+            selected_family_keys = [str(row["build_family_key"]) for row in family_rows]
+            record_rows = self._query_deep_record_rows(
+                con,
+                query=query,
+                component_key_groups=component_key_groups,
+                limit=min(max(1, limit), 6),
+                record_ids=record_ids,
+                build_family_keys=selected_family_keys,
+                record_kinds=record_kinds,
+                query_is_preference=explicit_family_filter,
+            )
+            deep_records = [
+                self._deep_record_result(row, include_content=detail_level == "record")
+                for row in record_rows
+            ]
+            if not explicit_family_filter:
+                selected_family_keys = sorted(
+                    {str(row["build_family_key"]) for row in record_rows if row["build_family_key"]}
+                )
+                family_rows = self._query_build_family_rows(
+                    con,
+                    ascendancy_key=None,
+                    primary_skill_keys=[],
+                    build_family_keys=selected_family_keys,
+                    limit=min(max(1, limit), 12),
+                )
+            build_families = self._build_family_results(con, family_rows)
+            family_keys = [str(row["buildFamilyKey"]) for row in build_families]
+            scope_component_keys = {key for group in component_key_groups for key in group}
+            for row in rows:
+                scope_component_keys.update(_loads(row["component_keys"], []))
+                scope_component_keys.update(_loads(row["affected_component_keys"], []))
+            for row in record_rows:
+                scope_component_keys.update(_loads(row["component_keys"], []))
+            for family in build_families:
+                scope_component_keys.update(
+                    [
+                        family["ascendancyKey"],
+                        family["primarySkillKey"],
+                        *family["secondarySkillKeys"],
+                    ]
+                )
+            context_limit = min(max(1, limit), 6)
+            semantic_edges = self._query_creator_semantic_edges(
+                con,
+                component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
+                limit=context_limit,
+            )
+            build_patterns = self._query_creator_build_patterns(
+                con,
+                component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
+                family_keys=family_keys,
+                limit=context_limit,
+            )
+            transferable_patterns = (
+                self._query_creator_transferable_patterns(
+                    con,
+                    query=query,
+                    component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
+                    research_axes=research_axes,
+                    exclude_origin_family_keys=family_keys,
+                    limit=min(4, max(1, limit)),
+                )
+                if include_transferable
+                else []
+            )
             con.commit()
         finally:
             con.close()
@@ -70,9 +604,760 @@ class ResearchMemoryService:
             "status": "known",
             "dedupeQueryRef": dedupe_ref,
             "results": results,
+            "deepResearchRecords": deep_records,
+            "buildFamilies": build_families,
+            "semanticEdges": semantic_edges,
+            "buildPatterns": build_patterns,
+            "transferablePatterns": transferable_patterns,
+            "requestedComponentKeys": component_keys,
+            "requestedResearchAxes": research_axes,
+            "requestedAscendancyKey": ascendancy_key,
+            "requestedPrimarySkillKey": primary_skill_key,
+            "requestedBuildFamilyKeys": build_family_keys,
+            "requestedRecordKinds": record_kinds,
+            "includeTransferable": include_transferable,
+            "retrievalPolicy": {
+                "familyKnowledgePriority": "higher",
+                "separateLanes": True,
+                "scopeWeights": RESEARCH_MEMORY_SCOPE_WEIGHTS,
+                "transferableConfidenceWeights": TRANSFER_CONFIDENCE_WEIGHTS,
+                "transferableResultLimit": min(4, max(1, limit)),
+                "originFamilyTransferablePatternsUseFamilyWeight": True,
+                "transferableKnowledgeNeverOutranksEquivalentFamilyKnowledge": True,
+            },
+            "componentKeyGroups": component_key_groups,
+            "detailLevel": detail_level,
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def _component_key_groups(self, component_keys: list[str]) -> list[list[str]]:
+        """Expand graph-backed gem/active-skill identities without fuzzy matching."""
+
+        adjacency: dict[str, set[str]] = {}
+        if self.graph_service is not None:
+            nodes_by_key = {node.stable_key: node for node in self.graph_service.snapshot.nodes}
+            for edge in self.graph_service.snapshot.edges:
+                if edge.status != "valid" or edge.edge_type not in {"grants_skill", "granted_by"}:
+                    continue
+                source = nodes_by_key.get(edge.source_key)
+                target = nodes_by_key.get(edge.target_key)
+                if source is None or target is None:
+                    continue
+                if {source.node_type, target.node_type} != {"skill_gem", "active_skill"}:
+                    continue
+                adjacency.setdefault(source.stable_key, set()).add(target.stable_key)
+                adjacency.setdefault(target.stable_key, set()).add(source.stable_key)
+
+        groups: set[tuple[str, ...]] = set()
+        for component_key in component_keys:
+            equivalents = {component_key}
+            pending = [component_key]
+            while pending:
+                current = pending.pop()
+                for candidate in adjacency.get(current, set()):
+                    if candidate not in equivalents:
+                        equivalents.add(candidate)
+                        pending.append(candidate)
+            groups.add(tuple(sorted(equivalents)))
+        return [list(group) for group in sorted(groups)]
+
+    def validate_deep_research_records(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate deep records for a safe review without persisting proposal data."""
+        payload = _normalize_deep_record_version_context(payload)
+        unsupported_pob_version = str(payload.pop("__unsupported_pob_version__", "") or "")
+        if unsupported_pob_version:
+            return research_models.rejection(
+                "unsupported_pob_version",
+                caveats=[
+                    "PoB version must be one of the application-managed compatibility values."
+                ],
+                facts={"submittedPobVersion": unsupported_pob_version},
+            )
+        validation = research_models.validate_researcher_output(payload)
+        if validation["status"] == "error":
+            return validation
+        copy_error = _copy_safety_error(payload)
+        if copy_error is not None:
+            return copy_error
+        output = research_models.ResearcherOutput.model_validate(payload)
+        records_by_group: dict[str, list[research_models.DeepResearchRecordProposal]] = {}
+        for record in output.deep_research_records:
+            records_by_group.setdefault(record.research_group_id, []).append(record)
+        families_by_group = {
+            group_id: research_identity.infer_build_family(records)
+            for group_id, records in records_by_group.items()
+        }
+        for record in output.deep_research_records:
+            scope_keys = [key for key in (record.class_key, record.ascendancy_key) if key]
+            endpoint_error = self._component_endpoint_error([*record.component_keys, *scope_keys])
+            if endpoint_error is not None:
+                return endpoint_error
+        unkeyed_records = [
+            record.title
+            for record in output.deep_research_records
+            if families_by_group.get(record.research_group_id) is not None
+            and research_identity.knowledge_key(record, families_by_group[record.research_group_id])
+            is None
+        ]
+        return {
+            "status": "accepted",
+            "validationOnly": True,
+            "candidateRecordIds": [
+                _deep_record_id(record) for record in output.deep_research_records
+            ],
+            "deepResearchRecordCount": len(output.deep_research_records),
+            "unkeyedRecordCount": len(unkeyed_records),
+            "unkeyedRecordTitles": unkeyed_records,
+            "nextStep": "Write the validated candidates to the leased safe review and run accept.",
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    def validate_research_fragments(
+        self,
+        payload: dict[str, Any],
+        *,
+        dedupe_query_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate fragment proposals and dedupe state without writing memory."""
+        if not dedupe_query_ref:
+            return research_models.rejection(
+                "missing_dedupe_query",
+                suggested_repair="Call query_research_memory before proposing a new fragment.",
+            )
+        if not self._dedupe_query_ref_exists(dedupe_query_ref):
+            return research_models.rejection(
+                "invalid_dedupe_query_ref",
+                suggested_repair="Call query_research_memory in this memory store first.",
+            )
+        validation = research_models.validate_researcher_output(payload)
+        if validation["status"] == "error":
+            return validation
+        copy_error = _copy_safety_error(payload)
+        if copy_error is not None:
+            return copy_error
+        output = research_models.ResearcherOutput.model_validate(payload)
+        con = mature_learning.connect(self.db_path)
+        try:
+            for fragment in output.fragments:
+                duplicate = self._duplicate_fragment(con, fragment)
+                if duplicate is not None:
+                    return research_models.rejection(
+                        "duplicate_fragment_candidate",
+                        proposal_id=duplicate,
+                        suggested_repair="Reference the existing fragment in the safe review.",
+                        facts={"existingFragmentIds": [duplicate]},
+                    )
+        finally:
+            con.close()
+        return {
+            "status": "accepted",
+            "validationOnly": True,
+            "candidateFragmentIds": [_fragment_id(fragment) for fragment in output.fragments],
+            "fragmentCount": len(output.fragments),
+            "nextStep": "Write the validated candidates to the leased safe review and run accept.",
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    def validate_semantic_edges(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate semantic edges against graph and memory state without persisting them."""
+        validation = research_models.validate_researcher_output(payload)
+        if validation["status"] == "error":
+            return validation
+        copy_error = _copy_safety_error(payload)
+        if copy_error is not None:
+            return copy_error
+        output = research_models.ResearcherOutput.model_validate(payload)
+        con = mature_learning.connect(self.db_path)
+        try:
+            candidate_ids: list[str] = []
+            for edge in output.semantic_edges:
+                error = self._endpoint_resolution_error(edge)
+                if error is None:
+                    error = self._endpoint_error(edge.source_key, edge.target_key)
+                if error is None:
+                    error = self._semantic_conflict(con, edge)
+                if error is not None:
+                    return error
+                candidate_ids.append(_edge_identity(edge)[0])
+        finally:
+            con.close()
+        return {
+            "status": "accepted",
+            "validationOnly": True,
+            "candidateEdgeIds": candidate_ids,
+            "semanticEdgeCount": len(candidate_ids),
+            "nextStep": "Write the validated candidates to the leased safe review and run accept.",
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    def validate_build_patterns(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate observations and patterns without persisting proposal data."""
+        validation = research_models.validate_researcher_output(payload)
+        if validation["status"] == "error":
+            return validation
+        copy_error = _copy_safety_error(payload)
+        if copy_error is not None:
+            return copy_error
+        output = research_models.ResearcherOutput.model_validate(payload)
+        link_error = _pattern_observation_link_error(output)
+        if link_error is not None:
+            return link_error
+        for observation in output.build_design_observations:
+            error = self._observation_resolution_error(observation)
+            if error is None:
+                error = self._component_endpoint_error(
+                    [component.component_key for component in observation.components]
+                )
+            if error is not None:
+                return error
+        for pattern in output.patterns:
+            endpoint_error = self._component_endpoint_error(pattern.component_keys)
+            if endpoint_error is not None:
+                return endpoint_error
+        return {
+            "status": "accepted",
+            "validationOnly": True,
+            "candidateObservationIds": [
+                _observation_id(observation) for observation in output.build_design_observations
+            ],
+            "candidatePatternIds": [_pattern_id(pattern) for pattern in output.patterns],
+            "observationCount": len(output.build_design_observations),
+            "patternCount": len(output.patterns),
+            "nextStep": "Write the validated candidates to the leased safe review and run accept.",
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    def propose_deep_research_records(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = _normalize_deep_record_version_context(payload)
+        unsupported_pob_version = str(payload.pop("__unsupported_pob_version__", "") or "")
+        if unsupported_pob_version:
+            result = research_models.rejection(
+                "unsupported_pob_version",
+                caveats=[
+                    "PoB version must be one of the application-managed compatibility values."
+                ],
+                facts={"submittedPobVersion": unsupported_pob_version},
+            )
+            self._record_rejection(payload, result)
+            return result
+        validation = research_models.validate_researcher_output(payload)
+        if validation["status"] == "error":
+            self._record_rejection(payload, validation)
+            return validation
+        copy_error = _copy_safety_error(payload)
+        if copy_error is not None:
+            self._record_rejection(payload, copy_error)
+            return copy_error
+
+        output = research_models.ResearcherOutput.model_validate(payload)
+        for record in output.deep_research_records:
+            scope_keys = [key for key in (record.class_key, record.ascendancy_key) if key]
+            endpoint_error = self._component_endpoint_error([*record.component_keys, *scope_keys])
+            if endpoint_error is not None:
+                self._record_rejection(payload, endpoint_error)
+                return endpoint_error
+
+        con = mature_learning.connect(self.db_path)
+        try:
+            now = _now()
+            record_ids: list[str] = []
+            record_writes: list[dict[str, Any]] = []
+            knowledge_keys: set[str] = set()
+            build_family_keys: set[str] = set()
+            created_record_count = 0
+            updated_record_count = 0
+            evidence_added_count = 0
+            family_evidence_added_count = 0
+            created_build_family_count = 0
+            unkeyed_record_titles: list[str] = []
+            records_by_group: dict[str, list[research_models.DeepResearchRecordProposal]] = {}
+            for record in output.deep_research_records:
+                records_by_group.setdefault(record.research_group_id, []).append(record)
+            families_by_group = {
+                group_id: research_identity.infer_build_family(records)
+                for group_id, records in records_by_group.items()
+            }
+            for group_id, family in families_by_group.items():
+                if family is None:
+                    continue
+                created_build_family_count += int(
+                    con.execute(
+                        "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                        (family.key,),
+                    ).fetchone()
+                    is None
+                )
+                sources = sorted(
+                    {
+                        source
+                        for record in records_by_group[group_id]
+                        for source in record.source_case_refs
+                    }
+                )
+                family_evidence_added_count += self._upsert_build_family(
+                    con,
+                    family=family,
+                    source_case_refs=sources,
+                    now=now,
+                )
+                build_family_keys.add(family.key)
+            for record in output.deep_research_records:
+                persisted = self._persist_deep_record(
+                    con,
+                    record=record,
+                    family=families_by_group.get(record.research_group_id),
+                    now=now,
+                )
+                canonical = con.execute(
+                    """
+                    SELECT record_id, research_group_id, build_family_key, knowledge_key,
+                           evidence_count, record_kind, title, summary, content,
+                           component_keys, source_case_refs, safe_evidence_refs
+                    FROM deep_research_records
+                    WHERE record_id = ?
+                    """,
+                    (persisted["record_id"],),
+                ).fetchone()
+                if canonical is None:
+                    raise RuntimeError(
+                        f"persisted deep research record missing: {persisted['record_id']}"
+                    )
+                record_ids.append(persisted["record_id"])
+                record_writes.append(
+                    {
+                        "recordId": persisted["record_id"],
+                        "researchGroupId": record.research_group_id,
+                        "recordKind": record.record_kind,
+                        "title": record.title,
+                        "submittedTitle": record.title,
+                        "canonicalRecord": {
+                            "recordId": canonical["record_id"],
+                            "researchGroupId": canonical["research_group_id"],
+                            "buildFamilyKey": canonical["build_family_key"],
+                            "knowledgeKey": canonical["knowledge_key"],
+                            "evidenceCount": int(canonical["evidence_count"]),
+                            "recordKind": canonical["record_kind"],
+                            "title": canonical["title"],
+                            "summary": canonical["summary"],
+                            "componentKeys": _loads(canonical["component_keys"], []),
+                            "sourceCaseRefs": _loads(canonical["source_case_refs"], []),
+                            "safeEvidenceRefs": _loads(canonical["safe_evidence_refs"], []),
+                        },
+                        "canonicalContentMatchesSubmitted": (
+                            canonical["title"] == record.title
+                            and canonical["summary"] == record.summary
+                            and canonical["content"] == record.content
+                        ),
+                        "created": bool(persisted["created"]),
+                        "evidenceAddedCount": int(persisted["evidence_added_count"]),
+                    }
+                )
+                if persisted["knowledge_key"]:
+                    knowledge_keys.add(persisted["knowledge_key"])
+                elif families_by_group.get(record.research_group_id) is not None:
+                    unkeyed_record_titles.append(record.title)
+                created_record_count += int(persisted["created"])
+                updated_record_count += int(not persisted["created"])
+                evidence_added_count += int(persisted["evidence_added_count"])
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+        return {
+            "status": "accepted",
+            "recordIds": sorted(set(record_ids)),
+            "recordWrites": record_writes,
+            "knowledgeKeys": sorted(knowledge_keys),
+            "buildFamilyKeys": sorted(build_family_keys),
+            "createdRecordCount": created_record_count,
+            "updatedRecordCount": updated_record_count,
+            "evidenceAddedCount": evidence_added_count,
+            "familyEvidenceAddedCount": family_evidence_added_count,
+            "createdBuildFamilyCount": created_build_family_count,
+            "unkeyedRecordCount": len(unkeyed_record_titles),
+            "unkeyedRecordTitles": unkeyed_record_titles,
+            "researchGroupIds": sorted(
+                {record.research_group_id for record in output.deep_research_records}
+            ),
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    def _persist_deep_record(
+        self,
+        con: sqlite3.Connection,
+        *,
+        record: research_models.DeepResearchRecordProposal,
+        family: research_identity.BuildFamilyIdentity | None,
+        now: str,
+    ) -> dict[str, Any]:
+        knowledge_key = research_identity.knowledge_key(record, family) if family else None
+        existing = None
+        if knowledge_key:
+            existing = con.execute(
+                """
+                SELECT * FROM deep_research_records
+                WHERE knowledge_key = ? AND superseded_by_id IS NULL
+                LIMIT 1
+                """,
+                (knowledge_key,),
+            ).fetchone()
+        if existing is None:
+            existing_id = self._existing_deep_record_id(con, record)
+            if existing_id:
+                existing = con.execute(
+                    "SELECT * FROM deep_research_records WHERE record_id = ?",
+                    (existing_id,),
+                ).fetchone()
+
+        evidence_added_count = 0
+        if knowledge_key:
+            evidence_added_count = self._upsert_deep_record_evidence(
+                con,
+                knowledge_key=knowledge_key,
+                record=record,
+                now=now,
+            )
+        evidence_count = (
+            int(
+                con.execute(
+                    "SELECT count(*) FROM deep_research_record_evidence WHERE knowledge_key = ?",
+                    (knowledge_key,),
+                ).fetchone()[0]
+            )
+            if knowledge_key
+            else 0
+        )
+
+        if existing is None:
+            record_id = (
+                "drr-" + _stable_hash({"knowledge_key": knowledge_key})[:16]
+                if knowledge_key
+                else _deep_record_id(record)
+            )
+            values = self._deep_record_values(
+                record,
+                record_id=record_id,
+                build_family_key=family.key if family else None,
+                knowledge_key=knowledge_key,
+                evidence_count=evidence_count,
+                now=now,
+            )
+            columns = tuple(values)
+            con.execute(
+                f"INSERT INTO deep_research_records({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                tuple(values[column] for column in columns),
+            )
+            return {
+                "record_id": record_id,
+                "knowledge_key": knowledge_key,
+                "created": True,
+                "evidence_added_count": evidence_added_count,
+            }
+
+        record_id = str(existing["record_id"])
+        old_knowledge_key = str(existing["knowledge_key"] or "")
+        merged_sources = sorted(
+            set(_loads(existing["source_case_refs"], [])) | set(record.source_case_refs)
+        )
+        merged_evidence = sorted(
+            set(_loads(existing["safe_evidence_refs"], [])) | set(record.safe_evidence_refs)
+        )
+        identity_changed = bool(
+            (knowledge_key and str(existing["knowledge_key"] or "") != knowledge_key)
+            or (family and str(existing["build_family_key"] or "") != family.key)
+        )
+        stored_typed_payload = _loads(existing["typed_payload"], {})
+        typed_identity_changed = any(
+            key in record.typed_payload
+            and stored_typed_payload.get(key) != record.typed_payload.get(key)
+            for key in ("familyCoreSkillKeys", "resourceMechanisms")
+        )
+        same_source_revision = set(_loads(existing["source_case_refs"], [])) == set(
+            record.source_case_refs
+        )
+        use_incoming = (
+            identity_changed
+            or typed_identity_changed
+            # Quality ranking selects a representative across different sources. A newly
+            # accepted review of the exact same source set is instead a revision and must
+            # be able to correct shorter prose without being blocked by content length.
+            or same_source_revision
+            or (
+                research_identity.record_quality(record)
+                > research_identity.record_quality(existing)
+            )
+        )
+        if use_incoming:
+            values = self._deep_record_values(
+                record,
+                record_id=record_id,
+                build_family_key=family.key if family else existing["build_family_key"],
+                knowledge_key=knowledge_key or existing["knowledge_key"],
+                evidence_count=evidence_count,
+                now=now,
+            )
+            values["created_at"] = existing["created_at"]
+            values["source_case_refs"] = _json(merged_sources)
+            values["safe_evidence_refs"] = _json(merged_evidence)
+            assignments = ", ".join(f"{column} = ?" for column in values if column != "record_id")
+            con.execute(
+                f"UPDATE deep_research_records SET {assignments} WHERE record_id = ?",
+                tuple(values[column] for column in values if column != "record_id") + (record_id,),
+            )
+            if identity_changed and old_knowledge_key and old_knowledge_key != knowledge_key:
+                # A same-source revision can legitimately correct the structured roles that form
+                # its knowledge identity. The replacement evidence was written under the new key
+                # above; retain no orphan evidence under the superseded identity once no record
+                # references it.
+                still_referenced = con.execute(
+                    "SELECT 1 FROM deep_research_records WHERE knowledge_key = ? LIMIT 1",
+                    (old_knowledge_key,),
+                ).fetchone()
+                if still_referenced is None:
+                    con.execute(
+                        "DELETE FROM deep_research_record_evidence WHERE knowledge_key = ?",
+                        (old_knowledge_key,),
+                    )
+        else:
+            con.execute(
+                """
+                UPDATE deep_research_records
+                SET build_family_key = COALESCE(?, build_family_key),
+                    knowledge_key = COALESCE(?, knowledge_key),
+                    evidence_count = ?,
+                    source_case_refs = ?,
+                    safe_evidence_refs = ?,
+                    last_seen_at = ?,
+                    last_validated_at = ?
+                WHERE record_id = ?
+                """,
+                (
+                    family.key if family else None,
+                    knowledge_key,
+                    evidence_count,
+                    _json(merged_sources),
+                    _json(merged_evidence),
+                    now,
+                    now,
+                    record_id,
+                ),
+            )
+        return {
+            "record_id": record_id,
+            "knowledge_key": knowledge_key,
+            "created": False,
+            "evidence_added_count": evidence_added_count,
+        }
+
+    def _deep_record_values(
+        self,
+        record: research_models.DeepResearchRecordProposal,
+        *,
+        record_id: str,
+        build_family_key: str | None,
+        knowledge_key: str | None,
+        evidence_count: int,
+        now: str,
+    ) -> dict[str, Any]:
+        return {
+            "record_id": record_id,
+            "research_group_id": record.research_group_id,
+            "build_family_key": build_family_key,
+            "knowledge_key": knowledge_key,
+            "evidence_count": evidence_count,
+            "record_kind": record.record_kind,
+            "title": record.title,
+            "summary": record.summary,
+            "content": record.content,
+            "content_language": record.content_language,
+            "length_exception_reason": record.length_exception_reason,
+            "component_keys": _json(sorted(set(record.component_keys))),
+            "component_mentions": _json(
+                [mention.model_dump(mode="json") for mention in record.component_mentions]
+            ),
+            "source_case_refs": _json(sorted(set(record.source_case_refs))),
+            "safe_evidence_refs": _json(sorted(set(record.safe_evidence_refs))),
+            "conditions": _json(record.conditions),
+            "failure_conditions": _json(record.failure_conditions),
+            "typed_payload": _json(record.typed_payload),
+            "class_key": record.class_key,
+            "ascendancy_key": record.ascendancy_key,
+            "extraction_method_version": record.extraction_method_version,
+            "record_schema_version": record.record_schema_version,
+            "game_patch": record.game_patch,
+            "passive_tree_version": record.passive_tree_version,
+            "pob_version_or_commit": record.pob_version_or_commit,
+            "visibility": record.visibility,
+            "split": record.split,
+            "knowledge_scope": record.knowledge_scope,
+            "status": record.status,
+            "copy_safety_state": record.copy_safety_state,
+            "current_version_context": _json(
+                {
+                    "game_patch": record.game_patch,
+                    "passive_tree_version": record.passive_tree_version,
+                    "pob_version_or_commit": record.pob_version_or_commit,
+                }
+            ),
+            "created_at": now,
+            "last_seen_at": now,
+            "last_validated_at": now,
+            "superseded_by_id": None,
+        }
+
+    def _upsert_build_family(
+        self,
+        con: sqlite3.Connection,
+        *,
+        family: research_identity.BuildFamilyIdentity,
+        source_case_refs: list[str],
+        now: str,
+    ) -> int:
+        con.execute(
+            """
+            INSERT INTO research_build_families(
+                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                evidence_count, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(build_family_key) DO UPDATE SET last_seen_at = excluded.last_seen_at
+            """,
+            (
+                family.key,
+                family.ascendancy_key,
+                family.primary_skill_key,
+                _json(list(family.secondary_skill_keys)),
+                now,
+                now,
+            ),
+        )
+        added = 0
+        for source_ref in sorted(set(source_case_refs)):
+            exists = con.execute(
+                """
+                SELECT 1 FROM research_build_family_evidence
+                WHERE build_family_key = ? AND source_case_ref = ?
+                """,
+                (family.key, source_ref),
+            ).fetchone()
+            added += int(exists is None)
+            con.execute(
+                """
+                INSERT INTO research_build_family_evidence(
+                    build_family_key, source_case_ref, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (family.key, source_ref, now, now),
+            )
+        con.execute(
+            """
+            UPDATE research_build_families
+            SET evidence_count = (
+                SELECT count(*) FROM research_build_family_evidence
+                WHERE build_family_key = ?
+            ), last_seen_at = ?
+            WHERE build_family_key = ?
+            """,
+            (family.key, now, family.key),
+        )
+        return added
+
+    def _upsert_deep_record_evidence(
+        self,
+        con: sqlite3.Connection,
+        *,
+        knowledge_key: str,
+        record: research_models.DeepResearchRecordProposal,
+        now: str,
+    ) -> int:
+        added = 0
+        for source_ref in sorted(set(record.source_case_refs)):
+            existing = con.execute(
+                """
+                SELECT safe_evidence_refs FROM deep_research_record_evidence
+                WHERE knowledge_key = ? AND source_case_ref = ?
+                """,
+                (knowledge_key, source_ref),
+            ).fetchone()
+            added += int(existing is None)
+            safe_refs = sorted(
+                set(record.safe_evidence_refs)
+                | (set(_loads(existing["safe_evidence_refs"], [])) if existing else set())
+            )
+            con.execute(
+                """
+                INSERT INTO deep_research_record_evidence(
+                    knowledge_key, source_case_ref, safe_evidence_refs,
+                    observed_component_keys, observed_component_mentions, conditions,
+                    failure_conditions, game_patch, passive_tree_version,
+                    pob_version_or_commit, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(knowledge_key, source_case_ref) DO UPDATE SET
+                    safe_evidence_refs = excluded.safe_evidence_refs,
+                    observed_component_keys = excluded.observed_component_keys,
+                    observed_component_mentions = excluded.observed_component_mentions,
+                    conditions = excluded.conditions,
+                    failure_conditions = excluded.failure_conditions,
+                    game_patch = excluded.game_patch,
+                    passive_tree_version = excluded.passive_tree_version,
+                    pob_version_or_commit = excluded.pob_version_or_commit,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    knowledge_key,
+                    source_ref,
+                    _json(safe_refs),
+                    _json(sorted(set(record.component_keys))),
+                    _json(
+                        [mention.model_dump(mode="json") for mention in record.component_mentions]
+                    ),
+                    _json(record.conditions),
+                    _json(record.failure_conditions),
+                    record.game_patch,
+                    record.passive_tree_version,
+                    record.pob_version_or_commit,
+                    now,
+                    now,
+                ),
+            )
+        return added
+
+    def _existing_deep_record_id(
+        self,
+        con: sqlite3.Connection,
+        record: research_models.DeepResearchRecordProposal,
+    ) -> str | None:
+        rows = con.execute(
+            """
+            SELECT record_id, title, source_case_refs
+            FROM deep_research_records
+            WHERE research_group_id = ? AND record_kind = ?
+            """,
+            (record.research_group_id, record.record_kind),
+        ).fetchall()
+        wanted_title = _normalize_text(record.title)
+        wanted_sources = sorted(set(record.source_case_refs))
+        for row in rows:
+            try:
+                stored_sources = sorted(set(json.loads(str(row["source_case_refs"]))))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if (
+                _normalize_text(str(row["title"])) == wanted_title
+                and stored_sources == wanted_sources
+            ):
+                return str(row["record_id"])
+        return None
 
     def propose_research_fragments(
         self,
@@ -351,6 +1636,8 @@ class ResearchMemoryService:
             now = _now()
             observation_ids: list[str] = []
             pattern_ids: list[str] = []
+            transfer_candidate_ids: list[str] = []
+            promoted_pattern_ids: list[str] = []
             for observation in output.build_design_observations:
                 resolution_error = self._observation_resolution_error(observation)
                 if resolution_error is not None:
@@ -374,9 +1661,21 @@ class ResearchMemoryService:
                         knowledge_scope, copy_safety_state, created_at, last_seen_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed', ?, ?)
                     ON CONFLICT(observation_id) DO UPDATE SET
+                        observation_type = excluded.observation_type,
+                        title = excluded.title,
                         summary = excluded.summary,
+                        axes = excluded.axes,
+                        components = excluded.components,
+                        component_keys = excluded.component_keys,
                         source_case_refs = excluded.source_case_refs,
                         safe_evidence_refs = excluded.safe_evidence_refs,
+                        game_patch = excluded.game_patch,
+                        passive_tree_version = excluded.passive_tree_version,
+                        pob_version_or_commit = excluded.pob_version_or_commit,
+                        visibility = excluded.visibility,
+                        split = excluded.split,
+                        knowledge_scope = excluded.knowledge_scope,
+                        copy_safety_state = excluded.copy_safety_state,
                         last_seen_at = excluded.last_seen_at
                     """,
                     (
@@ -416,76 +1715,118 @@ class ResearchMemoryService:
                     self._record_rejection(payload, endpoint_error, con=con)
                     con.commit()
                     return endpoint_error
-                pattern_id = _pattern_id(pattern)
+                pattern, pattern_id, transfer_key, promoted = _prepare_pattern_for_persistence(
+                    con, pattern
+                )
                 planner_visible = _pattern_planner_visible(pattern)
                 con.execute(
                     """
                     INSERT INTO research_build_patterns(
                         pattern_id, pattern_type, title, summary, component_keys,
-                        component_roles, confidence_tier, sample_count, family_count,
+                        component_roles, confidence_tier, transfer_scope, transfer_key,
+                        applicability_axes, applicability_requirements, exclusion_conditions,
+                        transfer_rationale, origin_family_keys, sample_count, family_count,
                         source_diversity_count, denominator, source_case_refs,
                         safe_evidence_refs, context_requirements, planner_hint,
                         verification_tasks, game_patch, passive_tree_version,
                         pob_version_or_commit, visibility, split, knowledge_scope,
                         status, copy_safety_state, current_version_context, planner_visible,
                         created_at, last_seen_at, last_validated_at, superseded_by_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                              'valid', 'passed', ?, ?, ?, ?, ?, NULL)
+                    ) VALUES (
+                        :pattern_id, :pattern_type, :title, :summary, :component_keys,
+                        :component_roles, :confidence_tier, :transfer_scope, :transfer_key,
+                        :applicability_axes, :applicability_requirements, :exclusion_conditions,
+                        :transfer_rationale, :origin_family_keys, :sample_count, :family_count,
+                        :source_diversity_count, :denominator, :source_case_refs,
+                        :safe_evidence_refs, :context_requirements, :planner_hint,
+                        :verification_tasks, :game_patch, :passive_tree_version,
+                        :pob_version_or_commit, :visibility, :split, :knowledge_scope,
+                        'valid', 'passed', :current_version_context, :planner_visible,
+                        :created_at, :last_seen_at, :last_validated_at, NULL
+                    )
                     ON CONFLICT(pattern_id) DO UPDATE SET
+                        title = excluded.title,
                         summary = excluded.summary,
+                        component_keys = excluded.component_keys,
+                        component_roles = excluded.component_roles,
                         source_case_refs = excluded.source_case_refs,
                         safe_evidence_refs = excluded.safe_evidence_refs,
+                        context_requirements = excluded.context_requirements,
+                        planner_hint = excluded.planner_hint,
+                        verification_tasks = excluded.verification_tasks,
                         confidence_tier = excluded.confidence_tier,
+                        transfer_scope = excluded.transfer_scope,
+                        transfer_key = excluded.transfer_key,
+                        applicability_axes = excluded.applicability_axes,
+                        applicability_requirements = excluded.applicability_requirements,
+                        exclusion_conditions = excluded.exclusion_conditions,
+                        transfer_rationale = excluded.transfer_rationale,
+                        origin_family_keys = excluded.origin_family_keys,
                         sample_count = excluded.sample_count,
                         family_count = excluded.family_count,
                         source_diversity_count = excluded.source_diversity_count,
+                        denominator = excluded.denominator,
+                        pob_version_or_commit = excluded.pob_version_or_commit,
                         status = excluded.status,
+                        copy_safety_state = excluded.copy_safety_state,
                         current_version_context = excluded.current_version_context,
                         planner_visible = excluded.planner_visible,
-                        last_seen_at = excluded.last_seen_at
+                        last_seen_at = excluded.last_seen_at,
+                        last_validated_at = excluded.last_validated_at
                     """,
-                    (
-                        pattern_id,
-                        pattern.pattern_type,
-                        pattern.title,
-                        pattern.summary,
-                        _json(sorted(set(pattern.component_keys))),
-                        _json(dict(sorted(pattern.component_roles.items()))),
-                        pattern.confidence_tier,
-                        pattern.sample_count,
-                        pattern.family_count,
-                        pattern.source_diversity_count,
-                        pattern.denominator,
-                        _json(pattern.source_case_refs),
-                        _json(pattern.safe_evidence_refs),
-                        _json(
+                    {
+                        "pattern_id": pattern_id,
+                        "pattern_type": pattern.pattern_type,
+                        "title": pattern.title,
+                        "summary": pattern.summary,
+                        "component_keys": _json(sorted(set(pattern.component_keys))),
+                        "component_roles": _json(dict(sorted(pattern.component_roles.items()))),
+                        "confidence_tier": pattern.confidence_tier,
+                        "transfer_scope": pattern.transfer_scope,
+                        "transfer_key": transfer_key,
+                        "applicability_axes": _json(sorted(set(pattern.applicability_axes))),
+                        "applicability_requirements": _json(pattern.applicability_requirements),
+                        "exclusion_conditions": _json(pattern.exclusion_conditions),
+                        "transfer_rationale": pattern.transfer_rationale,
+                        "origin_family_keys": _json(sorted(set(pattern.origin_family_keys))),
+                        "sample_count": pattern.sample_count,
+                        "family_count": pattern.family_count,
+                        "source_diversity_count": pattern.source_diversity_count,
+                        "denominator": pattern.denominator,
+                        "source_case_refs": _json(pattern.source_case_refs),
+                        "safe_evidence_refs": _json(pattern.safe_evidence_refs),
+                        "context_requirements": _json(
                             [
                                 item.model_dump(exclude_none=True, exclude_defaults=True)
                                 for item in pattern.context_requirements
                             ]
                         ),
-                        pattern.planner_hint,
-                        _json(pattern.verification_tasks),
-                        pattern.game_patch,
-                        pattern.passive_tree_version,
-                        pattern.pob_version_or_commit,
-                        pattern.visibility,
-                        pattern.split,
-                        pattern.knowledge_scope,
-                        _json(
+                        "planner_hint": pattern.planner_hint,
+                        "verification_tasks": _json(pattern.verification_tasks),
+                        "game_patch": pattern.game_patch,
+                        "passive_tree_version": pattern.passive_tree_version,
+                        "pob_version_or_commit": pattern.pob_version_or_commit,
+                        "visibility": pattern.visibility,
+                        "split": pattern.split,
+                        "knowledge_scope": pattern.knowledge_scope,
+                        "current_version_context": _json(
                             {
                                 "game_patch": pattern.game_patch,
                                 "passive_tree_version": pattern.passive_tree_version,
                                 "pob_version_or_commit": pattern.pob_version_or_commit,
                             }
                         ),
-                        planner_visible,
-                        now,
-                        now,
-                        now,
-                    ),
+                        "planner_visible": planner_visible,
+                        "created_at": now,
+                        "last_seen_at": now,
+                        "last_validated_at": now,
+                    },
                 )
                 pattern_ids.append(pattern_id)
+                if pattern.transfer_scope != "family":
+                    transfer_candidate_ids.append(pattern_id)
+                if promoted:
+                    promoted_pattern_ids.append(pattern_id)
             con.commit()
         finally:
             con.close()
@@ -493,6 +1834,8 @@ class ResearchMemoryService:
             "status": "accepted",
             "observationIds": observation_ids,
             "patternIds": pattern_ids,
+            "transferCandidateIds": transfer_candidate_ids,
+            "promotedPatternIds": promoted_pattern_ids,
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
@@ -764,7 +2107,7 @@ class ResearchMemoryService:
         self,
         con: sqlite3.Connection,
         query: str,
-        component_keys: list[str],
+        component_key_groups: list[list[str]],
         limit: int,
     ) -> list[sqlite3.Row]:
         params: list[Any] = []
@@ -793,21 +2136,515 @@ class ResearchMemoryService:
             placeholders = ",".join("?" for _ in ids)
             where.append(f"fragment_id IN ({placeholders})")
             params.extend(ids)
-        if component_keys:
-            for key in component_keys:
+        if component_key_groups:
+            for group in component_key_groups:
+                placeholders = ",".join("?" for _ in group)
                 where.append(
-                    """
+                    f"""
                     EXISTS (
                         SELECT 1 FROM json_each(research_fragments.component_keys)
-                        WHERE json_each.value = ?
+                        WHERE json_each.value IN ({placeholders})
                     )
                     """
                 )
-                params.append(key)
+                params.extend(group)
         sql = "SELECT * FROM research_fragments WHERE " + " AND ".join(where)
         sql += " ORDER BY evidence_count DESC, fragment_id LIMIT ?"
         params.append(limit)
         return list(con.execute(sql, params).fetchall())
+
+    def _query_build_family_rows(
+        self,
+        con: sqlite3.Connection,
+        *,
+        ascendancy_key: str | None,
+        primary_skill_keys: list[str],
+        build_family_keys: list[str],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        where = ["1 = 1"]
+        params: list[Any] = []
+        if ascendancy_key:
+            where.append("ascendancy_key = ?")
+            params.append(ascendancy_key)
+        if primary_skill_keys:
+            placeholders = ",".join("?" for _ in primary_skill_keys)
+            where.append(f"primary_skill_key IN ({placeholders})")
+            params.extend(primary_skill_keys)
+        if build_family_keys:
+            placeholders = ",".join("?" for _ in build_family_keys)
+            where.append(f"build_family_key IN ({placeholders})")
+            params.extend(build_family_keys)
+        sql = "SELECT * FROM research_build_families WHERE " + " AND ".join(where)
+        sql += " ORDER BY evidence_count DESC, build_family_key LIMIT ?"
+        params.append(limit)
+        return list(con.execute(sql, params).fetchall())
+
+    def _build_family_results(
+        self,
+        con: sqlite3.Connection,
+        family_rows: list[sqlite3.Row],
+    ) -> list[dict[str, Any]]:
+        if not family_rows:
+            return []
+        family_keys = [str(row["build_family_key"]) for row in family_rows]
+        placeholders = ",".join("?" for _ in family_keys)
+        count_rows = con.execute(
+            f"""
+            SELECT build_family_key, record_kind, COUNT(*) AS record_count
+            FROM deep_research_records
+            WHERE build_family_key IN ({placeholders})
+              AND visibility = 'creator_visible'
+              AND split = 'train_context'
+              AND copy_safety_state = 'passed'
+              AND status IN ('valid', 'needs_revalidation')
+              AND COALESCE(json_extract(typed_payload, '$.availability'), 'standard')
+                  != 'source_specific_random'
+            GROUP BY build_family_key, record_kind
+            ORDER BY build_family_key, record_kind
+            """,
+            family_keys,
+        ).fetchall()
+        counts_by_family: dict[str, dict[str, int]] = {key: {} for key in family_keys}
+        for row in count_rows:
+            counts_by_family[str(row["build_family_key"])][str(row["record_kind"])] = int(
+                row["record_count"] or 0
+            )
+        results: list[dict[str, Any]] = []
+        for row in family_rows:
+            family_key = str(row["build_family_key"])
+            record_kind_counts = counts_by_family.get(family_key, {})
+            results.append(
+                {
+                    "buildFamilyKey": family_key,
+                    "ascendancyKey": row["ascendancy_key"],
+                    "primarySkillKey": row["primary_skill_key"],
+                    "secondarySkillKeys": _loads(row["secondary_skill_keys"], []),
+                    "evidenceCount": int(row["evidence_count"] or 0),
+                    "deepRecordCount": sum(record_kind_counts.values()),
+                    "recordKindCounts": record_kind_counts,
+                    "availableRecordKinds": sorted(record_kind_counts),
+                }
+            )
+        return results
+
+    def _query_deep_record_rows(
+        self,
+        con: sqlite3.Connection,
+        *,
+        query: str,
+        component_key_groups: list[list[str]],
+        limit: int,
+        record_ids: list[str],
+        build_family_keys: list[str],
+        record_kinds: list[str],
+        query_is_preference: bool,
+    ) -> list[sqlite3.Row]:
+        where = [
+            "visibility = 'creator_visible'",
+            "split = 'train_context'",
+            "copy_safety_state = 'passed'",
+            "status IN ('valid', 'needs_revalidation')",
+        ]
+        if not record_ids:
+            where.append(
+                "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
+                "!= 'source_specific_random'"
+            )
+        params: list[Any] = []
+        if record_ids:
+            placeholders = ",".join("?" for _ in record_ids)
+            where.append(f"record_id IN ({placeholders})")
+            params.extend(record_ids)
+        if build_family_keys:
+            placeholders = ",".join("?" for _ in build_family_keys)
+            where.append(f"build_family_key IN ({placeholders})")
+            params.extend(build_family_keys)
+        elif query_is_preference:
+            return []
+        if record_kinds:
+            placeholders = ",".join("?" for _ in record_kinds)
+            where.append(f"record_kind IN ({placeholders})")
+            params.extend(record_kinds)
+        if not record_ids and query.strip() and not query_is_preference:
+            terms = [term.casefold() for term in _search_terms(query)]
+            if terms:
+                clauses: list[str] = []
+                for term in terms:
+                    clauses.append(
+                        "(lower(title) LIKE ? OR lower(summary) LIKE ? OR lower(record_kind) LIKE ?)"
+                    )
+                    token = f"%{term}%"
+                    params.extend([token, token, token])
+                where.append("(" + " OR ".join(clauses) + ")")
+        if component_key_groups:
+            for group in component_key_groups:
+                placeholders = ",".join("?" for _ in group)
+                where.append(
+                    f"""
+                    (
+                        EXISTS (
+                            SELECT 1 FROM json_each(deep_research_records.component_keys)
+                            WHERE json_each.value IN ({placeholders})
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM research_build_families
+                            WHERE research_build_families.build_family_key =
+                                  deep_research_records.build_family_key
+                              AND (
+                                  research_build_families.ascendancy_key IN ({placeholders})
+                                  OR research_build_families.primary_skill_key IN ({placeholders})
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM json_each(research_build_families.secondary_skill_keys)
+                                      WHERE json_each.value IN ({placeholders})
+                                  )
+                              )
+                        )
+                    )
+                    """
+                )
+                params.extend([*group, *group, *group, *group])
+        sql = "SELECT * FROM deep_research_records WHERE " + " AND ".join(where)
+        sql += " ORDER BY evidence_count DESC, last_validated_at DESC, record_id"
+        if not query_is_preference:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = list(con.execute(sql, params).fetchall())
+        if query_is_preference:
+            terms = [term.casefold() for term in _search_terms(query)]
+            if terms:
+                rows.sort(
+                    key=lambda row: (
+                        0
+                        if any(
+                            term
+                            in " ".join(
+                                [
+                                    str(row["title"] or ""),
+                                    str(row["summary"] or ""),
+                                    str(row["record_kind"] or ""),
+                                ]
+                            ).casefold()
+                            for term in terms
+                        )
+                        else 1
+                    )
+                )
+            return self._balanced_deep_record_rows(rows, limit=limit)
+        if record_ids or not query.strip() or len(rows) >= limit:
+            return rows
+        family_keys = sorted(
+            {str(row["build_family_key"]) for row in rows if row["build_family_key"]}
+        )
+        if not family_keys:
+            return rows
+        existing_ids = {str(row["record_id"]) for row in rows}
+        family_placeholders = ",".join("?" for _ in family_keys)
+        id_placeholders = ",".join("?" for _ in existing_ids)
+        expanded = con.execute(
+            f"""
+            SELECT * FROM deep_research_records
+            WHERE build_family_key IN ({family_placeholders})
+              AND record_id NOT IN ({id_placeholders})
+              AND visibility = 'creator_visible'
+              AND split = 'train_context'
+              AND copy_safety_state = 'passed'
+              AND status IN ('valid', 'needs_revalidation')
+              AND COALESCE(json_extract(typed_payload, '$.availability'), 'standard') != 'source_specific_random'
+            ORDER BY evidence_count DESC, last_validated_at DESC, record_id
+            LIMIT ?
+            """,
+            [*family_keys, *sorted(existing_ids), limit - len(rows)],
+        ).fetchall()
+        return [*rows, *expanded]
+
+    @staticmethod
+    def _balanced_deep_record_rows(
+        rows: list[sqlite3.Row],
+        *,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Return a bounded cross-Family preview without letting one Family consume every slot."""
+
+        queues: dict[str, list[sqlite3.Row]] = {}
+        family_order: list[str] = []
+        for row in rows:
+            family_key = str(row["build_family_key"] or "unclassified")
+            if family_key not in queues:
+                queues[family_key] = []
+                family_order.append(family_key)
+            queues[family_key].append(row)
+
+        selected: list[sqlite3.Row] = []
+        seen_kinds: dict[str, set[str]] = {key: set() for key in family_order}
+        while len(selected) < limit:
+            made_progress = False
+            for family_key in family_order:
+                queue = queues[family_key]
+                next_index = next(
+                    (
+                        index
+                        for index, row in enumerate(queue)
+                        if str(row["record_kind"]) not in seen_kinds[family_key]
+                    ),
+                    0 if queue else None,
+                )
+                if next_index is None:
+                    continue
+                row = queue.pop(next_index)
+                selected.append(row)
+                seen_kinds[family_key].add(str(row["record_kind"]))
+                made_progress = True
+                if len(selected) >= limit:
+                    break
+            if not made_progress:
+                break
+        return selected
+
+    def _query_creator_semantic_edges(
+        self,
+        con: sqlite3.Connection,
+        *,
+        component_keys: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not component_keys:
+            return []
+        placeholders = ",".join("?" for _ in component_keys)
+        rows = con.execute(
+            f"""
+            SELECT * FROM research_semantic_edges
+            WHERE visibility = 'creator_visible'
+              AND split = 'train_context'
+              AND status = 'valid'
+              AND copy_safety_state = 'passed'
+              AND planner_visible = 1
+              AND (
+                  source_key IN ({placeholders})
+                  OR target_key IN ({placeholders})
+                  OR EXISTS (
+                      SELECT 1 FROM json_each(research_semantic_edges.affected_component_keys)
+                      WHERE json_each.value IN ({placeholders})
+                  )
+              )
+            ORDER BY edge_id
+            LIMIT ?
+            """,
+            [*component_keys, *component_keys, *component_keys, limit],
+        ).fetchall()
+        return [
+            {
+                "edgeId": row["edge_id"],
+                "sourceKey": row["source_key"],
+                "targetKey": row["target_key"],
+                "edgeType": row["edge_type"],
+                "rationale": row["rationale"],
+                "confidence": row["confidence"],
+                "modelability": row["modelability"],
+                "contextRequirements": _loads(row["context_requirements"], []),
+                "affectedComponentKeys": _loads(row["affected_component_keys"], []),
+                "gamePatch": row["game_patch"],
+                "passiveTreeVersion": row["passive_tree_version"],
+                "pobVersionOrCommit": row["pob_version_or_commit"],
+                "status": row["status"],
+                "copySafetyState": row["copy_safety_state"],
+                "noRawMatureBuildMaterial": True,
+            }
+            for row in rows
+        ]
+
+    def _query_creator_build_patterns(
+        self,
+        con: sqlite3.Connection,
+        *,
+        component_keys: list[str],
+        family_keys: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not component_keys and not family_keys:
+            return []
+        base_where = """
+            visibility = 'creator_visible'
+            AND split = 'train_context'
+            AND status = 'valid'
+            AND copy_safety_state = 'passed'
+            AND planner_visible = 1
+        """
+
+        def fetch_rows(extra_where: str, params: list[Any]) -> list[sqlite3.Row]:
+            return list(
+                con.execute(
+                    f"""
+                    SELECT * FROM research_build_patterns
+                    WHERE {base_where} AND ({extra_where})
+                    ORDER BY sample_count DESC, source_diversity_count DESC, pattern_id
+                    LIMIT ?
+                    """,
+                    [*params, limit],
+                ).fetchall()
+            )
+
+        lanes: list[tuple[list[sqlite3.Row], str]] = []
+        if family_keys:
+            placeholders = ",".join("?" for _ in family_keys)
+            origin_match = f"""
+                EXISTS (
+                    SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
+                    WHERE json_each.value IN ({placeholders})
+                )
+            """
+            lanes.append(
+                (
+                    fetch_rows(f"transfer_scope = 'component' AND {origin_match}", family_keys),
+                    "origin_family",
+                )
+            )
+            lanes.append(
+                (
+                    fetch_rows(f"transfer_scope = 'family' AND {origin_match}", family_keys),
+                    "exact_family",
+                )
+            )
+        if component_keys:
+            placeholders = ",".join("?" for _ in component_keys)
+            lanes.append(
+                (
+                    fetch_rows(
+                        f"""
+                        transfer_scope = 'family' AND EXISTS (
+                            SELECT 1 FROM json_each(research_build_patterns.component_keys)
+                            WHERE json_each.value IN ({placeholders})
+                        )
+                        """,
+                        component_keys,
+                    ),
+                    "shared_component",
+                )
+            )
+
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for rows, match_scope in lanes:
+            for row in rows:
+                pattern_id = str(row["pattern_id"])
+                if pattern_id in seen:
+                    continue
+                seen.add(pattern_id)
+                results.append(self._build_pattern_result(row, match_scope=match_scope))
+                if len(results) >= limit:
+                    return results
+        return results
+
+    def _query_creator_transferable_patterns(
+        self,
+        con: sqlite3.Connection,
+        *,
+        query: str,
+        component_keys: list[str],
+        research_axes: list[str],
+        exclude_origin_family_keys: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        where = [
+            "visibility = 'creator_visible'",
+            "split = 'train_context'",
+            "status = 'valid'",
+            "copy_safety_state = 'passed'",
+            "planner_visible = 1",
+            "transfer_scope IN ('component', 'global')",
+            "confidence_tier IN ('case_observation', 'recurring_observation', 'likely_pattern')",
+        ]
+        params: list[Any] = []
+        if exclude_origin_family_keys:
+            placeholders = ",".join("?" for _ in exclude_origin_family_keys)
+            where.append(
+                "NOT EXISTS ("
+                "SELECT 1 FROM json_each(research_build_patterns.origin_family_keys) "
+                f"WHERE json_each.value IN ({placeholders})"
+                ")"
+            )
+            params.extend(exclude_origin_family_keys)
+        if research_axes:
+            placeholders = ",".join("?" for _ in research_axes)
+            where.append(
+                "EXISTS (SELECT 1 FROM json_each(research_build_patterns.applicability_axes) "
+                f"WHERE json_each.value IN ({placeholders}))"
+            )
+            params.extend(research_axes)
+        else:
+            terms = [term.casefold() for term in _search_terms(query)]
+            if terms:
+                term_clauses: list[str] = []
+                for term in terms:
+                    token = f"%{term}%"
+                    term_clauses.append(
+                        "(lower(title) LIKE ? OR lower(summary) LIKE ? "
+                        "OR lower(COALESCE(planner_hint, '')) LIKE ?)"
+                    )
+                    params.extend([token, token, token])
+                where.append("(" + " OR ".join(term_clauses) + ")")
+
+        sql = "SELECT * FROM research_build_patterns WHERE " + " AND ".join(where)
+        sql += " ORDER BY sample_count DESC, source_diversity_count DESC, pattern_id LIMIT ?"
+        params.append(max(limit * 4, limit))
+        rows = list(con.execute(sql, params).fetchall())
+        requested = set(component_keys)
+        rows.sort(
+            key=lambda row: (
+                -len(requested.intersection(_loads(row["component_keys"], []))),
+                -TRANSFER_CONFIDENCE_WEIGHTS.get(str(row["confidence_tier"]), 0.0),
+                -int(row["family_count"] or 0),
+                -int(row["sample_count"] or 0),
+                str(row["pattern_id"]),
+            )
+        )
+        return [
+            self._build_pattern_result(row, match_scope=str(row["transfer_scope"]))
+            for row in rows[:limit]
+        ]
+
+    @staticmethod
+    def _build_pattern_result(row: sqlite3.Row, *, match_scope: str) -> dict[str, Any]:
+        transfer_scope = str(row["transfer_scope"] or "family")
+        if match_scope in {"family", "exact_family", "origin_family"}:
+            weight_scope = "exact_family"
+        elif match_scope == "shared_component":
+            weight_scope = "same_primary_skill"
+        else:
+            weight_scope = transfer_scope
+        result = {
+            "patternId": row["pattern_id"],
+            "patternType": row["pattern_type"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "componentKeys": _loads(row["component_keys"], []),
+            "componentRoles": _loads(row["component_roles"], {}),
+            "confidenceTier": row["confidence_tier"],
+            "sampleCount": int(row["sample_count"]),
+            "familyCount": int(row["family_count"]),
+            "sourceDiversityCount": int(row["source_diversity_count"]),
+            "denominator": row["denominator"],
+            "transferScope": transfer_scope,
+            "matchScope": match_scope,
+            "applicabilityAxes": _loads(row["applicability_axes"], []),
+            "applicabilityRequirements": _loads(row["applicability_requirements"], []),
+            "exclusionConditions": _loads(row["exclusion_conditions"], []),
+            "transferRationale": row["transfer_rationale"],
+            "originFamilyKeys": _loads(row["origin_family_keys"], []),
+            "scopeWeightCap": RESEARCH_MEMORY_SCOPE_WEIGHTS.get(weight_scope, 1.0),
+            "confidenceWeight": TRANSFER_CONFIDENCE_WEIGHTS.get(str(row["confidence_tier"]), 1.0),
+            "contextRequirements": _loads(row["context_requirements"], []),
+            "plannerHint": row["planner_hint"],
+            "verificationTasks": _loads(row["verification_tasks"], []),
+            "gamePatch": row["game_patch"],
+            "passiveTreeVersion": row["passive_tree_version"],
+            "pobVersionOrCommit": row["pob_version_or_commit"],
+            "status": row["status"],
+            "copySafetyState": row["copy_safety_state"],
+            "noRawMatureBuildMaterial": True,
+        }
+        return result
 
     def _record_dedupe_query(
         self,
@@ -860,6 +2697,14 @@ class ResearchMemoryService:
             "matchedSemanticEdgeIds": [],
             "sourceCaseRefs": _loads(row["source_case_refs"], []),
             "safeEvidenceRefs": _loads(row["safe_evidence_refs"], []),
+            "fragmentType": row["fragment_type"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "reusablePrinciple": row["reusable_principle"],
+            "componentKeys": _loads(row["component_keys"], []),
+            "conditions": _loads(row["conditions"], []),
+            "risks": _loads(row["risks"], []),
+            "verificationTasks": _loads(row["verification_tasks"], []),
             "confidence": row["confidence"],
             "modelability": row["modelability"],
             "gamePatch": row["game_patch"],
@@ -871,6 +2716,35 @@ class ResearchMemoryService:
             else [],
             "noRawMatureBuildMaterial": True,
         }
+
+    def _deep_record_result(self, row: sqlite3.Row, *, include_content: bool) -> dict[str, Any]:
+        result = {
+            "recordId": row["record_id"],
+            "researchGroupId": row["research_group_id"],
+            "buildFamilyKey": row["build_family_key"],
+            "knowledgeKey": row["knowledge_key"],
+            "evidenceCount": int(row["evidence_count"] or 0),
+            "recordKind": row["record_kind"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "componentKeys": _loads(row["component_keys"], []),
+            "componentMentions": _loads(row["component_mentions"], []),
+            "sourceCaseRefs": _loads(row["source_case_refs"], []),
+            "safeEvidenceRefs": _loads(row["safe_evidence_refs"], []),
+            "conditions": _loads(row["conditions"], []),
+            "failureConditions": _loads(row["failure_conditions"], []),
+            "classKey": row["class_key"],
+            "ascendancyKey": row["ascendancy_key"],
+            "gamePatch": row["game_patch"],
+            "passiveTreeVersion": row["passive_tree_version"],
+            "status": row["status"],
+            "copySafetyState": row["copy_safety_state"],
+            "noRawMatureBuildMaterial": True,
+        }
+        if include_content:
+            result["content"] = row["content"]
+            result["typedPayload"] = _loads(row["typed_payload"], {})
+        return result
 
     def _duplicate_fragment(
         self,
@@ -1062,6 +2936,8 @@ class ResearchMemoryService:
         return None
 
     def _component_endpoint_error(self, component_keys: list[str]) -> dict[str, Any] | None:
+        if not component_keys:
+            return None
         if self.graph_service is None:
             return research_models.rejection(
                 "graph_service_unavailable",
@@ -1317,7 +3193,7 @@ def _copy_safety_error(payload: Any) -> dict[str, Any] | None:
     paths = copy_safety.find_forbidden_paths(payload)
     if paths:
         return research_models.rejection("copy_safety_violation", caveats=["forbidden raw field"])
-    flags = copy_safety.copyability_flags(payload)
+    flags = copy_safety.durable_knowledge_flags(payload)
     if flags:
         return research_models.rejection("copy_safety_violation", caveats=flags)
     return None
@@ -1509,7 +3385,133 @@ def _observation_id(observation: research_models.BuildDesignObservation) -> str:
     )
 
 
+def _prepare_pattern_for_persistence(
+    con: sqlite3.Connection,
+    pattern: research_models.BuildPatternProposal,
+) -> tuple[research_models.BuildPatternProposal, str, str | None, bool]:
+    transfer_key = _pattern_transfer_key(pattern)
+    if transfer_key is None:
+        return pattern, _pattern_id(pattern), None, False
+
+    existing = con.execute(
+        """
+        SELECT * FROM research_build_patterns
+        WHERE transfer_key = ?
+          AND transfer_scope = ?
+          AND visibility = ?
+          AND split = ?
+          AND knowledge_scope = ?
+          AND game_patch = ?
+          AND passive_tree_version = ?
+          AND status IN ('valid', 'needs_revalidation')
+        ORDER BY last_seen_at DESC, pattern_id
+        LIMIT 1
+        """,
+        (
+            transfer_key,
+            pattern.transfer_scope,
+            pattern.visibility,
+            pattern.split,
+            pattern.knowledge_scope,
+            pattern.game_patch,
+            pattern.passive_tree_version,
+        ),
+    ).fetchone()
+    if existing is None:
+        return pattern, _pattern_id(pattern), transfer_key, False
+
+    source_case_refs = sorted(
+        set(_loads(existing["source_case_refs"], [])) | set(pattern.source_case_refs)
+    )
+    safe_evidence_refs = sorted(
+        set(_loads(existing["safe_evidence_refs"], [])) | set(pattern.safe_evidence_refs)
+    )
+    origin_family_keys = sorted(
+        set(_loads(existing["origin_family_keys"], [])) | set(pattern.origin_family_keys)
+    )
+    sample_count = max(
+        len(source_case_refs), int(existing["sample_count"] or 0), pattern.sample_count
+    )
+    family_count = (
+        len(origin_family_keys)
+        if pattern.transfer_scope == "component"
+        else max(int(existing["family_count"] or 0), pattern.family_count)
+    )
+    source_diversity_count = max(
+        int(existing["source_diversity_count"] or 0), pattern.source_diversity_count
+    )
+    confidence_tier = _transfer_confidence_tier(
+        sample_count=sample_count,
+        family_count=family_count,
+        source_diversity_count=source_diversity_count,
+    )
+    existing_tier = str(existing["confidence_tier"] or "case_observation")
+    promoted = _transfer_confidence_rank(confidence_tier) > _transfer_confidence_rank(existing_tier)
+    denominator_values = [
+        value
+        for value in (existing["denominator"], pattern.denominator, sample_count)
+        if value is not None
+    ]
+    merged = pattern.model_copy(
+        update={
+            "confidence_tier": confidence_tier,
+            "sample_count": sample_count,
+            "family_count": family_count,
+            "source_diversity_count": source_diversity_count,
+            "denominator": max(int(value) for value in denominator_values),
+            "source_case_refs": source_case_refs,
+            "safe_evidence_refs": safe_evidence_refs,
+            "origin_family_keys": origin_family_keys,
+        }
+    )
+    return merged, str(existing["pattern_id"]), transfer_key, promoted
+
+
+def _pattern_transfer_key(pattern: research_models.BuildPatternProposal) -> str | None:
+    if pattern.transfer_scope == "family":
+        return None
+    return (
+        "tpk-"
+        + _stable_hash(
+            {
+                "transfer_scope": pattern.transfer_scope,
+                "pattern_type": pattern.pattern_type,
+                "component_roles": sorted(pattern.component_roles.items()),
+                "applicability_axes": sorted(set(pattern.applicability_axes)),
+                "visibility": pattern.visibility,
+                "split": pattern.split,
+                "knowledge_scope": pattern.knowledge_scope,
+                "version": {
+                    "game_patch": pattern.game_patch,
+                    "passive_tree_version": pattern.passive_tree_version,
+                },
+            }
+        )[:20]
+    )
+
+
+def _transfer_confidence_tier(
+    *, sample_count: int, family_count: int, source_diversity_count: int
+) -> str:
+    if sample_count >= 4 and family_count >= 2 and source_diversity_count >= 2:
+        return "likely_pattern"
+    if sample_count >= 2 and family_count >= 2:
+        return "recurring_observation"
+    return "case_observation"
+
+
+def _transfer_confidence_rank(value: str) -> int:
+    return {
+        "case_observation": 0,
+        "recurring_observation": 1,
+        "likely_pattern": 2,
+    }.get(value, 0)
+
+
 def _pattern_id(pattern: research_models.BuildPatternProposal) -> str:
+    transfer_key = _pattern_transfer_key(pattern)
+    if transfer_key is not None:
+        return "bdp-" + _stable_hash({"transfer_key": transfer_key})[:16]
     return (
         "bdp-"
         + _stable_hash(
@@ -1529,6 +3531,109 @@ def _pattern_id(pattern: research_models.BuildPatternProposal) -> str:
     )
 
 
+def _deep_record_proposal_from_row(
+    row: sqlite3.Row,
+) -> research_models.DeepResearchRecordProposal | None:
+    try:
+        return research_models.DeepResearchRecordProposal.model_validate(
+            {
+                "research_group_id": row["research_group_id"],
+                "record_kind": row["record_kind"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "content": row["content"],
+                "content_language": row["content_language"],
+                "length_exception_reason": row["length_exception_reason"],
+                "component_keys": _loads(row["component_keys"], []),
+                "component_mentions": _loads(row["component_mentions"], []),
+                "source_case_refs": _loads(row["source_case_refs"], []),
+                "safe_evidence_refs": _loads(row["safe_evidence_refs"], []),
+                "conditions": _loads(row["conditions"], []),
+                "failure_conditions": _loads(row["failure_conditions"], []),
+                "typed_payload": _loads(row["typed_payload"], {}),
+                "class_key": row["class_key"],
+                "ascendancy_key": row["ascendancy_key"],
+                "extraction_method_version": row["extraction_method_version"],
+                "record_schema_version": int(row["record_schema_version"]),
+                "game_patch": row["game_patch"],
+                "passive_tree_version": row["passive_tree_version"],
+                "pob_version_or_commit": row["pob_version_or_commit"],
+                "visibility": row["visibility"],
+                "split": row["split"],
+                "knowledge_scope": row["knowledge_scope"],
+                "status": row["status"],
+                "copy_safety_state": row["copy_safety_state"],
+            }
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _historical_family_hints(
+    con: sqlite3.Connection,
+) -> dict[str, set[tuple[str, str]]]:
+    """Reuse safe, resolved observation/pattern roles to repair older record scope metadata."""
+
+    hints: dict[str, set[tuple[str, str]]] = {}
+    observation_rows = con.execute(
+        """
+        SELECT source_case_refs, components
+        FROM research_build_design_observations
+        WHERE copy_safety_state = 'passed'
+        """
+    ).fetchall()
+    for row in observation_rows:
+        pairs = {
+            (str(item.get("role") or ""), str(item.get("component_key") or ""))
+            for item in _loads(row["components"], [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "")
+            and str(item.get("component_key") or "")
+        }
+        for source_ref in _loads(row["source_case_refs"], []):
+            hints.setdefault(str(source_ref), set()).update(pairs)
+
+    pattern_rows = con.execute(
+        """
+        SELECT source_case_refs, component_roles
+        FROM research_build_patterns
+        WHERE copy_safety_state = 'passed'
+          AND status IN ('valid', 'needs_revalidation')
+        """
+    ).fetchall()
+    for row in pattern_rows:
+        roles = _loads(row["component_roles"], {})
+        pairs = (
+            {(str(role), str(component_key)) for component_key, role in roles.items()}
+            if isinstance(roles, dict)
+            else set()
+        )
+        for source_ref in _loads(row["source_case_refs"], []):
+            hints.setdefault(str(source_ref), set()).update(pairs)
+    return hints
+
+
+def _deep_record_id(record: research_models.DeepResearchRecordProposal) -> str:
+    return (
+        "drr-"
+        + _stable_hash(
+            {
+                "research_group_id": record.research_group_id,
+                "record_kind": record.record_kind,
+                "title": _normalize_text(record.title),
+                "component_keys": sorted(set(record.component_keys)),
+                "component_mentions": [
+                    mention.model_dump(mode="json") for mention in record.component_mentions
+                ],
+                "source_case_refs": sorted(set(record.source_case_refs)),
+                "visibility": record.visibility,
+                "split": record.split,
+                "knowledge_scope": record.knowledge_scope,
+            }
+        )[:16]
+    )
+
+
 def _pattern_planner_visible(pattern: research_models.BuildPatternProposal) -> int:
     return 1 if pattern.visibility == "creator_visible" and pattern.split == "train_context" else 0
 
@@ -1536,7 +3641,13 @@ def _pattern_planner_visible(pattern: research_models.BuildPatternProposal) -> i
 def _proposal_bucket(payload: Any) -> tuple[str, str, str]:
     if not isinstance(payload, dict):
         return "unknown", "unknown", "unknown"
-    for key in ("fragments", "semantic_edges", "build_design_observations", "patterns"):
+    for key in (
+        "fragments",
+        "semantic_edges",
+        "build_design_observations",
+        "patterns",
+        "deep_research_records",
+    ):
         values = payload.get(key)
         if isinstance(values, list) and values and isinstance(values[0], dict):
             row = values[0]
@@ -1586,6 +3697,10 @@ def _now() -> str:
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _search_terms(value: str) -> list[str]:
+    return [term for term in re.findall(r"[\w:.-]+", value, flags=re.UNICODE) if len(term) >= 2]
 
 
 def _fts_query(value: str) -> str:

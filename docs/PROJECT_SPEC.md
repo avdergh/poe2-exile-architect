@@ -100,6 +100,33 @@ Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产
 strong evidence、limited evidence、source-data problem 与 unsolved modelability gap，
 并阻止有限证据污染强 reward。
 
+## 上游依赖与长期解耦原则
+
+当前仓库建立在 MIT 许可的 `MaxWilk/poe2-build-mcp` 基座之上，并已经对 Headless PoB bridge、
+计算工具、语料库、MCP 注册、运行时安装和打包流程做了项目所需的修改。现阶段不拆分仓库，也不
+新建独立 runtime 项目；当前可运行版本继续作为单仓维护。
+
+后续开发必须控制新增耦合，为未来按需拆分保留清晰边界：
+
+- Exile Architect 新增的 Judge、知识/记忆、生成、Critic、reward、artifact 和导出功能，应放在
+  项目自身模块中，不继续把产品逻辑写入上游 compute、live 或 PoB bridge 内部；
+- 业务层优先依赖稳定的 typed contract、adapter、service facade 或 MCP tool，不直接读取、修改
+  或假设上游模块的私有对象、内部目录结构和未声明状态；
+- 对 Headless PoB、PoB code codec、静态 corpus 和基础计算能力的调用，应逐步集中到少量明确的
+  runtime 边界，避免 Judge、Knowledge、Generation 等模块分别跨层引用底层实现；
+- 必须修改底层基座时，改动应保持聚焦，说明为什么不能在项目适配层完成，并通过合同测试固定
+  输入、输出、错误、版本和状态所有权；
+- 新工具不能因为实现方便就把 Agent 工作流固化进底层 runtime。底层只提供可验证能力，设计、
+  查询取舍和失败修正仍由 Agent 主导；
+- 安装、更新和打包逻辑应区分项目产品版本、上游基座版本、PoB commit、数据版本和 converter
+  provider 版本，不能继续依赖“它们总在同一仓库、同一版本变化”的隐含假设；
+- 保留上游许可证、来源和修改说明。解耦不表示隐藏派生关系，也不通过复制代码规避 attribution；
+- 暂不执行仓库拆分。只有稳定边界、双边测试、迁移回滚方案和人工验收都准备完成后，才重新评估
+  是否建立独立 runtime 仓库或外部服务。
+
+本原则的目标是让后续功能与上游内部实现保持低耦合，而不是在当前阶段为了形式上的独立而破坏
+已经可运行的生成、Judge 和导出闭环。
+
 ## Phase 关系
 
 Phase 不是平行愿望清单，而是一条验证优先的依赖链：
@@ -112,7 +139,6 @@ Phase 0 文档与边界
   -> Phase 4 Researcher 语义记忆
   -> Phase 5 Agent 主导的生成原型
   -> Phase 6 官方 .build 导出
-  -> Phase 6.5 真实产物驱动的全链路调优与仓库拆分调研
   -> Phase 7 Critic loop / rollback / early stopping
   -> Phase 8 RLAIF-lite reward memory
   -> Phase 9 scale / revalidation / productization
@@ -157,7 +183,6 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
 | Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
-| Phase 6.5 | 筹划中：真实产物驱动的 Judge、知识提取、计算工具和生成流程调优，并调研从上游派生仓库拆为独立项目与外部 runtime 依赖 | Phase 1-6 | 在进入 Critic loop 前，用固定真实生成/导出样例修正全链路误差；定义主项目与 PoE2 runtime 的稳定边界、许可证和双仓迁移 spike，不直接搬迁或删除当前可运行仓库。 | `docs/phases/06_5_system_optimization.md` |
 | Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
 | Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
@@ -174,8 +199,10 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
   Agent 主导，程序只提供工具、边界、评估和报告。
 - 真实成熟 BD 是研究/校准来源，不是复制模板。
 - Raw mature-build material 只允许 quarantine-only transient 使用。
-- 不要持久化或暴露第三方成熟 BD 的 PoB code、raw XML、完整装备表、完整 passive path、完整
-  gem/support links、raw account/character details 或长篇复制攻略文本。系统自己生成、经过可信
+- 不要持久化或暴露第三方成熟 BD 的 PoB code、raw XML、raw account/character details、长篇复制
+  攻略文本，或由全部装备槽、整棵已分配天赋、全部技能组和完整配置组成的整角色镜像。允许保存
+  可复用核心机制包，包括关键技能与辅助组合、局部核心天赋连接、暗金/装备与技能、天赋、资源系统
+  的完整联动；边界按知识作用域而不是组件数量判断。系统自己生成、经过可信
   Judge、并由 Agent 明确接受的最终候选允许作为本地私有 `FinalBuildArtifact` 保存完整 PoB XML，
   但不得进入聊天、人工验收包、研究记忆或 Git。
 - Creator/evaluator/holdout 边界必须强制执行。
@@ -224,6 +251,11 @@ Phase 5 对 freshness 使用降级策略：如果当前游戏补丁、赛季和�
 PoB 数据版本兼容性按赛季大版本比较，精确补丁号只用于来源追踪和注意事项。同一赛季内上游 PoB
 发布小版本只产生更新提醒，不自动撤销已经认证的本地运行时；跨赛季大版本或天赋树世代冲突仍
 必须阻断强验证。
+
+官方天赋树 provider 每小时尝试刷新，但可信缓存允许保留 7 天。GitHub 匿名 API 限流必须输出
+明确诊断；运行环境可以通过 `GH_TOKEN` 或 `GITHUB_TOKEN` 提高限额。当官方提交时间暂时无法
+确认，而本地已认证 PoB/语料与 poe.ninja 对同一赛季天赋树世代一致时，只降低“官方最新提交”
+证据并输出 warning，不把整个构筑错误判成版本不可用；缺少独立交叉证据或世代冲突时仍阻断。
 
 验证耗时也是规格的一部分：
 

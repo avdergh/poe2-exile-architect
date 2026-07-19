@@ -15,6 +15,5 @@
     "knowledge-graph",
     "mcp"
   ],
-  "skills": "./poe-bd-creator-plugin/skills/",
-  "agents": "./poe-bd-creator-plugin/agents/"
+  "skills": "./poe-bd-creator-plugin/skills/"
 }

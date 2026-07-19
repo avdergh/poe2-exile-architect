@@ -14,7 +14,9 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -42,40 +44,13 @@ CHARACTER_LINK = re.compile(
     re.IGNORECASE,
 )
 DEFAULT_BUILD_LIST_URL = "https://poe.ninja/poe2/builds/{league_url}?max-level={max_level}"
-PLAYWRIGHT_PACKAGE_PATH = (
-    Path.home()
-    / "AppData"
-    / "Local"
-    / "OpenAI"
-    / "Codex"
-    / "runtimes"
-    / "cua_node"
-    / "1b23c930bdf84ed6"
-    / "bin"
-    / "node_modules"
-    / "playwright"
-)
-DEFAULT_NODE_EXECUTABLE = (
-    Path.home()
-    / "AppData"
-    / "Local"
-    / "OpenAI"
-    / "Codex"
-    / "runtimes"
-    / "cua_node"
-    / "1b23c930bdf84ed6"
-    / "bin"
-    / "node.exe"
-)
-PLAYWRIGHT_CHROMIUM_PATH = (
-    Path.home()
-    / "AppData"
-    / "Local"
-    / "ms-playwright"
-    / "chromium-1228"
-    / "chrome-win64"
-    / "chrome.exe"
-)
+NINJA_LIST_CHARACTER_WAIT_MS = 15_000
+NINJA_DETAIL_IMPORT_WAIT_MS = 30_000
+NINJA_NAVIGATION_TIMEOUT_MS = 45_000
+NINJA_PLAYWRIGHT_PROCESS_TIMEOUT_SECONDS = 90
+NODE_ENV = "POE2_RESEARCH_NODE"
+PLAYWRIGHT_ENV = "POE2_RESEARCH_PLAYWRIGHT"
+CHROMIUM_ENV = "POE2_RESEARCH_CHROMIUM"
 
 
 class NinjaSampleError(RuntimeError):
@@ -198,19 +173,21 @@ class PlaywrightHtmlDriver:
     def __init__(
         self,
         *,
-        node_executable: str | Path = DEFAULT_NODE_EXECUTABLE,
-        playwright_package_path: Path = PLAYWRIGHT_PACKAGE_PATH,
-        chromium_path: Path = PLAYWRIGHT_CHROMIUM_PATH,
+        node_executable: str | Path | None = None,
+        playwright_package_path: str | Path | None = None,
+        chromium_path: str | Path | None = None,
     ) -> None:
-        self.node_executable = str(node_executable)
-        self.playwright_package_path = Path(playwright_package_path)
-        self.chromium_path = Path(chromium_path)
+        runtime = discover_playwright_runtime(
+            node_executable=node_executable,
+            playwright_package_path=playwright_package_path,
+            chromium_path=chromium_path,
+        )
+        self.node_executable = str(runtime["nodeExecutable"])
+        self.playwright_package_path = Path(runtime["playwrightPackagePath"])
+        self.chromium_path = Path(runtime["chromiumPath"])
 
     def fetch_html(self, url: str) -> str:
-        if not self.playwright_package_path.exists():
-            raise NinjaSampleError(f"playwright_package_missing:{self.playwright_package_path}")
-        if not self.chromium_path.exists():
-            raise NinjaSampleError(f"chromium_executable_missing:{self.chromium_path}")
+        is_build_list = "/poe2/builds/" in url and "/character/" not in url
         script = f"""
 const {{ chromium }} = require({json.dumps(str(self.playwright_package_path))});
 (async () => {{
@@ -219,8 +196,29 @@ const {{ chromium }} = require({json.dumps(str(self.playwright_package_path))});
     executablePath: {json.dumps(str(self.chromium_path))}
   }});
   const page = await browser.newPage();
-  await page.goto({json.dumps(url)}, {{ waitUntil: 'domcontentloaded', timeout: 180000 }});
-  await page.waitForTimeout(5000);
+  await page.goto({json.dumps(url)}, {{
+    waitUntil: 'commit',
+    timeout: {NINJA_NAVIGATION_TIMEOUT_MS}
+  }});
+  if ({json.dumps(is_build_list)}) {{
+    try {{
+      await page.waitForSelector('a[href*="/character/"]', {{
+        state: 'attached',
+        timeout: {NINJA_LIST_CHARACTER_WAIT_MS}
+      }});
+    }} catch (err) {{
+      if (err.name !== 'TimeoutError') throw err;
+    }}
+  }} else {{
+    try {{
+      await page.waitForSelector('input[aria-label="Import code for Path of Building"]', {{
+        state: 'attached',
+        timeout: {NINJA_DETAIL_IMPORT_WAIT_MS}
+      }});
+    }} catch (err) {{
+      if (err.name !== 'TimeoutError') throw err;
+    }}
+  }}
   const html = await page.content();
   process.stdout.write(html);
   await browser.close();
@@ -229,18 +227,149 @@ const {{ chromium }} = require({json.dumps(str(self.playwright_package_path))});
   process.exit(1);
 }});
 """.strip()
-        completed = subprocess.run(
-            [self.node_executable, "-e", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [self.node_executable, "-e", script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=NINJA_PLAYWRIGHT_PROCESS_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise NinjaSampleError("playwright_fetch_timed_out") from exc
         if completed.returncode != 0:
             raise NinjaSampleError(
                 f"playwright_fetch_failed:{completed.stderr.strip() or completed.stdout.strip()}"
             )
         return completed.stdout
+
+
+def discover_playwright_runtime(
+    *,
+    node_executable: str | Path | None = None,
+    playwright_package_path: str | Path | None = None,
+    chromium_path: str | Path | None = None,
+    home: Path | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, Path]:
+    """Resolve a compatible Node, Playwright package, and Chromium without fixed runtime hashes."""
+    env = environ if environ is not None else os.environ
+    home_dir = Path(home) if home is not None else Path.home()
+    node_candidates = _path_candidates(node_executable, env.get(NODE_ENV))
+    playwright_candidates = _path_candidates(playwright_package_path, env.get(PLAYWRIGHT_ENV))
+
+    for runtime_bin in _codex_cua_runtime_bins(home_dir):
+        node_candidates.append(runtime_bin / ("node.exe" if os.name == "nt" else "node"))
+        playwright_candidates.append(runtime_bin / "node_modules" / "playwright")
+
+    system_node = shutil.which("node")
+    if system_node:
+        node_candidates.append(Path(system_node))
+        system_node_path = Path(system_node)
+        playwright_candidates.extend(
+            [
+                system_node_path.parent / "node_modules" / "playwright",
+                _REPO_ROOT / "node_modules" / "playwright",
+            ]
+        )
+
+    chromium_candidates = _path_candidates(chromium_path, env.get(CHROMIUM_ENV))
+    chromium_candidates.extend(_playwright_chromium_candidates(home_dir, env))
+
+    node = _first_existing_file(node_candidates)
+    playwright = _first_playwright_package(playwright_candidates)
+    chromium = _first_existing_file(chromium_candidates)
+    missing = []
+    if node is None:
+        missing.append(f"node ({NODE_ENV})")
+    if playwright is None:
+        missing.append(f"playwright package ({PLAYWRIGHT_ENV})")
+    if chromium is None:
+        missing.append(f"chromium executable ({CHROMIUM_ENV})")
+    if missing:
+        raise NinjaSampleError(
+            "playwright_runtime_unavailable:missing="
+            + ",".join(missing)
+            + ";checked_codex_runtimes="
+            + str(len(_codex_cua_runtime_bins(home_dir)))
+        )
+    return {
+        "nodeExecutable": node,
+        "playwrightPackagePath": playwright,
+        "chromiumPath": chromium,
+    }
+
+
+def _codex_cua_runtime_bins(home: Path) -> list[Path]:
+    if os.name == "nt":
+        root = home / "AppData" / "Local" / "OpenAI" / "Codex" / "runtimes" / "cua_node"
+    elif sys.platform == "darwin":
+        root = (
+            home / "Library" / "Application Support" / "OpenAI" / "Codex" / "runtimes" / "cua_node"
+        )
+    else:
+        root = home / ".local" / "share" / "OpenAI" / "Codex" / "runtimes" / "cua_node"
+    if not root.exists():
+        return []
+    bins = [path / "bin" for path in root.iterdir() if path.is_dir()]
+    return sorted(bins, key=lambda path: path.parent.stat().st_mtime, reverse=True)
+
+
+def _playwright_chromium_candidates(home: Path, environ: dict[str, str]) -> list[Path]:
+    roots = []
+    local_app_data = environ.get("LOCALAPPDATA")
+    if local_app_data:
+        roots.append(Path(local_app_data) / "ms-playwright")
+    roots.extend([home / "AppData" / "Local" / "ms-playwright", home / ".cache" / "ms-playwright"])
+    candidates: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        versions = sorted(
+            (path for path in root.glob("chromium-*") if path.is_dir()),
+            key=_playwright_version,
+            reverse=True,
+        )
+        for version in versions:
+            candidates.extend(
+                [
+                    version / "chrome-win64" / "chrome.exe",
+                    version / "chrome-linux" / "chrome",
+                    version / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                    version
+                    / "chrome-mac-arm64"
+                    / "Chromium.app"
+                    / "Contents"
+                    / "MacOS"
+                    / "Chromium",
+                ]
+            )
+    return candidates
+
+
+def _path_candidates(*values: str | Path | None) -> list[Path]:
+    return [Path(value).expanduser() for value in values if value]
+
+
+def _first_existing_file(candidates: list[Path]) -> Path | None:
+    return next((path.resolve() for path in candidates if path.is_file()), None)
+
+
+def _first_playwright_package(candidates: list[Path]) -> Path | None:
+    return next(
+        (
+            path.resolve()
+            for path in candidates
+            if path.is_dir() and (path / "package.json").is_file() and (path / "index.js").is_file()
+        ),
+        None,
+    )
+
+
+def _playwright_version(path: Path) -> tuple[int, str]:
+    match = re.search(r"(\d+)$", path.name)
+    return (int(match.group(1)) if match else -1, path.name)
 
 
 def evaluate_ninja_sample_row(

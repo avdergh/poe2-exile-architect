@@ -96,6 +96,201 @@ def test_researcher_batch_collects_filters_dedupes_and_prepares_one_case(tmp_pat
     assert "programmaticDiagnostics" in packet_text
 
 
+def test_researcher_batch_passes_optional_class_filter_to_poe_ninja(tmp_path):
+    code = _sample_code("BonestormPlayer", ascendancy="Blood Mage", level=95)
+    list_url = (
+        "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&class=Blood+Mage"
+    )
+    browser = _FakeBrowser(
+        {
+            list_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+</body></html>
+""",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code),
+        }
+    )
+
+    report, _ = run_phase45_researcher_batch.build_researcher_batch_report(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=95,
+        level_max=95,
+        ninja_classes=["Blood Mage"],
+        output_dir=tmp_path,
+        temp_root=tmp_path.parent / "transient-ninja-class-filter",
+        browser_driver=browser,
+    )
+
+    assert browser.urls[0] == list_url
+    assert report["sampleCount"] == 1
+    assert report["samples"][0]["ascendancy"] == "Blood Mage"
+
+
+def test_researcher_batch_backfills_duplicate_ninja_payloads_to_requested_limit(tmp_path):
+    code_a = _sample_code("BonestormPlayer", ascendancy="Blood Mage", level=95)
+    code_c = _sample_code("PlasmaBlastPlayer", ascendancy="Blood Mage", level=95)
+    list_url = (
+        "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&class=Blood+Mage"
+    )
+    browser = _FakeBrowser(
+        {
+            list_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctB/CharB">CharB</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctC/CharC">CharC</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+</body></html>
+""",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctC/CharC": _build_page(code_c),
+        }
+    )
+
+    report, _ = run_phase45_researcher_batch.build_researcher_batch_report(
+        league_url="runesofaldur",
+        limit=2,
+        level_min=95,
+        level_max=95,
+        ninja_classes=["Blood Mage"],
+        output_dir=tmp_path,
+        temp_root=tmp_path.parent / "transient-ninja-backfill",
+        browser_driver=browser,
+    )
+
+    assert report["sampleCount"] == 2
+    assert browser.urls[-1].endswith("/character/acctC/CharC")
+
+
+def test_researcher_batch_normalizes_url_style_class_and_rejects_other_classes(tmp_path):
+    code_a = _sample_code("BonestormPlayer", ascendancy="Blood Mage", level=95)
+    code_b = _sample_code("PlasmaBlastPlayer", ascendancy="Blood Mage", level=95)
+    list_url = (
+        "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&class=Blood+Mage"
+    )
+    browser = _FakeBrowser(
+        {
+            list_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctX/OtherA">OtherA</a></td>
+      <td><div>95<img alt="Deadeye" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctY/OtherB">OtherB</a></td>
+      <td><div>95<img alt="Stormweaver" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctB/CharB">CharB</a></td>
+      <td><div>95<img alt="Blood Mage" /></div></td></tr>
+</body></html>
+""",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB": _build_page(code_b),
+        }
+    )
+
+    report, _ = run_phase45_researcher_batch.build_researcher_batch_report(
+        league_url="runesofaldur",
+        limit=2,
+        level_min=95,
+        level_max=95,
+        ninja_classes=["Blood+Mage"],
+        output_dir=tmp_path,
+        temp_root=tmp_path.parent / "transient-ninja-url-class-filter",
+        browser_driver=browser,
+    )
+
+    assert browser.urls[0] == list_url
+    assert "%2B" not in browser.urls[0]
+    assert report["sampleCount"] == 2
+    assert {sample["ascendancy"] for sample in report["samples"]} == {"Blood Mage"}
+    assert not any("OtherA" in url or "OtherB" in url for url in browser.urls)
+
+
+def test_ninja_class_normalization_accepts_spaces_plus_and_encoded_separators():
+    normalize = run_phase45_researcher_batch._normalize_ninja_classes
+
+    assert normalize(
+        ["Blood Mage", "Blood+Mage", "Blood%20Mage", "Blood%2BMage", "  Blood   Mage  "]
+    ) == ["Blood Mage"]
+
+
+def test_researcher_batch_retries_an_empty_ninja_list_twice_before_success():
+    code = _sample_code("FlickerStrikePlayer", ascendancy="Martial Artist", level=94)
+    list_url = (
+        "https://poe.ninja/poe2/builds/runesofaldur?min-level=94&max-level=94&class=Martial+Artist"
+    )
+    detail_url = "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA"
+
+    class _RetryBrowser:
+        def __init__(self) -> None:
+            self.list_fetch_count = 0
+
+        def fetch_html(self, url: str) -> str:
+            if url == list_url:
+                self.list_fetch_count += 1
+                if self.list_fetch_count <= 2:
+                    return "<html><body></body></html>"
+                return """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>94<img alt="Martial Artist" /></div></td></tr>
+</body></html>
+"""
+            assert url == detail_url
+            return _build_page(code)
+
+    browser = _RetryBrowser()
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=94,
+        level_max=94,
+        ascendancies=[],
+        browser_driver=browser,
+        ninja_classes=["Martial+Artist"],
+    )
+
+    assert browser.list_fetch_count == 3
+    assert len(cases) == 1
+    assert cases[0]["ascendancy"] == "Martial Artist"
+
+
+def test_researcher_batch_stops_after_two_empty_ninja_list_retries():
+    list_url = (
+        "https://poe.ninja/poe2/builds/runesofaldur?min-level=94&max-level=94&class=Martial+Artist"
+    )
+
+    class _EmptyBrowser:
+        def __init__(self) -> None:
+            self.list_fetch_count = 0
+
+        def fetch_html(self, url: str) -> str:
+            assert url == list_url
+            self.list_fetch_count += 1
+            return "<html><body></body></html>"
+
+    browser = _EmptyBrowser()
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=94,
+        level_max=94,
+        ascendancies=[],
+        browser_driver=browser,
+        ninja_classes=["Martial Artist"],
+    )
+
+    assert cases == []
+    assert browser.list_fetch_count == 3
+
+
 def test_researcher_batch_resume_prepares_next_uncompleted_case(tmp_path):
     code_a = _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
     code_b = _sample_code("SparkPlayer", ascendancy="Stormweaver", level=96)

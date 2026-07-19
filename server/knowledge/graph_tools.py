@@ -82,6 +82,16 @@ GraphToolContext = Annotated[
 
 class ResolveGraphComponentInput(StrictModel):
     query: str
+    expected_node_types: list[str] = Field(default_factory=list, max_length=12)
+    scope: Literal["any", "player"] = "any"
+    context: GraphToolContext | None = None
+
+
+class SearchGraphComponentsInput(StrictModel):
+    query: str
+    expected_node_types: list[str] = Field(default_factory=list, max_length=12)
+    scope: Literal["any", "player"] = "any"
+    limit: int = Field(default=20, ge=1, le=50)
     context: GraphToolContext | None = None
 
 
@@ -152,6 +162,7 @@ class InspectStaleSourcesInput(StrictModel):
 
 
 INPUT_MODELS: dict[str, type[StrictModel]] = {
+    "search_graph_components": SearchGraphComponentsInput,
     "resolve_graph_component": ResolveGraphComponentInput,
     "explain_graph_evidence": ExplainGraphEvidenceInput,
     "requirements_for_component": ComponentStageInput,
@@ -171,6 +182,7 @@ INPUT_MODELS: dict[str, type[StrictModel]] = {
 
 
 CONTEXT_POLICIES: dict[str, str] = {
+    "search_graph_components": "none",
     "resolve_graph_component": "none",
     "explain_graph_evidence": "none",
     "requirements_for_component": "version_only",
@@ -196,6 +208,27 @@ class GraphQueryService:
         self.snapshot = snapshot
         self._nodes_by_key = {node.stable_key: node for node in snapshot.nodes}
         self._sources_by_id = {source.source_id: source for source in snapshot.sources}
+        self._ascendancy_by_passive = {
+            edge.source_key: edge.target_key
+            for edge in snapshot.edges
+            if edge.edge_type == "belongs_to"
+            and edge.source_key in self._nodes_by_key
+            and edge.target_key in self._nodes_by_key
+            and self._nodes_by_key[edge.target_key].node_type == "ascendancy"
+        }
+        self._player_skill_keys = {
+            edge.target_key
+            for edge in snapshot.edges
+            if edge.edge_type == "grants_skill"
+            and edge.source_key in self._nodes_by_key
+            and self._nodes_by_key[edge.source_key].node_type in {"skill_gem", "support_gem"}
+        }
+        self._player_skill_keys.update(
+            node.stable_key
+            for node in snapshot.nodes
+            if node.node_type == "active_skill"
+            and "player" in node.stable_key.split(":", 1)[-1].casefold()
+        )
         self._topology_graph = self._build_topology_graph(snapshot)
         self.topology_build_count = 1
 
@@ -253,6 +286,8 @@ class GraphQueryService:
             return missing_context
 
         try:
+            if query_family == "search_graph_components":
+                return self._search_graph_components(typed_input)
             if query_family == "resolve_graph_component":
                 return self._resolve_graph_component(typed_input)
             if query_family == "explain_graph_evidence":
@@ -431,6 +466,39 @@ class GraphQueryService:
 
     def _resolve_graph_component(self, typed_input: ResolveGraphComponentInput) -> dict[str, Any]:
         resolution = pg.resolve_candidates(self.snapshot, typed_input.query)
+        expected_node_types = set(typed_input.expected_node_types)
+        if expected_node_types and resolution.get("candidate_keys"):
+            candidate_keys = [
+                key
+                for key in resolution["candidate_keys"]
+                if key in self._nodes_by_key
+                and self._nodes_by_key[key].node_type in expected_node_types
+            ]
+            resolution = {
+                "status": "resolved"
+                if len(candidate_keys) == 1
+                else "ambiguous"
+                if candidate_keys
+                else "missing",
+                "resolved_key": candidate_keys[0] if len(candidate_keys) == 1 else None,
+                "candidate_keys": candidate_keys,
+            }
+        if typed_input.scope == "player" and resolution.get("candidate_keys"):
+            candidate_keys = [
+                key
+                for key in resolution["candidate_keys"]
+                if self._nodes_by_key[key].node_type != "active_skill"
+                or key in self._player_skill_keys
+            ]
+            resolution = {
+                "status": "resolved"
+                if len(candidate_keys) == 1
+                else "ambiguous"
+                if candidate_keys
+                else "missing",
+                "resolved_key": candidate_keys[0] if len(candidate_keys) == 1 else None,
+                "candidate_keys": candidate_keys,
+            }
         status = str(resolution["status"])
         candidate_keys = list(resolution.get("candidate_keys", []))
         candidates = [
@@ -453,6 +521,8 @@ class GraphQueryService:
             )
             facts = {
                 "query": typed_input.query,
+                "expected_node_types": sorted(expected_node_types),
+                "scope": typed_input.scope,
                 "candidate_keys": candidate_keys,
                 "candidates": candidates,
                 "endpointAssessment": endpoint_assessment,
@@ -460,6 +530,8 @@ class GraphQueryService:
         else:
             facts = {
                 "query": typed_input.query,
+                "expected_node_types": sorted(expected_node_types),
+                "scope": typed_input.scope,
                 "candidate_keys": candidate_keys,
                 "candidates": candidates,
             }
@@ -474,6 +546,44 @@ class GraphQueryService:
             caveats=["ambiguous_alias"] if status == "ambiguous" else [],
             context=_context_payload(typed_input.context),
             endpoint_assessment=endpoint_assessment,
+        )
+
+    def _search_graph_components(self, typed_input: SearchGraphComponentsInput) -> dict[str, Any]:
+        discovery = pg.search_candidates(
+            self.snapshot,
+            typed_input.query,
+            expected_node_types=tuple(typed_input.expected_node_types),
+            allowed_keys=(
+                frozenset(self._player_skill_keys) if typed_input.scope == "player" else None
+            ),
+            limit=typed_input.limit,
+        )
+        candidate_keys = list(discovery.get("candidate_keys") or [])
+        candidates = [self._candidate_summary(key) for key in candidate_keys]
+        source_refs = sorted(
+            {
+                source_ref
+                for candidate in candidates
+                for source_ref in candidate.get("sourceRefs", [])
+            }
+        )
+        status = str(discovery.get("status") or "missing")
+        return self._envelope(
+            query_family="search_graph_components",
+            status=status,
+            facts={
+                "query": typed_input.query,
+                "expected_node_types": list(discovery.get("expected_node_types") or []),
+                "scope": typed_input.scope,
+                "candidates": candidates,
+                "truncated": bool(discovery.get("truncated")),
+            },
+            resolved_subject=None,
+            source_refs=source_refs,
+            evidence_path=self._evidence_path(nodes=candidate_keys, source_refs=source_refs),
+            confidence=0.75 if candidate_keys else 0.0,
+            caveats=["candidate_discovery_only"] if candidate_keys else [],
+            context=_context_payload(typed_input.context),
         )
 
     def _explain_graph_evidence(self, typed_input: ExplainGraphEvidenceInput) -> dict[str, Any]:
@@ -885,25 +995,33 @@ class GraphQueryService:
 
     def _candidate_summary(self, node_key: str) -> dict[str, Any]:
         node = self._nodes_by_key[node_key]
-        return {
+        result = {
             "stableKey": node.stable_key,
             "nodeType": node.node_type,
             "displayName": node.display_name,
             "confidence": node.confidence,
             "sourceRefs": list(node.source_refs),
         }
+        ascendancy_key = self._ascendancy_by_passive.get(node_key)
+        if ascendancy_key:
+            result["ascendancyKey"] = ascendancy_key
+        return result
 
     def _node_summary(self, node_key: str) -> dict[str, Any] | None:
         node = self._nodes_by_key.get(node_key)
         if node is None:
             return None
-        return {
+        result = {
             "stableKey": node.stable_key,
             "nodeType": node.node_type,
             "displayName": node.display_name,
             "status": node.status,
             "confidence": node.confidence,
         }
+        ascendancy_key = self._ascendancy_by_passive.get(node_key)
+        if ascendancy_key:
+            result["ascendancyKey"] = ascendancy_key
+        return result
 
     def _source_refs_for_keys(
         self, node_keys: list[str | None] | tuple[str | None, ...]

@@ -49,7 +49,7 @@ PATCH_POLICY = CachePolicy(
 )
 TREE_POLICY = CachePolicy(
     refresh_after=timedelta(hours=1),
-    reject_after=timedelta(hours=6),
+    reject_after=timedelta(days=7),
 )
 
 _PATCH_TITLE = re.compile(r"^(\d+\.\d+\.\d+)(?: Hotfix \d+)?$")

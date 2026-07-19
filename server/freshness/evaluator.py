@@ -101,11 +101,20 @@ def evaluate_freshness(manifest: FreshnessManifest) -> FreshnessReport:
         )
         claim_conflicts.append(f"{key.value} claims conflict: {rendered}")
 
-    stale_reasons = [
-        f"{item.source} reports stale {item.component.value} version {item.version or 'unknown'}"
-        for item in required_evidence
-        if item.status is SourceStatus.STALE
-    ]
+    stale_reasons: list[str] = []
+    for item in required_evidence:
+        if item.status is not SourceStatus.STALE:
+            continue
+        if _stale_official_tree_is_corroborated(item, required_evidence):
+            warnings.append(
+                f"{item.source} official {item.component.value} commit freshness is stale, "
+                "but current compatible season evidence corroborates its version"
+            )
+            continue
+        stale_reasons.append(
+            f"{item.source} reports stale {item.component.value} version "
+            f"{item.version or 'unknown'}"
+        )
     unknown_reasons.extend(
         f"{item.source} cannot verify {item.component.value}"
         for item in required_evidence
@@ -162,3 +171,40 @@ def _claim_comparison_value(claim: VersionClaim) -> str:
     if len(parts) < 2:
         return claim.value
     return ".".join(parts[:2])
+
+
+def _stale_official_tree_is_corroborated(
+    item: FreshnessEvidence,
+    evidence: tuple[FreshnessEvidence, ...],
+) -> bool:
+    if item.source != "ggg-tree" or item.component not in {
+        Component.LEAGUE,
+        Component.PASSIVE_TREE,
+    }:
+        return False
+    claim_key = (
+        ClaimDimension.LEAGUE if item.component is Component.LEAGUE else ClaimDimension.PASSIVE_TREE
+    )
+    claim = next((claim for claim in item.claims if claim.key is claim_key), None)
+    if claim is None:
+        return False
+    corroborators = {
+        other.component
+        for other in evidence
+        if other.source != item.source
+        and other.status is SourceStatus.CURRENT
+        and any(
+            other_claim.key is claim_key and other_claim.value == claim.value
+            for other_claim in other.claims
+        )
+    }
+    if claim_key is ClaimDimension.LEAGUE:
+        return Component.META_SNAPSHOT in corroborators
+    local_model_components = {
+        Component.POB_ENGINE,
+        Component.POB_DATA,
+        Component.CORPUS,
+    }
+    return bool(corroborators & local_model_components) and (
+        Component.META_SNAPSHOT in corroborators
+    )

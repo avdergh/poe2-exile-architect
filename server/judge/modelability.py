@@ -32,8 +32,12 @@ def evaluate_modelability(
             return {
                 "status": "not_modelable",
                 "coreBlocked": True,
-                "failureCodes": ["unmodelled_mechanic"],
-                "caveats": ["main_socket_group_core_unmodelled"],
+                "failureCodes": [],
+                "unmodelledMechanics": [str(gem.get("name") or "")],
+                "caveats": [
+                    "main_socket_group_core_unmodelled",
+                    "trigger_rate_unmodelled_caveat",
+                ],
             }
 
     status = "full"
@@ -55,6 +59,7 @@ def evaluate_modelability(
         "status": status,
         "coreBlocked": False,
         "failureCodes": failure_codes,
+        "unmodelledMechanics": [],
         "caveats": _dedupe(caveats),
     }
 

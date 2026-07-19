@@ -2,7 +2,7 @@
 
 ## 阶段状态
 
-已完成。当前 Phase 1 以 `judge_phase1_v3` / `judge_v3_evidence_aware` 作为内部 Judge
+已完成。当前 Phase 1 以 `judge_phase1_v4` / `judge_v4_stage_aware` 作为内部 Judge
 基线：合法性仍由 hard checks 和 PoB readback 兜底，质量评分输出 evidence-aware score
 vector，并明确区分 strong evidence、limited evidence、source-data problem 和
 unsolved modelability gap。
@@ -97,7 +97,7 @@ unsolved modelability gap。
 - 为 BuildComparison 定义 comparability contract：
   - 只有当两个 snapshot 在目标场景和 active-state policy 下 modelability 可比较时，才
     可以返回 candidate/reference/prior winner；
-  - 一方包含 `unmodelled_mechanic` 或关键 metric provenance 为 unmodelled 时，比较结果
+  - 一方核心 `modelability.status=not_modelable` 或关键 metric provenance 为 unmodelled 时，比较结果
     必须是 incomparable/unknown，并带 caveat；
   - 不允许把“无法建模导致的低表面数值”解释为机制或 build archetype 本身较弱；
   - 后续 reward memory 只能消费 comparable comparison。
@@ -113,15 +113,19 @@ unsolved modelability gap。
   - game patch；
   - passive tree version；
   - metric provenance（PoB-computed、hard-check-derived、unavailable、unmodelled）。
-- 建立 failure code taxonomy，至少覆盖：
-  - uncapped_resistance；
+- 建立四层结果 taxonomy：
+  - legality：确定性职业、插槽、武器、属性、预算、Spirit 和装备非法；
+  - severe playability：阶段抗性、强证据 DPS 和灾难性防御短板；
+  - quality warnings：75% 元素抗目标、混沌抗与 offense/Max Hit 质量目标；
+  - modelability：PoB/Judge 当前是否能可靠计算；
+  - severe_elemental_resistance_shortfall；
   - attribute_requirement_unmet；
   - passive_budget_exceeded；
   - attack_skill_without_weapon；
   - incompatible_weapon_skill_tags；
   - spirit_budget_exceeded；
   - pob_compute_failed；
-  - unmodelled_mechanic。
+  - trigger_rate_unmodelled_caveat。
 - 生成 baseline benchmark report，供后续 Phase 对比。
 
 ## 当前实现
@@ -129,11 +133,11 @@ unsolved modelability gap。
 - 新增内部模块 `server/judge/`，暂不暴露 MCP tool：
   - `models.py`：evaluator version、metric keys、failure code / caveat 常量；
   - `rules.py`：class/ascendancy、support/socket v1、physical-invalid blocker；
-  - `scoring.py`：`judge_v3_evidence_aware`，包含 hard floor / quality target 分离、
+  - `scoring.py`：`judge_v4_stage_aware`，包含 hard floor / quality target 分离、阶段感知权重、
     hard-floor 到 target 的对数连续评分、动态可用主资源池 recovery、异构 Max Hit、CI
-    混沌免疫、EHP 物理短板补偿、uncapped resistance cap、offense evidence provenance
+    混沌免疫、EHP 物理短板补偿、30%/60%/75% 阶段抗性、offense evidence provenance
     和扁平 aggregate；
-  - `modelability.py`：main socket group meta-trigger core blocker、partial modelability、白名单 caveat；
+  - `modelability.py`：main socket group meta-trigger 不可数值验证、partial modelability、白名单 caveat；
   - `comparison.py`：`selectionWinner` 与 `rewardWinner` 分离，并输出 `rewardStrength`；
   - `evaluator.py`：从 active PoB build 生成 `BuildEvaluation`，包含 `defenseModel` 诊断层；
   - `runner.py`：engine factory/import/evaluation safe-call、timeout、EOF/crash recovery；
@@ -177,7 +181,7 @@ unsolved modelability gap。
   - raw 分数可以展示，但是否可比较、是否可用于 reward，取决于 evidence / caveat；
   - `judge_unsolved_modelability_gap` 不再被视为 Judge 失败，而是 Phase 1 成功识别到的“当前
    不应装作算准”的机制簇；
-  - 对 `trusted_reference` 外部成熟样本，`uncapped_resistance`、attribute mismatch、
+  - 对 `trusted_reference` 外部成熟样本，抗性质量警示、attribute mismatch、
     multi-active group 等可在 confidence contract 下保留强警示或 limited reward，而不必
     一律当作 archetype 负样本。
 - `BuildEvaluation.defenseModel` 只作为诊断层：
@@ -222,10 +226,14 @@ unsolved modelability gap。
 - MoM/EB 类构筑在包含 `Mind Over Matter` 且 Mana 为主要承伤资源时，recovery 主池允许使用
   `ManaUnreserved`，并追加 `mom_mana_primary_pool_caveat`。
 - CI 构筑不能因 `ChaosMaximumHitTaken` 为 nil、0 或特殊值被误判为混沌防御短板。
-- PoB 可计算输出高于 hard floor 但低于 quality floor 时，必须给非零低分并追加
-  `quality_target_missed_caveat`，不能等同 0 DPS。
-- 多投射物 / 多段命中使用 PoB 的隔离 `FullDPS` 或可计算 combined 输出；无法证明重叠命中
-  时保留 lower-bound / modelability caveat，不盲乘 projectile count。
+- PoB strong-evidence 输出低于 hard floor 时进入 playability failure；limited/unknown evidence
+  不得触发 DPS 硬失败。低于 quality floor 时进入 `qualityWarnings`，不能等同非法或 0 DPS。
+- 对本系统生成的候选，如果 limited/unknown offense 最终只能得到 0 分，追加
+  `offense_delivery_not_established` 并把综合分限制在 `barely_playable`；候选可以继续由 Agent
+  修正或作为建模缺口研究，但不能保存为最终可交付 PoB。该限制不应用于成熟参考样本的事实判断。
+- `TotalDPS` 按 PoB 定义解释为 Hit DPS，不是单次命中。多投射物 / 多段命中优先读取 PoB 的
+  `CombinedDPS` / `FullDPS` 组件；无法证明重叠时使用 `projectile_overlap_unverified_caveat`，
+  不盲乘 projectile count，也不把 Hit DPS 统称为下界。
 - 缺失关键 PoB 指标或只靠 fallback 估分时，允许 selection 使用该 evaluation，但 reward 必须
   降为 `limited`，避免把证据不足写成强学习信号。
 - 对 `FullDPS` rollup、召唤 / 指令复合输出、触发链、多 active rotation、规避型防御和条
@@ -258,7 +266,7 @@ raw XML、完整装备、完整天赋或完整 gem links。
   超出该范围的 passive / weapon-set budget。Judge 保持 hard failure，并在 `legality` 中暴露
   over 数值，后续需继续核对 poe.ninja 导出、树版本和赛季额外点来源。
 - Twister 榜首样本在当前 PoB sandbox 中隔离可计算输出约 18-20 万 DPS，低于 30 万 quality
-  floor；Judge 现在给非零低分和 `quality_target_missed_caveat`，但这说明 offense 标准和技能
+  floor；Judge 现在给非零低分并在 `qualityWarnings` 标记 offense 质量目标未达到，但这说明 offense 标准和技能
   modelability 仍需更多样本校准，不能把当前分数视作最终客观真理。
 
 ## 验证

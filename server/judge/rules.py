@@ -49,6 +49,7 @@ PHYSICAL_INVALID_FAILURES = {
     "invalid_support_gem",
     "attribute_requirement_unmet",
     "equipped_item_level_requirement_unmet",
+    "illegal_equipped_item_affixes",
     "incompatible_weapon_skill_tags",
     "attack_skill_without_weapon",
     "passive_budget_exceeded",
@@ -73,6 +74,31 @@ def check_equipped_item_requirements(build: dict[str, Any]) -> dict[str, Any]:
                 {"slot": str(slot), "requiredLevel": int(required), "characterLevel": level}
             )
     return {"ok": not underlevelled, "underlevelledSlots": underlevelled}
+
+
+def check_equipped_item_affixes(build: dict[str, Any]) -> dict[str, Any]:
+    """Reject deterministic rare/magic affix impossibilities reported by completeness parsing."""
+    gear = build.get("gear") or {}
+    invalid: list[dict[str, Any]] = []
+    if isinstance(gear, dict):
+        for slot, item in gear.items():
+            legality = item.get("affixLegality") if isinstance(item, dict) else None
+            if isinstance(legality, dict) and legality.get("ok") is False:
+                invalid.append({"slot": str(slot), "issues": list(legality.get("issues") or [])})
+    return {"ok": not invalid, "invalidSlots": invalid}
+
+
+def support_completeness_caveats(
+    group: list[dict[str, Any]] | None,
+    *,
+    level: int,
+    source_context: str,
+) -> list[str]:
+    """Flag suspiciously sparse late-campaign links without declaring them illegal."""
+    if source_context != "generated_candidate" or level < 50:
+        return []
+    supports = [gem for gem in group or [] if _is_support(gem, DEFAULT_KNOWN_SUPPORTS_V1)]
+    return ["main_skill_support_setup_incomplete_caveat"] if len(supports) <= 1 else []
 
 
 def check_class_ascendancy(

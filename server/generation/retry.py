@@ -63,6 +63,11 @@ def validate_and_build_retry_report(
         if memory_error is not None:
             return memory_error
 
+    if experiment.memory_mode == "memory_assisted":
+        requery_error = _memory_requery_error(attempts)
+        if requery_error is not None:
+            return requery_error
+
     report = _build_retry_report(run_id, experiment, attempts)
     return {
         "status": "accepted",
@@ -82,16 +87,87 @@ def _memory_mode_error(
     ]
     memory_ref = candidate.version_context.research_memory_ref.casefold()
     if memory_mode == "no_memory":
-        if candidate.memory_references or memory_tools:
+        if candidate.memory_references or memory_tools or candidate.research_memory_use is not None:
             return models.rejected("no_memory_lane_used_research_memory")
         if memory_ref != "disabled:no_memory_baseline":
             return models.rejected("invalid_no_memory_version_context")
     elif memory_mode == "memory_assisted":
-        if not candidate.memory_references or not memory_tools:
+        if (
+            not candidate.memory_references
+            or not memory_tools
+            or candidate.research_memory_use is None
+        ):
             return models.rejected("memory_assisted_lane_missing_memory_evidence")
         if memory_ref.startswith(("disabled:", "unavailable", "unknown")):
             return models.rejected("invalid_memory_assisted_version_context")
     return None
+
+
+def _memory_requery_error(
+    attempts: list[models.GenerationAttemptRecord],
+) -> dict[str, Any] | None:
+    for previous, current in zip(attempts, attempts[1:], strict=False):
+        changed_fields = _changed_research_identity_fields(previous, current)
+        if not changed_fields:
+            continue
+        previous_usage = previous.prototype_build_candidate.research_memory_use
+        current_usage = current.prototype_build_candidate.research_memory_use
+        if previous_usage is None or current_usage is None:
+            return models.rejected(
+                "research_memory_requery_required",
+                caveats=[f"Changed identity fields: {', '.join(changed_fields)}."],
+            )
+        fresh_refs = set(current_usage.dedupe_query_refs) - set(previous_usage.dedupe_query_refs)
+        current_ref = current.prototype_build_candidate.version_context.research_memory_ref
+        if not fresh_refs or current_ref not in fresh_refs:
+            return models.rejected(
+                "research_memory_requery_required",
+                caveats=[f"Changed identity fields: {', '.join(changed_fields)}."],
+            )
+    return None
+
+
+def _changed_research_identity_fields(
+    previous: models.GenerationAttemptRecord,
+    current: models.GenerationAttemptRecord,
+) -> list[str]:
+    previous_identity = _attempt_research_identity(previous)
+    current_identity = _attempt_research_identity(current)
+    changed: list[str] = []
+    for field in ("ascendancy", "primary_skill"):
+        previous_value = previous_identity[field]
+        current_value = current_identity[field]
+        if previous_value and current_value and previous_value != current_value:
+            changed.append(field)
+    return changed
+
+
+def _attempt_research_identity(
+    attempt: models.GenerationAttemptRecord,
+) -> dict[str, str]:
+    summary = attempt.transient_build_state.safe_summary
+    ascendancy = _safe_summary_value(summary, "ascendancy")
+    primary_skill = _safe_summary_value(summary, "mainSkill", "main_skill")
+    if not primary_skill and attempt.judge_advisory_report.selected_skill is not None:
+        primary_skill = attempt.judge_advisory_report.selected_skill.skill_name
+    if not primary_skill and attempt.transient_build_state.tested_skill_groups:
+        primary_skill = attempt.transient_build_state.tested_skill_groups[0].active_skill
+    return {
+        "ascendancy": _normalize_identity_value(ascendancy),
+        "primary_skill": _normalize_identity_value(primary_skill),
+    }
+
+
+def _safe_summary_value(summary: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(summary.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_identity_value(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 def _build_retry_report(

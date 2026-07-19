@@ -153,6 +153,112 @@ def test_save_rejects_failed_judge_and_does_not_persist_xml(tmp_path, monkeypatc
     assert not (tmp_path / "artifacts").exists()
 
 
+def test_save_allows_legal_candidate_with_playability_failure(tmp_path, monkeypatch):
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        result = _judge_result(snapshot_id)
+        result["playabilityFailures"] = ["severe_elemental_resistance_shortfall"]
+        result["qualityWarnings"] = ["elemental_resistance_below_cap"]
+        return result
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:playability-failed",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:playability-failed",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert evaluated["judgeAdvisoryReport"]["passed"] is True
+    assert saved["status"] == "saved"
+    assert saved["finalBuildArtifact"]["judgePlayabilityFailures"] == [
+        "severe_elemental_resistance_shortfall"
+    ]
+    assert saved["finalBuildArtifact"]["judgeQualityWarnings"] == ["elemental_resistance_below_cap"]
+
+
+def test_save_allows_legal_barely_playable_candidate_with_zero_offense(tmp_path, monkeypatch):
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        result = _judge_result(snapshot_id)
+        result["scoreVector"]["offense"] = {"value": 0.0, "blocked": False}
+        result["aggregateScore"] = {"value": 0.29}
+        result["qualityBand"] = "barely_playable"
+        result["qualityWarnings"] = ["offense_delivery_not_established"]
+        return result
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:zero-offense",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:zero-offense",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert evaluated["judgeAdvisoryReport"]["qualityBand"] == "barely_playable"
+    assert saved["status"] == "saved"
+    assert saved["finalBuildArtifact"]["judgeQualityBand"] == "barely_playable"
+    assert saved["finalBuildArtifact"]["judgeQualityWarnings"] == [
+        "offense_delivery_not_established"
+    ]
+
+
+def test_save_allows_legal_candidate_when_score_is_unavailable(tmp_path, monkeypatch):
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        result = _judge_result(snapshot_id)
+        result["modelability"] = {"status": "not_modelable"}
+        result["scoreApplicability"] = {"status": "unavailable"}
+        return result
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:score-unavailable",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:score-unavailable",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["status"] == "saved"
+    assert saved["finalBuildArtifact"]["judgeScoreApplicability"] == "unavailable"
+
+
 def test_save_rejects_second_artifact_for_same_run(tmp_path, monkeypatch):
     run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
     args = {

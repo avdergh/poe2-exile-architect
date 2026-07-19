@@ -1417,6 +1417,80 @@ def support_skill_candidate(
 ) -> ComputedFactResult:
     """Evaluate source-backed support-vs-skill legality without promoting candidate tags."""
 
+    return _support_skill_candidate_for_types(
+        snapshot=snapshot,
+        support_key=support_key,
+        skill_key=skill_key,
+        skill_types=_skill_types_for(snapshot, _required_text(skill_key, "skill key")),
+    )
+
+
+def support_skill_group_candidates(
+    *,
+    snapshot: GraphSnapshot,
+    support_keys: tuple[str, ...] | list[str],
+    skill_key: str,
+) -> tuple[ComputedFactResult, ...]:
+    """Evaluate one active skill's support group after the PoB skill-type fixed point."""
+
+    normalized_skill_key = _required_text(skill_key, "skill key")
+    normalized_support_keys = tuple(_required_text(value, "support key") for value in support_keys)
+    if len(set(normalized_support_keys)) != len(normalized_support_keys):
+        raise ValueError("support group must not contain duplicate support keys")
+
+    skill_types = _skill_types_for(snapshot, normalized_skill_key)
+    rejected: list[str] = []
+    for normalized_support_key in normalized_support_keys:
+        result = _support_skill_candidate_for_types(
+            snapshot=snapshot,
+            support_key=normalized_support_key,
+            skill_key=normalized_skill_key,
+            skill_types=skill_types,
+        )
+        if result.status == "known":
+            skill_types.update(_added_skill_types_for_support(snapshot, normalized_support_key))
+        else:
+            rejected.append(normalized_support_key)
+
+    while rejected:
+        remaining: list[str] = []
+        added_support = False
+        for normalized_support_key in rejected:
+            result = _support_skill_candidate_for_types(
+                snapshot=snapshot,
+                support_key=normalized_support_key,
+                skill_key=normalized_skill_key,
+                skill_types=skill_types,
+            )
+            if result.status == "known":
+                skill_types.update(_added_skill_types_for_support(snapshot, normalized_support_key))
+                added_support = True
+            else:
+                remaining.append(normalized_support_key)
+        rejected = remaining
+        if not added_support:
+            break
+
+    return tuple(
+        _support_skill_candidate_for_types(
+            snapshot=snapshot,
+            support_key=normalized_support_key,
+            skill_key=normalized_skill_key,
+            skill_types=skill_types,
+        )
+        for normalized_support_key in normalized_support_keys
+    )
+
+
+def _support_skill_candidate_for_types(
+    *,
+    snapshot: GraphSnapshot,
+    support_key: str,
+    skill_key: str,
+    skill_types: set[str],
+) -> ComputedFactResult:
+    """Evaluate a support against an already accumulated set of active-skill types."""
+
     normalized_support_key = _required_text(support_key, "support key")
     normalized_skill_key = _required_text(skill_key, "skill key")
     nodes_by_key = {node.stable_key: node for node in snapshot.nodes}
@@ -1431,18 +1505,7 @@ def support_skill_candidate(
     if skill_node.node_type != "active_skill":
         raise ValueError(f"node is not an active skill: {normalized_skill_key}")
 
-    support_contract_key = _granted_skill_keys(snapshot, normalized_support_key)
-    if not support_contract_key:
-        raise ValueError(f"missing granted support skill contract: {normalized_support_key}")
-    if len(support_contract_key) > 1:
-        raise ValueError(f"ambiguous granted support skill contract: {normalized_support_key}")
-    contract_requirements = _requirement_fact_for(
-        snapshot,
-        component_key=support_contract_key[0],
-        level_or_stage="support_contract",
-    )
-    if contract_requirements is None:
-        raise ValueError(f"missing support contract requirements: {support_contract_key[0]}")
+    _, contract_requirements = _support_contract_for(snapshot, normalized_support_key)
 
     supports_gems_only = bool(contract_requirements.requirements.get("supports_gems_only", False))
     is_gem_granted = _is_skill_granted_by_gem(snapshot, normalized_skill_key)
@@ -1460,7 +1523,6 @@ def support_skill_candidate(
             ),
         )
 
-    skill_types = _skill_types_for(snapshot, normalized_skill_key)
     allowed_expr = _string_tuple(contract_requirements.requirements.get("allowed_types_expr"))
     excluded_expr = _string_tuple(contract_requirements.requirements.get("excluded_types_expr"))
     matched_skill_types = sorted(
@@ -1967,6 +2029,61 @@ def resolve_candidates(snapshot: GraphSnapshot, query: str) -> dict[str, Any]:
     if len(display_matches) > 1:
         return {"status": "ambiguous", "resolved_key": None, "candidate_keys": display_matches}
     return {"status": "missing", "resolved_key": None, "candidate_keys": []}
+
+
+def search_candidates(
+    snapshot: GraphSnapshot,
+    query: str,
+    *,
+    expected_node_types: tuple[str, ...] = (),
+    allowed_keys: frozenset[str] | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Return bounded lexical discovery candidates without authorizing an endpoint."""
+
+    text = _required_text(query, "component search query")
+    normalized = " ".join(text.casefold().split())
+    expected = {str(value).strip() for value in expected_node_types if str(value).strip()}
+    nodes_by_key = {node.stable_key: node for node in snapshot.nodes}
+    aliases_by_key: dict[str, set[str]] = {}
+    for alias in snapshot.aliases:
+        aliases_by_key.setdefault(alias.target_key, set()).add(alias.normalized_alias)
+
+    ranked: list[tuple[int, str]] = []
+    for node in snapshot.nodes:
+        if (
+            allowed_keys is not None
+            and node.node_type == "active_skill"
+            and node.stable_key not in allowed_keys
+        ):
+            continue
+        if expected and node.node_type not in expected:
+            continue
+        names = {
+            " ".join(node.display_name.casefold().split()),
+            *aliases_by_key.get(node.stable_key, set()),
+        }
+        if normalized in names:
+            rank = 0
+        elif any(name.startswith(normalized) for name in names):
+            rank = 1
+        elif any(normalized in name for name in names):
+            rank = 2
+        else:
+            query_tokens = {token for token in normalized.split() if token}
+            if not query_tokens or not any(query_tokens <= set(name.split()) for name in names):
+                continue
+            rank = 3
+        ranked.append((rank, node.stable_key))
+
+    candidate_keys = [key for _, key in sorted(ranked, key=lambda item: (item[0], item[1]))[:limit]]
+    return {
+        "status": "found" if candidate_keys else "missing",
+        "candidate_keys": candidate_keys,
+        "expected_node_types": sorted(expected),
+        "truncated": len(ranked) > limit,
+        "matched_node_types": sorted({nodes_by_key[key].node_type for key in candidate_keys}),
+    }
 
 
 def resolve_id_mapping(
@@ -4464,6 +4581,41 @@ def _granted_skill_keys(snapshot: GraphSnapshot, gem_key: str) -> list[str]:
     )
 
 
+def _support_contract_for(
+    snapshot: GraphSnapshot,
+    support_key: str,
+) -> tuple[str, RequirementFact]:
+    granted_skill_keys = _granted_skill_keys(snapshot, support_key)
+    if not granted_skill_keys:
+        raise ValueError(f"missing granted support skill contract: {support_key}")
+    contracts = [
+        (granted_skill_key, fact)
+        for granted_skill_key in granted_skill_keys
+        if (
+            fact := _requirement_fact_for(
+                snapshot,
+                component_key=granted_skill_key,
+                level_or_stage="support_contract",
+            )
+        )
+        is not None
+    ]
+    if not contracts:
+        raise ValueError(f"missing support contract requirements: {support_key}")
+    if len(contracts) > 1:
+        raise ValueError(f"ambiguous granted support skill contract: {support_key}")
+    return contracts[0]
+
+
+def _added_skill_types_for_support(snapshot: GraphSnapshot, support_key: str) -> set[str]:
+    _, contract_requirements = _support_contract_for(snapshot, support_key)
+    return {
+        token.casefold()
+        for token in _string_tuple(contract_requirements.requirements.get("added_types"))
+        if token.casefold() not in {"and", "or", "not"}
+    }
+
+
 def _granted_by_skill(snapshot: GraphSnapshot, skill_key: str) -> str | None:
     for edge in snapshot.edges:
         if edge.edge_type == "granted_by" and edge.source_key == skill_key:
@@ -4496,15 +4648,9 @@ def _shared_component_tags(snapshot: GraphSnapshot, support_key: str, skill_key:
 
 
 def _support_family_for(snapshot: GraphSnapshot, support_key: str) -> str | None:
-    support_contract_key = _granted_skill_keys(snapshot, support_key)
-    if len(support_contract_key) != 1:
-        return None
-    contract_requirements = _requirement_fact_for(
-        snapshot,
-        component_key=support_contract_key[0],
-        level_or_stage="support_contract",
-    )
-    if contract_requirements is None:
+    try:
+        _, contract_requirements = _support_contract_for(snapshot, support_key)
+    except ValueError:
         return None
     family = contract_requirements.requirements.get("support_family")
     if family is None:

@@ -90,6 +90,23 @@ def test_socket_rules_accept_pob_recognized_support_outside_seed_list():
     assert "invalid_support_gem" not in failures
 
 
+def test_late_campaign_sparse_support_setup_is_advisory_only():
+    group = [
+        {"name": "Arc", "isSupport": False},
+        {"name": "Arcane Tempo", "isSupport": True},
+    ]
+
+    caveats = rules.support_completeness_caveats(
+        group, level=68, source_context="generated_candidate"
+    )
+
+    assert caveats == ["main_skill_support_setup_incomplete_caveat"]
+    assert (
+        rules.support_completeness_caveats(group, level=40, source_context="generated_candidate")
+        == []
+    )
+
+
 def test_weapon_skill_check_rejects_pob_disable_reason():
     result = rules.check_weapon_skill_compatibility(
         {

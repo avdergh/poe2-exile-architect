@@ -31,6 +31,8 @@ RELEASES_URL = "https://github.com/avdergh/poe2-exile-architect/releases"
 class LocalCompatibility:
     game_patch: str
     passive_tree: str
+    pob_version: str = ""
+    pob_commit: str = ""
 
 
 def shape_validated_release(
@@ -119,6 +121,81 @@ def collect_local_evidence(observed_at: datetime) -> tuple[FreshnessEvidence, ..
     )
 
 
+def current_local_compatibility() -> LocalCompatibility | None:
+    """Return the application-managed current PoB compatibility enum and season context."""
+    try:
+        manifest = load_compatibility_manifest(DEFAULT_COMPATIBILITY_MANIFEST)
+    except (OSError, ValueError, PobParseError):
+        manifest = None
+    if manifest is not None and manifest.current_pob_version:
+        current = next(
+            (
+                entry
+                for entry in manifest.entries
+                if entry.pob_version == manifest.current_pob_version
+            ),
+            None,
+        )
+        if current is not None:
+            return LocalCompatibility(
+                game_patch=current.game_patch,
+                passive_tree=current.passive_tree,
+                pob_version=current.pob_version,
+                pob_commit=current.commit,
+            )
+    try:
+        installed = live_update.installed_meta()
+    except (OSError, ValueError):
+        installed = {}
+    resolved = _resolve_local_compatibility(installed)
+    if resolved is not None:
+        return resolved
+    if manifest is None:
+        return None
+    if not manifest.entries:
+        return None
+    current_version = manifest.current_pob_version
+    latest = next(
+        (entry for entry in manifest.entries if entry.pob_version == current_version),
+        manifest.entries[-1],
+    )
+    return LocalCompatibility(
+        game_patch=latest.game_patch,
+        passive_tree=latest.passive_tree,
+        pob_version=latest.pob_version,
+        pob_commit=latest.commit,
+    )
+
+
+def known_pob_versions() -> frozenset[str]:
+    """Return application-managed PoB version enum values."""
+    try:
+        manifest = load_compatibility_manifest(DEFAULT_COMPATIBILITY_MANIFEST)
+    except (OSError, ValueError, PobParseError):
+        return frozenset()
+    return frozenset(entry.pob_version for entry in manifest.entries)
+
+
+def resolve_pob_version_enum(value: str | None) -> str | None:
+    """Normalize unknown, version, or certified commit input to the stored PoB version enum."""
+    normalized = str(value or "").strip()
+    if normalized.casefold() in {"", "unknown", "none", "null"}:
+        current = current_local_compatibility()
+        return current.pob_version if current is not None else None
+    try:
+        manifest = load_compatibility_manifest(DEFAULT_COMPATIBILITY_MANIFEST)
+    except (OSError, ValueError, PobParseError):
+        return None
+    version_matches = [entry for entry in manifest.entries if entry.pob_version == normalized]
+    if version_matches:
+        return version_matches[-1].pob_version
+    try:
+        commit_match = resolve_compatibility(normalized, manifest)
+    except PobParseError:
+        return None
+    return commit_match.pob_version if commit_match is not None else None
+
+
 def _resolve_local_compatibility(installed: dict[str, Any]) -> LocalCompatibility | None:
     pob_commit = str(installed.get("pob_commit") or "").strip()
     if not pob_commit:
@@ -133,4 +210,6 @@ def _resolve_local_compatibility(installed: dict[str, Any]) -> LocalCompatibilit
     return LocalCompatibility(
         game_patch=match.game_patch,
         passive_tree=match.passive_tree,
+        pob_version=match.pob_version,
+        pob_commit=match.commit,
     )

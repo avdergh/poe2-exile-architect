@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v3"
-WEIGHT_PROFILE = "judge_v3_evidence_aware"
+EVALUATOR_VERSION = "judge_phase1_v4"
+WEIGHT_PROFILE = "judge_v4_stage_aware"
 
 LIMITED_REWARD_CAVEATS = {
     "lower_bound_dps_caveat",
+    "projectile_overlap_unverified_caveat",
     "minion_dps_unverified_caveat",
     "minion_count_multiplier_caveat",
     "full_dps_rollup_caveat",
@@ -19,6 +20,7 @@ LIMITED_REWARD_CAVEATS = {
     "trusted_reference_attribute_requirement_mismatch_caveat",
     "trusted_reference_uncapped_resistance_caveat",
     "campaign_chaos_resistance_opportunity_cost_caveat",
+    "main_skill_support_setup_incomplete_caveat",
     "trusted_reference_floor_unverified_caveat",
     "metric_unavailable_caveat",
     "movement_metric_unavailable_caveat",
@@ -39,15 +41,19 @@ FAILURE_CODES = {
     "invalid_support_gem",
     "attribute_requirement_unmet",
     "equipped_item_level_requirement_unmet",
+    "illegal_equipped_item_affixes",
     "incompatible_weapon_skill_tags",
     "attack_skill_without_weapon",
     "passive_budget_exceeded",
     "weapon_set_budget_exceeded",
     "spirit_budget_exceeded",
-    "uncapped_resistance",
+    "severe_elemental_resistance_shortfall",
     "below_playability_floor",
     "catastrophic_defense_shortboard",
-    "unmodelled_mechanic",
+    "elemental_resistance_below_cap",
+    "negative_chaos_resistance",
+    "offense_quality_target_missed",
+    "offense_delivery_not_established",
     "pob_compute_failed",
     "primary_pool_unavailable_caveat",
     "life_unreserved_missing_caveat",
@@ -78,6 +84,9 @@ FAILURE_CODES = {
     "source_data_problem_caveat",
     "movement_metric_unavailable_caveat",
     "skill_speed_mobility_fallback_caveat",
+    "main_skill_support_setup_incomplete_caveat",
+    "trigger_rate_unmodelled_caveat",
+    "offense_metric_unavailable_caveat",
 }
 
 JUDGE_METRIC_KEYS = [

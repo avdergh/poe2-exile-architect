@@ -109,7 +109,8 @@ source probe
 
 ## Runtime 状态
 
-- Active build state 存在共享 Headless PoB session 中。
+- 每个 MCP session 拥有隔离的 Active build state；默认全进程最多运行 5 个 Headless PoB 实例，
+  同一 session 的完整工具调用串行执行，避免多步 optimizer 状态互相穿插。
 - Durable generated reports 不存入仓库。
 - Mature raw payloads 只允许 quarantine-only transient 使用。
 - Long-term knowledge 必须 clean、versioned、evidence-backed 且 copy-safe。

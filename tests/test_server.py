@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_research_mature_build_case_prompt_is_tool_driven():
         "safeHash": "abc123",
         "safeMetadata": {"case_id": "case-lightning-arrow"},
         "rawContext": {"pobCode": "eNrt" + "A" * 180},
-        "requestedOutputSchema": "ResearcherOutput schema_version=4",
+        "requestedOutputSchema": "ResearcherOutput schema_version=5",
     }
 
     text = main.research_mature_build_case(
@@ -56,10 +57,13 @@ def test_research_mature_build_case_prompt_is_tool_driven():
     )
 
     assert "MUST NOT output the final JSON as regular text" in text
+    assert "Independently Reconstruct the Current Build" in text
+    assert "Do not query durable memory until that initial working model is complete" in text
     assert "query_research_memory" in text
     assert "graph_tool_query" in text
     assert "resolve_graph_component" in text
     assert "propose_research_fragments" in text
+    assert "propose_deep_research_records" in text
     assert "propose_semantic_edges" in text
 
 
@@ -74,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 97
+    assert len(tools) == 98
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -118,6 +122,7 @@ def test_tool_surface_intact():
         "validate_researcher_output",
         "query_research_memory",
         "propose_research_fragments",
+        "propose_deep_research_records",
         "append_evidence_to_fragment",
         "propose_semantic_edges",
         "propose_build_patterns",
@@ -143,6 +148,25 @@ def test_freshness_report_tool_exposes_force_refresh_schema():
 
     assert schema["properties"]["force_refresh"]["type"] == "boolean"
     assert schema["properties"]["force_refresh"]["default"] is False
+
+
+def test_mcp_tool_call_routes_compute_to_current_session(monkeypatch):
+    from server import main
+
+    session = type("Session", (), {})()
+    captured: dict[str, object] = {}
+
+    class Pool:
+        def get(self, owner):
+            captured["session"] = owner
+            return type("Engine", (), {"get_stats": lambda self, keys: {"stats": {}}})()
+
+    monkeypatch.setattr(main, "_engine_pool", Pool())
+    monkeypatch.setattr(main.mcp, "get_context", lambda: SimpleNamespace(session=session))
+
+    asyncio.run(main.mcp.call_tool("get_build_stats", {}))
+
+    assert captured["session"] is session
 
 
 def test_graph_tool_query_forwards_to_cached_service(monkeypatch):
@@ -176,6 +200,19 @@ def test_research_memory_tools_expose_public_schemas():
     )
     assert tools["query_research_memory"].inputSchema["properties"]["query"]["type"] == "string"
     assert (
+        tools["query_research_memory"].inputSchema["properties"]["detail_level"]["type"] == "string"
+    )
+    assert {
+        "ascendancy_key",
+        "primary_skill_key",
+        "build_family_keys",
+        "record_kinds",
+    } <= set(tools["query_research_memory"].inputSchema["properties"])
+    assert (
+        tools["propose_deep_research_records"].inputSchema["properties"]["payload"]["type"]
+        == "object"
+    )
+    assert (
         tools["propose_research_fragments"].inputSchema["properties"]["payload"]["type"] == "object"
     )
     assert (
@@ -196,11 +233,46 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
     calls: list[tuple[str, object]] = []
 
     class FakeResearchService:
-        def query_research_memory(self, query, *, component_keys=None, limit=10):
-            calls.append(("query", (query, component_keys, limit)))
+        def query_research_memory(
+            self,
+            query,
+            *,
+            component_keys=None,
+            limit=10,
+            detail_level="summary",
+            record_ids=None,
+            include_transferable=False,
+            research_axes=None,
+            ascendancy_key=None,
+            primary_skill_key=None,
+            build_family_keys=None,
+            record_kinds=None,
+        ):
+            calls.append(
+                (
+                    "query",
+                    (
+                        query,
+                        component_keys,
+                        limit,
+                        detail_level,
+                        record_ids,
+                        include_transferable,
+                        research_axes,
+                        ascendancy_key,
+                        primary_skill_key,
+                        build_family_keys,
+                        record_kinds,
+                    ),
+                )
+            )
             return {"status": "known", "noRawMatureBuildMaterial": True}
 
-        def propose_research_fragments(self, payload, *, dedupe_query_ref=None):
+        def validate_deep_research_records(self, payload):
+            calls.append(("deep_records", payload))
+            return {"status": "accepted", "noRawMatureBuildMaterial": True}
+
+        def validate_research_fragments(self, payload, *, dedupe_query_ref=None):
             calls.append(("fragments", (payload, dedupe_query_ref)))
             return {"status": "accepted", "noRawMatureBuildMaterial": True}
 
@@ -208,11 +280,11 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             calls.append(("append", kwargs))
             return {"status": "accepted", "noRawMatureBuildMaterial": True}
 
-        def propose_semantic_edges(self, payload):
+        def validate_semantic_edges(self, payload):
             calls.append(("edges", payload))
             return {"status": "accepted", "noRawMatureBuildMaterial": True}
 
-        def propose_build_patterns(self, payload):
+        def validate_build_patterns(self, payload):
             calls.append(("patterns", payload))
             return {"status": "accepted", "noRawMatureBuildMaterial": True}
 
@@ -224,10 +296,19 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
     monkeypatch.setattr(main, "_research_memory_service_with_graph", lambda: FakeResearchService())
 
     assert (
-        main.query_research_memory("projectile", ["skill:LightningArrowPlayer"], 5)["status"]
+        main.query_research_memory(
+            "projectile",
+            ["skill:LightningArrowPlayer"],
+            5,
+            ascendancy_key="ascendancy:monk:martial_artist",
+            primary_skill_key="skill:LightningArrowPlayer",
+            build_family_keys=["bf-1234567890abcdef"],
+            record_kinds=["skill_package"],
+        )["status"]
         == "known"
     )
     assert main.propose_research_fragments({"schema_version": 4}, "dq-1")["status"] == "accepted"
+    assert main.propose_deep_research_records({"schema_version": 5})["status"] == "accepted"
     assert (
         main.append_evidence_to_fragment(
             "rf-1",
@@ -259,11 +340,18 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
     assert [name for name, _payload in calls] == [
         "query",
         "fragments",
+        "deep_records",
         "append",
         "edges",
         "patterns",
         "revalidate",
     ]
+    assert calls[0][1][-4:] == (
+        "ascendancy:monk:martial_artist",
+        "skill:LightningArrowPlayer",
+        ["bf-1234567890abcdef"],
+        ["skill_package"],
+    )
 
 
 def test_research_memory_fragment_tools_do_not_require_graph_snapshot(monkeypatch, tmp_path):
@@ -550,7 +638,10 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
                 "stats": {
                     "Life": 2600,
                     "Mana": 500,
+                    "ManaUnreserved": 420,
                     "ManaCost": 40,
+                    "Speed": 2,
+                    "NetManaRegen": 85,
                     "TotalDPS": 90000,
                 }
             }
@@ -813,8 +904,13 @@ def test_build_advice_sections():
     overview = advice.advise()
     assert overview["topics"]
     assert "engine" in overview["intro"].lower()  # framing: numbers come from the engine
-    # the durable resistance-cap rule must survive in the defense section
-    assert "75%" in advice.advise("defense")["text"]
+    defense = advice.advise("defense")
+    # Planning guidance remains useful, but current data has explicit authority over patch facts.
+    assert "75%" in defense["text"]
+    assert "current 0.5 `chaos inoculation`" in defense["text"].lower()
+    assert "chaos damage" in defense["text"].lower()
+    assert "bleeding" in defense["text"].lower()
+    assert "pinned pob" in defense["authority"].lower()
     # fuzzy keyword match resolves a query that isn't a section title
     assert advice.advise("crit").get("topic")
 

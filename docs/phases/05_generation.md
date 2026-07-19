@@ -141,7 +141,7 @@ P5.1 最小产物：
 
 - Agent 需求理解、按需查询、候选概要与自然语言输出流程。已完成
 - 原型 schema、安全检查、一次性运行凭据和 `HumanReviewPacket`。已完成
-- `/poe-bd-create` 的 PoB 工具顺序、共享状态串行约束和实际技能组记录。已完成
+- `/poe-bd-create` 的 PoB 工具顺序、同一 MCP session 状态串行约束和实际技能组记录。已完成
 - `evaluate_generation_candidate` 捕获活动 PoB、运行独立 Judge、生成无原始 XML 的可信凭据。
   已完成
 - `review-packet` 强制核对本次可信凭据，不接受 Agent 自填或改写的 Judge 结果。已完成
@@ -325,6 +325,22 @@ P5.3 不做：
   连续性，不根据分数替 Agent 决定修改方向。已完成
 - 默认运行已收敛到 `memory_assisted`，无记忆模式必须显式指定；旧 `standard` 仅保留单轮兼容，
   不能用空 `generationAttempts` 跳过多轮审计。已完成
+- 精确 Family 召回只用升华和核心主技能作为首查身份；图中 `gem:` 与对应 `skill:` 节点通过
+  `grants_skill/granted_by` 关系等价匹配。可信快照显示重试改变升华或主技能时，验收要求新的
+  `query_research_memory` 引用，普通局部修正不重复查库。已完成
+- 精确 Family 查询使用独立的 `ascendancy_key` / `primary_skill_key` 合同，自然语言目标只参与
+  相关性排序，不会把已有 Family 过滤成空结果，也不会把仅以该技能作副技能的 Family 当作精确
+  主技能命中。Family 摘要返回 `recordKindCounts`；Agent 可用 `build_family_keys` 和
+  `record_kinds` 按支持包、轮转、装备、升华、资源或防御缺口渐进深读，避免固定六条摘要静默
+  遗漏新结构。已完成
+- Create 将 `supportPackages`、`gearResponsibilities`、`ascendancyResponsibilities` 和
+  `resourceMechanisms` 分别转成待验证的辅助候选、装备职责、升华取舍与资源/失效状态，不由程序
+  自动拼装 BD。涉及暗金、天赋、触发、转换或资源交互的记忆结论在采用前仍需核对当前静态事实；
+  resolver 成功不等于机制解释正确。已完成
+- 精确 Family 无命中、证据过薄或存在具体设计轴缺口时，可显式查询同主技能经验与
+  `transferablePatterns`。公用知识单列通道、固定返回上限，scope 权重低于 Family，且最高只允许
+  `likely_pattern`；它不能伪装成当前 Family 成熟经验。component Pattern 在来源 Family 内仍通过
+  `buildPatterns` 使用 Family 权重，只在跨 Family 使用时进入公用通道。已完成
 - 安全扫描只阻断原始 PoB/URL/隐私/隐藏推理材料，不阻断 Agent 生成的完整技能组合；同时修复了
   不同 zlib 压缩级别 PoB 导入码的检测绕过。已完成
 - Phase 5 分发链补齐固定 PoB、兼容清单、CI/Release 固定提交、MCP 注册和生成工具声明；安装器
@@ -364,6 +380,11 @@ Phase 5 的 PoB 数据兼容性按赛季大版本判断，例如 `0.5.3`、`0.5.
 判为过期；精确补丁号仍保留在报告中。只有赛季大版本、天赋树世代或核心版本声明冲突时，才
 阻断当前版本强验证。该策略不表示同赛季所有机制都已被 PoB 完整建模，具体缺口仍进入注意事项。
 固定 PoB 已更新到上游正式版 `0.22.0`，并通过 Headless PoB、Judge 和 Phase 5 快照计算回归。已完成
+
+官方天赋树刷新失败需要区分“树世代未知”和“GitHub 最新提交暂时无法确认”。当前实现每小时
+尝试刷新、可信缓存保留 7 天，并识别 GitHub 匿名 API 限流。若本地已认证 PoB/语料与 poe.ninja
+共同确认同一赛季树世代，则官方提交缓存过期只作为 warning；没有这些交叉证据时仍按 stale/
+unknown 阻断。部署环境可选配置 `GH_TOKEN` 或 `GITHUB_TOKEN` 提高 GitHub API 限额。已完成
 
 ## BuildBrief 与提示词语义
 
@@ -420,7 +441,15 @@ Phase 5 原型不做“程序把 Phase 4 数据库全查出来塞上下文”。
 正确方式：
 
 - Agent 先根据改写后的生成提示词判断要查什么；
-- 通过研究记忆查询、结构化图工具、机制/语料库工具、构筑原则等入口按需查询；
+- 先用结构化图工具确认升华、主技能和核心副技能 stable key，再用自然语言目标和
+  `component_keys` 查询研究记忆 summary；
+- summary 同时提供匹配的 Build Family、深度记录、planner-visible pattern、semantic edge 和
+  旧 fragment；Agent 只按 `record_ids` 深读少量高度相关记录；
+- 精确 Family 为空或在资源、防御、轮转、机制链等维度存在明确缺口时，Agent 才使用
+  `include_transferable=true` 和 canonical `research_axes` 读取独立的 `transferablePatterns` 通道；
+  Family 结果保留优先配额，公用知识不得挤占或覆盖同等相关的 Family 经验；
+- Agent 使用 `recordKind`、组件职责、条件、失败条件、typed payload、pattern 证据等级和
+  verification tasks 做取舍，不能把 `case_observation` 写成通用规律；
 - 查询结果只作为参考上下文；
 - 节点解析、辅助技能、Spirit、天赋、装备、PoB/Judge 仍以各自工具证据为准。
 
@@ -428,7 +457,8 @@ Phase 5 原型不做“程序把 Phase 4 数据库全查出来塞上下文”。
 
 - 安全查询入口；
 - 查询结果大小限制；
-- 使用过的记忆 ID、图节点 ID 和查询引用；
+- 使用过的查询引用、Family/record/pattern/edge ID，以及采用、保留或拒绝结论的安全摘要；
+- 定向查询无命中时允许显式记录 `no_matching_memory`，但不能以一次空泛工具调用冒充使用了记忆；
 - 数据分区、可见性、安全检查和版本上下文边界；
 - 不让可直接复刻成熟 BD 的原始材料进入持久产物。
 

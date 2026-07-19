@@ -17,10 +17,13 @@ import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_plus, urlencode
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+NINJA_LIST_MAX_RETRIES = 2
 
 from scripts import run_judge_ninja_samples  # noqa: E402
 from server.compute import pob_code  # noqa: E402
@@ -69,6 +72,7 @@ def build_researcher_batch_report(
     level_min: int = 90,
     level_max: int = 100,
     ascendancies: list[str] | None = None,
+    ninja_classes: list[str] | None = None,
     source_files: list[str | Path] | None = None,
     source_batch_files: list[str | Path] | None = None,
     sample_start_index: int = 1,
@@ -92,6 +96,7 @@ def build_researcher_batch_report(
         if resume and state_path.exists()
         else None
     )
+    normalized_ninja_classes = _normalize_ninja_classes(ninja_classes or [])
     local_sources = _local_sources(source_files or [], source_batch_files or [])
     cases = (
         _cases_from_sources(local_sources, sample_start_index=sample_start_index)
@@ -103,6 +108,7 @@ def build_researcher_batch_report(
             level_max=level_max,
             ascendancies=ascendancies or [],
             browser_driver=browser_driver,
+            ninja_classes=normalized_ninja_classes,
         )
     )
     state = _new_state(
@@ -112,6 +118,7 @@ def build_researcher_batch_report(
         level_min=level_min,
         level_max=level_max,
         ascendancies=ascendancies or [],
+        ninja_classes=normalized_ninja_classes,
     )
     if previous_state is not None:
         _merge_previous_state(state, previous_state)
@@ -292,34 +299,68 @@ def _cases_from_ninja(
     level_max: int,
     ascendancies: list[str],
     browser_driver: Any | None,
+    ninja_classes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     resolved_league = _resolve_league_url(league_url)
     browser = browser_driver or run_judge_ninja_samples.PlaywrightHtmlDriver()
-    list_url = (
-        f"https://poe.ninja/poe2/builds/{resolved_league}"
-        f"?min-level={level_min}&max-level={level_max}"
-    )
-    list_html = browser.fetch_html(list_url)
-    rows = run_judge_ninja_samples.extract_character_links_from_rendered_html(
-        list_html,
-        league_url=resolved_league,
-    )
+    normalized_ninja_classes = _normalize_ninja_classes(ninja_classes or [])
+    query: list[tuple[str, str]] = [
+        ("min-level", str(level_min)),
+        ("max-level", str(level_max)),
+    ]
+    query.extend(("class", value) for value in normalized_ninja_classes)
+    list_url = f"https://poe.ninja/poe2/builds/{resolved_league}?{urlencode(query)}"
+    rows: list[dict[str, Any]] = []
+    for _attempt in range(NINJA_LIST_MAX_RETRIES + 1):
+        list_html = browser.fetch_html(list_url)
+        rows = run_judge_ninja_samples.extract_character_links_from_rendered_html(
+            list_html,
+            league_url=resolved_league,
+        )
+        if rows:
+            break
     wanted_ascendancies = {item.casefold() for item in ascendancies if item.strip()}
+    wanted_ninja_classes = {item.casefold() for item in normalized_ninja_classes}
     filtered = []
     for row in rows:
         level = int(row.get("level") or 0)
-        ascendancy = str(row.get("ascendancy") or "")
+        ascendancy = _normalize_ninja_class(row.get("ascendancy"))
         if level < level_min or level > level_max:
             continue
         if wanted_ascendancies and ascendancy.casefold() not in wanted_ascendancies:
             continue
+        if wanted_ninja_classes and ascendancy.casefold() not in wanted_ninja_classes:
+            continue
         filtered.append(row)
     sampled = run_judge_ninja_samples.sample_rows(
         filtered,
-        target_count=limit,
+        target_count=len(filtered),
         minimum_per_ascendancy=1,
     )
-    return _payload_cases_from_rows(sampled, league_url=resolved_league, browser_driver=browser)
+    return _payload_cases_from_rows(
+        sampled,
+        league_url=resolved_league,
+        browser_driver=browser,
+        target_count=limit,
+    )
+
+
+def _normalize_ninja_classes(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        class_name = _normalize_ninja_class(value)
+        key = class_name.casefold()
+        if not class_name or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(class_name)
+    return normalized
+
+
+def _normalize_ninja_class(value: Any) -> str:
+    decoded = unquote_plus(str(value or "").strip()).replace("+", " ")
+    return re.sub(r"\s+", " ", decoded).strip()
 
 
 def _payload_cases_from_rows(
@@ -327,14 +368,21 @@ def _payload_cases_from_rows(
     *,
     league_url: str,
     browser_driver: Any,
+    target_count: int | None = None,
 ) -> list[dict[str, Any]]:
+    target = None if target_count is None else max(0, int(target_count))
+    if target == 0:
+        return []
     cases: list[dict[str, Any]] = []
     seen_identity_hashes: set[str] = set()
     for row in rows:
         character_url = str(
             row.get("url") or run_judge_ninja_samples.build_character_url(league_url, row)
         )
-        page_html = browser_driver.fetch_html(character_url)
+        try:
+            page_html = browser_driver.fetch_html(character_url)
+        except run_judge_ninja_samples.NinjaSampleError:
+            continue
         extracted = run_judge_ninja_samples.extract_import_code_from_rendered_build_page(page_html)
         if not extracted.get("ok"):
             continue
@@ -354,6 +402,8 @@ def _payload_cases_from_rows(
                 row=row,
             )
         )
+        if target is not None and len(cases) >= target:
+            break
     return cases
 
 
@@ -524,6 +574,7 @@ def _new_state(
     level_min: int,
     level_max: int,
     ascendancies: list[str],
+    ninja_classes: list[str],
 ) -> dict[str, Any]:
     return {
         "stateVersion": 1,
@@ -533,6 +584,7 @@ def _new_state(
         "levelMin": level_min,
         "levelMax": level_max,
         "ascendancies": [_safe_text(item) for item in ascendancies],
+        "ninjaClasses": [_safe_text(item) for item in ninja_classes],
         "cases": cases,
     }
 
@@ -910,6 +962,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--level-min", type=int, default=90)
     parser.add_argument("--level-max", type=int, default=100)
     parser.add_argument("--ascendancy", action="append", default=[])
+    parser.add_argument("--class", dest="ninja_classes", action="append", default=[])
     parser.add_argument("--source-file", action="append", default=[])
     parser.add_argument("--source-batch-file", action="append", default=[])
     parser.add_argument("--sample-start-index", type=int, default=1)
@@ -976,6 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
         level_min=args.level_min,
         level_max=args.level_max,
         ascendancies=list(args.ascendancy or []),
+        ninja_classes=list(args.ninja_classes or []),
         source_files=[Path(item) for item in args.source_file],
         sample_start_index=args.sample_start_index,
         output_dir=args.output_dir,

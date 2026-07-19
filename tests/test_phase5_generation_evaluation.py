@@ -177,6 +177,9 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
         "enabled": True,
     }
     assert result["judgeAdvisoryReport"]["aggregateScore"] == 0.65
+    assert result["judgeAdvisoryReport"]["playabilityFailures"] == []
+    assert result["judgeAdvisoryReport"]["qualityWarnings"] == []
+    assert result["judgeAdvisoryReport"]["scoreApplicability"] == "applicable"
     assert result["judgeAdvisoryReport"]["rewardStrength"] == "limited"
     assert result["judgeAdvisoryReport"]["selectedSkill"] == {
         "skillName": "Lightning Arrow",

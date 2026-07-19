@@ -196,3 +196,6 @@ graph tool tests 和 deterministic benchmark 通过后运行：
 ```powershell
 .\scripts\verify.ps1 quick
 ```
+
+组件查询分为两层：`search_graph_components` 负责按名称、节点类型和玩家作用域做有界候选发现；
+`resolve_graph_component` 负责 stable key 的最终确认。发现结果本身不能创建 semantic edge。

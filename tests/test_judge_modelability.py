@@ -15,7 +15,9 @@ def test_main_socket_group_meta_trigger_is_core_blocker():
 
     assert result["status"] == "not_modelable"
     assert result["coreBlocked"] is True
-    assert "unmodelled_mechanic" in result["failureCodes"]
+    assert result["failureCodes"] == []
+    assert result["unmodelledMechanics"] == ["Cast on Critical"]
+    assert "trigger_rate_unmodelled_caveat" in result["caveats"]
 
 
 def test_unknown_unmodelled_signal_defaults_to_partial():

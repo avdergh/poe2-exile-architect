@@ -58,7 +58,7 @@ def test_zero_full_dps_falls_back_to_total_dps():
 
     assert "below_playability_floor" not in result["failures"]
     assert result["scoreVector"]["offense"]["value"] > 0
-    assert "quality_target_missed_caveat" in result["caveats"]
+    assert "offense_quality_target_missed" in result["qualityWarnings"]
     assert result["scoreBreakdown"]["offense"]["scoreFloor"] == 50_000
     assert result["scoreBreakdown"]["offense"]["qualityFloor"] == 300_000
 
@@ -83,7 +83,7 @@ def test_quality_floor_is_diagnostic_not_zero_score_cutoff():
     assert result["scoreVector"]["defense"]["value"] > 0
     assert "below_playability_floor" not in result["failures"]
     assert "catastrophic_defense_shortboard" not in result["failures"]
-    assert "quality_target_missed_caveat" in result["caveats"]
+    assert "offense_quality_target_missed" in result["qualityWarnings"]
 
 
 def test_single_chaos_shortboard_lowers_defense_without_forcing_catastrophic_failure():
@@ -124,7 +124,7 @@ def test_campaign_nonnegative_chaos_does_not_dominate_defense_score():
         resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": 0},
     )
 
-    assert "uncapped_resistance" not in result["failures"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
     assert result["scoreVector"]["defense"]["value"] == 1.0
     assert result["scoreBreakdown"]["chaos"]["excludedFromDefenseShortboard"] is True
     assert result["scoreBreakdown"]["defense"]["scoreComponents"] == [
@@ -136,7 +136,7 @@ def test_campaign_nonnegative_chaos_does_not_dominate_defense_score():
     assert "campaign_chaos_resistance_opportunity_cost_caveat" in result["caveats"]
 
 
-def test_campaign_negative_chaos_still_fails_resistance_gate():
+def test_campaign_negative_chaos_is_quality_warning_not_playability_failure():
     result = scoring.score_metrics(
         {
             "TotalDPS": 50_000,
@@ -152,7 +152,8 @@ def test_campaign_negative_chaos_still_fails_resistance_gate():
         resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": -1},
     )
 
-    assert "uncapped_resistance" in result["failures"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "negative_chaos_resistance" in result["qualityWarnings"]
     assert "campaign_chaos_resistance_opportunity_cost_caveat" not in result["caveats"]
 
 
@@ -175,7 +176,7 @@ def test_ci_keystone_scores_chaos_as_immune_without_chaos_max_hit():
     )
 
     assert "catastrophic_defense_shortboard" not in result["failures"]
-    assert "uncapped_resistance" not in result["failures"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
     assert result["scoreBreakdown"]["chaos"]["value"] == 1.0
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
 
@@ -352,9 +353,9 @@ def test_uncapped_resistance_caps_aggregate_score():
         resistances={"fire": -60, "cold": -60, "lightning": -60, "chaos": -60},
     )
 
-    assert "uncapped_resistance" in result["failures"]
+    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
     assert result["aggregateScore"]["value"] == pytest.approx(
-        scoring.CRITICAL_FAILURE_PENALTIES_V1["UNCAPPED_RESISTANCE_SCORE_CAP"]
+        scoring.CRITICAL_FAILURE_PENALTIES_V1["SEVERE_RESISTANCE_SCORE_CAP"]
     )
 
 
@@ -379,7 +380,7 @@ def test_trusted_reference_uncapped_resistance_can_be_flagged_as_source_data_pro
         source_context="trusted_reference",
     )
 
-    assert "uncapped_resistance" not in result["failures"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
     assert "source_data_problem_caveat" in result["caveats"]
     assert "state_or_import_suspect_caveat" in result["caveats"]
 
@@ -410,7 +411,7 @@ def test_trusted_reference_limited_offense_and_strong_defense_can_downgrade_unca
     )
 
     assert "uncapped_resistance" not in result["failures"]
-    assert "trusted_reference_uncapped_resistance_caveat" in result["caveats"]
+    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
 
 
 def test_trusted_reference_tiny_limited_offense_can_downgrade_uncapped_resistance_with_mature_defense():
@@ -438,8 +439,8 @@ def test_trusted_reference_tiny_limited_offense_can_downgrade_uncapped_resistanc
         source_context="trusted_reference",
     )
 
-    assert "uncapped_resistance" not in result["failures"]
-    assert "trusted_reference_uncapped_resistance_caveat" in result["caveats"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
 
 
 def test_trusted_reference_strong_low_floor_can_downgrade_to_floor_unverified():
@@ -551,10 +552,35 @@ def test_flat_aggregate_does_not_include_scenario_fit():
     )
 
     assert result["scoreScale"] == "0_to_1"
-    assert result["aggregateScore"]["weightProfile"] == "judge_v3_evidence_aware"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v4_stage_aware"
     assert result["aggregateScore"]["value"] == pytest.approx(1.0)
     assert "mappingFit" in result["scenarioFit"]
     assert "scenarioFit" not in result["scoreVector"]
+
+
+def test_campaign_aggregate_uses_stage_aware_smoothness_weights():
+    result = scoring.score_metrics(
+        {
+            "TotalDPS": 80_000,
+            "PhysicalMaximumHitTaken": 3_000,
+            "FireMaximumHitTaken": 5_000,
+            "ColdMaximumHitTaken": 5_000,
+            "LightningMaximumHitTaken": 5_000,
+            "ChaosMaximumHitTaken": 4_000,
+            "LifeUnreserved": 2_000,
+            "LifeRegenRecovery": 300,
+            "EffectiveMovementSpeedMod": 1.5,
+        },
+        level=68,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": 0},
+    )
+
+    assert result["aggregateScore"]["weights"] == {
+        "offense": 0.35,
+        "defense": 0.30,
+        "recovery": 0.20,
+        "mobility": 0.15,
+    }
 
 
 def test_mobility_can_use_skill_speed_when_walk_speed_is_baselineish():
@@ -749,6 +775,31 @@ def test_generated_limited_offense_stays_strict():
     assert "below_playability_floor" not in result["failures"]
     assert "limited_offense_floor_unverified_caveat" in result["caveats"]
     assert result["scoreBreakdown"]["offense"]["value"] == 0.0
+    assert "offense_delivery_not_established" in result["qualityWarnings"]
+    assert result["aggregateScore"]["value"] <= 0.29
+    assert result["qualityBand"] == "barely_playable"
+
+
+def test_trusted_reference_zero_limited_offense_is_not_reclassified_as_generated_failure():
+    result = scoring.score_metrics(
+        {
+            "JudgeDPS": 2_500,
+            "JudgeDPSMetric": "FullDPS",
+            "JudgeSkillName": "Molten Crash",
+            "JudgeSkillCaveats": ["full_dps_rollup_caveat"],
+            "PhysicalMaximumHitTaken": 12_000,
+            "FireMaximumHitTaken": 25_000,
+            "ColdMaximumHitTaken": 25_000,
+            "LightningMaximumHitTaken": 25_000,
+            "ChaosMaximumHitTaken": 18_000,
+            "LifeUnreserved": 4_000,
+        },
+        level=100,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": 75},
+        source_context="trusted_reference",
+    )
+
+    assert "offense_delivery_not_established" not in result["qualityWarnings"]
 
 
 def test_limited_full_dps_evidence_is_source_agnostic():
@@ -873,7 +924,7 @@ def test_ci_does_not_bypass_elemental_resistance_failures():
         source_context="generated_candidate",
     )
 
-    assert "uncapped_resistance" in result["failures"]
+    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
 
 
@@ -963,7 +1014,7 @@ def test_reference_uncapped_resistance_still_fails_when_state_is_not_otherwise_s
     )
 
     assert "uncapped_resistance" not in result["failures"]
-    assert "trusted_reference_uncapped_resistance_caveat" in result["caveats"]
+    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
 
 
 def test_reference_context_does_not_soften_single_physical_shortboard_score():
@@ -1072,7 +1123,7 @@ def test_generated_high_ehp_physical_shortboard_keeps_observed_defense_score():
     assert "trusted_reference_ehp_defense_prior_caveat" not in result["caveats"]
 
 
-def test_projectile_damage_is_marked_as_lower_bound_without_blocking_scoring():
+def test_projectile_damage_marks_overlap_unknown_without_calling_hit_dps_a_lower_bound():
     result = scoring.score_metrics(
         {
             "TotalDPS": 750_000,
@@ -1089,7 +1140,7 @@ def test_projectile_damage_is_marked_as_lower_bound_without_blocking_scoring():
     )
 
     assert "below_playability_floor" not in result["failures"]
-    assert "lower_bound_dps_caveat" in result["caveats"]
+    assert "projectile_overlap_unverified_caveat" in result["caveats"]
     assert result["scoreBreakdown"]["offense"]["projectileCount"] == 6
     assert result["scoreVector"]["offense"]["value"] > 0
 

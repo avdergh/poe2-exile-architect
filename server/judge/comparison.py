@@ -53,6 +53,7 @@ def _limited_evidence(evaluation: dict[str, Any]) -> bool:
         return True
     limited_caveats = {
         "lower_bound_dps_caveat",
+        "projectile_overlap_unverified_caveat",
         "minion_dps_unverified_caveat",
         "minion_count_multiplier_caveat",
         "full_dps_rollup_caveat",

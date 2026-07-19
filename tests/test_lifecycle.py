@@ -354,7 +354,7 @@ def test_research_build_lifecycle_attaches_concrete_stage_verification():
     assert "evaluate_build" in maps_entry["verification"]["engineTools"]
 
 
-def test_verify_stage_metrics_fails_maps_entry_when_resists_and_sustain_are_low():
+def test_verify_stage_metrics_does_not_infer_sustain_from_mana_pool_multiple():
     from server.knowledge import lifecycle_verification
 
     result = lifecycle_verification.verify_stage_metrics(
@@ -369,16 +369,25 @@ def test_verify_stage_metrics_fails_maps_entry_when_resists_and_sustain_are_low(
     assert result["ok"] is True
     assert result["pass"] is False
     assert result["status"] == "failed"
-    assert {"resists_capped", "basic_defense_online", "sustain_ok"} <= set(result["failedChecks"])
+    assert {"resists_capped", "basic_defense_online"} <= set(result["failedChecks"])
+    assert "sustain_ok" in result["unknownChecks"]
     assert "engine-computed" in result["evidenceTags"]
 
 
-def test_verify_stage_metrics_passes_maps_entry_with_engine_values():
+def test_verify_stage_metrics_passes_maps_entry_with_rate_based_sustain_evidence():
     from server.knowledge import lifecycle_verification
 
     result = lifecycle_verification.verify_stage_metrics(
         "maps_entry",
-        stats={"TotalDPS": 90000, "Life": 2600, "Mana": 500, "ManaCost": 40},
+        stats={
+            "TotalDPS": 90000,
+            "Life": 2600,
+            "Mana": 500,
+            "ManaUnreserved": 420,
+            "ManaCost": 40,
+            "Speed": 2,
+            "NetManaRegen": 85,
+        },
         defenses={
             "resistances": {"fire": 75, "cold": 79, "lightning": 76},
             "totalEHP": 12000,

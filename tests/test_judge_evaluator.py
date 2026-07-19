@@ -86,7 +86,7 @@ def test_evaluator_requests_judge_metric_keys():
     assert "SpiritReserved" in engine.requested_keys
     assert result["scoreScale"] == "0_to_1"
     assert "scoreBreakdown" in result
-    assert result["aggregateScore"]["weightProfile"] == "judge_v3_evidence_aware"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v4_stage_aware"
     assert result["defenseModel"]["poolModel"] == "life"
     assert result["defenseModel"]["confidence"] == "full"
     assert result["pass"] is True
@@ -447,8 +447,9 @@ def test_evaluator_flags_uncapped_resistance_without_physical_invalid():
 
     result = evaluator.evaluate_active_build(engine, "uncapped")
 
-    assert "uncapped_resistance" in result["hardFailures"]
-    assert "uncapped_resistance" not in result["physicalInvalidFailures"]
+    assert result["hardFailures"] == []
+    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
+    assert result["pass"] is True
     assert result["aggregateScore"]["value"] < 0.6
 
 
@@ -494,8 +495,8 @@ def test_trusted_reference_can_downgrade_uncapped_resistance_when_other_evidence
     )
 
     assert result["pass"] is True
-    assert "uncapped_resistance" not in result["hardFailures"]
-    assert "trusted_reference_uncapped_resistance_caveat" in result["caveats"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
     assert result["rewardEligible"] == "limited"
 
 
@@ -577,7 +578,8 @@ def test_evaluator_ci_still_flags_uncapped_elemental_resistance():
 
     result = evaluator.evaluate_active_build(engine, "ci-ele-uncapped")
 
-    assert "uncapped_resistance" in result["hardFailures"]
+    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
+    assert result["hardFailures"] == []
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
 
 
@@ -655,7 +657,9 @@ def test_evaluator_flags_meta_trigger_core_blocker():
     result = evaluator.evaluate_active_build(engine, "meta-trigger")
 
     assert result["modelability"]["coreBlocked"] is True
-    assert "unmodelled_mechanic" in result["hardFailures"]
+    assert result["hardFailures"] == []
+    assert result["pass"] is True
+    assert result["rewardEligible"] is False
 
 
 def test_evaluator_flags_tree_version_mismatch_caveat():
@@ -969,7 +973,8 @@ def test_evaluator_checks_selected_damage_group_modelability():
     result = evaluator.evaluate_active_build(engine, "selected-meta-trigger")
 
     assert result["modelability"]["coreBlocked"] is True
-    assert "unmodelled_mechanic" in result["hardFailures"]
+    assert "unmodelled_mechanic" not in result["hardFailures"]
+    assert result["pass"] is True
     assert result["rewardEligible"] is False
 
 

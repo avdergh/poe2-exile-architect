@@ -402,6 +402,26 @@ def test_network_failure_after_reject_after_exposes_hard_stale(tmp_path):
     assert result.hard_stale is True
 
 
+def test_github_rate_limit_is_reported_as_structured_diagnostic(tmp_path):
+    store = FileCacheStore(tmp_path / "ggg-patch.json")
+    old = make_envelope(
+        fetched_at=NOW - timedelta(hours=1),
+        checked_at=NOW - timedelta(minutes=20),
+    )
+    store.save(old)
+    transport = RecordingTransport(
+        TransportResponse(
+            status_code=403,
+            headers={"X-RateLimit-Remaining": "0"},
+        )
+    )
+
+    result = run(store, transport)
+
+    assert result.cache_state is CacheState.FALLBACK
+    assert result.diagnostics == ("github_rate_limited", "transport returned HTTP 403")
+
+
 def test_response_json_error_uses_fallback_without_replacing_cache(tmp_path):
     store = FileCacheStore(tmp_path / "ggg-patch.json")
     old = make_envelope(

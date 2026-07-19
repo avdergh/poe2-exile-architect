@@ -18,6 +18,7 @@ param(
     [Parameter(Position = 0)]
     [string]$Platform,
     [switch]$Update,
+    [switch]$RegisterMcpOnly,
     [string]$Uninstall,
     [switch]$DryRun,
     [switch]$Help
@@ -51,6 +52,7 @@ Usage:
   install.ps1 [<platform>]          Install for <platform> (or prompt if omitted)
   install.ps1 -DryRun <platform>    Show actions without changing files
   install.ps1 -Update               Pull latest changes
+  install.ps1 -RegisterMcpOnly      Register this checkout's MCP server without cloning/linking
   install.ps1 -Uninstall <platform> Remove links for <platform>
   install.ps1 -Help
 
@@ -126,7 +128,7 @@ function Get-SkillNamesForUninstall {
     if (Test-Path $root) {
         return @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     }
-    return @('poe-bd-research', 'poe-bd-create')
+    return @('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop')
 }
 
 function Test-IsReparse([string]$Path) {
@@ -347,7 +349,7 @@ function Cmd-Install([string]$Id) {
     Link-Plugin-Root
     Install-BuildConverterProvider
     if ($Id -eq 'codex') { Register-Codex-McpServer }
-    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research and /poe-bd-create."
+    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research, /poe-bd-create, and /poe-bd-research-loop."
 }
 
 function Cmd-Uninstall([string]$Id) {
@@ -367,6 +369,12 @@ function Cmd-Update {
 }
 
 if ($Help) { Show-Usage; return }
+if ($RegisterMcpOnly) {
+    $RepoDir = $ScriptRepoDir
+    $null = Resolve-UvCommand
+    Register-Codex-McpServer
+    return
+}
 if ($Update) { Cmd-Update; return }
 if ($Uninstall) { Cmd-Uninstall $Uninstall; return }
 if (-not $Platform) { $Platform = Prompt-Platform }

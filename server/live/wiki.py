@@ -1,8 +1,9 @@
 """Live wiki lookup — the long-tail escape hatch (the ONLY runtime wiki read).
 
 When a mechanic/skill/item isn't in the bundled corpus, this fetches a concise extract from
-the PoE2 Wiki's MediaWiki API on demand. It is a *targeted slice* (lead extract + link), never
-a page dump, and it degrades gracefully to "unavailable" if the wiki is unreachable.
+the PoE2 Wiki's MediaWiki API on demand. It is a *targeted slice* (lead plus early mechanics
+sections, capped locally), never a returned page dump, and it degrades gracefully to
+"unavailable" if the wiki is unreachable.
 
 This is a deliberate, narrow exception to the offline-first invariant (see CLAUDE.md invariant
 #3): a single, user-triggered, read-only lookup — not bundled redistribution. PoE2 Wiki content
@@ -18,6 +19,7 @@ from typing import Any
 
 API = "https://www.poe2wiki.net/api.php"
 PAGE_URL = "https://www.poe2wiki.net/wiki/{}"
+PERMANENT_URL = "https://www.poe2wiki.net/index.php?oldid={}"
 LICENSE = "CC BY-NC-SA 3.0"
 SOURCE = "PoE2 Wiki (poe2wiki.net)"
 UA = {"User-Agent": "poe2-exile-architect/0.1 (+https://github.com/avdergh/poe2-exile-architect)"}
@@ -34,10 +36,11 @@ def _extract(title: str) -> dict | None:
     res = _api(
         {
             "action": "query",
-            "prop": "extracts",
+            "prop": "extracts|info|revisions",
             "explaintext": 1,
-            "exintro": 1,
             "exsectionformat": "plain",
+            "rvlimit": 1,
+            "rvprop": "ids|timestamp",
             "redirects": 1,
             "titles": title,
         }
@@ -49,10 +52,24 @@ def _extract(title: str) -> dict | None:
         if not text:
             return None
         real = p.get("title") or title
+        revisions = p.get("revisions") or []
+        latest_revision = revisions[0] if revisions and isinstance(revisions[0], dict) else {}
+        page_id = int(p.get("pageid") or _pid)
+        revision_id = int(latest_revision.get("revid") or p.get("lastrevid") or 0)
+        revision_timestamp = str(latest_revision.get("timestamp") or "")
         return {
             "title": real,
             "text": text[:MAX_CHARS],
             "url": PAGE_URL.format(urllib.parse.quote(real.replace(" ", "_"))),
+            "pageId": page_id,
+            "revisionId": revision_id,
+            "revisionTimestamp": revision_timestamp,
+            "permanentUrl": PERMANENT_URL.format(revision_id) if revision_id else None,
+            "sourceRef": (
+                f"poe2wiki:page:{page_id}:rev:{revision_id}"
+                if page_id > 0 and revision_id > 0
+                else None
+            ),
         }
     return None
 
@@ -84,11 +101,18 @@ def lookup_mechanic(topic: str) -> dict[str, Any]:
             "title": rec["title"],
             "text": rec["text"],
             "url": rec["url"],
+            "pageId": rec["pageId"],
+            "revisionId": rec["revisionId"],
+            "revisionTimestamp": rec["revisionTimestamp"],
+            "permanentUrl": rec["permanentUrl"],
+            "sourceRef": rec["sourceRef"],
+            "excerptKind": "lead_and_early_sections",
             "license": LICENSE,
             "source": SOURCE,
-            "attribution": f"{SOURCE}, {LICENSE} — {rec['url']}",
-            "note": "Live wiki fetch (time-sensitive, may be wrong/outdated). Engine remains the "
-            "source of truth for numbers. Attribute the source when you quote it.",
+            "attribution": f"{SOURCE}, {LICENSE} — {rec['permanentUrl'] or rec['url']}",
+            "note": "Live wiki fetch with revision-pinned provenance. The content may still be "
+            "wrong or outdated. Engine remains the source of truth for numbers. Attribute the "
+            "source when you quote it.",
         }
     except Exception as e:  # noqa: BLE001 - network/timeout: degrade gracefully
         return {"available": False, "error": f"wiki unreachable: {e}", "topic": topic}

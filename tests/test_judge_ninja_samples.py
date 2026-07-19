@@ -1,8 +1,137 @@
 from __future__ import annotations
 
 import json
+import os
+from types import SimpleNamespace
+
+import pytest
 
 from scripts import run_judge_ninja_samples
+
+
+def test_discover_playwright_runtime_tracks_current_codex_runtime_hash(tmp_path):
+    home = tmp_path / "home"
+    runtime_bin = (
+        home
+        / "AppData"
+        / "Local"
+        / "OpenAI"
+        / "Codex"
+        / "runtimes"
+        / "cua_node"
+        / "new-runtime-hash"
+        / "bin"
+    )
+    playwright = runtime_bin / "node_modules" / "playwright"
+    playwright.mkdir(parents=True)
+    (playwright / "package.json").write_text("{}", encoding="utf-8")
+    (playwright / "index.js").write_text("module.exports = {};", encoding="utf-8")
+    node = runtime_bin / ("node.exe" if os.name == "nt" else "node")
+    node.write_bytes(b"node")
+    browser_root = tmp_path / "local" / "ms-playwright" / "chromium-9999"
+    chromium = browser_root / "chrome-win64" / "chrome.exe"
+    chromium.parent.mkdir(parents=True)
+    chromium.write_bytes(b"chrome")
+
+    result = run_judge_ninja_samples.discover_playwright_runtime(
+        home=home,
+        environ={"LOCALAPPDATA": str(tmp_path / "local")},
+    )
+
+    assert result == {
+        "nodeExecutable": node.resolve(),
+        "playwrightPackagePath": playwright.resolve(),
+        "chromiumPath": chromium.resolve(),
+    }
+
+
+def test_discover_playwright_runtime_prefers_explicit_environment_overrides(tmp_path):
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node")
+    playwright = tmp_path / "playwright"
+    playwright.mkdir()
+    (playwright / "package.json").write_text("{}", encoding="utf-8")
+    (playwright / "index.js").write_text("module.exports = {};", encoding="utf-8")
+    chromium = tmp_path / "chrome.exe"
+    chromium.write_bytes(b"chrome")
+
+    result = run_judge_ninja_samples.discover_playwright_runtime(
+        home=tmp_path / "empty-home",
+        environ={
+            run_judge_ninja_samples.NODE_ENV: str(node),
+            run_judge_ninja_samples.PLAYWRIGHT_ENV: str(playwright),
+            run_judge_ninja_samples.CHROMIUM_ENV: str(chromium),
+        },
+    )
+
+    assert result["nodeExecutable"] == node.resolve()
+    assert result["playwrightPackagePath"] == playwright.resolve()
+    assert result["chromiumPath"] == chromium.resolve()
+
+
+def test_playwright_list_fetch_waits_for_character_link_for_at_most_15_seconds(
+    monkeypatch, tmp_path
+):
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="<html></html>", stderr="")
+
+    monkeypatch.setattr(run_judge_ninja_samples.subprocess, "run", fake_run)
+    driver = object.__new__(run_judge_ninja_samples.PlaywrightHtmlDriver)
+    driver.node_executable = "node"
+    driver.playwright_package_path = tmp_path / "playwright"
+    driver.chromium_path = tmp_path / "chrome.exe"
+
+    driver.fetch_html("https://poe.ninja/poe2/builds/current?class=Martial+Artist")
+
+    script = captured["args"][2]
+    assert "waitForSelector" in script
+    assert 'a[href*="/character/"]' in script
+    assert "timeout: 15000" in script
+    assert "waitUntil: 'commit'" in script
+    assert captured["kwargs"]["timeout"] == 90
+
+
+def test_playwright_detail_fetch_waits_for_import_input(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="<html></html>", stderr="")
+
+    monkeypatch.setattr(run_judge_ninja_samples.subprocess, "run", fake_run)
+    driver = object.__new__(run_judge_ninja_samples.PlaywrightHtmlDriver)
+    driver.node_executable = "node"
+    driver.playwright_package_path = tmp_path / "playwright"
+    driver.chromium_path = tmp_path / "chrome.exe"
+
+    driver.fetch_html("https://poe.ninja/poe2/builds/runesofaldur/character/account/character")
+
+    script = captured["args"][2]
+    assert 'input[aria-label="Import code for Path of Building"]' in script
+    assert "timeout: 30000" in script
+    assert captured["kwargs"]["timeout"] == 90
+
+
+def test_playwright_fetch_has_a_hard_process_timeout(monkeypatch, tmp_path):
+    def fake_run(*_args, **_kwargs):
+        raise run_judge_ninja_samples.subprocess.TimeoutExpired("node", 90)
+
+    monkeypatch.setattr(run_judge_ninja_samples.subprocess, "run", fake_run)
+    driver = object.__new__(run_judge_ninja_samples.PlaywrightHtmlDriver)
+    driver.node_executable = "node"
+    driver.playwright_package_path = tmp_path / "playwright"
+    driver.chromium_path = tmp_path / "chrome.exe"
+
+    with pytest.raises(
+        run_judge_ninja_samples.NinjaSampleError,
+        match="playwright_fetch_timed_out",
+    ):
+        driver.fetch_html("https://poe.ninja/poe2/builds/current")
 
 
 def test_extract_character_links_from_rendered_html_reads_unique_character_urls():
@@ -91,6 +220,24 @@ def test_finalize_sample_classification_marks_low_scoring_pass_sample_for_review
     assert out["scoreReviewNeeded"] is True
     assert out["scoreReviewReasons"] == ["aggregate_below_0_5", "defense_below_0_5"]
     assert out["finalClassification"] == "judge_unsolved_modelability_gap"
+
+
+def test_finalize_sample_classification_separates_severe_playability_from_legality():
+    sample = {
+        "pass": True,
+        "hardFailures": [],
+        "playabilityFailures": ["severe_elemental_resistance_shortfall"],
+        "caveats": [],
+        "modelability": {"status": "full", "coreBlocked": False},
+        "aggregateScore": {"value": 0.4},
+        "scoreVector": {},
+    }
+
+    out = run_judge_ninja_samples.finalize_sample_classification(sample)
+
+    assert out["pass"] is True
+    assert out["finalClassification"] == "severe_playability_failure"
+    assert out["scoreReviewNeeded"] is False
 
 
 def test_finalize_sample_classification_clears_review_for_known_limited_offense_gap():

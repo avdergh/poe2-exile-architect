@@ -8,9 +8,17 @@ from typing import Any
 from . import models
 
 CRITICAL_FAILURE_PENALTIES_V1 = {
-    "UNCAPPED_RESISTANCE_SCORE_CAP": 0.45,
+    "SEVERE_RESISTANCE_SCORE_CAP": 0.45,
     "CATASTROPHIC_DEFENSE_SCORE_CAP": 0.35,
+    "UNESTABLISHED_OFFENSE_SCORE_CAP": 0.29,
 }
+
+ELEMENTAL_RESISTANCE_SEVERE_FLOOR = {
+    "campaign": 30.0,
+    "maps_entry": 60.0,
+    "endgame": 60.0,
+}
+ELEMENTAL_RESISTANCE_QUALITY_TARGET = 75.0
 
 SCORING_TARGETS_V1: dict[str, dict[str, float]] = {
     "campaign": {
@@ -111,11 +119,11 @@ DAMAGE_BREAKDOWN = {
     "chaos": ("ChaosMaximumHitTaken", "chaos_hard_floor", "chaos_quality_floor", "chaos_target"),
 }
 
-AGGREGATE_WEIGHTS_V2 = {
-    "offense": 0.40,
-    "defense": 0.40,
-    "recovery": 0.15,
-    "mobility": 0.05,
+AGGREGATE_WEIGHTS_BY_BAND_V3 = {
+    # Campaign smoothness depends materially on recovery and movement, not only PoB damage/EHP.
+    "campaign": {"offense": 0.35, "defense": 0.30, "recovery": 0.20, "mobility": 0.15},
+    "maps_entry": {"offense": 0.375, "defense": 0.35, "recovery": 0.175, "mobility": 0.10},
+    "endgame": {"offense": 0.40, "defense": 0.40, "recovery": 0.15, "mobility": 0.05},
 }
 
 SPEED_QUALITY_FLOOR = 1.0
@@ -173,7 +181,8 @@ def score_metrics(
     band = level_band(level)
     targets = SCORING_TARGETS_V1[band]
     caveats = floor_caveats(level)
-    failures: list[str] = []
+    playability_failures: list[str] = []
+    quality_warnings: list[str] = []
     provenance = {key: "pob_computed" for key in metrics if metrics.get(key) is not None}
     breakdown: dict[str, Any] = {}
 
@@ -194,18 +203,21 @@ def score_metrics(
     limited_offense = offense_meta.get("evidenceLevel") == "limited"
     offense_meta_caveats = list(offense_meta.get("caveats") or [])
     lower_bound_offense = "lower_bound_dps_caveat" in offense_meta_caveats
+    offense_evidence = str(offense_meta.get("evidenceLevel") or "none")
     if dps < targets["dps_hard_floor"]:
         if limited_offense or lower_bound_offense:
             caveats.append("limited_offense_floor_unverified_caveat")
+        elif offense_evidence in {"none", "unknown"}:
+            caveats.append("offense_metric_unavailable_caveat")
         elif source_context == "trusted_reference" and _allow_reference_floor_downgrade(
             metrics, breakdown, offense_meta, offense_meta_caveats
         ):
             caveats.append("trusted_reference_floor_unverified_caveat")
         else:
-            failures.append("below_playability_floor")
+            playability_failures.append("below_playability_floor")
             offense_blocked = True
     elif dps < offense_quality_floor:
-        caveats.append("quality_target_missed_caveat")
+        quality_warnings.append("offense_quality_target_missed")
     caveats.extend(offense_meta.pop("caveats", []))
     breakdown["offense"] = {
         "value": round(_clamp(offense_value), 6),
@@ -220,7 +232,16 @@ def score_metrics(
     }
 
     defense_value = _score_defense(
-        metrics, targets, keystones, resistances, failures, caveats, breakdown, source_context, band
+        metrics,
+        targets,
+        keystones,
+        resistances,
+        playability_failures,
+        quality_warnings,
+        caveats,
+        breakdown,
+        source_context,
+        band,
     )
     recovery_value = _score_recovery(metrics, caveats, breakdown, keystones, source_context, band)
     mobility_value = _score_mobility(metrics, caveats, breakdown, source_context, band)
@@ -239,13 +260,24 @@ def score_metrics(
     if source_context == "trusted_reference" and _resistance_state_suspect(metrics, res, ci_active):
         caveats.append("source_data_problem_caveat")
         caveats.append("state_or_import_suspect_caveat")
-    uncapped_resistance = any(_num(res.get(k)) < 75 for k in ("fire", "cold", "lightning")) or (
-        (not ci_active) and _num(res.get("chaos")) < 0
+    elemental_values = [_num(res.get(k)) for k in ("fire", "cold", "lightning")]
+    resistance_floor = ELEMENTAL_RESISTANCE_SEVERE_FLOOR[band]
+    severe_resistance_shortfall = any(value < resistance_floor for value in elemental_values)
+    below_resistance_target = any(
+        value < ELEMENTAL_RESISTANCE_QUALITY_TARGET for value in elemental_values
     )
-    if uncapped_resistance:
-        failures.append("uncapped_resistance")
-    if uncapped_resistance and source_context == "trusted_reference":
-        failures = [failure for failure in failures if failure != "uncapped_resistance"]
+    if severe_resistance_shortfall:
+        playability_failures.append("severe_elemental_resistance_shortfall")
+    if below_resistance_target:
+        quality_warnings.append("elemental_resistance_below_cap")
+    if (not ci_active) and _num(res.get("chaos")) < 0:
+        quality_warnings.append("negative_chaos_resistance")
+    if severe_resistance_shortfall and source_context == "trusted_reference":
+        playability_failures = [
+            failure
+            for failure in playability_failures
+            if failure != "severe_elemental_resistance_shortfall"
+        ]
         caveats.append("trusted_reference_uncapped_resistance_caveat")
 
     score_vector = {
@@ -262,12 +294,21 @@ def score_metrics(
             score_vector[dimension]["value"] = 0.0
             score_vector[dimension]["blocked"] = True
 
+    aggregate_weights = AGGREGATE_WEIGHTS_BY_BAND_V3[band]
     aggregate = sum(
-        score_vector[key]["value"] * weight for key, weight in AGGREGATE_WEIGHTS_V2.items()
+        score_vector[key]["value"] * weight for key, weight in aggregate_weights.items()
     )
-    if "uncapped_resistance" in failures:
-        aggregate = min(aggregate, CRITICAL_FAILURE_PENALTIES_V1["UNCAPPED_RESISTANCE_SCORE_CAP"])
-    if "catastrophic_defense_shortboard" in failures:
+    if source_context == "generated_candidate" and score_vector["offense"]["value"] <= 0.0:
+        # Limited PoB evidence must not become a false low-DPS legality failure. It also must not
+        # let unrelated dimensions average an unproven damage package into a finished build.
+        quality_warnings.append("offense_delivery_not_established")
+        aggregate = min(
+            aggregate,
+            CRITICAL_FAILURE_PENALTIES_V1["UNESTABLISHED_OFFENSE_SCORE_CAP"],
+        )
+    if "severe_elemental_resistance_shortfall" in playability_failures:
+        aggregate = min(aggregate, CRITICAL_FAILURE_PENALTIES_V1["SEVERE_RESISTANCE_SCORE_CAP"])
+    if "catastrophic_defense_shortboard" in playability_failures:
         aggregate = min(aggregate, CRITICAL_FAILURE_PENALTIES_V1["CATASTROPHIC_DEFENSE_SCORE_CAP"])
     if blocked:
         aggregate = 0.0
@@ -276,17 +317,20 @@ def score_metrics(
 
     return {
         "levelBand": band,
-        "failures": _dedupe(failures),
+        "playabilityFailures": _dedupe(playability_failures),
+        "qualityWarnings": _dedupe(quality_warnings),
+        # Deprecated compatibility alias. Callers must not merge these into legality failures.
+        "failures": _dedupe(playability_failures),
         "caveats": _dedupe(caveats),
         "scoreVector": _round_score_vector(score_vector),
         "scoreBreakdown": breakdown,
         "scoreScale": "0_to_1",
         "scenarioFit": scenario_fit,
-        "qualityBand": _quality_band(aggregate, failures, blocked),
+        "qualityBand": _quality_band(aggregate, playability_failures, blocked),
         "aggregateScore": {
             "value": round(_clamp(aggregate), 6),
             "weightProfile": models.WEIGHT_PROFILE,
-            "weights": AGGREGATE_WEIGHTS_V2,
+            "weights": aggregate_weights,
         },
         "metricProvenance": provenance,
     }
@@ -297,7 +341,8 @@ def _score_defense(
     targets: dict[str, float],
     keystones: list[str] | None,
     resistances: dict[str, Any] | None,
-    failures: list[str],
+    playability_failures: list[str],
+    quality_warnings: list[str],
     caveats: list[str],
     breakdown: dict[str, Any],
     source_context: str,
@@ -397,10 +442,10 @@ def _score_defense(
                     suspicious_defense_state=suspicious_defense_state
                     and source_context == "trusted_reference",
                 ):
-                    failures.append("catastrophic_defense_shortboard")
+                    playability_failures.append("catastrophic_defense_shortboard")
                     break
             if value < breakdown[name]["qualityFloor"]:
-                caveats.append("quality_target_missed_caveat")
+                quality_warnings.append(f"{name}_max_hit_quality_target_missed")
         if missing:
             caveats.append("metric_unavailable_caveat")
         score_basis = shortboard_scores or scores
@@ -431,7 +476,7 @@ def _score_defense(
         target=targets["ehp_target"],
     )
     if ehp < targets["ehp_quality_floor"]:
-        failures.append("catastrophic_defense_shortboard")
+        playability_failures.append("catastrophic_defense_shortboard")
     breakdown["defense"] = {
         "value": round(_clamp(defense), 6),
         "observedValue": round(_clamp(defense), 6),
@@ -913,7 +958,7 @@ def _offense_metric(metrics: dict[str, Any]) -> tuple[float, str, dict[str, Any]
     projectile_count = _num(metrics.get("ProjectileCount"))
     caveats: list[str] = []
     if projectile_count > 1 and key != "FullDPS":
-        caveats.append("lower_bound_dps_caveat")
+        caveats.append("projectile_overlap_unverified_caveat")
         meta["projectileCount"] = projectile_count
     if key in {"MinionCombinedDPS", "MinionTotalDPS"}:
         meta["provenance"] = "minion_pob_output"

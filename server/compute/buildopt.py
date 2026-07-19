@@ -26,7 +26,7 @@ from typing import Any
 from ..knowledge import db as corpus
 from ..knowledge import refbuilds
 from . import craftopt, itemopt, supportopt
-from .engine import PobEngine
+from .engine import PobEngine, PobEngineError, available_engine_slots
 
 _RES_KEYS = ("fire", "cold", "lightning")
 _DAMAGE = {"fire", "cold", "lightning", "chaos", "physical"}
@@ -367,8 +367,18 @@ def _run_levers(
     if not parallel or len(levers) <= 1:
         return [commit_and_max(engine, snapshot, lev, **kw) for lev in levers]
 
-    n = min(max(2, max_workers), len(levers))
-    extras = [PobEngine(script=engine.script) for _ in range(n - 1)]
+    n = min(max(2, max_workers), len(levers), 1 + available_engine_slots())
+    if n <= 1:
+        return [commit_and_max(engine, snapshot, lev, **kw) for lev in levers]
+    extras: list[PobEngine] = []
+    for _ in range(n - 1):
+        try:
+            extras.append(PobEngine(script=engine.script))
+        except PobEngineError:
+            break
+    n = 1 + len(extras)
+    if n <= 1:
+        return [commit_and_max(engine, snapshot, lev, **kw) for lev in levers]
     engines = [engine, *extras]
     chunks: list[list[str | None]] = [levers[i::n] for i in range(n)]
 

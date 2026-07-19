@@ -10,12 +10,17 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 - 从 poe.ninja 当前赛季普通服拉取 90-100 级成熟 BD 样本。
 - 支持本地单个或批量 PoB import code / XML。
 - 用 `/poe-bd-research` 或 `$poe-bd-research` 启动队列。
+- 用 `/poe-bd-research-loop` 或 `$poe-bd-research-loop` 运行 Desktop 可见研究循环。每个计划项
+  都会创建一个新的侧边栏任务：`gpt-5.6-sol + medium` 研究，同一任务切换到 `xhigh` review
+  和 fix；用户直接打开任务查看完整过程。控制任务只推进阶段和报告 thread ID/终态，不复制
+  子任务正文。`poe_research_orchestrator` MCP 只保存 Markdown claim、检查点、暂停和恢复状态，
+  不创建会话、不调用模型，也不启动后台控制台。
 - 用 `/poe-bd-create` 或 `$poe-bd-create` 启动 Phase 5 Agent 主导生成原型；Agent 负责理解、
   查询、候选设计和活动 PoB 搭建，程序负责运行绑定、快照捕获、Judge 调用和人工验收包生成。
 - 对最终通过且被 Agent 接受的候选，保存本地私有 PoB artifact，并导出桌面 PoB XML、PoB
   导入码文本和官方单阶段 `.build` 文件。
-- 每个 Researcher worker 只读取一个 transient raw-rich prompt。
-- 通过 resolver、typed schema、copy-safety 和 proposal gate 后才入库。
+- 当前 Researcher Agent 每次只处理一个 transient 案例，并通过有界清单、分区读取和搜索获得证据。
+- 通过 resolver、typed schema、copy-safety 和 acceptance gate 后才入库。
 
 仍在建设中的能力包括完整 Critic 修复/回滚/提前停止循环、分场景多技能组合评分和 reward
 memory。当前导出能力用于交付和暴露前置构筑问题，不代表 Agent 已能稳定创造所有类型的高水平
@@ -23,7 +28,8 @@ BD，也不代表完整产品闭环已经成熟。
 
 ## 安装
 
-Codex 本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会优先使用仓库内
+Codex 本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会注册统一的
+`poe2_build_mcp`，并优先使用仓库内
 `.tools/uv`，其次使用 `PATH` 中的 `uv`。两者都不存在时会明确停止，不会写入一个无法启动的
 MCP 配置。
 
@@ -43,24 +49,29 @@ macOS / Linux：
 
 ```powershell
 .\install.ps1 -DryRun codex
+.\install.ps1 -RegisterMcpOnly
 .\install.ps1 -Update
 .\install.ps1 -Uninstall codex
 ```
 
 ```bash
 ./install.sh --dry-run codex
+./install.sh --register-mcp-only
 ./install.sh --update
 ./install.sh --uninstall codex
 ```
 
-安装器会链接 `poe-bd-creator-plugin/skills/poe-bd-research` 和
-`poe-bd-creator-plugin/skills/poe-bd-create`，不会覆盖已有真实目录；卸载只删除自己创建的
-symlink/junction。
+安装器会链接 `poe-bd-creator-plugin/skills/poe-bd-research`、
+`poe-bd-creator-plugin/skills/poe-bd-create` 和
+`poe-bd-creator-plugin/skills/poe-bd-research-loop`，不会覆盖已有真实目录；卸载只删除自己
+创建的 symlink/junction。
 
 安装器还会为 Codex 注册本项目 MCP 服务 `poe2_build_mcp`，这样 `/poe-bd-create` 运行时才能
 看到 `query_research_memory`、`find_skills`、`new_build`、`evaluate_generation_candidate` 等工具。修改会写入
 `~/.codex/config.toml` 中带有 `poe-bd-creator managed MCP server` 标记的配置块；卸载 Codex
 目标时只删除这个托管配置块，不会改动其他 MCP 服务。
+已有本地 checkout 和 skills、只缺 MCP 工具时，可使用 `-RegisterMcpOnly` / `--register-mcp-only`；
+该模式不会 pull、clone 或重新链接 skill。注册后需要新建 Codex 任务以重新发现工具。
 
 ## 使用 `/poe-bd-create`
 
@@ -87,24 +98,27 @@ Judge 结果也仍需人工判断。
 
 ## 使用 `/poe-bd-research`
 
+研究案例必须由当前主会话逐案完成，禁止委派给 subagent 或独立 agent lane，因为研究 MCP 工具只
+保证在当前主会话可用。
+
 在 Codex 或支持 skill 的宿主里输入：
 
 ```text
-/poe-bd-research --limit 20 --worker-count 5
+/poe-bd-research --limit 20
 ```
 
 这是会话里的 skill 指令，不是让你在聊天框里执行 shell 命令。Codex agent 会在后台调用本地脚本和工具。
 
 如果不带参数，skill 应先询问运行数量和模式，而不是先联网 dry-run，也不是静默启动完整 50 样本采集。你可以选择：预检 5 个样本（推荐，不入库）、小批量提取 20 个样本、大批量提取 50 个样本，或恢复已有队列。
 
-如果宿主支持交互式选择控件，应优先显示这些选项。不支持时退化为普通文字选项。`--resume` 是独立恢复模式，不绑定到 50 个样本。
+如果宿主支持交互式选择控件，应优先显示这些选项。不支持时退化为普通文字选项。`--resume` 是独立恢复模式，不绑定到 50 个样本，并且必须带上原始 `queue` 返回的 `--output-dir <runDir>`。
 
 含义：
 
 - 默认从 poe.ninja 当前 softcore trade league 拉样本；
 - 等级默认 90-100；
-- `--worker-count 5` 表示最多 5 个并发 Researcher agent lane；
-- 每个 lane 每次只分析一个完整 BD；
+- 当前 Agent 一次只领取并分析一个完整 BD；
+- 当前案例完成验收后，才继续领取下一案；
 - 默认不复用 raw-rich transcript，避免前一个样本污染后一个样本。
 
 筛升华：
@@ -113,13 +127,21 @@ Judge 结果也仍需人工判断。
 /poe-bd-research --limit 30 --ascendancy Deadeye
 ```
 
+使用 poe.ninja 自身的 `class` URL 条件筛选来源（当前网站该参数填写升华名称）：
+
+```text
+/poe-bd-research --limit 10 --class "Blood Mage" --level-min 95 --level-max 95
+```
+
+程序会把它编码为 `class=Blood+Mage`；从网页条件取得的 `--class "Blood+Mage"` 也会归一为
+同一名称，不会二次编码为 `%2B`。collector 会在采样前再次排除不匹配的升华；不传 `--class`
+时不会增加该 URL 参数。
+
 使用本地批量 code 文件：
 
 ```text
-/poe-bd-research --source-batch-file samples.txt --worker-count 5
+/poe-bd-research --source-batch-file samples.txt
 ```
-
-如果宿主不支持程序化 subagent，它必须明确报告 `requestedWorkers`、`effectiveWorkers=1` 和降级原因，然后串行执行。
 
 `/poe-bd-research` 是产品运行态入口，不是开发任务。运行期间 agent 只能操作队列、lease、transient prompt、safe review 和 acceptance；如果 collector 或外部源失败，应报告 `collector_failed` / `source_unavailable` / `runtime_failed`，不能现场修改仓库源码、测试或文档。
 
@@ -128,35 +150,49 @@ Judge 结果也仍需人工判断。
 skill 内部使用这个产品化脚本。普通 Codex 桌面用户不需要手动运行这些命令；它们主要用于 CLI/debug 或其他宿主集成：
 
 ```powershell
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py queue --limit 20 --worker-count 5
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py claim --output-dir .poe-bd-research
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py worker-brief --output-dir .poe-bd-research --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py prompt --output-dir .poe-bd-research --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py accept --output-dir .poe-bd-research --lease-token <leaseToken> --review-file <safe-review.json>
-.\.tools\uv\uv.exe run python scripts/research_mature_builds.py status --output-dir .poe-bd-research
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py queue --limit 20
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py claim --output-dir <runDir>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py worker-brief --output-dir <runDir> --lease-token <leaseToken>  # 仅恢复已领取任务
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py prompt --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py inspect --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py read --output-dir <runDir> --lease-token <leaseToken> --section skills --cursor 0 --limit 20
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py search --output-dir <runDir> --lease-token <leaseToken> --query <componentName>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py review-contract --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py init-review --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
+.\.tools\uv\uv.exe run python scripts/research_mature_builds.py status --output-dir <runDir>
 .\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode memory_assisted
 .\.tools\uv\uv.exe run python scripts\create_build.py review-packet --run-id <runId> --run-token <runToken>
 ```
 
 macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 
+非 dry-run 的默认 `queue` 会返回唯一的 `runDir`，后续命令必须原样使用。每个研究会话拥有独立
+`.poe-bd-research/runs/<runId>`，因此多个会话可以并发运行；已有队列目录不会被静默覆盖。
+
 ## 安全边界
 
 - 不持久化 PoB code、raw XML、完整装备表、完整天赋路径、完整 gem/support links、账号名、角色名或完整 URL。
-- `queue`、`claim`、`status`、`accept` 只输出 safe metadata。
-- `worker-brief` 只输出 safe worker 首条消息；宿主应把其中的 `workerPrompt` 原样发给 subagent，不要只发送本机 `SKILL.md` 路径或临时说明。
-- `prompt` 是唯一会输出 raw-rich transient material 的子命令，只应由持有 lease 的 Researcher worker 调用。
+- `queue`、`claim`、`prompt`、`inspect`、`review-contract`、`init-review`、`status` 和 `accept` 只输出 safe metadata 或安全合同。
+- `claim` 原子返回当前案例的 safe brief；当前 Agent 直接遵守其中的 `workerPrompt`，不得转交给其他 agent。`worker-brief` 仅用于恢复已领取的任务。
+- `prompt` 是兼容入口，只返回 safe manifest 和后续命令，不再输出 raw XML 或 PoB code。
+- 当前 lease 持有者使用 `inspect` 查看分区清单，再用 `read` 分页读取 `skills`、`gear`、`passives`、`config` 和 `build`；`search` 只搜索当前 transient 案例。
+- `review-contract` 在提交前提供 canonical 枚举和 JSON 模板；`init-review` 原子创建 lease 绑定的
+  JSON 骨架且不覆盖已有工作；先运行 `accept --validate-only` 自检，普通 `accept` 是队列研究唯一的 durable memory 写入入口。
+- `readyForAccept` 表示安全子集可接收，`fullyResolvedForAccept` / `acceptanceMode=clean` 才表示没有
+  暂缓候选或组件解析缺口；safe review 使用 UTF-8、两空格缩进的多行 JSON，便于 Agent 有界修复。
 - 没有 static source 不能创建 physical node。
 - 没有已解析 graph node 不能写 semantic edge。
 - 单个样本只能形成 `case_observation`，不能宣称“通常”“常见”。
 
 ## 平台能力
 
-| 平台 | Skill 发现 | MCP 工具 | 程序化并发 worker | 本地 uv / PoB |
+| 平台 | Skill 发现 | MCP 工具 | 串行逐案研究 | 本地 uv / PoB |
 | --- | --- | --- | --- | --- |
 | Codex | 支持 | 支持 | 支持 | 支持 |
-| Claude Code | 支持 | 取决于本地配置 | 默认串行降级 | 支持 |
-| Cursor / VS Code Copilot | 取决于宿主 skill/plugin 支持 | 取决于本地配置 | 默认串行降级 | 支持 |
-| Gemini / OpenCode / OpenClaw / Hermes | 取决于宿主 | 取决于本地配置 | 默认串行降级 | 支持 |
+| Claude Code | 支持 | 取决于本地配置 | 支持 | 支持 |
+| Cursor / VS Code Copilot | 取决于宿主 skill/plugin 支持 | 取决于本地配置 | 支持 | 支持 |
+| Gemini / OpenCode / OpenClaw / Hermes | 取决于宿主 | 取决于本地配置 | 支持 | 支持 |
 
-多平台兼容的目标是让同一套 skill、脚本和安全合同可被不同 agent 宿主使用；不是承诺每个平台都有 Codex 一样的 subagent 调度能力。
+多平台兼容的目标是让同一套 skill、脚本和安全合同可被不同 agent 宿主串行执行。

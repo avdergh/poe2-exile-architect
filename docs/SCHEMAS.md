@@ -112,7 +112,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - `PrototypeBuildCandidate`：Agent 产出的候选 BD 安全摘要。至少表达当前输出阶段、完整生命
   周期目标、职业壳、跨阶段职业硬锁、主技能/辅助技能意图、机制和伤害缩放轴、防御层、
   Spirit / 保留资源假设、装备角色、词缀方向、天赋锚点或区域意图、转型门槛、未解决注意事项
-  和使用过的工具/记忆引用。
+  和使用过的工具/记忆引用。普通模式还必须带 `ResearchMemoryUse`：记录真实
+  `dedupeQueryRef`、定向查询使用的 stable component keys、命中的 Build Family / 深度记录 /
+  pattern / semantic edge，以及每条研究结论被采用、保留或拒绝后如何影响候选。无匹配可以显式
+  记录 `no_matching_memory`，不能用空泛工具调用冒充记忆已参与设计。
 - `TransientBuildStateRef`：由 `evaluate_generation_candidate` 从真实活动 PoB 快照生成的临时
   构筑状态引用；对外和持久报告里只能出现不透明本地引用、摘要和安全 hash，不能
   展开 PoB 导入码、原始 XML、第三方成熟 BD 的完整装备表、完整天赋路径或原始技能连接。
@@ -145,9 +148,9 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它只比较同一用户请求下的安全摘要、
   Judge 结果和人工可审查差异，不写奖励记忆，不做长期进化式学习。
 
-P5.2 研究记忆对照不新增持久对照报告。现有创建入口支持 `--no-memory`：普通模式必须调用研究
-记忆查询，无记忆模式禁止调用研究记忆但保留其他全部工具。人工用同一请求分别运行两种模式并
-直接审查结果；程序不自动宣布胜负。
+P5.2 研究记忆对照不新增持久对照报告。现有创建入口支持 `--no-memory`：普通模式必须渐进查询
+研究记忆并填写 `ResearchMemoryUse`；无记忆模式禁止调用研究记忆、禁止填写该结构，但保留其他
+全部工具。人工用同一请求分别运行两种模式并直接审查结果；程序不自动宣布胜负。
 
 P5.1 证据可信度边界：
 
@@ -229,18 +232,28 @@ P5.1 证据可信度边界：
   `disableReason` 显示技能被当前武器禁用时，必须产生 `incompatible_weapon_skill_tags`；
   不允许用 Python 技能名表替代 PoB 兼容性判断；
 - scenario fit：当前作为展示型 mapping/bossing/hybrid fit，不参与 aggregate；
-- aggregate score：必须包含 weight profile；当前 `judge_v3_evidence_aware` 使用 offense
-  0.40、defense 0.40、recovery 0.15、mobility 0.05；
+- aggregate score：必须包含 weight profile；当前 `judge_v4_stage_aware` 保留现有阶段权重：
+  campaign 为 0.35/0.30/0.20/0.15，maps-entry 为 0.375/0.35/0.175/0.10，endgame 为
+  0.40/0.40/0.15/0.05；
 - quality band：`invalid`、`barely_playable`、`entry_endgame`、`solid`、`strong`；
-- hard failures 和 warnings；
+- 四层结果合同：`hardFailures` 仅表示确定性非法并决定 legality pass；
+  `playabilityFailures` 表示合法但严重不可玩短板；`qualityWarnings` 表示未达到推荐质量目标；
+  `modelability` / `scoreApplicability` 表示 PoB 数值是否可用于结论；
 - legality diagnostics：至少包含 `passiveBudget` 和 `weaponSetBudget` 的 used、available、
   over 信息；诊断用于解释 hard failure，不能把超预算自动降级为合法；
 - PoB-computed metrics；
 - resistance、Spirit、attribute、support、weapon、weapon/skill tag、passive-budget checks；
-- failure codes：uncapped_resistance、attribute_requirement_unmet、passive_budget_exceeded、
+- legality failure codes：attribute_requirement_unmet、passive_budget_exceeded、
   attack_skill_without_weapon、incompatible_weapon_skill_tags、spirit_budget_exceeded、
   invalid_class_ascendancy_pairing、invalid_socket_setup、support_limit_exceeded、
-  duplicate_support_gem、invalid_support_gem、pob_compute_failed、unmodelled_mechanic；
+  duplicate_support_gem、invalid_support_gem、illegal_equipped_item_affixes；
+- playability failure codes：`severe_elemental_resistance_shortfall`、
+  `below_playability_floor`、`catastrophic_defense_shortboard`；
+- quality warnings：`elemental_resistance_below_cap`、`negative_chaos_resistance`、各 offense / Max Hit
+  quality target miss，以及生成候选 offense 分数为 0 时的
+  `offense_delivery_not_established`；后者限制综合档位和最终交付，但不属于确定性非法；
+- DPS 语义遵循 PoB：`AverageDamage` 是平均命中，`TotalDPS` 是 Hit DPS，`CombinedDPS` 加入当前
+  技能的已建模次级/持续伤害，`FullDPS` 汇总被纳入的 skill actors/groups；
 - short-circuit state：physical-invalid failure 必须标记被 blocked 的 score dimensions；
 - reward eligibility：熔断 evaluation 不能产生 positive reward；
 - reward strength：`BuildEvaluation` / `BuildComparison` 使用 `rewardStrength` 区分
@@ -265,7 +278,8 @@ P5.1 证据可信度边界：
 - modelability status；
 - limited evidence：缺少关键 PoB 指标、primary pool 不可得或 partial modelability 时，evaluation
   可以用于 selection，但 `rewardEligible` 必须降为 `limited`，不能作为 strong reward 写入学习；
-- limited offense evidence：`lower_bound_dps_caveat`、`minion_dps_unverified_caveat`、
+- limited offense evidence：`projectile_overlap_unverified_caveat`、
+  `minion_dps_unverified_caveat`、
   `minion_count_multiplier_caveat`、`full_dps_rollup_caveat` 等 caveat 必须限制 reward，
   但不应阻止单个 BD 的 selection / 诊断评分；
 - dual-state limited evidence：Phase 1 如果检测到 weapon set passive usage，但尚未分别计算
@@ -291,7 +305,7 @@ Candidate vs reference 或 candidate vs prior round。
 - scenario / active-state comparison policy；
 - comparability/status：`comparable`、`partial_modelability`、`candidate_invalid`、
   `reference_invalid`、`both_invalid`、`incomparable`；
-- incomparable reason：例如 unmodelled_mechanic、missing_metric、different_active_state_policy；
+- incomparable reason：例如 core_mechanic_not_modelable、missing_metric、different_active_state_policy；
 - reward eligibility：full comparable 才能进入 strong reward；partial modelability 只能进入
   limited reward；非法或 core-unmodelled comparison 不进入 reward memory；
 - limited evidence comparison：如果任一方只有 limited evidence，可以给出
@@ -315,7 +329,8 @@ Candidate vs reference 或 candidate vs prior round。
 
 ## CleanFragment
 
-可持久化的 non-copyable research finding。
+可持久化的结构化研究知识。它可以包含完整核心机制包，但不能包含原始导入材料或第三方整角色
+镜像。
 
 必要概念：
 
@@ -344,14 +359,15 @@ Phase 4.5 的成熟 BD 设计观察中间层。它用于先记录“这个 BD �
 - components：每个 component 必须是 resolver-backed stable key，并带 role，例如
   primary_damage、clear_skill、boss_skill、generator、payoff、reservation、defensive_buff、
   ascendancy_shell、movement、trigger_host、support_modifier、unique_enabler、transition_gate、passive_anchor、
-  keystone_transformer、weapon_base、scaling_stat、defense_layer、resource_engine；
+  keystone_transformer、gear_base、weapon_base、scaling_stat、defense_layer、resource_engine；
 - `ascendancy_shell` 只表示 resolver-backed 职业/升华壳，用作 Agent 设计参考上下文；
   不代表完整升华点路径，也不是 hard legality。具体升华 notable / keystone 若作为机制锚点，
   必须单独用 `passive_anchor` / `keystone_transformer` 组件并携带 resolver evidence；
 - source case refs 和 safe evidence refs；
 - game patch、passive tree version、PoB version/commit；
 - visibility / split / knowledge scope；
-- 不包含 raw PoB code、raw XML、完整装备表、完整天赋路径或完整 gem/support links。
+- 不包含 raw PoB code、raw XML、账号角色信息，或由全部装备槽、整棵已分配天赋、全部技能组和配置
+  组成的第三方整角色镜像；允许保存关键技能与辅助组合、局部核心天赋连接和跨组件机制包。
 
 ## BuildPattern
 
@@ -364,6 +380,12 @@ Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 Agent 可见
 - component keys 和 component roles；
 - confidence tier：case_observation、recurring_observation、likely_pattern、
   common_within_archetype、strong_ranking_hint；
+- `transfer_scope`：`family`、`component` 或 `global`。`family` 表示只在来源 Build Family 内使用；
+  `component` 表示该 Family 知识同时具备带明确条件的跨 Family 迁移资格，而不是脱离 Family 或在
+  来源 Family 内降权；`global` 只接受静态事实/流程规则或独立 review，单成熟案例不能直接声明；
+- 可迁移 pattern 保存 `applicability_axes`、`applicability_requirements`、
+  `exclusion_conditions`、`transfer_rationale` 和 `origin_family_keys`。缺少最低条件、排除条件、验证任务
+  或来源 Family 的 component 候选不得入库；
 - sample count、family count、source diversity count 和可选 denominator；
 - typed context requirements；
 - Agent 设计提示和 verification tasks；
@@ -373,6 +395,13 @@ Phase 4.5 从多个 BuildDesignObservation 或样本中聚合出的 Agent 可见
   context，复核仍有效时才能恢复；
 - 所有 pattern 都是 advisory research context，不能替代 Phase 2/3 hard source facts、
   support/socket legality、Phase 5 Agent 设计判断或 Phase 1 Judge。
+- 单案例新 pattern 始终从 `case_observation` 开始。结构身份相同的 component pattern 只有获得两个
+  独立 Family 的证据后才能晋升为 `recurring_observation`；达到多样来源要求后最多晋升为
+  `likely_pattern`。`common_within_archetype` 与 `strong_ranking_hint` 仅用于 Family/Archetype 内部，
+  不能赋予公用知识跨 Family 强排序权。
+- component pattern 只保存一条记录，并通过 `origin_family_keys` 建立双重召回：来源 Family 内进入
+  `buildPatterns` 且使用 Family 权重，其他 Family 才进入较低权重的 `transferablePatterns`；同次查询
+  不得在两个通道重复返回。
 
 ## GraphNode
 
@@ -576,13 +605,39 @@ exclusive state 时返回 `unsupported` 与 `conflicting_weapon_set_caveat`。
 
 ## Phase4ResearchMemory
 
-Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、non-copyable、typed proposal。
+Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed proposal。这里的 clean 指
+不含原始导入材料、账号角色信息和第三方整角色镜像，不表示必须拆散关键技能、辅助、局部天赋或
+装备联动。
 它不是成熟 BD 模板库，也不是 physical graph fact source。
 
 核心概念：
 
-- `ResearcherOutput`：strict Pydantic schema，`schema_version = 4`，包含 clean fragments、
-  semantic edge proposals、`BuildDesignObservation` 和 `BuildPattern` proposals。
+- `ResearcherOutput`：strict Pydantic schema；旧 `schema_version = 4` 继续兼容，深度提取使用
+  `schema_version = 5`，并增加 `DeepResearchRecord` proposals。
+- `DeepResearchRecord`：同一案例通过 `research_group_id` 聚合成多条聚焦记录。每条只表达一个主要
+  知识单元，保存 title、summary、content、record kind、stable component keys、条件、失败条件、
+  safe evidence、版本和作用域。中文 `content` 原则上不超过 400 字，英文原则上不超过 250 个单词；
+  只有不可拆分的核心机制链可以携带 `length_exception_reason` 少量超出。
+- `BuildFamily`：只由已解析的 `ascendancy_key + primary_skill_key + sorted
+  secondary_skill_keys` 确定。clear/boss/triggered-payload，以及在同一技能包/机制链中与载荷成对的
+  trigger-host 自动作为核心副技能；普通 secondary 只是 Family 内工具或变体。其他确实定义流派的
+  generator/control 等技能通过
+  `typed_payload.familyCoreSkillKeys` 显式加入，且必须引用同一研究组已解析的 skill stable key。support、
+  暗金、装备、防御和资源方案不参与 Family 身份。
+- `Canonical KnowledgeUnit`：`DeepResearchRecord` 通过 `BuildFamily + record_kind + kind-specific
+  core component roles` 生成 `knowledge_key`。标题和正文只用于召回与选择更完整的代表文本，不能单独
+  授权跨来源合并。`skill_package` 还必须通过 `typed_payload.supportPackages` 保存每个核心技能组的
+  support 归属；同一技能、不同辅助包是同 Family 下不同知识单元。结构证据不足时保留原记录，不进行
+  猜测性归并。
+- `source_specific_random`：Cultivated/mutated 等随机实例依赖写入
+  `typed_payload.availability` 和 `sourceSpecificComponentKeys`。它拥有独立知识身份，只用于案例解释；
+  默认 Create 召回排除，也不能生成 planner-visible Pattern。
+- 无物理图节点的普通资源方式通过 `typed_payload.resourceMechanisms` 保存 lower_snake_case 机制标签，
+  例如 `mana_leech`、`mana_flask`。已归入 Family 但不能生成 `knowledge_key` 的记录不得作为 clean
+  acceptance 入库，必须补足结构化身份或暂缓。
+- `DeepResearchRecordEvidence`：同一 `knowledge_key` 每个 `source_case_ref` 只保存一份安全证据，
+  包括该来源观察到的组件、条件、失败条件和版本。重复研究同一 source 只更新时间；新 source 增加
+  evidence count，不复制 canonical 正文。
 - `CleanFragmentProposal`：机制级可复用原则，必须带 title、summary、reusable principle、
   safe evidence refs、source case refs、confidence、copyability risk、lifecycle、modelability、
   verification tasks、patch/tree/PoB version 和 visibility/split/scope。
@@ -610,17 +665,28 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、non-copy
 - `synergizes_with` 无向 edge id 使用 canonical JSON payload hash，不能裸字符串拼接。
 - directional short-cycle 同步检测上限为 `max_depth=3`。
 - rejected proposals 必须幂等 upsert，重复提交只增加 `retry_count`。
+- acceptance 必须分别报告 canonical record 的 created/updated 数量和新增 source evidence 数量；
+  “本案接受了多少记录”不能再被解释为“数据库新建了多少条知识”。
+- `caseCoverage.supports` 只有在每个核心技能组有结构化 `supportPackages` 且至少两个已解析辅助时才是
+  `covered`；`passiveAscendancy` 必须包含 ascendancy shell 和绑定到具体已解析升华节点的
+  `ascendancyResponsibilities`，普通 notable/keystone 不足以代替。
 - 所有 public tool envelope 必须包含 `noRawQuery: true` 和 `noRawMatureBuildMaterial: true`。
 
 禁止输出或持久化：
 
 - raw PoB code；
 - raw XML；
-- full equipment table；
-- full passive path；
-- full gem/support links；
 - raw account / character / profile URL；
 - long copied guide text。
+
+允许持久化：
+
+- 对机制成立必要的完整 key skill/support package；
+- 局部核心 passive connection、keystone/notable/jewel package；
+- 暗金/装备与技能、辅助、天赋、资源系统的完整核心联动。
+
+禁止的是把全部装备槽、整棵已分配天赋、全部技能组和完整配置共同组装成可一比一还原第三方
+整角色的镜像。边界按知识作用域判断，不按组件数量判断。
 
 ## RewardEvent
 
@@ -688,7 +754,9 @@ Phase 6 MVP 不要求自动生成 `level_interval` 或多阶段生命周期。�
 
 约束：
 
-- 只有可信 Judge `passed=true` 且 Agent 明确接受的候选可以创建；
+- 当前临时交付策略只要求可信 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效；
+  playability failure、`barely_playable`、分数不可用或 offense 为 0 等非硬性结论不阻止创建和
+  导出，但必须随 artifact 保留并在用户输出中明确披露，不能据此宣称质量通过；
 - 保存时必须重新读取活动 PoB 并验证 hash 与可信凭据一致；
 - 每个生成运行最多一个 artifact，不覆盖；
 - 失败轮次不保存完整 PoB XML；
@@ -751,3 +819,14 @@ Agent 最终答复必须逐项转述这三项，不能因为某项失败或忘�
 
 业务层不得依赖 provider 内部类型。provider 缺失、崩溃、输出非 JSON、输出 hash 不匹配或包含
 error-level warning 时，导出失败而不是静默切换到名称猜测。
+`DeepResearchRecord.component_mentions` 保存当前案例中被明确讨论、但未必已经解析为物理图 stable key
+的组件提及。每项包含 `candidate_name`、`role`、`resolver_query`、`expected_node_types`、可选
+`component_key` 和 `resolution_status`。已解析项同时进入 `component_keys`；未解析项仍可入库和召回，
+但不得据此创建 semantic edge。
+
+这里的 `role` 是 BD 功能角色，不是物理节点类型的别名。一个 `payoff` 可以来自主动技能、被动或
+暗金，非武器的普通装备基底使用 `gear_base`，武器基底使用 `weapon_base`；后者也可能由暗金武器承担。acceptance 使用受控的 role/node-type 兼容矩阵，
+但仍要求 resolver 唯一确认 stable key。兼容矩阵不能把模糊候选变成已解析端点，也不能授权 semantic
+edge。验收报告中的 `unresolvedDeepRecordMentionCount` 统计未解析提及次数，
+`unresolvedUniqueComponentCount` 统计去重后的组件；旧字段 `unresolvedDeepRecordComponentCount` 保持为
+mention 次数以兼容现有消费者。

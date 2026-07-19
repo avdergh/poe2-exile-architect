@@ -9,6 +9,7 @@ from server.knowledge import mature_learning
 from server.knowledge import graph_tools as gt
 from server.knowledge import physical_graph as pg
 from server.knowledge import research_memory
+from server.knowledge import research_identity
 from server.knowledge import research_models
 from server.knowledge import research_packet
 
@@ -39,6 +40,12 @@ def _graph_service(
             "skill:LightningArrowPlayer", "active_skill", "Lightning Arrow", (source.source_id,)
         ),
         pg.GraphNode(
+            "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+            "skill_gem",
+            "Lightning Arrow",
+            (source.source_id,),
+        ),
+        pg.GraphNode(
             "ascendancy:monk:martial_artist",
             "ascendancy",
             "Martial Artist",
@@ -57,7 +64,20 @@ def _graph_service(
         sources=(source,),
         nodes=nodes,
         aliases=tuple(extra_aliases or ()),
-        edges=(),
+        edges=(
+            pg.GraphEdge(
+                "grants_skill",
+                "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+                "skill:LightningArrowPlayer",
+                (source.source_id,),
+            ),
+            pg.GraphEdge(
+                "granted_by",
+                "skill:LightningArrowPlayer",
+                "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+                (source.source_id,),
+            ),
+        ),
     )
     return gt.GraphQueryService.from_snapshot(snapshot)
 
@@ -83,7 +103,7 @@ def _fragment_payload(title: str = "Projectile overlap principle") -> dict[str, 
                 "risks": ["single-target overclaim"],
                 "game_patch": "0.5.4",
                 "passive_tree_version": "0_5",
-                "pob_version_or_commit": "unknown",
+                "pob_version_or_commit": "0.22.0",
                 "visibility": "creator_visible",
                 "split": "train_context",
                 "knowledge_scope": "global_seed",
@@ -142,13 +162,543 @@ def _edge_payload(
     }
 
 
+def _deep_record_payload(content: str = "投射物覆盖依赖主技能与辅助共同改变清图范围。") -> dict:
+    return {
+        "schema_version": 5,
+        "deep_research_records": [
+            {
+                "research_group_id": "research:la-safe",
+                "record_kind": "mechanic_chain",
+                "title": "投射物覆盖机制链",
+                "summary": "记录主技能与辅助如何共同形成覆盖，并保留单体复核条件。",
+                "content": content,
+                "content_language": "zh-CN",
+                "length_exception_reason": None,
+                "component_keys": ["skill:LightningArrowPlayer", "support:Scattershot"],
+                "component_mentions": [],
+                "source_case_refs": ["case:la-safe"],
+                "safe_evidence_refs": ["safe:la:hash"],
+                "conditions": ["投射物命中环境成立"],
+                "failure_conditions": ["单体重叠未经验证"],
+                "typed_payload": {"roles": ["delivery", "coverage"]},
+                "class_key": None,
+                "ascendancy_key": None,
+                "extraction_method_version": "deep_research_mvp_v1",
+                "record_schema_version": 1,
+                "game_patch": "0.5.4",
+                "passive_tree_version": "0_5",
+                "pob_version_or_commit": "0.22.0",
+                "visibility": "creator_visible",
+                "split": "train_context",
+                "knowledge_scope": "global_seed",
+            }
+        ],
+    }
+
+
+def test_build_family_identity_uses_only_ascendancy_and_core_skills():
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "role": "primary_damage",
+            "component_key": "skill:LightningArrowPlayer",
+        },
+        {"role": "clear_skill", "component_key": "skill:ClearSkillPlayer"},
+        {"role": "support_modifier", "component_key": "support:Scattershot"},
+        {"role": "unique_enabler", "component_key": "unique:Fixture"},
+        {"role": "defense_layer", "component_key": "keystone:Fixture"},
+    ]
+
+    family = research_identity.infer_build_family([record])
+
+    assert family is not None
+    assert family.ascendancy_key == "ascendancy:monk:martial_artist"
+    assert family.primary_skill_key == "skill:LightningArrowPlayer"
+    assert family.secondary_skill_keys == ("skill:ClearSkillPlayer",)
+
+
+def test_build_family_ignores_generic_secondary_but_accepts_explicit_core_skill():
+    record = _deep_record_payload()["deep_research_records"][0]
+    record["ascendancy_key"] = "ascendancy:ranger:deadeye"
+    record["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:IceShotPlayer"},
+        {"role": "secondary_skill", "component_key": "skill:TornadoShotPlayer"},
+        {"role": "generator", "component_key": "skill:LightningRodPlayer"},
+    ]
+
+    variant_family = research_identity.infer_build_family([record])
+    record["typed_payload"] = {"familyCoreSkillKeys": ["skill:LightningRodPlayer"]}
+    explicit_family = research_identity.infer_build_family([record])
+
+    assert variant_family is not None
+    assert variant_family.secondary_skill_keys == ()
+    assert explicit_family is not None
+    assert explicit_family.secondary_skill_keys == ("skill:LightningRodPlayer",)
+
+
+def test_trigger_host_and_payload_form_a_deterministic_family_pair():
+    trigger_record = _deep_record_payload()["deep_research_records"][0]
+    trigger_record["record_kind"] = "skill_package"
+    trigger_record["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    trigger_record["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:SparkPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
+        {"role": "triggered_payload", "component_key": "skill:CometPlayer"},
+    ]
+    automatic = research_identity.infer_build_family([trigger_record])
+    trigger_record["typed_payload"] = {"familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"]}
+    manually_repeated = research_identity.infer_build_family([trigger_record])
+
+    assert automatic is not None
+    assert automatic.secondary_skill_keys == (
+        "skill:CometPlayer",
+        "skill:MetaCastOnCritPlayer",
+    )
+    assert manually_repeated == automatic
+
+
+def test_trigger_host_delivering_primary_payload_is_part_of_family_identity():
+    trigger_record = _deep_record_payload()["deep_research_records"][0]
+    trigger_record["record_kind"] = "skill_package"
+    trigger_record["ascendancy_key"] = "ascendancy:druid:oracle"
+    trigger_record["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:CometPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaSpellslingerPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
+    ]
+
+    family = research_identity.infer_build_family([trigger_record])
+
+    assert family is not None
+    assert family.secondary_skill_keys == (
+        "skill:MetaCastOnCritPlayer",
+        "skill:MetaSpellslingerPlayer",
+    )
+
+
+def test_unpaired_trigger_host_does_not_change_family_identity():
+    primary = _deep_record_payload()["deep_research_records"][0]
+    primary["record_kind"] = "skill_package"
+    primary["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    primary["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:SparkPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
+        {"role": "triggered_payload", "component_key": "skill:CometPlayer"},
+    ]
+    caveat = _deep_record_payload()["deep_research_records"][0]
+    caveat["record_kind"] = "modelability_caveat"
+    caveat["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    caveat["component_mentions"] = [
+        {"role": "trigger_host", "component_key": "skill:MetaSpellslingerPlayer"}
+    ]
+
+    family = research_identity.infer_build_family([primary, caveat])
+
+    assert family is not None
+    assert "skill:MetaSpellslingerPlayer" not in family.secondary_skill_keys
+
+
+def test_modelability_caveat_payload_does_not_change_family_identity():
+    primary = _deep_record_payload()["deep_research_records"][0]
+    primary["record_kind"] = "skill_package"
+    primary["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    primary["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:SparkPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
+        {"role": "triggered_payload", "component_key": "skill:CometPlayer"},
+    ]
+    caveat = _deep_record_payload()["deep_research_records"][0]
+    caveat["record_kind"] = "modelability_caveat"
+    caveat["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    caveat["component_mentions"] = [
+        {"role": "triggered_payload", "component_key": "skill:ExplosiveTransmutationPlayer"}
+    ]
+
+    family = research_identity.infer_build_family([primary, caveat])
+
+    assert family is not None
+    assert family.secondary_skill_keys == (
+        "skill:CometPlayer",
+        "skill:MetaCastOnCritPlayer",
+    )
+
+
+def test_resource_knowledge_identity_uses_structured_mechanisms_without_graph_nodes():
+    record = _deep_record_payload()["deep_research_records"][0]
+    record["record_kind"] = "resource_engine"
+    record["ascendancy_key"] = "ascendancy:ranger:deadeye"
+    record["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"}
+    ]
+    family = research_identity.infer_build_family([record])
+
+    assert family is not None
+    assert research_identity.knowledge_key(record, family) is None
+
+    record["typed_payload"] = {
+        "resourceMechanisms": ["mana_leech", "mana_flask", "mana_gear_affix"]
+    }
+    identity = research_identity.knowledge_identity(record, family)
+
+    assert identity is not None
+    assert identity["role_components"] == [
+        ("resource_mechanism", "mana_flask"),
+        ("resource_mechanism", "mana_gear_affix"),
+        ("resource_mechanism", "mana_leech"),
+    ]
+
+
+def test_structured_resource_identity_upgrades_same_unkeyed_record(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["record_kind"] = "resource_engine"
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+
+    unkeyed = service.propose_deep_research_records(payload)
+    record["typed_payload"] = {"resourceMechanisms": ["mana_leech", "mana_flask"]}
+    upgraded = service.propose_deep_research_records(payload)
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        con.execute("UPDATE deep_research_records SET typed_payload = '{}' ")
+        con.commit()
+    finally:
+        con.close()
+    repaired_payload = service.propose_deep_research_records(payload)
+
+    assert unkeyed["unkeyedRecordCount"] == 1
+    assert upgraded["createdRecordCount"] == 0
+    assert upgraded["updatedRecordCount"] == 1
+    assert upgraded["unkeyedRecordCount"] == 0
+    assert upgraded["evidenceAddedCount"] == 1
+    assert repaired_payload["createdRecordCount"] == 0
+    assert repaired_payload["updatedRecordCount"] == 1
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT knowledge_key, evidence_count, typed_payload FROM deep_research_records"
+        ).fetchone()
+        assert row["knowledge_key"] is not None
+        assert row["evidence_count"] == 1
+        assert json.loads(row["typed_payload"])["resourceMechanisms"] == [
+            "mana_leech",
+            "mana_flask",
+        ]
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
+def test_skill_package_knowledge_identity_preserves_support_variants():
+    first = _deep_record_payload()["deep_research_records"][0]
+    first["record_kind"] = "skill_package"
+    first["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+        {"role": "support_modifier", "component_key": "support:Scattershot"},
+    ]
+    second = json.loads(json.dumps(first))
+    second["component_mentions"][1]["component_key"] = "support:DifferentSupport"
+    family = research_identity.infer_build_family([first, second])
+
+    assert family is not None
+    assert research_identity.knowledge_key(first, family) != research_identity.knowledge_key(
+        second, family
+    )
+
+
+def test_structured_support_packages_preserve_socket_ownership_in_identity():
+    first = _deep_record_payload()["deep_research_records"][0]
+    first["record_kind"] = "skill_package"
+    first["ascendancy_key"] = "ascendancy:sorceress:stormweaver"
+    first["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:SparkPlayer"},
+        {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
+        {"role": "triggered_payload", "component_key": "skill:CometPlayer"},
+        {"role": "support_modifier", "component_key": "support:Execute"},
+        {"role": "support_modifier", "component_key": "support:SpellCascade"},
+    ]
+    first["typed_payload"] = {
+        "supportPackages": [
+            {"skillKey": "skill:SparkPlayer", "supportKeys": ["support:Execute"]},
+            {
+                "skillKey": "skill:MetaCastOnCritPlayer",
+                "supportKeys": ["support:SpellCascade"],
+            },
+        ]
+    }
+    second = json.loads(json.dumps(first))
+    second["typed_payload"]["supportPackages"] = [
+        {"skillKey": "skill:SparkPlayer", "supportKeys": ["support:SpellCascade"]},
+        {
+            "skillKey": "skill:MetaCastOnCritPlayer",
+            "supportKeys": ["support:Execute"],
+        },
+    ]
+    family = research_identity.infer_build_family([first, second])
+
+    assert family is not None
+    assert research_identity.knowledge_key(first, family) != research_identity.knowledge_key(
+        second, family
+    )
+
+
+def test_source_specific_random_record_is_hidden_from_normal_retrieval(tmp_path):
+    mutated_unique = pg.GraphNode(
+        "unique:MutatedFixture",
+        "unique",
+        "Mutated Fixture",
+        ("fixture:phase4",),
+    )
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(extra_nodes=[mutated_unique]),
+    )
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["record_kind"] = "gear_synergy"
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_keys"] = [
+        "skill:LightningArrowPlayer",
+        "unique:MutatedFixture",
+    ]
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Mutated Fixture",
+            "role": "unique_enabler",
+            "resolver_query": "Mutated Fixture",
+            "expected_node_types": ["unique"],
+            "scope": "any",
+            "component_key": "unique:MutatedFixture",
+            "resolution_status": "resolved",
+        },
+    ]
+    record["typed_payload"] = {
+        "availability": "source_specific_random",
+        "sourceSpecificComponentKeys": ["unique:MutatedFixture"],
+    }
+    accepted = service.propose_deep_research_records(payload)
+
+    normal = service.query_research_memory("", component_keys=["skill:LightningArrowPlayer"])
+    audit = service.query_research_memory(
+        "", record_ids=accepted["recordIds"], detail_level="record"
+    )
+
+    assert normal["deepResearchRecords"] == []
+    assert [row["recordId"] for row in audit["deepResearchRecords"]] == accepted["recordIds"]
+
+
+def test_source_specific_random_record_has_a_distinct_knowledge_identity():
+    standard = _deep_record_payload()["deep_research_records"][0]
+    standard["record_kind"] = "gear_synergy"
+    standard["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    standard["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+        {"role": "unique_enabler", "component_key": "unique:Fixture"},
+    ]
+    random_instance = json.loads(json.dumps(standard))
+    random_instance["typed_payload"] = {
+        "availability": "source_specific_random",
+        "sourceSpecificComponentKeys": ["unique:Fixture"],
+    }
+    family = research_identity.infer_build_family([standard, random_instance])
+
+    assert family is not None
+    assert research_identity.knowledge_key(standard, family) != research_identity.knowledge_key(
+        random_instance, family
+    )
+
+
+def test_skill_package_requires_structured_support_ownership():
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["record_kind"] = "skill_package"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    record["component_keys"] = ["skill:LightningArrowPlayer", "support:Scattershot"]
+    record["typed_payload"] = {}
+
+    missing = research_models.validate_researcher_output(payload)
+    record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": ["support:Scattershot"],
+            }
+        ]
+    }
+    structured = research_models.validate_researcher_output(payload)
+
+    assert missing["status"] == "error"
+    assert missing["errorCode"] == "invalid_schema"
+    assert structured["status"] == "accepted"
+
+
+def test_origin_family_component_pattern_keeps_a_reserved_result_slot(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    record_payload = _deep_record_payload()
+    record = record_payload["deep_research_records"][0]
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+    family_key = service.propose_deep_research_records(record_payload)["buildFamilyKeys"][0]
+    for index in range(6):
+        shared = _pattern_payload()
+        shared["patterns"][0]["title"] = f"Shared component pattern {index}"
+        shared["build_design_observations"][0]["title"] = f"Shared observation {index}"
+        assert service.propose_build_patterns(shared)["status"] == "accepted"
+    origin = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key=family_key,
+        case_ref="case:origin-priority",
+        title="Origin family component module",
+    )
+    origin_id = service.propose_build_patterns(origin)["patternIds"][0]
+
+    recalled = service.query_research_memory(
+        "",
+        component_keys=[
+            "ascendancy:monk:martial_artist",
+            "skill:LightningArrowPlayer",
+        ],
+        limit=1,
+    )
+
+    assert [row["patternId"] for row in recalled["buildPatterns"]] == [origin_id]
+    assert recalled["buildPatterns"][0]["matchScope"] == "origin_family"
+
+
+def test_defense_knowledge_identity_normalizes_equivalent_component_roles():
+    first = _deep_record_payload()["deep_research_records"][0]
+    first["record_kind"] = "defense_engine"
+    first["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+        {"role": "defense_layer", "component_key": "notable:pob:0_5:100"},
+    ]
+    second = json.loads(json.dumps(first))
+    second["component_mentions"][1]["role"] = "passive_anchor"
+    family = research_identity.infer_build_family([first, second])
+
+    assert family is not None
+    assert research_identity.knowledge_key(first, family) == research_identity.knowledge_key(
+        second, family
+    )
+
+
+def test_gear_knowledge_identity_normalizes_legacy_weapon_base_to_gear_base():
+    first = _deep_record_payload()["deep_research_records"][0]
+    first["record_kind"] = "gear_synergy"
+    first["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+        {
+            "role": "weapon_base",
+            "component_key": "item_base:Metadata/Items/Armours/BodyArmours/Fixture",
+        },
+    ]
+    second = json.loads(json.dumps(first))
+    second["component_mentions"][1]["role"] = "gear_base"
+    family = research_identity.infer_build_family([first, second])
+
+    assert family is not None
+    assert research_identity.knowledge_key(first, family) == research_identity.knowledge_key(
+        second, family
+    )
+
+
+def test_build_family_identity_refuses_ambiguous_primary_skills():
+    first = _deep_record_payload()["deep_research_records"][0]
+    first["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first["component_mentions"] = [
+        {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"}
+    ]
+    second = json.loads(json.dumps(first))
+    second["component_mentions"][0]["component_key"] = "skill:OtherPrimaryPlayer"
+
+    assert research_identity.infer_build_family([first, second]) is None
+
+
+def test_historical_family_identity_can_repair_a_clearly_dominant_primary_role():
+    records = []
+    for key in (
+        "skill:LightningArrowPlayer",
+        "skill:LightningArrowPlayer",
+        "skill:LightningArrowPlayer",
+        "skill:OtherPrimaryPlayer",
+    ):
+        record = _deep_record_payload()["deep_research_records"][0]
+        record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        record["component_mentions"] = [{"role": "primary_damage", "component_key": key}]
+        records.append(record)
+
+    assert research_identity.infer_build_family(records) is None
+    repaired = research_identity.infer_build_family(records, allow_dominant_primary=True)
+    assert repaired is not None
+    assert repaired.primary_skill_key == "skill:LightningArrowPlayer"
+
+
 def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
     db_path = tmp_path / "mature.sqlite"
 
     mature_learning.initialize_store(db_path)
     con = mature_learning.connect(db_path)
     try:
-        assert mature_learning.schema_version(con) == 2
+        assert mature_learning.schema_version(con) == 4
         assert {
             "research_fragments",
             "research_fragment_evidence",
@@ -156,7 +706,15 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
             "research_semantic_edges",
             "research_rejected_proposals",
             "research_revalidation_events",
+            "deep_research_records",
+            "deep_research_record_evidence",
+            "research_build_families",
+            "research_build_family_evidence",
         } <= _tables(con)
+        columns = {
+            str(row["name"]) for row in con.execute("PRAGMA table_info(deep_research_records)")
+        }
+        assert {"build_family_key", "knowledge_key", "evidence_count"} <= columns
 
         service = research_memory.ResearchMemoryService(db_path=db_path)
         query_ref = service.query_research_memory(
@@ -176,7 +734,7 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
         con.close()
 
 
-def test_rejected_proposals_are_idempotent_and_increment_retry_count(tmp_path):
+def test_core_support_package_is_not_rejected_by_component_count(tmp_path):
     service = research_memory.ResearchMemoryService(db_path=tmp_path / "mature.sqlite")
     bad = _fragment_payload()
     bad["fragments"][0]["summary"] = "Supports: A, B, C, D, E"
@@ -185,18 +743,878 @@ def test_rejected_proposals_are_idempotent_and_increment_retry_count(tmp_path):
     ]
 
     first = service.propose_research_fragments(bad, dedupe_query_ref=query_ref)
-    second = service.propose_research_fragments(bad, dedupe_query_ref=query_ref)
 
-    assert first["status"] == "rejected"
-    assert first["errorCode"] == "copy_safety_violation"
-    assert second["status"] == "rejected"
-    assert second["errorCode"] == "copy_safety_violation"
-    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    assert first["status"] == "accepted"
+
+
+def test_deep_records_persist_and_support_summary_then_record_recall(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+
+    accepted = service.propose_deep_research_records(_deep_record_payload())
+    fragment_ref = service.query_research_memory("旧片段", component_keys=[])["dedupeQueryRef"]
+    service.propose_research_fragments(_fragment_payload(), dedupe_query_ref=fragment_ref)
+    summary = service.query_research_memory(
+        "投射物覆盖", component_keys=["skill:LightningArrowPlayer"]
+    )
+    record_id = accepted["recordIds"][0]
+    detail = service.query_research_memory("", detail_level="record", record_ids=[record_id])
+
+    assert accepted["status"] == "accepted"
+    assert summary["deepResearchRecords"][0]["recordId"] == record_id
+    assert "content" not in summary["deepResearchRecords"][0]
+    assert detail["deepResearchRecords"][0]["content"].startswith("投射物覆盖")
+    assert detail["results"] == []
+    assert detail["deepResearchRecords"][0]["typedPayload"]["roles"] == [
+        "delivery",
+        "coverage",
+    ]
+
+
+def test_exact_family_identity_is_not_filtered_by_goal_text_or_secondary_skill(tmp_path):
+    source_id = "fixture:phase4"
+    other_primary = pg.GraphNode(
+        "skill:OtherPrimaryPlayer", "active_skill", "Other Primary", (source_id,)
+    )
+    second_core = pg.GraphNode(
+        "skill:SecondCorePlayer", "active_skill", "Second Core", (source_id,)
+    )
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(extra_nodes=[other_primary, second_core]),
+    )
+
+    def store_family(
+        group_id: str,
+        primary_key: str,
+        secondary_key: str | None,
+    ) -> str:
+        payload = _deep_record_payload()
+        record = payload["deep_research_records"][0]
+        record["research_group_id"] = group_id
+        record["title"] = f"{group_id} mechanism"
+        record["summary"] = f"Safe summary for {group_id}."
+        record["source_case_refs"] = [f"case:{group_id}"]
+        record["safe_evidence_refs"] = [f"safe:{group_id}"]
+        record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        record["component_keys"] = [primary_key]
+        record["component_mentions"] = [
+            {
+                "candidate_name": primary_key,
+                "role": "primary_damage",
+                "resolver_query": primary_key,
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": primary_key,
+                "resolution_status": "resolved",
+            }
+        ]
+        if secondary_key:
+            record["component_keys"].append(secondary_key)
+            record["component_mentions"].append(
+                {
+                    "candidate_name": secondary_key,
+                    "role": "clear_skill",
+                    "resolver_query": secondary_key,
+                    "expected_node_types": ["active_skill"],
+                    "scope": "player",
+                    "component_key": secondary_key,
+                    "resolution_status": "resolved",
+                }
+            )
+        result = service.propose_deep_research_records(payload)
+        assert result["status"] == "accepted"
+        return result["buildFamilyKeys"][0]
+
+    exact_a = store_family("research:exact-a", "skill:LightningArrowPlayer", None)
+    exact_b = store_family(
+        "research:exact-b", "skill:LightningArrowPlayer", "skill:SecondCorePlayer"
+    )
+    secondary_only = store_family(
+        "research:secondary-only", "skill:OtherPrimaryPlayer", "skill:LightningArrowPlayer"
+    )
+
+    recalled = service.query_research_memory(
+        "开荒顺畅但这段目标文字不应成为硬过滤条件",
+        component_keys=[
+            "ascendancy:monk:martial_artist",
+            "skill:LightningArrowPlayer",
+        ],
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="skill:LightningArrowPlayer",
+        limit=2,
+    )
+    gem_recalled = service.query_research_memory(
+        "",
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="gem:Metadata/Items/Gems/SkillGemLightningArrow",
+    )
+
+    recalled_families = {row["buildFamilyKey"] for row in recalled["buildFamilies"]}
+    assert recalled_families == {exact_a, exact_b}
+    assert secondary_only not in recalled_families
+    assert {row["buildFamilyKey"] for row in recalled["deepResearchRecords"]} == {
+        exact_a,
+        exact_b,
+    }
+    assert recalled["requestedAscendancyKey"] == "ascendancy:monk:martial_artist"
+    assert recalled["requestedPrimarySkillKey"] == "skill:LightningArrowPlayer"
+    assert {row["buildFamilyKey"] for row in gem_recalled["buildFamilies"]} == {
+        exact_a,
+        exact_b,
+    }
+
+
+def test_family_summary_indexes_record_kinds_for_targeted_recall(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    family_key = ""
+    for record_kind in ("mechanic_chain", "rotation", "resource_engine"):
+        payload = _deep_record_payload()
+        record = payload["deep_research_records"][0]
+        record["research_group_id"] = f"research:kind-{record_kind}"
+        record["record_kind"] = record_kind
+        record["title"] = f"{record_kind} title"
+        record["summary"] = f"{record_kind} summary"
+        record["source_case_refs"] = [f"case:{record_kind}"]
+        record["safe_evidence_refs"] = [f"safe:{record_kind}"]
+        record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        record["component_keys"] = ["skill:LightningArrowPlayer"]
+        record["component_mentions"] = [
+            {
+                "candidate_name": "Lightning Arrow",
+                "role": "primary_damage",
+                "resolver_query": "skill:LightningArrowPlayer",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:LightningArrowPlayer",
+                "resolution_status": "resolved",
+            }
+        ]
+        accepted = service.propose_deep_research_records(payload)
+        assert accepted["status"] == "accepted"
+        family_key = accepted["buildFamilyKeys"][0]
+
+    summary = service.query_research_memory(
+        "unmatched planning objective",
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="skill:LightningArrowPlayer",
+    )
+    family = summary["buildFamilies"][0]
+    targeted = service.query_research_memory(
+        "another unmatched objective",
+        build_family_keys=[family_key],
+        record_kinds=["rotation"],
+        detail_level="summary",
+    )
+    invalid = service.query_research_memory(
+        "",
+        build_family_keys=[family_key],
+        record_kinds=["invented_record_kind"],
+    )
+
+    assert family["deepRecordCount"] == 3
+    assert family["recordKindCounts"] == {
+        "mechanic_chain": 1,
+        "resource_engine": 1,
+        "rotation": 1,
+    }
+    assert family["availableRecordKinds"] == [
+        "mechanic_chain",
+        "resource_engine",
+        "rotation",
+    ]
+    assert [row["recordKind"] for row in targeted["deepResearchRecords"]] == ["rotation"]
+    assert targeted["requestedBuildFamilyKeys"] == [family_key]
+    assert targeted["requestedRecordKinds"] == ["rotation"]
+    assert invalid["status"] == "error"
+    assert invalid["errorCode"] == "invalid_record_kinds"
+
+
+def test_deep_record_resolution_enrichment_updates_existing_knowledge_unit(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    initial = _deep_record_payload()
+    initial_record = initial["deep_research_records"][0]
+    initial_record["component_keys"] = ["skill:LightningArrowPlayer"]
+    initial_record["component_mentions"] = [
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot support",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": None,
+            "resolution_status": "ambiguous",
+        }
+    ]
+    first = service.propose_deep_research_records(initial)
+
+    enriched = _deep_record_payload()
+    enriched_record = enriched["deep_research_records"][0]
+    enriched_record["component_mentions"] = [
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "support:Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        }
+    ]
+    second = service.propose_deep_research_records(enriched)
+
+    assert second["recordIds"] == first["recordIds"]
+    con = mature_learning.connect(db_path)
     try:
-        row = con.execute("SELECT retry_count FROM research_rejected_proposals").fetchone()
-        assert row["retry_count"] == 2
+        rows = con.execute(
+            "SELECT component_keys, component_mentions FROM deep_research_records"
+        ).fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["component_keys"]) == [
+            "skill:LightningArrowPlayer",
+            "support:Scattershot",
+        ]
+        assert json.loads(rows[0]["component_mentions"])[0]["resolution_status"] == "resolved"
     finally:
         con.close()
+
+
+def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload()
+    first_record = first["deep_research_records"][0]
+    first_record["record_kind"] = "skill_package"
+    first_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    first_record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": ["support:Scattershot"],
+            }
+        ]
+    }
+    first_record["source_case_refs"] = ["source-hash:first"]
+    second = json.loads(json.dumps(first))
+    second_record = second["deep_research_records"][0]
+    second_record["research_group_id"] = "research:second-source"
+    second_record["title"] = "另一种标题不会创建重复知识"
+    second_record["content"] = "第二个来源提供更完整的主技能职责和辅助使用边界。"
+    second_record["source_case_refs"] = ["source-hash:second"]
+
+    first_result = service.propose_deep_research_records(first)
+    second_result = service.propose_deep_research_records(second)
+
+    assert first_result["createdRecordCount"] == 1
+    assert first_result["createdBuildFamilyCount"] == 1
+    assert first_result["evidenceAddedCount"] == 1
+    assert second_result["createdRecordCount"] == 0
+    assert second_result["createdBuildFamilyCount"] == 0
+    assert second_result["updatedRecordCount"] == 1
+    assert second_result["evidenceAddedCount"] == 1
+    assert second_result["recordIds"] == first_result["recordIds"]
+    assert second_result["buildFamilyKeys"] == first_result["buildFamilyKeys"]
+    recalled = service.query_research_memory(
+        "", component_keys=["ascendancy:monk:martial_artist"], detail_level="record"
+    )["deepResearchRecords"]
+    assert len(recalled) == 1
+    assert recalled[0]["evidenceCount"] == 2
+    assert recalled[0]["buildFamilyKey"] == first_result["buildFamilyKeys"][0]
+    family_result = service.query_research_memory("另一种标题")
+    assert family_result["buildFamilies"] == [
+        {
+            "buildFamilyKey": first_result["buildFamilyKeys"][0],
+            "ascendancyKey": "ascendancy:monk:martial_artist",
+            "primarySkillKey": "skill:LightningArrowPlayer",
+            "secondarySkillKeys": [],
+            "evidenceCount": 2,
+            "deepRecordCount": 1,
+            "recordKindCounts": {"skill_package": 1},
+            "availableRecordKinds": ["skill_package"],
+        }
+    ]
+
+    con = mature_learning.connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM research_build_families").fetchone()[0] == 1
+        assert con.execute("SELECT evidence_count FROM research_build_families").fetchone()[0] == 2
+        assert con.execute("SELECT count(*) FROM deep_research_record_evidence").fetchone()[0] == 2
+    finally:
+        con.close()
+
+
+def test_record_writes_report_the_persisted_canonical_record(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload(
+        "第一个来源提供较完整的机制说明，覆盖主技能职责、辅助边界与需要复核的失效条件。"
+    )
+    first_record = first["deep_research_records"][0]
+    first_record["record_kind"] = "skill_package"
+    first_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+    first_record["title"] = "最终保留的 canonical 标题"
+    first_record["source_case_refs"] = ["source-hash:canonical"]
+    second = json.loads(json.dumps(first))
+    second_record = second["deep_research_records"][0]
+    second_record["research_group_id"] = "research:second-source"
+    second_record["title"] = "本次提交标题"
+    second_record["summary"] = "较短摘要。"
+    second_record["content"] = "较短说明。"
+    second_record["source_case_refs"] = ["source-hash:submitted"]
+
+    first_result = service.propose_deep_research_records(first)
+    second_result = service.propose_deep_research_records(second)
+
+    write = second_result["recordWrites"][0]
+    assert write["recordId"] == first_result["recordIds"][0]
+    assert write["title"] == "本次提交标题"
+    assert write["submittedTitle"] == "本次提交标题"
+    assert write["canonicalContentMatchesSubmitted"] is False
+    assert write["canonicalRecord"] == {
+        "recordId": first_result["recordIds"][0],
+        "researchGroupId": "research:la-safe",
+        "buildFamilyKey": first_result["buildFamilyKeys"][0],
+        "knowledgeKey": first_result["knowledgeKeys"][0],
+        "evidenceCount": 2,
+        "recordKind": "skill_package",
+        "title": "最终保留的 canonical 标题",
+        "summary": first_record["summary"],
+        "componentKeys": ["skill:LightningArrowPlayer", "support:Scattershot"],
+        "sourceCaseRefs": ["source-hash:canonical", "source-hash:submitted"],
+        "safeEvidenceRefs": ["safe:la:hash"],
+    }
+
+
+def test_same_source_accepted_revision_can_replace_longer_canonical_prose(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload(
+        "旧分析包含较长的机制解释，但其中有一项已被静态资料推翻，需要由同一来源的复审纠正。"
+    )
+    first_record = first["deep_research_records"][0]
+    first_record["record_kind"] = "skill_package"
+    first_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    first_record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": ["support:Scattershot"],
+            }
+        ]
+    }
+    first_record["conditions"] = ["第一个条件", "第二个条件"]
+    first_record["failure_conditions"] = ["第一个失败条件", "第二个失败条件"]
+    corrected = json.loads(json.dumps(first))
+    corrected_record = corrected["deep_research_records"][0]
+    corrected_record["summary"] = "同一来源复审后的精确结论。"
+    corrected_record["content"] = "静态资料复核后的纠正结论。"
+    corrected_record["conditions"] = ["复核条件"]
+    corrected_record["failure_conditions"] = ["失效边界"]
+
+    assert research_identity.record_quality(
+        research_models.DeepResearchRecordProposal.model_validate(corrected_record)
+    ) < research_identity.record_quality(
+        research_models.DeepResearchRecordProposal.model_validate(first_record)
+    )
+
+    first_result = service.propose_deep_research_records(first)
+    corrected_result = service.propose_deep_research_records(corrected)
+
+    assert corrected_result["createdRecordCount"] == 0
+    assert corrected_result["updatedRecordCount"] == 1
+    assert corrected_result["recordIds"] == first_result["recordIds"]
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT summary, content, conditions, failure_conditions, evidence_count "
+            "FROM deep_research_records WHERE record_id = ?",
+            (first_result["recordIds"][0],),
+        ).fetchone()
+        assert row["summary"] == corrected_record["summary"]
+        assert row["content"] == corrected_record["content"]
+        assert json.loads(row["conditions"]) == ["复核条件"]
+        assert json.loads(row["failure_conditions"]) == ["失效边界"]
+        assert row["evidence_count"] == 1
+    finally:
+        con.close()
+
+
+def test_defense_engine_identity_keeps_distinct_unique_enablers_separate():
+    first = _deep_record_payload("第一个防御方案由独立暗金提供关键防御基底。")
+    first_record = first["deep_research_records"][0]
+    first_record["record_kind"] = "defense_engine"
+    first_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first_record["component_mentions"] = [
+        {
+            "candidate_name": "Rathpith Globe",
+            "role": "unique_enabler",
+            "resolver_query": "Rathpith Globe",
+            "expected_node_types": ["unique"],
+            "scope": "any",
+            "component_key": "unique:pob:rathpith_globe",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "defensive_buff",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+    ]
+    first_record["component_keys"] = [
+        "unique:pob:rathpith_globe",
+        "skill:LightningArrowPlayer",
+    ]
+
+    second = json.loads(json.dumps(first))
+    second_record = second["deep_research_records"][0]
+    second_record["research_group_id"] = "research:second-defense-source"
+    second_record["title"] = "第二个暗金防御方案"
+    second_record["source_case_refs"] = ["source-hash:second-defense"]
+    second_record["component_mentions"][0].update(
+        {
+            "candidate_name": "Different Defensive Unique",
+            "resolver_query": "Different Defensive Unique",
+            "component_key": "unique:pob:different_defensive_unique",
+        }
+    )
+    second_record["component_keys"] = [
+        "unique:pob:different_defensive_unique",
+        "skill:LightningArrowPlayer",
+    ]
+
+    family = research_identity.BuildFamilyIdentity(
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="skill:LightningArrowPlayer",
+        secondary_skill_keys=(),
+    )
+    first_proposal = research_models.DeepResearchRecordProposal.model_validate(first_record)
+    second_proposal = research_models.DeepResearchRecordProposal.model_validate(second_record)
+
+    assert research_identity.knowledge_key(
+        first_proposal, family
+    ) != research_identity.knowledge_key(second_proposal, family)
+
+
+def test_same_pattern_revision_updates_semantic_title(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    original = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key="bf-origin",
+        case_ref="case:la-safe",
+        title="原始语义标题",
+    )
+    first = service.propose_build_patterns(original)
+    revised = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key="bf-origin",
+        case_ref="case:la-safe",
+        title="原始语义标题",
+    )
+    revised["patterns"][0]["title"] = "静态机制复核后的修正标题"
+
+    second = service.propose_build_patterns(revised)
+
+    assert second["patternIds"] == first["patternIds"]
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT title FROM research_build_patterns WHERE pattern_id = ?",
+            (first["patternIds"][0],),
+        ).fetchone()
+        assert row["title"] == "静态机制复核后的修正标题"
+    finally:
+        con.close()
+
+
+def test_same_source_identity_revision_replaces_old_evidence_key(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload("原始轮转把一个组件记录为普通辅助。")
+    record = first["deep_research_records"][0]
+    record["record_kind"] = "rotation"
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    first_result = service.propose_deep_research_records(first)
+    old_key = first_result["knowledgeKeys"][0]
+
+    corrected = json.loads(json.dumps(first))
+    corrected_record = corrected["deep_research_records"][0]
+    corrected_record["content"] = "同一来源复审后确认该组件承担触发载荷职责。"
+    corrected_record["component_mentions"][1]["role"] = "triggered_payload"
+    corrected_result = service.propose_deep_research_records(corrected)
+    new_key = corrected_result["knowledgeKeys"][0]
+
+    assert new_key != old_key
+    assert corrected_result["recordIds"] == first_result["recordIds"]
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT knowledge_key, evidence_count FROM deep_research_records"
+        ).fetchone()
+        evidence_keys = [
+            str(item[0])
+            for item in con.execute(
+                "SELECT knowledge_key FROM deep_research_record_evidence ORDER BY knowledge_key"
+            )
+        ]
+        assert row["knowledge_key"] == new_key
+        assert row["evidence_count"] == 1
+        assert evidence_keys == [new_key]
+    finally:
+        con.close()
+
+
+def test_text_recall_expands_to_other_knowledge_in_the_matched_family(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload()
+    skill_record = payload["deep_research_records"][0]
+    skill_record["record_kind"] = "skill_package"
+    skill_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    skill_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+    passive_record = json.loads(json.dumps(skill_record))
+    passive_record["record_kind"] = "passive_package"
+    passive_record["title"] = "局部投射物天赋包"
+    passive_record["summary"] = "记录局部天赋职责。"
+    passive_record["content"] = "该局部天赋节点承担独立的路径职责。"
+    passive_record["component_keys"] = ["passive:pob:0_5:100"]
+    passive_record["component_mentions"] = [
+        {
+            "candidate_name": "Projectile Cluster",
+            "role": "passive_anchor",
+            "resolver_query": "Projectile Cluster",
+            "expected_node_types": ["passive"],
+            "scope": "any",
+            "component_key": "passive:pob:0_5:100",
+            "resolution_status": "resolved",
+        }
+    ]
+    payload["deep_research_records"].append(passive_record)
+    service.propose_deep_research_records(payload)
+
+    result = service.query_research_memory("投射物覆盖")
+
+    assert {row["recordKind"] for row in result["deepResearchRecords"]} == {
+        "skill_package",
+        "passive_package",
+    }
+    assert len(result["buildFamilies"]) == 1
+
+
+def test_historical_backfill_supersedes_only_high_confidence_duplicates(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload()
+    first_record = first["deep_research_records"][0]
+    first_record["source_case_refs"] = ["source-hash:legacy-first"]
+    second = json.loads(json.dumps(first))
+    second_record = second["deep_research_records"][0]
+    second_record["title"] = "历史改写标题"
+    second_record["source_case_refs"] = ["source-hash:legacy-second"]
+    service.propose_deep_research_records(first)
+    service.propose_deep_research_records(second)
+
+    resolved_mentions = json.dumps(
+        [
+            {
+                "candidate_name": "Lightning Arrow",
+                "role": "primary_damage",
+                "resolver_query": "Lightning Arrow",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:LightningArrowPlayer",
+                "resolution_status": "resolved",
+            }
+        ]
+    )
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            """
+            UPDATE deep_research_records
+            SET component_mentions = ?, build_family_key = 'bf-legacy-secondary-split'
+            """,
+            (resolved_mentions,),
+        )
+        con.execute(
+            """
+            INSERT INTO research_build_families(
+                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                evidence_count, created_at, last_seen_at
+            ) VALUES (
+                'bf-legacy-secondary-split', 'ascendancy:monk:martial_artist',
+                'skill:LightningArrowPlayer', '["skill:UtilitySkillPlayer"]',
+                1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO research_build_family_evidence(
+                build_family_key, source_case_ref, first_seen_at, last_seen_at
+            ) VALUES (
+                'bf-legacy-secondary-split', 'source-hash:legacy-first',
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO meta(key, value) VALUES ('phase4_build_family_backfill_version', '1')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+    pattern_payload = _pattern_payload()
+    ascendancy_component = {
+        "component_key": "ascendancy:monk:martial_artist",
+        "role": "ascendancy_shell",
+        "resolution": _resolution_evidence("ascendancy:monk:martial_artist"),
+    }
+    pattern_payload["build_design_observations"][0]["components"].append(ascendancy_component)
+    pattern_payload["build_design_observations"][0]["source_case_refs"] = [
+        "source-hash:legacy-first"
+    ]
+    pattern_payload["patterns"][0]["component_keys"].append("ascendancy:monk:martial_artist")
+    pattern_payload["patterns"][0]["component_roles"]["ascendancy:monk:martial_artist"] = (
+        "ascendancy_shell"
+    )
+    pattern_payload["patterns"][0]["source_case_refs"] = ["source-hash:legacy-first"]
+    assert service.propose_build_patterns(pattern_payload)["status"] == "accepted"
+
+    report = service.backfill_deep_research_knowledge(force=True)
+
+    assert report["supersededRecordCount"] == 1
+    assert report["canonicalRecordCount"] == 1
+    assert report["evidenceAddedCount"] == 2
+    con = mature_learning.connect(db_path)
+    try:
+        rows = con.execute(
+            """
+            SELECT status, superseded_by_id, knowledge_key, evidence_count
+            FROM deep_research_records ORDER BY status
+            """
+        ).fetchall()
+        assert len(rows) == 2
+        deprecated = next(row for row in rows if row["status"] == "deprecated")
+        canonical = next(row for row in rows if row["status"] == "valid")
+        assert deprecated["superseded_by_id"] is not None
+        assert deprecated["knowledge_key"] == canonical["knowledge_key"]
+        assert canonical["evidence_count"] == 2
+        assert (
+            con.execute(
+                "SELECT count(*) FROM research_build_families "
+                "WHERE build_family_key = 'bf-legacy-secondary-split'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            con.execute(
+                "SELECT value FROM meta WHERE key = 'phase4_build_family_backfill_version'"
+            ).fetchone()[0]
+            == "4"
+        )
+    finally:
+        con.close()
+
+
+def test_validation_only_deep_record_proposal_does_not_persist(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+
+    validated = service.validate_deep_research_records(_deep_record_payload())
+
+    assert validated["status"] == "accepted"
+    assert validated["validationOnly"] is True
+    con = mature_learning.connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_deep_record_batch_rejection_does_not_partially_persist(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    payload = _deep_record_payload()
+    invalid = json.loads(json.dumps(payload["deep_research_records"][0]))
+    invalid["research_group_id"] = "research:missing-endpoint"
+    invalid["title"] = "缺失端点记录"
+    invalid["component_keys"] = ["skill:MissingFromPhysicalGraph"]
+    invalid["source_case_refs"] = ["case:missing-endpoint"]
+    invalid["safe_evidence_refs"] = ["safe:missing-endpoint"]
+    payload["deep_research_records"].append(invalid)
+
+    rejected = service.propose_deep_research_records(payload)
+
+    assert rejected["status"] == "rejected"
+    assert rejected["errorCode"] == "missing_endpoint"
+    con = mature_learning.connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM research_build_families").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM deep_research_record_evidence").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_deep_record_content_budget_requires_explicit_indivisible_exception(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload("机" * 401)
+
+    rejected = service.propose_deep_research_records(payload)
+    payload["deep_research_records"][0]["length_exception_reason"] = (
+        "拆分会破坏同一生成、状态与兑现链的因果闭环。"
+    )
+    accepted = service.propose_deep_research_records(payload)
+
+    assert rejected["status"] == "error"
+    assert rejected["errorCode"] == "invalid_schema"
+    assert accepted["status"] == "accepted"
+
+
+def test_deep_record_normalizes_unknown_to_application_current_version(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload()
+    payload["deep_research_records"][0]["pob_version_or_commit"] = "unknown"
+
+    result = service.propose_deep_research_records(payload)
+
+    assert result["status"] == "accepted"
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT game_patch, passive_tree_version, pob_version_or_commit "
+            "FROM deep_research_records"
+        ).fetchone()
+        assert row["game_patch"] == "0.5.4"
+        assert row["passive_tree_version"] == "0_5"
+        assert row["pob_version_or_commit"] == "0.22.0"
+    finally:
+        con.close()
+
+
+def test_deep_record_rejects_unsupported_explicit_pob_version(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload()
+    payload["deep_research_records"][0]["pob_version_or_commit"] = "99.99.99"
+
+    result = service.propose_deep_research_records(payload)
+
+    assert result["status"] == "rejected"
+    assert result["errorCode"] == "unsupported_pob_version"
+
+
+def test_deep_record_cjk_content_cannot_use_english_word_budget(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    payload = _deep_record_payload("机制链必须按中文字符预算。")
+    payload["deep_research_records"][0]["content_language"] = "en"
+
+    result = service.propose_deep_research_records(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
 
 
 def test_context_requirements_reject_arbitrary_dicts():
@@ -312,6 +1730,42 @@ def test_pattern_payload_accepts_build_design_observation_and_case_pattern():
     assert result["observationCount"] == 1
 
 
+def test_memory_query_returns_creator_patterns_and_semantic_edges(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    edge_result = service.propose_semantic_edges(
+        _edge_payload("skill:LightningArrowPlayer", "support:Scattershot")
+    )
+    pattern_result = service.propose_build_patterns(_pattern_payload())
+
+    recalled = service.query_research_memory(
+        "投射物组合",
+        component_keys=["skill:LightningArrowPlayer"],
+    )
+
+    assert [row["edgeId"] for row in recalled["semanticEdges"]] == edge_result["edgeIds"]
+    assert [row["patternId"] for row in recalled["buildPatterns"]] == pattern_result["patternIds"]
+    assert recalled["buildPatterns"][0]["confidenceTier"] == "case_observation"
+    assert recalled["buildPatterns"][0]["componentRoles"]["support:Scattershot"] == (
+        "support_modifier"
+    )
+    assert recalled["semanticEdges"][0]["contextRequirements"]
+    assert recalled["noRawMatureBuildMaterial"] is True
+
+
+def test_pattern_payload_rejects_single_component_pattern():
+    payload = _pattern_payload()
+    payload["patterns"][0]["component_keys"] = ["skill:LightningArrowPlayer"]
+    payload["patterns"][0]["component_roles"] = {"skill:LightningArrowPlayer": "primary_damage"}
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+
+
 def test_pattern_payload_accepts_ascendancy_shell_role():
     payload = _pattern_payload()
     ascendancy_component = {
@@ -336,6 +1790,200 @@ def test_pattern_payload_rejects_common_claim_with_low_sample_count():
 
     assert result["status"] == "error"
     assert result["errorCode"] == "insufficient_pattern_evidence"
+
+
+def _as_transfer_candidate(
+    payload: dict[str, object],
+    *,
+    family_key: str,
+    case_ref: str,
+    title: str,
+) -> dict[str, object]:
+    observation = payload["build_design_observations"][0]
+    pattern = payload["patterns"][0]
+    observation["title"] = title
+    observation["source_case_refs"] = [case_ref]
+    observation["safe_evidence_refs"] = [f"safe:{case_ref}"]
+    pattern.update(
+        {
+            "title": title,
+            "transfer_scope": "component",
+            "applicability_axes": ["primary_skill_package"],
+            "applicability_requirements": ["The active skill can use projectile supports."],
+            "exclusion_conditions": ["Reject when the support is illegal for the active skill."],
+            "transfer_rationale": "The package depends on skill/support compatibility, not ascendancy.",
+            "origin_family_keys": [family_key],
+            "source_case_refs": [case_ref],
+            "safe_evidence_refs": [f"safe:{case_ref}"],
+        }
+    )
+    return payload
+
+
+def test_transferable_pattern_rejects_cross_family_strong_ranking_authority():
+    payload = _as_transfer_candidate(
+        _pattern_payload(confidence_tier="strong_ranking_hint"),
+        family_key="bf-family-one",
+        case_ref="case:transfer-one",
+        title="Transfer candidate one",
+    )
+    payload["patterns"][0]["sample_count"] = 15
+    payload["patterns"][0]["source_diversity_count"] = 2
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "overclaimed_transfer_scope"
+
+
+def test_transferable_patterns_aggregate_only_across_distinct_families(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    first = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key="bf-family-one",
+        case_ref="case:transfer-one",
+        title="First wording for the transferable package",
+    )
+    second = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key="bf-family-two",
+        case_ref="case:transfer-two",
+        title="Different wording for the same transferable package",
+    )
+
+    first_result = service.propose_build_patterns(first)
+    second_result = service.propose_build_patterns(second)
+
+    assert first_result["status"] == "accepted"
+    assert second_result["status"] == "accepted"
+    assert first_result["patternIds"] == second_result["patternIds"]
+    assert second_result["promotedPatternIds"] == second_result["patternIds"]
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        rows = con.execute("SELECT * FROM research_build_patterns").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["transfer_scope"] == "component"
+        assert rows[0]["confidence_tier"] == "recurring_observation"
+        assert rows[0]["sample_count"] == 2
+        assert rows[0]["family_count"] == 2
+        assert json.loads(rows[0]["origin_family_keys"]) == [
+            "bf-family-one",
+            "bf-family-two",
+        ]
+    finally:
+        con.close()
+
+
+def test_query_returns_transferable_patterns_in_a_separate_capped_lane(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    payload = _as_transfer_candidate(
+        _pattern_payload(),
+        family_key="bf-family-one",
+        case_ref="case:transfer-one",
+        title="Transferable projectile package",
+    )
+    accepted = service.propose_build_patterns(payload)
+
+    exact_only = service.query_research_memory(
+        "projectile package",
+        component_keys=["skill:LightningArrowPlayer"],
+    )
+    with_transfer = service.query_research_memory(
+        "projectile package",
+        component_keys=["skill:LightningArrowPlayer"],
+        include_transferable=True,
+        research_axes=["primary_skill_package"],
+    )
+
+    assert accepted["status"] == "accepted"
+    assert exact_only["buildPatterns"] == []
+    assert exact_only["transferablePatterns"] == []
+    assert [row["patternId"] for row in with_transfer["transferablePatterns"]] == accepted[
+        "patternIds"
+    ]
+    recalled = with_transfer["transferablePatterns"][0]
+    assert recalled["transferScope"] == "component"
+    assert recalled["scopeWeightCap"] == 0.8
+    assert (
+        with_transfer["retrievalPolicy"][
+            "transferableKnowledgeNeverOutranksEquivalentFamilyKnowledge"
+        ]
+        is True
+    )
+
+
+def test_transferable_pattern_keeps_family_weight_in_its_origin_family(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    record_payload = _deep_record_payload()
+    record = record_payload["deep_research_records"][0]
+    record["record_kind"] = "skill_package"
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": ["support:Scattershot"],
+            }
+        ]
+    }
+    record_result = service.propose_deep_research_records(record_payload)
+    family_key = record_result["buildFamilyKeys"][0]
+    pattern_result = service.propose_build_patterns(
+        _as_transfer_candidate(
+            _pattern_payload(),
+            family_key=family_key,
+            case_ref="case:origin-family",
+            title="Transferable package important to its origin family",
+        )
+    )
+
+    recalled = service.query_research_memory(
+        "",
+        component_keys=[
+            "ascendancy:monk:martial_artist",
+            "skill:LightningArrowPlayer",
+        ],
+        include_transferable=True,
+        research_axes=["primary_skill_package"],
+    )
+
+    assert pattern_result["status"] == "accepted"
+    assert [row["patternId"] for row in recalled["buildPatterns"]] == pattern_result["patternIds"]
+    origin_pattern = recalled["buildPatterns"][0]
+    assert origin_pattern["transferScope"] == "component"
+    assert origin_pattern["matchScope"] == "origin_family"
+    assert origin_pattern["scopeWeightCap"] == 1.0
+    assert recalled["transferablePatterns"] == []
+    assert recalled["retrievalPolicy"]["originFamilyTransferablePatternsUseFamilyWeight"] is True
 
 
 def test_propose_build_patterns_persists_creator_visible_safe_patterns(tmp_path):
@@ -541,6 +2189,68 @@ def test_pattern_payload_allows_negated_common_language_guardrail():
     assert result["status"] == "accepted"
 
 
+def test_propose_build_patterns_updates_planner_fields_for_same_pattern_revision(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    original = _pattern_payload()
+    first = service.propose_build_patterns(original)
+    assert first["status"] == "accepted"
+
+    revised = _pattern_payload()
+    revised["build_design_observations"][0]["components"][0]["role"] = "clear_skill"
+    revised["patterns"][0]["component_roles"]["skill:LightningArrowPlayer"] = "clear_skill"
+    revised["patterns"][0]["denominator"] = 2
+    revised["patterns"][0]["context_requirements"] = [
+        {
+            "context_type": "verification_gate_requirement",
+            "task": "Verify the revised resource state before reuse.",
+        }
+    ]
+    revised["patterns"][0]["planner_hint"] = "Use the revised planner guidance."
+    revised["patterns"][0]["verification_tasks"] = [
+        "Verify the revised endpoint and resource state."
+    ]
+    revised["build_design_observations"][0]["pob_version_or_commit"] = "0.22.0"
+    revised["patterns"][0]["pob_version_or_commit"] = "0.22.0"
+
+    second = service.propose_build_patterns(revised)
+    assert second["status"] == "accepted"
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT component_roles, denominator, context_requirements, planner_hint, "
+            "verification_tasks, pob_version_or_commit "
+            "FROM research_build_patterns WHERE pattern_id = ?",
+            (first["patternIds"][0],),
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row["component_roles"]) == revised["patterns"][0]["component_roles"]
+        assert row["denominator"] == 2
+        assert (
+            json.loads(row["context_requirements"])
+            == revised["patterns"][0]["context_requirements"]
+        )
+        assert row["planner_hint"] == revised["patterns"][0]["planner_hint"]
+        assert json.loads(row["verification_tasks"]) == revised["patterns"][0]["verification_tasks"]
+        assert row["pob_version_or_commit"] == "0.22.0"
+        observation = con.execute(
+            "SELECT components, pob_version_or_commit "
+            "FROM research_build_design_observations WHERE observation_id = ?",
+            (first["observationIds"][0],),
+        ).fetchone()
+        assert observation is not None
+        assert (
+            json.loads(observation["components"])
+            == revised["build_design_observations"][0]["components"]
+        )
+        assert observation["pob_version_or_commit"] == "0.22.0"
+    finally:
+        con.close()
+
+
 def test_pattern_payload_rejects_common_without_source_diversity():
     payload = _pattern_payload(confidence_tier="common_within_archetype")
     payload["patterns"][0]["sample_count"] = 8
@@ -612,6 +2322,81 @@ def test_pattern_payload_rejects_denominator_below_sample_count():
 
     assert result["status"] == "error"
     assert result["errorCode"] == "insufficient_pattern_evidence"
+
+
+def test_skill_package_cannot_hide_resolved_support_from_ownership_with_functional_role():
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    support_key = "support:FixtureFunctionalGenerator"
+    record["record_kind"] = "skill_package"
+    record["component_keys"] = ["skill:LightningArrowPlayer", support_key]
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "skill:LightningArrowPlayer",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Fixture Functional Generator",
+            "role": "generator",
+            "resolver_query": support_key,
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": support_key,
+            "resolution_status": "resolved",
+        },
+    ]
+    record["typed_payload"] = {}
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+    assert "supportPackages" in json.dumps(result["facts"]["validationIssues"], ensure_ascii=False)
+
+
+def test_skill_package_support_ownership_allows_functional_role_when_explicitly_packaged():
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    support_key = "support:FixtureFunctionalGenerator"
+    record["record_kind"] = "skill_package"
+    record["component_keys"] = ["skill:LightningArrowPlayer", support_key]
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "skill:LightningArrowPlayer",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Fixture Functional Generator",
+            "role": "generator",
+            "resolver_query": support_key,
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": support_key,
+            "resolution_status": "resolved",
+        },
+    ]
+    record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": [support_key],
+            }
+        ]
+    }
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "accepted"
 
 
 def test_pattern_patch_decay_removes_pattern_from_planner_visible_context(tmp_path):
@@ -1211,6 +2996,44 @@ def test_query_component_filter_uses_exact_stable_key_not_substring(tmp_path):
     assert accepted["status"] == "accepted"
     assert near_miss["results"] == []
     assert exact["results"]
+
+
+def test_query_expands_graph_backed_gem_and_active_skill_identity(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+    accepted = service.propose_deep_research_records(payload)
+
+    result = service.query_research_memory(
+        "",
+        component_keys=["gem:Metadata/Items/Gems/SkillGemLightningArrow"],
+    )
+
+    assert accepted["status"] == "accepted"
+    assert result["deepResearchRecords"]
+    assert result["buildFamilies"]
+    assert result["requestedComponentKeys"] == ["gem:Metadata/Items/Gems/SkillGemLightningArrow"]
+    assert result["componentKeyGroups"] == [
+        [
+            "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+            "skill:LightningArrowPlayer",
+        ]
+    ]
 
 
 def test_query_hides_deprecated_fragments_after_changed_scope_revalidation(tmp_path):

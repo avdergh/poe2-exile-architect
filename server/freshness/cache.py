@@ -728,6 +728,11 @@ def run_cached(
                 )
             state = CacheState.REFRESHED
         else:
+            if (
+                response.status_code == 403
+                and _response_header(response, "X-RateLimit-Remaining") == "0"
+            ):
+                diagnostics.append("github_rate_limited")
             diagnostics.append(f"transport returned HTTP {response.status_code}")
             return _fallback_result(
                 envelope,
