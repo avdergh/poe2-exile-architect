@@ -192,12 +192,15 @@ does not take over build completion.
   budget, trade/SSF, and defense/complexity preferences.
 - Generation helper flow: call `scripts/create_build.py start-run --memory-mode memory_assisted`
   (or `--memory-mode no_memory` when the user explicitly invokes `/poe-bd-create --no-memory`);
-  assemble the active PoB; call
-  `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`; preserve its
-  `attemptIndex`, `transientBuildState`, and `judgeAdvisoryReport`; perform at most two Agent-led
-  retries in the same conversation and same run; write the final safe attempt list to the returned
-  `agentOutputFile`; then call
-  `scripts/create_build.py review-packet --run-id "<runId>" --run-token "<runToken>"`.
+  fill the initialized bound `agentOutputFile`; assemble the active PoB; call
+  `inspect_generation_preflight()` and repair blocking issues before calling
+  `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`. Perform at
+  most two Agent-led retries in the same conversation and same run. Each compact attempt needs only
+  its index, candidate, and failure audit; trusted state and Judge fields are hydrated from the
+  run-bound receipts. Call `scripts/create_build.py validate-output --run-id "<runId>"
+  --run-token "<runToken>"` until the safe contract passes, then call
+  `scripts/create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"`.
+  The full review result is persisted even though stdout is compact.
 - `trustedEvaluation` covers only the immutable snapshot and Judge result. The tool intentionally
   returns `trustedEvaluationScope=snapshot_and_judge_only` and `versionContextTrusted=false`;
   cross-check the supplied version context against this run's freshness result before making a
@@ -265,6 +268,11 @@ does not take over build completion.
 - The evaluation tool snapshots the active build, evaluates the immutable XML in a dedicated Judge
   engine, and persists only a raw-free receipt bound to the run and candidate. Never invent or edit
   its snapshot id, source hash, hard failures, caveats, or score.
+- Preflight and Judge use the same captured XML. A deterministic preflight blocker returns
+  `generation_preflight_failed` without creating a Judge engine, receipt, or retry attempt.
+- Treat `rewardLimitReasons` and the sanitized `offenseEvidence` separately from legality. Positive
+  DPS below a stage floor may have limited delivery evidence without being an unavailable metric;
+  limited or non-endgame evidence must never become a strong reward.
 - The helper receives Agent-produced safe artifacts: `agentRefinedBuildPrompt`,
   `prototypeBuildCandidate`, `transientBuildState`, `judgeAdvisoryReport`, and optional
   `toolFeedbackEvents`.
@@ -288,6 +296,9 @@ does not take over build completion.
   direction. For "starter now, respec later into bossing/endgame", preserve future targets and keep
   `crossStageLockedDimensions=["class"]`; later stages may change ascendancy, skills, passives,
   gear, and supports.
+- Report `lifecycleEvidenceCoverage` to the user. It is derived from the final trusted snapshot and
+  validates at most one lifecycle stage; all other claimed stages remain text-only until separately
+  snapshotted and judged.
 - Copyable build links or PoB-like material in the user request must be redacted before persistence
   and carried only as caveats or clarification items.
 - Lifecycle helpers may return only stage structure, transition gates, and design principles. Missing

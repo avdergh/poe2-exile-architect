@@ -124,21 +124,27 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
    检查，不能用理论上不存在的黄装抬高伤害或防御数值。
 9. 调用 `get_build()` 复读活动构筑，确认 PoB 中的职业、技能、装备和天赋确实是本次候选；发现
    遗留状态或缺项时继续修正。
-10. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`。这个工具
+10. 调用 `inspect_generation_preflight()`。修复 blocking issues 后才进入正式 Judge；完全重复的
+    enabled skill group、多主动技能组、重复辅助或 completeness hard failure 不应消耗一次 attempt。
+    advisories 仍由 Agent 判断和记录。
+11. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`。这个工具
    会捕获当前 PoB 状态，在独立 Judge 引擎中运行正式评估，并把可信结果绑定到本次运行。不要用
    `evaluate_build`、`pinnacle_readiness` 或 Agent 自己整理的分数冒充正式 Judge。
-11. 将该工具返回的 `attemptIndex`、`transientBuildState` 和 `judgeAdvisoryReport` 原样保留。工具
+12. 将该工具返回的 `attemptIndex` 及安全 Judge 结论保留。可信 `transientBuildState` 和
+    `judgeAdvisoryReport` 已写入本次 receipt，最终 `agent-output.json` 可以省略这两份重复内容；
+    helper 会按 attempt index 补全并严格核对。工具
    拒绝空骨架时继续完成构筑；工具返回 Judge 执行错误时保留错误报告，不要自行改写成已评估。
    `trustedEvaluation` 只表示活动快照和 Judge 结果由程序绑定；`versionContextTrusted=false` 表示
    版本上下文仍需与本次 `get_freshness_report` 返回核对，不能借此冒充当前赛季强验证。
-12. 对本轮结果做简短失败核验：区分真实构筑失败、PoB/Judge 建模缺口、Judge 选错技能、工具或
+13. 对本轮结果做简短失败核验：区分真实构筑失败、PoB/Judge 建模缺口、Judge 选错技能、工具或
     数据缺口、混合问题，或者当前没有实质失败。只保存结论摘要、修改计划和保留的注意事项，
     不保存逐步推理。
     `passed=true` 只表示确定性合法性通过，不等于候选值得推荐。按以下四层处理结果：
     `hardFailures` 是确定性非法；`playabilityFailures` 是合法但存在严重可玩性短板；
-    `qualityWarnings` 是未达到推荐质量目标；`modelability` 是 PoB/Judge 能否可靠计算。
+    `qualityWarnings` 是未达到推荐质量目标；`modelability` 是 PoB/Judge 能否可靠计算；
+    `offenseEvidence` 区分 metric 是否可用、阶段 floor 是否达到和 delivery evidence 是否充分。
     如果存在 `playabilityFailures`、`qualityBand="barely_playable"`、offense/recovery 等与用户
-    目标直接相关的维度为 0，或仍有 `support_conflict_unverified_caveat`，
+    目标直接相关的维度为 0，或 `offenseEvidence.floorStatus != "met"`，
     必须优先继续修正或核验。重试耗尽后可以交付给人工研究，但只能称为“弱原型/待完善候选”，
     不能称为“推荐方案”“开荒顺畅已验证”或“成品 BD”。
     `scoreApplicability="unavailable"` 表示核心机制当前无法可靠数值验证。不得引用综合分或 DPS
@@ -150,30 +156,34 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
     `optimize_supports` 测试阶段合理的组合，或说明少辅助为何是有意设计；它不是合法性硬规则。
     不要用“总蓝量至少是单次耗蓝的固定倍数”删辅助。续航应结合未保留蓝量、使用频率、每秒
     恢复、药剂、击回/偷取和实际技能轮转判断；证据不足时标记为待实测。
-13. 如果 Judge 未通过，或存在 `playabilityFailures` 且有明确可修正项，在当前会话、当前 `runId`
+14. 如果 Judge 未通过，或存在 `playabilityFailures` 且有明确可修正项，在当前会话、当前 `runId`
     和当前需求上下文中直接修改
     活动构筑，再次调用 `evaluate_generation_candidate`。不要重新调用 `start-run`，也不要要求用户
     重复需求。最多重试两轮；程序返回 `retry_limit_reached` 后必须停止。
     如果修正改变了升华或核心主技能，必须先重新解析身份并重新调用 `query_research_memory`；新一轮
     `researchMemoryUse` 和 `versionContext.researchMemoryRef` 必须包含新的 `dedupeQueryRef`。只调整
     supports、装备数值、天赋路径或配置时不要求重复查询。
-14. 每轮生成一项 `generationAttempts` 记录。非最后一轮的 `retryDecision` 必须是 `retry`；最后
-    一轮必须是 `accept` 或带明确停止原因的 `stop`。顶层候选、临时状态和 Judge 报告使用最后一轮。
-15. 如果最后一轮 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效，必须在
+15. 每轮生成一项 compact `generationAttempts` 记录，只写 `attemptIndex`、本轮 candidate 和
+    `failureAudit`。非最后一轮的 `retryDecision` 必须是 `retry`；最后一轮必须是 `accept` 或带明确
+    停止原因的 `stop`。顶层最终 candidate、failure audit、临时状态和 Judge 报告由 helper 从末次
+    compact attempt 与 receipt 规范化生成，不必重复抄写。
+16. 如果最后一轮 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效，必须在
     调用 `review-packet` 前调用
     `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`。这个工具只保存当前
     最后一轮且仍与可信 Judge 快照完全一致的活动 PoB；失败轮次和旧 attempt 不保存完整 PoB。
     当前临时交付策略下，`playabilityFailures`、`qualityBand="barely_playable"`、目标维度为 0、
     `scoreApplicability="unavailable"` 和其他非硬性 Judge 警告不阻止保存与导出。它们仍必须原样
     出现在用户可见 Judge 结论中，并将结果称为弱原型/待验证候选，不能称为推荐方案或已验证成品。
-16. 只把本次生成的安全摘要写入 `start-run` 返回的 `agentOutputFile`，并使用对应 `runId` 和
-    `runToken` 调用 `review-packet`。最终 PoB XML 由专用 artifact 工具写入本地私有存储，不要写入
-    `agentOutputFile`。
-17. artifact 保存成功后，只调用一次
+17. 只把本次生成的安全摘要写入 `start-run` 已初始化的 `agentOutputFile`。先调用
+    `validate-output`；它不会消费 run，可以根据字段路径修正后重试。通过后再用对应 `runId` 和
+    `runToken` 调用 `review-packet --compact`。完整 review 会写入 `reviewResultFile`，stdout 只返回
+    紧凑摘要。最终 PoB XML 由专用 artifact 工具写入本地私有存储，不要写入 `agentOutputFile`。
+18. artifact 保存成功后，只调用一次
     `export_final_build_package(artifact_id, name, author, description)`。这个工具固定尝试导出 PoB XML、
     PoB 导入码文本和官方 `.build`，并返回完整 `artifacts` 清单。不要再自行分别调用多个导出工具
     拼接交付结果；除非用户明确只补导某一种格式。
-18. 向用户展示自然语言构筑结果、Judge 结论、内部重试改了什么、最终 artifact id，并逐项列出
+19. 向用户展示自然语言构筑结果、Judge 结论、`lifecycleEvidenceCoverage`、内部重试改了什么、
+    最终 artifact id，并逐项列出
     `export_final_build_package.artifacts` 中的全部三项。成功项必须给路径，失败项必须给 errorCode；
     不得省略任何一项。不要展示 PoB XML 或导入码原文。
 
@@ -261,6 +271,8 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
   分数而在剧情阶段强行封顶混沌抗；显式 75% 只用于确有该需求的终局内容。
 - `inspect_build_completeness()`：Judge 前检查黄装物品等级、底材等级、Scaffold 占位装、符文/
   灵魂核心决策、天赋珠宝、药剂和护符。除明确等级非法外是 advisory，不替 Agent 决定配装。
+- `inspect_generation_preflight()`：正式 Judge 前对同一活动 snapshot 做技能组与 completeness
+  阻断预检；blocking issue 不应消耗 attempt，advisory 仍由 Agent 决定。
 - `get_defenses()` / `get_build_stats(keys=None)`：读取防御和伤害等计算结果。
 - `evaluate_build(goals)`：做当前阶段局部数值检查，不是正式 Judge。
 - `pinnacle_readiness(...)`：只用于用户明确要求的终局攻坚/巅峰候选；不得用于剧情或普通开荒
@@ -322,9 +334,6 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `runContext`
 - `packetId`
 - `agentRefinedBuildPrompt`
-- `prototypeBuildCandidate`
-- `transientBuildState`
-- `judgeAdvisoryReport`
 - `toolFeedbackEvents`
 - `generationAttempts`
 
@@ -362,7 +371,7 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `transitionGates`
 - `unresolvedCaveats`
 - `toolReferences`
-- `memoryReferences`
+- `memoryReferences`（可省略；helper 从 typed `researchMemoryUse` 生成完整去重并集）
 - `researchMemoryUse`
 - `rationaleSummary`
 - `versionContext`
@@ -372,9 +381,9 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 `componentKeys`、`buildFamilyKeys`、`deepRecordIds`、`patternIds`、`semanticEdgeIds`、
 `memoryItemIds`、`insightDecisions` 和可选的 `noMatchReason`。`insightDecisions` 每项使用
 `sourceRefs`、`decision`（`adopted` / `caveated` / `rejected`）、`summary` 和 `application`；
-`sourceRefs` 必须来自本次命中的安全记忆项。`memoryReferences` 保留兼容，但必须包含全部
-`dedupeQueryRefs` 和实际使用的记忆项 ID；`versionContext.researchMemoryRef` 使用其中一个真实
-`dedupeQueryRef`。
+`sourceRefs` 必须来自本次命中的安全记忆项。`memoryReferences` 保留兼容，但不必手工复制；
+helper 会加入全部 `dedupeQueryRefs` 和实际使用的记忆项 ID；`versionContext.researchMemoryRef`
+使用其中一个真实 `dedupeQueryRef`。
 
 `transientBuildState` 至少包含：
 
@@ -416,16 +425,15 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `versionContext`
 - `noRawMaterial`
 
-`transientBuildState` 和 `judgeAdvisoryReport` 必须来自本次
-`evaluate_generation_candidate` 返回值。不要自行生成 `snapshotId`、`sourceHash`、Judge 分数或
-硬阻断。`error` 只表示正式 Judge 调用发生错误，此时不能把构筑失败写进 `hardFailures`。
+`transientBuildState` 和 `judgeAdvisoryReport` 由本次 `evaluate_generation_candidate` 的 trusted
+receipt 补入。不要自行生成 `snapshotId`、`sourceHash`、Judge 分数或硬阻断；如果仍显式写入，
+必须与 receipt 完全一致。`error` 只表示正式 Judge 调用发生错误，此时不能把构筑失败写进
+`hardFailures`。
 
 `generationAttempts` 每项至少包含：
 
 - `attemptIndex`：由 `evaluate_generation_candidate` 返回，从 0 开始，最多为 2；
 - `prototypeBuildCandidate`：本轮 Agent 候选安全摘要；
-- `transientBuildState`：本轮正式评估返回的原样状态引用；
-- `judgeAdvisoryReport`：本轮正式评估返回的原样 Judge 报告；
 - `failureAudit`：本轮 Agent 的安全失败核验摘要。
 
 `failureAudit` 使用英文 schema 字段：`auditId`、`attemptIndex`、`candidateId`、`snapshotId`、
@@ -434,6 +442,8 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 
 - `true_build_failure`：构筑确实存在合法性或质量问题；
 - `judge_modelability_gap`：PoB/Judge 对机制表达不足；
+- `judge_offense_evidence_gap`：已有正伤害指标，但阶段 floor 或 delivery evidence 仍不足；
+- `judge_score_review_required`：modelability 可用，但低分仍需要校准/人工审查；
 - `selected_skill_suspect`：Judge 本次选择的评分技能可疑；
 - `tool_or_data_gap`：工具或当前数据覆盖不足；
 - `mixed`：同时存在多类问题；
@@ -498,7 +508,8 @@ Windows：
 ```powershell
 .\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode memory_assisted
 .\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode no_memory
-.\.tools\uv\uv.exe run python scripts\create_build.py review-packet --run-id "<runId>" --run-token "<runToken>"
+.\.tools\uv\uv.exe run python scripts\create_build.py validate-output --run-id "<runId>" --run-token "<runToken>"
+.\.tools\uv\uv.exe run python scripts\create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"
 ```
 
 macOS / Linux：
@@ -506,7 +517,8 @@ macOS / Linux：
 ```bash
 ./.tools/uv/uv run python scripts/create_build.py start-run --memory-mode memory_assisted
 ./.tools/uv/uv run python scripts/create_build.py start-run --memory-mode no_memory
-./.tools/uv/uv run python scripts/create_build.py review-packet --run-id "<runId>" --run-token "<runToken>"
+./.tools/uv/uv run python scripts/create_build.py validate-output --run-id "<runId>" --run-token "<runToken>"
+./.tools/uv/uv run python scripts/create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"
 ```
 
 `start-run` 返回：
@@ -514,6 +526,7 @@ macOS / Linux：
 - `runContext`：本次运行的一次性绑定信息，原样写入内部 JSON；
 - `requestRef`、`promptId`、`packetId`：本次产物必须使用的编号；
 - `agentOutputFile`：本次唯一允许写入和验收的 Agent 产物路径；
+  helper 已在其中初始化 run binding 骨架，Agent 在该文件上补安全设计字段；
 - `reviewResultFile`：helper 成功验收后原子写入的安全结果副本；若命令输出意外中断，可以读取
   这个文件确认本次结果。
 - `experimentContext`：本次是否允许使用研究记忆，以及最多两轮内部重试的运行合同。
@@ -521,7 +534,8 @@ macOS / Linux：
 `review-packet` 根据 `runId` 自行定位本次目录，不接受调用者指定其他清单或产物路径；它只接受
 与本次运行凭据匹配的文件。运行凭据两小时后过期，成功验收后立即失效，不能再次验收。
 
-`review-packet` 除了校验结构和安全性，还会读取本次运行目录中的可信 Judge 凭据。缺少凭据、
+`validate-output` 与 `review-packet` 共用同一条 fail-closed canonicalization。前者不消费 run；后者
+成功后写完整 review 并消费运行凭据。两者都会读取本次运行目录中的可信 Judge 凭据。缺少凭据、
 候选编号不一致，或 Agent 文件中的临时状态/Judge 报告与可信结果不同，都会被拒绝。helper 通过
 只表示材料可以进入人工验收；Judge 分数仍是参考评估，不代表人已经认可这个 BD。
 

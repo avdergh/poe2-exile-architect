@@ -9,7 +9,28 @@ def test_level_band_uses_non_endgame_floor_for_lower_level_build():
     band = scoring.level_band(75)
 
     assert band == "maps_entry"
-    assert scoring.floor_caveats(75) == ["non_endgame_sample_caveat"]
+    assert scoring.floor_caveats(75) == []
+
+
+def test_level_69_to_70_offense_floor_boundary_remains_explicit_for_future_calibration():
+    metrics = {
+        "TotalDPS": 10_000,
+        "PhysicalMaximumHitTaken": 10_000,
+        "FireMaximumHitTaken": 20_000,
+        "ColdMaximumHitTaken": 20_000,
+        "LightningMaximumHitTaken": 20_000,
+        "ChaosMaximumHitTaken": 12_000,
+        "LifeUnreserved": 4_000,
+    }
+    resistances = {"fire": 75, "cold": 75, "lightning": 75, "chaos": 75}
+
+    level_69 = scoring.score_metrics(metrics, level=69, resistances=resistances)
+    level_70 = scoring.score_metrics(metrics, level=70, resistances=resistances)
+
+    assert level_69["scoreBreakdown"]["offense"]["hardFloor"] == 5_000
+    assert level_70["scoreBreakdown"]["offense"]["hardFloor"] == 50_000
+    assert level_69["levelBand"] == "campaign"
+    assert level_70["levelBand"] == "maps_entry"
 
 
 def test_log_score_has_diminishing_returns():
@@ -552,7 +573,7 @@ def test_flat_aggregate_does_not_include_scenario_fit():
     )
 
     assert result["scoreScale"] == "0_to_1"
-    assert result["aggregateScore"]["weightProfile"] == "judge_v4_stage_aware"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v5_evidence_separated"
     assert result["aggregateScore"]["value"] == pytest.approx(1.0)
     assert "mappingFit" in result["scenarioFit"]
     assert "scenarioFit" not in result["scoreVector"]
@@ -749,7 +770,7 @@ def test_limited_offense_keeps_observed_score_visible_without_source_prior():
     offense = result["scoreBreakdown"]["offense"]
     assert offense["observedValue"] == 0.0
     assert offense["value"] == 0.0
-    assert offense.get("scorePolicy") is None
+    assert offense["scorePolicy"] == "standard_target_curve"
     assert "trusted_reference_limited_offense_prior_caveat" not in result["caveats"]
     assert "limited_offense_floor_unverified_caveat" in result["caveats"]
 
@@ -774,10 +795,14 @@ def test_generated_limited_offense_stays_strict():
 
     assert "below_playability_floor" not in result["failures"]
     assert "limited_offense_floor_unverified_caveat" in result["caveats"]
-    assert result["scoreBreakdown"]["offense"]["value"] == 0.0
+    offense = result["scoreBreakdown"]["offense"]
+    assert offense["value"] == pytest.approx(0.002)
+    assert offense["floorProgress"] == pytest.approx(0.05)
+    assert offense["floorProgressCredit"] == pytest.approx(0.004)
+    assert offense["deliveryEvidenceStatus"] == "limited"
     assert "offense_delivery_not_established" in result["qualityWarnings"]
-    assert result["aggregateScore"]["value"] <= 0.29
-    assert result["qualityBand"] == "barely_playable"
+    assert result["aggregateScore"]["value"] <= 0.34
+    assert result["qualityBand"] == "prototype_only"
 
 
 def test_trusted_reference_zero_limited_offense_is_not_reclassified_as_generated_failure():
@@ -870,7 +895,8 @@ def test_limited_full_dps_uses_reality_calibrated_quality_target():
     offense = result["scoreBreakdown"]["offense"]
     assert offense["qualityFloor"] == 150_000
     assert offense["target"] == 750_000
-    assert result["scoreVector"]["offense"]["value"] >= 0.3
+    assert result["scoreVector"]["offense"]["value"] >= 0.24
+    assert offense["scoreConfidenceFactor"] == 0.5
 
 
 def test_low_pool_recovery_uses_gentler_reference_ratios():

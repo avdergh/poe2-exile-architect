@@ -65,6 +65,7 @@ def validate_and_build_human_review_packet(
             tool_feedback_events=feedback,
             failure_audit=failure_audit,
             generation_attempts=generation_attempts,
+            lifecycle_evidence_coverage=_lifecycle_evidence_coverage(candidate, state),
             human_review_fields=_human_review_fields(),
             recommended_next_action=action,
             version_context=prompt.version_context,
@@ -181,6 +182,48 @@ def _human_review_fields() -> dict[str, str]:
         "judgeCaveatReasonable": "pending",
         "continueToNextPrototypeStep": "pending",
     }
+
+
+def _lifecycle_evidence_coverage(
+    candidate: models.PrototypeBuildCandidate,
+    state: models.TransientBuildStateRef,
+) -> models.LifecycleEvidenceCoverage:
+    evaluated_level = _positive_level(state.safe_summary.get("level"))
+    evaluated_stage = _stage_for_level(evaluated_level) if evaluated_level is not None else None
+    evaluated_stages = [evaluated_stage] if state.status == "available" and evaluated_stage else []
+    text_only_stages = [
+        stage for stage in candidate.current_output_stages if stage not in evaluated_stages
+    ]
+    complete = bool(evaluated_stages) and not text_only_stages
+    return models.LifecycleEvidenceCoverage(
+        coverage_status="complete" if complete else "partial",
+        evaluated_stages=evaluated_stages,
+        text_only_stages=text_only_stages,
+        evaluated_level=evaluated_level,
+        source_snapshot_id=state.snapshot_id if state.status == "available" else None,
+    )
+
+
+def _positive_level(value: Any) -> int | None:
+    try:
+        level = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return level if level > 0 else None
+
+
+def _stage_for_level(level: int) -> str:
+    if level <= 25:
+        return "campaign_early"
+    if level <= 45:
+        return "campaign_mid"
+    if level < 65:
+        return "campaign_late"
+    if level <= 75:
+        return "maps_entry"
+    if level < 90:
+        return "endgame_budget"
+    return "endgame_final"
 
 
 def _pick(payload: Any, key: str, *, default: Any = None) -> Any:

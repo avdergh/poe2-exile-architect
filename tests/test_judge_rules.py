@@ -40,7 +40,7 @@ def test_socket_rules_require_exactly_one_active_skill():
     failures, caveats = rules.check_main_skill_group(group)
 
     assert "invalid_socket_setup" in failures
-    assert caveats == ["support_conflict_unverified_caveat"]
+    assert caveats == []
 
 
 def test_socket_rules_allow_multi_active_reference_group_with_caveat():
@@ -54,7 +54,7 @@ def test_socket_rules_allow_multi_active_reference_group_with_caveat():
 
     assert "invalid_socket_setup" not in failures
     assert "external_multi_active_socket_group_caveat" in caveats
-    assert "support_conflict_unverified_caveat" in caveats
+    assert "support_conflict_unverified_caveat" not in caveats
 
 
 def test_socket_rules_reject_support_limit_duplicate_and_unknown_support():

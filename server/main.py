@@ -57,6 +57,7 @@ from .generation import artifacts as generation_artifacts
 from .generation import evaluation as generation_evaluation
 from .generation import delivery as generation_delivery
 from .generation import pob_exports as generation_pob_exports
+from .generation import preflight as generation_preflight
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
 
@@ -521,6 +522,18 @@ def inspect_build_completeness() -> dict[str, Any]:
     either fills each system or records why it is intentionally unused.
     """
     return completeness.inspect_build_completeness(get_engine())
+
+
+@mcp.tool()
+def inspect_generation_preflight() -> dict[str, Any]:
+    """Run cheap deterministic checks before consuming a generation Judge attempt.
+
+    Reads one active PoB snapshot and reports missing/invalid main groups, multi-active groups,
+    duplicate supports, completely duplicated enabled groups, and completeness findings. Blocking
+    issues should be repaired before `evaluate_generation_candidate`; advisories remain Agent
+    design decisions. The response never contains XML or raw item text.
+    """
+    return generation_preflight.inspect_generation_preflight(get_engine())
 
 
 @mcp.tool()

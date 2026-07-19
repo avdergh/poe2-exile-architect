@@ -157,7 +157,7 @@ endgame:    offense 0.40 / defense 0.40 / recovery 0.15 / mobility 0.05
 
 权重 profile（权重配置名）为：
 
-- `judge_v4_stage_aware`
+- `judge_v5_evidence_separated`
 
 这组权重属于项目产品启发式，不是官方规则。阶段感知调整的依据是：剧情开荒的实际体验高度
 依赖资源恢复和移动/走位，而终局数值比较仍更依赖伤害与防御。权重仍需用真实构筑样本和人工
@@ -234,9 +234,10 @@ Judge 不是一套固定终局线打天下，而是按等级段使用不同标�
 - `70 - 79` -> `maps_entry`
 - `>= 80` -> `endgame`
 
-非终局样本会自动追加：
-
-- `non_endgame_sample_caveat`
+等级段本身已经表达评价范围，因此 campaign / maps-entry 不再把
+`non_endgame_sample_caveat` 当作构筑缺陷。对系统生成的非终局候选，Evaluator 会显式输出
+`rewardLimitReasons=["non_endgame_scope"]` 并把 reward 限为 limited；比较时仍可选出更适合
+当前用途的候选，但不能产生确定的 `rewardWinner`。
 
 ---
 
@@ -305,6 +306,10 @@ PoB 字段按上游实际定义解释：
 
 Python 层优先看 `JudgeDPS`。如果 Lua 已经给出 `judgeSelectedSkill`，就使用它。
 
+Lua 会同时保留 `directDps` 和 `fullDps`。两者相等或仅有浮点误差时优先直接指标；只有
+`FullDPS` 实质更高或直接指标为 0 时才把 `FullDPS` 作为 offense 来源，避免无意义的 rollup
+caveat 污染直接 PoB 证据。
+
 否则才 fallback（回退）到 PoB 常规字段：
 
 - `FullDPS`
@@ -321,6 +326,24 @@ Python 层优先看 `JudgeDPS`。如果 Lua 已经给出 `judgeSelectedSkill`，
 ### 7.3 offense 证据分层
 
 Judge 对 offense 明确区分 provenance（证据来源）和 evidence level（证据强度）。
+
+`scoreBreakdown.offense` 同时输出观察值与可信度：`metricStatus`、`floorStatus`、
+`deliveryEvidenceStatus`、`observedValue`、`floorProgress`、`floorProgressCredit`、
+`scoreConfidenceFactor` 和 `scorePolicy`。生成候选的阶段地板进度按下式保留为小额诊断信号：
+
+```text
+floorProgress = clamp(effectiveDps / hardFloor, 0, 1)
+floorProgressCredit = 0.08 * floorProgress
+baseValue = max(observedValue, floorProgressCredit)
+offenseValue = baseValue * confidenceFactor
+```
+
+strong / limited / none 的 confidence factor 分别为 1 / 0.5 / 0。正 DPS 低于 hard floor
+不再被描述成“指标不可用”；strong evidence 仍触发 playability failure 并阻断 reward，limited
+evidence 仍只允许有限诊断和 limited reward。物理非法、核心不可建模或 DPS 为 0 时仍为 0。
+
+注意：当前 69→70 级会把 DPS hard floor 从 5,000 提高到 50,000。这个边界已用回归测试明确
+记录，但仍是待真实样本校准项，小额 floor-progress credit 不代表阈值已被证明合理。
 
 #### A. `direct_pob_dps`（PoB 直接伤害）
 
@@ -691,6 +714,7 @@ mobility * 0.10
 
 - `invalid`（非法）
 - `barely_playable`（勉强可玩）
+- `prototype_only`（已有观察值，但 offense delivery 证据不足）
 - `entry_endgame`（能进终局）
 - `solid`（扎实）
 - `strong`（强）
@@ -699,9 +723,9 @@ mobility * 0.10
 
 - 被 blocked（阻断） -> `invalid`
 - 出现强底线失败 -> `barely_playable`
-- 生成候选的 offense（进攻）维度为 0 -> `offense_delivery_not_established`（进攻兑现尚未建立），
-  综合分上限为 0.29，因此不能被其他维度平均成 `solid`；这不是确定性非法，也不表示 PoB 已证明
-  真实 DPS 很低，而是表示当前候选还没有足够证据作为可交付成品
+- 生成候选的 delivery evidence 不是 established -> `offense_delivery_not_established`（进攻兑现
+  尚未建立）和 `prototype_only`，综合分上限为 0.34，因此不能被其他维度平均成 `solid`；这不是
+  确定性非法，也不表示 PoB 没有正 DPS，而是表示当前候选还没有足够证据作为可交付成品
 - 综合分高 -> `solid` 或 `strong`
 
 ---

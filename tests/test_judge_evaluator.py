@@ -86,7 +86,7 @@ def test_evaluator_requests_judge_metric_keys():
     assert "SpiritReserved" in engine.requested_keys
     assert result["scoreScale"] == "0_to_1"
     assert "scoreBreakdown" in result
-    assert result["aggregateScore"]["weightProfile"] == "judge_v4_stage_aware"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v5_evidence_separated"
     assert result["defenseModel"]["poolModel"] == "life"
     assert result["defenseModel"]["confidence"] == "full"
     assert result["pass"] is True
@@ -588,7 +588,8 @@ def test_evaluator_flags_non_endgame_caveat():
 
     result = evaluator.evaluate_active_build(engine, "level-75")
 
-    assert "non_endgame_sample_caveat" in result["caveats"]
+    assert "non_endgame_sample_caveat" not in result["caveats"]
+    assert "non_endgame_scope" in result["rewardLimitReasons"]
     assert result["levelBand"] == "maps_entry"
 
 

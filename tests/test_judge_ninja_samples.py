@@ -219,7 +219,7 @@ def test_finalize_sample_classification_marks_low_scoring_pass_sample_for_review
 
     assert out["scoreReviewNeeded"] is True
     assert out["scoreReviewReasons"] == ["aggregate_below_0_5", "defense_below_0_5"]
-    assert out["finalClassification"] == "judge_unsolved_modelability_gap"
+    assert out["finalClassification"] == "judge_score_review_required"
 
 
 def test_finalize_sample_classification_separates_severe_playability_from_legality():
@@ -265,7 +265,7 @@ def test_finalize_sample_classification_clears_review_for_known_limited_offense_
     out = run_judge_ninja_samples.finalize_sample_classification(sample)
 
     assert out["scoreReviewNeeded"] is False
-    assert out["finalClassification"] == "judge_unsolved_modelability_gap"
+    assert out["finalClassification"] == "judge_offense_evidence_gap"
 
 
 def test_finalize_sample_classification_clears_review_for_known_avoidance_defense_gap():
@@ -294,7 +294,7 @@ def test_finalize_sample_classification_clears_review_for_known_avoidance_defens
     out = run_judge_ninja_samples.finalize_sample_classification(sample)
 
     assert out["scoreReviewNeeded"] is False
-    assert out["finalClassification"] == "judge_unsolved_modelability_gap"
+    assert out["finalClassification"] == "judge_pass_and_scores_explained"
 
 
 def test_finalize_sample_classification_clears_review_for_explained_real_low_scores():
@@ -492,7 +492,7 @@ def test_evaluate_ninja_sample_row_uses_browser_html_and_finalizes(monkeypatch):
         snapshot_id="ninja_sample_001",
     )
 
-    assert out["finalClassification"] == "judge_unsolved_modelability_gap"
+    assert out["finalClassification"] == "judge_score_review_required"
     assert out["scoreReviewNeeded"] is True
     assert (
         out["ninjaSample"]["characterUrl"]

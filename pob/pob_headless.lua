@@ -611,15 +611,25 @@ local function selectedDamageMetric(out, allowFullDPS, allowMinionOutput)
 		candidates[#candidates + 1] = { key = "MinionCombinedDPS", value = asNumber(outputValue(out, "MinionCombinedDPS")) }
 		candidates[#candidates + 1] = { key = "MinionTotalDPS", value = asNumber(outputValue(out, "MinionTotalDPS")) }
 	end
-	if allowFullDPS then
-		table.insert(candidates, 1, { key = "FullDPS", value = asNumber(out.FullDPS) })
-	end
 	local best = { key = "TotalDPS", value = 0 }
 	for _, candidate in ipairs(candidates) do
 		if candidate.value and candidate.value > best.value then
 			best = candidate
 		end
 	end
+	local directDPS = best.value or 0
+	local fullDPS = asNumber(out.FullDPS)
+	if allowFullDPS and fullDPS > 0 then
+		-- FullDPS is a limited-evidence rollup. Prefer a direct PoB metric when the two are equal
+		-- within floating-point noise; use FullDPS only when it adds a material component or no
+		-- direct metric exists.
+		local tolerance = math.max(0.000001, math.abs(directDPS) * 0.000001)
+		if directDPS <= 0 or fullDPS > directDPS + tolerance then
+			best = { key = "FullDPS", value = fullDPS }
+		end
+	end
+	best.directDPS = directDPS
+	best.fullDPS = fullDPS
 	return best
 end
 
@@ -668,6 +678,8 @@ local function computeJudgeSelectedSkill()
 						dps = value,
 						rawDps = rawValue,
 						effectiveDps = effectiveValue,
+						directDps = metric.directDPS,
+						fullDps = metric.fullDPS,
 						sourceMetric = metric.key,
 						projectileCount = asNumber(out.ProjectileCount),
 						activeSkillCount = summary.activeSkillCount,

@@ -7,8 +7,13 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 from uuid import UUID, uuid4
+
+from pydantic import ValidationError
+
+from . import models
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -148,8 +153,62 @@ def read_trusted_evaluations(bound_run: BoundRun) -> list[dict[str, Any]]:
     return receipts
 
 
+def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]:
+    """Read a complete receipt chain and fail closed on corruption or index gaps."""
+    directory = bound_run.trusted_evaluations_dir
+    indexed_paths: dict[int, Path] = {}
+    if directory.exists():
+        for path in directory.glob("attempt-*.json"):
+            match = re.fullmatch(r"attempt-(\d+)\.json", path.name)
+            if match is None:
+                raise RunStoreError("trusted_evaluation_corrupt")
+            index = int(match.group(1))
+            if index > 2 or index in indexed_paths:
+                raise RunStoreError("trusted_evaluation_corrupt")
+            indexed_paths[index] = path
+
+    if indexed_paths and sorted(indexed_paths) != list(range(max(indexed_paths) + 1)):
+        raise RunStoreError("trusted_attempt_gap")
+
+    receipts: list[dict[str, Any]] = []
+    for attempt_index in sorted(indexed_paths):
+        path = indexed_paths[attempt_index]
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, OSError, json.JSONDecodeError) as exc:
+            raise RunStoreError("trusted_evaluation_corrupt") from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schemaVersion") != 1
+            or payload.get("runId") != bound_run.run_id
+            or payload.get("attemptIndex") != attempt_index
+            or not isinstance(payload.get("candidateId"), str)
+            or not payload.get("candidateId")
+        ):
+            raise RunStoreError("trusted_evaluation_corrupt")
+        try:
+            models.TransientBuildStateRef.model_validate(payload.get("transientBuildState"))
+            models.JudgeAdvisoryReport.model_validate(payload.get("judgeAdvisoryReport"))
+        except ValidationError as exc:
+            raise RunStoreError("trusted_evaluation_corrupt") from exc
+        receipts.append(payload)
+
+    latest_path = bound_run.trusted_evaluation_path
+    if not receipts:
+        if latest_path.exists():
+            raise RunStoreError("trusted_evaluation_corrupt")
+        return []
+    try:
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, OSError, json.JSONDecodeError) as exc:
+        raise RunStoreError("trusted_evaluation_corrupt") from exc
+    if latest != receipts[-1]:
+        raise RunStoreError("trusted_latest_mismatch")
+    return receipts
+
+
 def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> int | None:
-    existing = read_trusted_evaluations(bound_run)
+    existing = read_trusted_evaluations_strict(bound_run)
     attempt_index = len(existing)
     if attempt_index >= 3:
         raise RunStoreError("retry_limit_reached")

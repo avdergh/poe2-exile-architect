@@ -925,8 +925,10 @@ def test_judge_selected_skill_uses_isolated_full_dps_per_group(engine):
     selected = engine.get_build()["judgeSelectedSkill"]
 
     assert global_full > single_full * 1.5
-    assert selected["sourceMetric"] == "FullDPS"
+    assert selected["sourceMetric"] != "FullDPS"
     assert selected["dps"] == pytest.approx(single_full, rel=0.05)
+    assert selected["directDps"] == pytest.approx(selected["dps"], rel=1e-6)
+    assert selected["fullDps"] == pytest.approx(single_full, rel=0.05)
     assert selected["dps"] < global_full * 0.75
 
 

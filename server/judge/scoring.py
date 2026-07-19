@@ -10,8 +10,10 @@ from . import models
 CRITICAL_FAILURE_PENALTIES_V1 = {
     "SEVERE_RESISTANCE_SCORE_CAP": 0.45,
     "CATASTROPHIC_DEFENSE_SCORE_CAP": 0.35,
-    "UNESTABLISHED_OFFENSE_SCORE_CAP": 0.29,
+    "UNESTABLISHED_OFFENSE_SCORE_CAP": 0.34,
 }
+
+LIMITED_OFFENSE_FLOOR_PROGRESS_CREDIT_CAP = 0.08
 
 ELEMENTAL_RESISTANCE_SEVERE_FLOOR = {
     "campaign": 30.0,
@@ -150,7 +152,9 @@ def level_band(level: int | None) -> str:
 
 
 def floor_caveats(level: int | None) -> list[str]:
-    return [] if level_band(level) == "endgame" else ["non_endgame_sample_caveat"]
+    # Evaluation scope is already explicit in levelBand. Reward limitations are handled by the
+    # evaluator instead of presenting non-endgame scope as a build defect.
+    return []
 
 
 def target_log_score(value: Any, *, quality_floor: float, target: float) -> float:
@@ -198,12 +202,37 @@ def score_metrics(
         quality_floor=offense_floor,
         target=offense_target,
     )
-    offense_value = offense_observed
+    metric_status = "available" if dps > 0 else "unavailable"
+    offense_evidence = str(offense_meta.get("evidenceLevel") or "none")
+    floor_progress = _clamp(dps / offense_floor) if dps > 0 and offense_floor > 0 else 0.0
+    floor_progress_credit = (
+        LIMITED_OFFENSE_FLOOR_PROGRESS_CREDIT_CAP * floor_progress
+        if dps > 0 and source_context == "generated_candidate"
+        else 0.0
+    )
+    confidence_factor = {"strong": 1.0, "limited": 0.5}.get(offense_evidence, 0.0)
+    offense_base_value = max(offense_observed, floor_progress_credit)
+    offense_value = offense_base_value * confidence_factor
+    if dps <= 0:
+        floor_status = "unavailable"
+        delivery_evidence_status = "unavailable"
+    elif dps >= offense_floor:
+        floor_status = "met"
+        delivery_evidence_status = "established" if offense_evidence == "strong" else "limited"
+    else:
+        floor_status = "unverified" if offense_evidence == "limited" else "missed"
+        delivery_evidence_status = (
+            "limited" if offense_evidence in {"strong", "limited"} else "unavailable"
+        )
+    score_policy = (
+        "limited_evidence_floor_progress_credit"
+        if floor_progress_credit > offense_observed
+        else "standard_target_curve"
+    )
     offense_blocked = "offense" in blocked
     limited_offense = offense_meta.get("evidenceLevel") == "limited"
     offense_meta_caveats = list(offense_meta.get("caveats") or [])
     lower_bound_offense = "lower_bound_dps_caveat" in offense_meta_caveats
-    offense_evidence = str(offense_meta.get("evidenceLevel") or "none")
     if dps < targets["dps_hard_floor"]:
         if limited_offense or lower_bound_offense:
             caveats.append("limited_offense_floor_unverified_caveat")
@@ -227,6 +256,13 @@ def score_metrics(
         "scoreFloor": offense_floor,
         "qualityFloor": offense_quality_floor,
         "target": offense_target,
+        "metricStatus": metric_status,
+        "floorProgress": round(floor_progress, 6),
+        "floorProgressCredit": round(floor_progress_credit, 6),
+        "floorStatus": floor_status,
+        "deliveryEvidenceStatus": delivery_evidence_status,
+        "scoreConfidenceFactor": confidence_factor,
+        "scorePolicy": score_policy,
         "sourceMetric": dps_key,
         **offense_meta,
     }
@@ -298,7 +334,7 @@ def score_metrics(
     aggregate = sum(
         score_vector[key]["value"] * weight for key, weight in aggregate_weights.items()
     )
-    if source_context == "generated_candidate" and score_vector["offense"]["value"] <= 0.0:
+    if source_context == "generated_candidate" and delivery_evidence_status != "established":
         # Limited PoB evidence must not become a false low-DPS legality failure. It also must not
         # let unrelated dimensions average an unproven damage package into a finished build.
         quality_warnings.append("offense_delivery_not_established")
@@ -326,7 +362,12 @@ def score_metrics(
         "scoreBreakdown": breakdown,
         "scoreScale": "0_to_1",
         "scenarioFit": scenario_fit,
-        "qualityBand": _quality_band(aggregate, playability_failures, blocked),
+        "qualityBand": _quality_band(
+            aggregate,
+            playability_failures,
+            blocked,
+            delivery_evidence_status=delivery_evidence_status,
+        ),
         "aggregateScore": {
             "value": round(_clamp(aggregate), 6),
             "weightProfile": models.WEIGHT_PROFILE,
@@ -849,7 +890,13 @@ def _scenario_fit(score_vector: dict[str, dict[str, Any]]) -> dict[str, float]:
     }
 
 
-def _quality_band(aggregate: float, failures: list[str], blocked: set[str]) -> str:
+def _quality_band(
+    aggregate: float,
+    failures: list[str],
+    blocked: set[str],
+    *,
+    delivery_evidence_status: str = "established",
+) -> str:
     if blocked:
         return "invalid"
     if any(
@@ -861,6 +908,8 @@ def _quality_band(aggregate: float, failures: list[str], blocked: set[str]) -> s
         )
     ):
         return "barely_playable"
+    if delivery_evidence_status != "established":
+        return "prototype_only"
     if aggregate >= 0.80:
         return "strong"
     if aggregate >= 0.55:
@@ -927,6 +976,7 @@ def _offense_metric(metrics: dict[str, Any]) -> tuple[float, str, dict[str, Any]
         else:
             meta["provenance"] = "direct_pob_dps"
             meta["evidenceLevel"] = "strong"
+            caveats = [value for value in caveats if value != "full_dps_rollup_caveat"]
         if metrics.get("JudgeSkillName"):
             meta["skillName"] = str(metrics.get("JudgeSkillName"))
         if metrics.get("JudgeSkillGroupIndex") is not None:
@@ -940,6 +990,8 @@ def _offense_metric(metrics: dict[str, Any]) -> tuple[float, str, dict[str, Any]
         meta["isMinion"] = is_minion
         meta["rawDps"] = raw_dps
         meta["effectiveDps"] = effective_dps
+        meta["directDps"] = _num(metrics.get("JudgeDirectDPS"))
+        meta["fullDps"] = _num(metrics.get("JudgeFullDPS"))
         meta["caveats"] = caveats
         return value, "JudgeDPS", meta
     value, key = _first_number_with_key(

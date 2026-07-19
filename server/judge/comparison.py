@@ -47,6 +47,8 @@ def _partial(evaluation: dict[str, Any]) -> bool:
 
 
 def _limited_evidence(evaluation: dict[str, Any]) -> bool:
+    if evaluation.get("rewardLimitReasons"):
+        return True
     if evaluation.get("rewardEligible") == "limited":
         return True
     if evaluation.get("rewardStrength") == "limited":

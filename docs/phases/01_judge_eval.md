@@ -2,7 +2,7 @@
 
 ## 阶段状态
 
-已完成。当前 Phase 1 以 `judge_phase1_v4` / `judge_v4_stage_aware` 作为内部 Judge
+已完成。当前 Phase 1 以 `judge_phase1_v5` / `judge_v5_evidence_separated` 作为内部 Judge
 基线：合法性仍由 hard checks 和 PoB readback 兜底，质量评分输出 evidence-aware score
 vector，并明确区分 strong evidence、limited evidence、source-data problem 和
 unsolved modelability gap。
@@ -133,7 +133,7 @@ unsolved modelability gap。
 - 新增内部模块 `server/judge/`，暂不暴露 MCP tool：
   - `models.py`：evaluator version、metric keys、failure code / caveat 常量；
   - `rules.py`：class/ascendancy、support/socket v1、physical-invalid blocker；
-  - `scoring.py`：`judge_v4_stage_aware`，包含 hard floor / quality target 分离、阶段感知权重、
+  - `scoring.py`：`judge_v5_evidence_separated`，包含 hard floor / quality target 分离、阶段感知权重、
     hard-floor 到 target 的对数连续评分、动态可用主资源池 recovery、异构 Max Hit、CI
     混沌免疫、EHP 物理短板补偿、30%/60%/75% 阶段抗性、offense evidence provenance
     和扁平 aggregate；
@@ -177,6 +177,17 @@ unsolved modelability gap。
   - `minion_pob_output` 默认 limited；
   - `unknown_or_unavailable` 表示无可用 DPS；
   - limited offense evidence 仍可用于单个 BD selection / 诊断评分，但不能产生 strong reward。
+- v5 将正伤害观察值、阶段地板与实战交付证据拆开：offense breakdown 输出
+  `metricStatus`、`floorStatus`、`deliveryEvidenceStatus`、`observedValue`、
+  `floorProgress` / `floorProgressCredit` 和 confidence factor。生成候选低于地板时允许保留
+  最高 0.08 的进度 credit，再按 evidence confidence 折减；strong below-floor 仍是 playability
+  failure，limited evidence 仍不能产生 strong reward。
+- `judgeSelectedSkill` 同时返回 direct/full diagnostics；二者在容差内相等时优先 direct，只有
+  FullDPS 实质增加组件或 direct 为 0 时才采用 rollup。合法单主动技能组不再无条件附加
+  `support_conflict_unverified_caveat`，但 `supportKnown` 仍不宣称 support applicability 已验证。
+- campaign / maps-entry scope 由 `levelBand` 表达，不再附加缺陷式 caveat；generated non-endgame
+  通过 `rewardLimitReasons=["non_endgame_scope"]` 明确限制 reward，comparison 不得给出明确
+  reward winner。
 - Judge 的 aggregate / scenario fit 语义已经转为 confidence-aware：
   - raw 分数可以展示，但是否可比较、是否可用于 reward，取决于 evidence / caveat；
   - `judge_unsolved_modelability_gap` 不再被视为 Judge 失败，而是 Phase 1 成功识别到的“当前
@@ -228,8 +239,8 @@ unsolved modelability gap。
 - CI 构筑不能因 `ChaosMaximumHitTaken` 为 nil、0 或特殊值被误判为混沌防御短板。
 - PoB strong-evidence 输出低于 hard floor 时进入 playability failure；limited/unknown evidence
   不得触发 DPS 硬失败。低于 quality floor 时进入 `qualityWarnings`，不能等同非法或 0 DPS。
-- 对本系统生成的候选，如果 limited/unknown offense 最终只能得到 0 分，追加
-  `offense_delivery_not_established` 并把综合分限制在 `barely_playable`；候选可以继续由 Agent
+- 对本系统生成的候选，如果 offense delivery 不是 established，追加
+  `offense_delivery_not_established` 并把综合分限制在 `prototype_only`；候选可以继续由 Agent
   修正或作为建模缺口研究，但不能保存为最终可交付 PoB。该限制不应用于成熟参考样本的事实判断。
 - `TotalDPS` 按 PoB 定义解释为 Hit DPS，不是单次命中。多投射物 / 多段命中优先读取 PoB 的
   `CombinedDPS` / `FullDPS` 组件；无法证明重叠时使用 `projectile_overlap_unverified_caveat`，

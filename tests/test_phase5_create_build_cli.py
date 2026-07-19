@@ -55,6 +55,20 @@ def test_start_run_defaults_to_memory_assisted(tmp_path: Path):
     assert result["experimentContext"]["memoryMode"] == "memory_assisted"
 
 
+def test_start_run_initializes_bound_agent_output_template(tmp_path: Path):
+    run = _start_run(tmp_path)
+
+    template = json.loads(Path(str(run["agentOutputFile"])).read_text(encoding="utf-8"))
+
+    assert run["agentOutputTemplateInitialized"] is True
+    assert template["runContext"] == run["runContext"]
+    assert template["packetId"] == run["packetId"]
+    assert template["agentRefinedBuildPrompt"] == {
+        "promptId": run["promptId"],
+        "requestRef": run["requestRef"],
+    }
+
+
 def _bind_submission_to_run(payload: dict[str, object], run: dict[str, object]) -> None:
     payload["packet_id"] = run["packetId"]
     payload["runContext"] = run["runContext"]
@@ -108,6 +122,7 @@ def _attach_trusted_evaluation(payload: dict[str, object], run: dict[str, object
     judge = {
         "reportId": "judge:generation:test:snapshot",
         "status": "evaluated",
+        "passed": True,
         "hardFailures": [],
         "caveats": ["test_caveat"],
         "aggregateScore": 0.55,
@@ -122,6 +137,7 @@ def _attach_trusted_evaluation(payload: dict[str, object], run: dict[str, object
     receipt = {
         "schemaVersion": 1,
         "runId": run["runContext"]["runId"],
+        "attemptIndex": 0,
         "candidateId": candidate_id,
         "createdAt": "2026-07-10T00:00:00+00:00",
         "transientBuildState": state,
@@ -129,6 +145,49 @@ def _attach_trusted_evaluation(payload: dict[str, object], run: dict[str, object
     }
     receipt_path = Path(str(run["agentOutputFile"])).parent / "trusted-evaluation.json"
     receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    attempts_dir = receipt_path.parent / "trusted-evaluations"
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+    (attempts_dir / "attempt-0.json").write_text(
+        json.dumps(receipt, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _compact_submission(payload: dict[str, object], run: dict[str, object]) -> dict[str, object]:
+    prompt = payload["agentRefinedBuildPrompt"]
+    candidate = payload["prototypeBuildCandidate"]
+    state = payload["transientBuildState"]
+    assert isinstance(prompt, dict)
+    assert isinstance(candidate, dict)
+    assert isinstance(state, dict)
+    audit = {
+        "auditId": "audit:test:0",
+        "attemptIndex": 0,
+        "candidateId": candidate["candidate_id"],
+        "snapshotId": state["snapshotId"],
+        "classification": "no_material_failure",
+        "retryDecision": "accept",
+        "summary": "可信快照已通过确定性合法性检查。",
+        "plannedChanges": [],
+        "retainedCaveats": ["仍需人工确认玩法手感。"],
+        "stopReason": None,
+        "versionContext": prompt["version_context"],
+        "noRawMaterial": True,
+    }
+    return {
+        "schemaVersion": 2,
+        "runContext": run["runContext"],
+        "packetId": run["packetId"],
+        "agentRefinedBuildPrompt": prompt,
+        "toolFeedbackEvents": [],
+        "generationAttempts": [
+            {
+                "attemptIndex": 0,
+                "prototypeBuildCandidate": candidate,
+                "failureAudit": audit,
+            }
+        ],
+    }
 
 
 def test_create_build_review_packet_cli_outputs_safe_human_review_packet(tmp_path):
@@ -164,6 +223,131 @@ def test_create_build_review_packet_cli_outputs_safe_human_review_packet(tmp_pat
     assert "rawTranscript" not in completed.stdout
     assert "chainOfThought" not in completed.stdout
     assert "pobb.in" not in completed.stdout
+
+
+def test_validate_output_hydrates_compact_attempt_without_consuming_run(tmp_path):
+    run = _start_run(tmp_path)
+    payload = agent_submission_payload()
+    _bind_submission_to_run(payload, run)
+    _attach_trusted_evaluation(payload, run)
+    compact = _compact_submission(payload, run)
+    Path(str(run["agentOutputFile"])).write_text(
+        json.dumps(compact, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    validate_command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "create_build.py"),
+        "validate-output",
+        "--run-id",
+        str(run["runContext"]["runId"]),
+        "--run-token",
+        str(run["runContext"]["runToken"]),
+    ]
+    first = subprocess.run(
+        validate_command,
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_review_env(run),
+    )
+    second = subprocess.run(
+        validate_command,
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_review_env(run),
+    )
+
+    first_result = json.loads(first.stdout)
+    assert first_result["status"] == "accepted"
+    assert first_result["validationOnly"] is True
+    assert first_result["attemptCount"] == 1
+    assert first_result["lifecycleEvidenceCoverage"] == {
+        "coverageStatus": "partial",
+        "evaluatedStages": ["maps_entry"],
+        "textOnlyStages": ["campaign_late"],
+        "evaluatedLevel": 68,
+        "sourceSnapshotId": "generation:test:snapshot",
+    }
+    assert json.loads(second.stdout)["status"] == "accepted"
+    assert not Path(str(run["reviewResultFile"])).exists()
+    assert not (Path(str(run["agentOutputFile"])).parent / "review-consumed").exists()
+
+    review_command = _review_command(run)
+    review_command.insert(3, "--compact")
+    reviewed = subprocess.run(
+        review_command,
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_review_env(run),
+    )
+    reviewed_result = json.loads(reviewed.stdout)
+    assert reviewed_result["status"] == "accepted"
+    assert reviewed_result["validationOnly"] is False
+    assert Path(str(run["reviewResultFile"])).is_file()
+    assert "humanReviewPacket" not in reviewed_result
+
+
+def test_raw_agent_output_is_scanned_before_trusted_fields_are_hydrated(tmp_path):
+    run = _start_run(tmp_path)
+    payload = agent_submission_payload()
+    _bind_submission_to_run(payload, run)
+    _attach_trusted_evaluation(payload, run)
+    payload["transientBuildState"]["safeSummary"] = {
+        "rawXml": "<PathOfBuilding><Build /></PathOfBuilding>"
+    }
+    Path(str(run["agentOutputFile"])).write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        _review_command(run),
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_review_env(run),
+    )
+
+    assert completed.returncode == 1
+    assert json.loads(completed.stdout)["errorCode"] == "copy_safety_violation"
+
+
+def test_compact_attempt_rejects_conflicting_trusted_field_aliases(tmp_path):
+    run = _start_run(tmp_path)
+    payload = agent_submission_payload()
+    _bind_submission_to_run(payload, run)
+    _attach_trusted_evaluation(payload, run)
+    compact = _compact_submission(payload, run)
+    attempt = compact["generationAttempts"][0]
+    attempt["transientBuildState"] = payload["transientBuildState"]
+    attempt["transient_build_state"] = {
+        **payload["transientBuildState"],
+        "sourceHash": "tampered-hash",
+    }
+    Path(str(run["agentOutputFile"])).write_text(
+        json.dumps(compact, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        _review_command(run),
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_review_env(run),
+    )
+
+    assert completed.returncode == 1
+    assert json.loads(completed.stdout)["errorCode"] == "invalid_schema"
 
 
 def test_create_build_review_packet_cli_requires_trusted_evaluation(tmp_path):
@@ -314,6 +498,7 @@ def test_create_build_review_packet_cli_wraps_packet_consistency_errors(tmp_path
     run = _start_run(tmp_path)
     payload = agent_submission_payload()
     _bind_submission_to_run(payload, run)
+    _attach_trusted_evaluation(payload, run)
     payload["prototypeBuildCandidate"]["prompt_ref"] = "prompt:other"
     submission_file = Path(str(run["agentOutputFile"]))
     submission_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -332,11 +517,13 @@ def test_create_build_review_packet_cli_wraps_packet_consistency_errors(tmp_path
     assert completed.returncode == 1
     assert payload["status"] == "rejected"
     assert payload["errorCode"] == "invalid_schema"
+    assert payload["caveats"] == ["input: Value error, candidate prompt_ref must match prompt_id"]
     assert "Traceback" not in completed.stderr
 
 
 def test_create_build_review_packet_cli_wraps_unreadable_file_as_safe_error(tmp_path):
     run = _start_run(tmp_path)
+    Path(str(run["agentOutputFile"])).unlink()
 
     completed = subprocess.run(
         _review_command(run),
@@ -384,6 +571,7 @@ def test_create_build_review_packet_cli_rejects_file_outside_current_run(tmp_pat
     _bind_submission_to_run(payload, run)
     old_file = tmp_path / "old_agent_output.json"
     old_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    Path(str(run["agentOutputFile"])).unlink()
 
     completed = subprocess.run(
         _review_command(run),
@@ -553,6 +741,7 @@ def test_create_build_review_packet_cli_wraps_invalid_feedback_collection(tmp_pa
     run = _start_run(tmp_path)
     payload = agent_submission_payload()
     _bind_submission_to_run(payload, run)
+    _attach_trusted_evaluation(payload, run)
     payload["toolFeedbackEvents"] = None
     Path(str(run["agentOutputFile"])).write_text(
         json.dumps(payload, ensure_ascii=False),

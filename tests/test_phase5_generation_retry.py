@@ -389,11 +389,77 @@ def test_run_store_keeps_three_immutable_attempt_receipts(tmp_path: Path):
 
     receipts = run_store.read_trusted_evaluations(bound)
     assert [receipt["attemptIndex"] for receipt in receipts] == [0, 1, 2]
+    assert [
+        receipt["attemptIndex"] for receipt in run_store.read_trusted_evaluations_strict(bound)
+    ] == [0, 1, 2]
     assert (
         json.loads(bound.trusted_evaluation_path.read_text(encoding="utf-8"))["attemptIndex"] == 2
     )
     with pytest.raises(run_store.RunStoreError, match="retry_limit_reached"):
         run_store.write_trusted_evaluation(bound, receipt)
+
+
+def test_strict_receipt_reader_rejects_index_gap_and_latest_mismatch(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    bound = run_store.BoundRun(
+        run_id="00000000-0000-0000-0000-000000000002",
+        run_dir=run_dir,
+        manifest={},
+    )
+    version = _version("memory:test")
+    for index in range(2):
+        snapshot = f"generation:strict:{index}"
+        assert (
+            run_store.write_trusted_evaluation(
+                bound,
+                {
+                    "candidateId": f"candidate:{index}",
+                    "transientBuildState": _state(snapshot, f"strict-{index}", version),
+                    "judgeAdvisoryReport": _judge(
+                        snapshot,
+                        f"strict-{index}",
+                        version,
+                        passed=True,
+                        score=0.5,
+                    ),
+                },
+            )
+            == index
+        )
+
+    attempt_one = bound.trusted_evaluations_dir / "attempt-1.json"
+    saved_attempt_one = attempt_one.read_text(encoding="utf-8")
+    (bound.trusted_evaluations_dir / "attempt-0.json").unlink()
+    with pytest.raises(run_store.RunStoreError, match="trusted_attempt_gap"):
+        run_store.read_trusted_evaluations_strict(bound)
+
+    # Restore a continuous chain, then prove the latest pointer cannot diverge from it.
+    attempt_zero_payload = json.loads(saved_attempt_one)
+    attempt_zero_payload["attemptIndex"] = 0
+    attempt_zero_payload["candidateId"] = "candidate:0"
+    (bound.trusted_evaluations_dir / "attempt-0.json").write_text(
+        json.dumps(attempt_zero_payload),
+        encoding="utf-8",
+    )
+    bound.trusted_evaluation_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(run_store.RunStoreError, match="trusted_latest_mismatch"):
+        run_store.read_trusted_evaluations_strict(bound)
+    with pytest.raises(run_store.RunStoreError, match="trusted_latest_mismatch"):
+        run_store.write_trusted_evaluation(
+            bound,
+            {
+                "candidateId": "candidate:next",
+                "transientBuildState": _state("generation:strict:next", "strict-next", version),
+                "judgeAdvisoryReport": _judge(
+                    "generation:strict:next",
+                    "strict-next",
+                    version,
+                    passed=True,
+                    score=0.6,
+                ),
+            },
+        )
 
 
 def test_no_memory_retry_cli_validates_all_attempt_receipts(tmp_path: Path):

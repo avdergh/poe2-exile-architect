@@ -6,7 +6,7 @@ import re
 import hashlib
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from server.knowledge import copy_safety
 
@@ -18,9 +18,17 @@ LIFECYCLE_STAGE = Literal[
     "campaign_mid",
     "campaign_late",
     "maps_entry",
+    "endgame_budget",
+    "endgame_final",
+    # Legacy Phase 5 spellings remain accepted at the input boundary and are normalized below.
     "budget_endgame",
     "final_endgame",
 ]
+
+LIFECYCLE_STAGE_ALIASES = {
+    "budget_endgame": "endgame_budget",
+    "final_endgame": "endgame_final",
+}
 
 HIDDEN_REASONING_FIELDS = {
     "hidden_chain_of_thought",
@@ -95,6 +103,11 @@ class AgentRefinedBuildPrompt(VersionedSafeModel):
     default_assumptions: list[str] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
     unresolved_items: list[str] = Field(default_factory=list)
+
+    @field_validator("current_output_stages", "target_lifecycle_stages", mode="before")
+    @classmethod
+    def _normalize_stage_names(cls, value: Any) -> Any:
+        return normalize_lifecycle_stages(value)
 
     @model_validator(mode="after")
     def _stage_contract_is_valid(self) -> "AgentRefinedBuildPrompt":
@@ -216,6 +229,11 @@ class PrototypeBuildCandidate(VersionedSafeModel):
     research_memory_use: ResearchMemoryUse | None = None
     rationale_summary: str = Field(min_length=1)
 
+    @field_validator("current_output_stages", "target_lifecycle_stages", mode="before")
+    @classmethod
+    def _normalize_stage_names(cls, value: Any) -> Any:
+        return normalize_lifecycle_stages(value)
+
     @model_validator(mode="after")
     def _candidate_contract_is_valid(self) -> "PrototypeBuildCandidate":
         _require_stage_contract(self.current_output_stages, self.target_lifecycle_stages)
@@ -231,11 +249,11 @@ class PrototypeBuildCandidate(VersionedSafeModel):
                 raise ValueError(
                     "research_memory_use query refs must match query_research_memory tool references"
                 )
-            required_memory_refs = set(usage.dedupe_query_refs) | set(usage.source_refs())
-            if not required_memory_refs.issubset(set(self.memory_references)):
-                raise ValueError(
-                    "memory_references must include research query and recalled item references"
-                )
+            # This list is a denormalized review convenience. The typed usage object remains the
+            # authority, so derive its complete trace set instead of asking the Agent to copy it.
+            self.memory_references = _dedupe_strings(
+                [*self.memory_references, *usage.dedupe_query_refs, *usage.source_refs()]
+            )
             if self.version_context.research_memory_ref not in usage.dedupe_query_refs:
                 raise ValueError(
                     "version_context research_memory_ref must identify a recorded memory query"
@@ -335,6 +353,23 @@ class JudgeScoreVector(StrictModel):
     mobility: JudgeScoreDimension
 
 
+class JudgeOffenseEvidence(StrictModel):
+    raw_dps: float = Field(ge=0.0)
+    effective_dps: float = Field(ge=0.0)
+    direct_dps: float = Field(default=0.0, ge=0.0)
+    full_dps: float = Field(default=0.0, ge=0.0)
+    source_metric: str = Field(min_length=1)
+    evidence_level: Literal["strong", "limited", "none", "unknown"]
+    metric_status: Literal["available", "unavailable"]
+    observed_value: float = Field(ge=0.0, le=1.0)
+    floor_progress: float = Field(ge=0.0, le=1.0)
+    floor_progress_credit: float = Field(ge=0.0, le=1.0)
+    floor_status: Literal["met", "missed", "unverified", "unavailable"]
+    delivery_evidence_status: Literal["established", "limited", "unavailable"]
+    score_confidence_factor: float = Field(ge=0.0, le=1.0)
+    score_policy: str = Field(min_length=1)
+
+
 class JudgeAdvisoryReport(StrictModel):
     report_id: str = Field(min_length=1)
     status: Literal["evaluated", "not_evaluated", "error"]
@@ -344,11 +379,13 @@ class JudgeAdvisoryReport(StrictModel):
     caveats: list[str] = Field(default_factory=list)
     aggregate_score: float | None = Field(default=None, ge=0.0, le=1.0)
     reward_strength: Literal["strong", "limited", "none", "unknown"] = "unknown"
+    reward_limit_reasons: list[str] = Field(default_factory=list)
     evaluated_snapshot_id: str | None = None
     evaluated_source_hash: str | None = None
     passed: bool | None = None
     quality_band: str | None = None
     score_vector: JudgeScoreVector | None = None
+    offense_evidence: JudgeOffenseEvidence | None = None
     modelability_status: str | None = None
     score_applicability: Literal["applicable", "unavailable", "unknown"] = "unknown"
     level_band: str | None = None
@@ -399,6 +436,7 @@ class JudgeAdvisoryReport(StrictModel):
                     self.passed,
                     self.quality_band,
                     self.score_vector,
+                    self.offense_evidence,
                     self.modelability_status,
                     None if self.score_applicability == "unknown" else self.score_applicability,
                     self.level_band,
@@ -434,6 +472,8 @@ class ToolFeedbackEvent(StrictModel):
     event_id: str = Field(min_length=1)
     feedback_type: Literal[
         "judge_modelability_gap",
+        "judge_offense_evidence_gap",
+        "judge_score_review_required",
         "query_gap",
         "copy_safety_gap",
         "pob_state_gap",
@@ -459,6 +499,8 @@ class FailureAuditSummary(VersionedSafeModel):
     classification: Literal[
         "true_build_failure",
         "judge_modelability_gap",
+        "judge_offense_evidence_gap",
+        "judge_score_review_required",
         "selected_skill_suspect",
         "tool_or_data_gap",
         "mixed",
@@ -527,6 +569,14 @@ class GenerationAttemptRecord(StrictModel):
         return self
 
 
+class LifecycleEvidenceCoverage(StrictModel):
+    coverage_status: Literal["complete", "partial"]
+    evaluated_stages: list[str] = Field(max_length=1)
+    text_only_stages: list[str]
+    evaluated_level: int | None = Field(default=None, ge=1)
+    source_snapshot_id: str | None = None
+
+
 class HumanReviewPacket(StrictModel):
     packet_id: str = Field(min_length=1)
     agent_refined_build_prompt: AgentRefinedBuildPrompt
@@ -539,6 +589,7 @@ class HumanReviewPacket(StrictModel):
         default_factory=list,
         max_length=3,
     )
+    lifecycle_evidence_coverage: LifecycleEvidenceCoverage
     human_review_fields: dict[str, str] = Field(default_factory=dict)
     recommended_next_action: Literal[
         "ready_for_human_review",
@@ -714,7 +765,8 @@ def scan_payload(payload: Any) -> Any:
 def schema_error(exc: ValidationError) -> dict[str, Any]:
     first = exc.errors()[0] if exc.errors() else {}
     loc = ".".join(str(part) for part in first.get("loc", ())) or "input"
-    return rejected("invalid_schema", caveats=[f"Validation failed at {loc}."])
+    message = " ".join(str(first.get("msg") or "validation failed").split())[:160]
+    return rejected("invalid_schema", caveats=[f"{loc}: {message}"])
 
 
 def rejected(error_code: str, caveats: list[str] | None = None) -> dict[str, Any]:
@@ -919,6 +971,20 @@ def _safe_path_segment(segment: str) -> str:
         digest = hashlib.sha256(segment.encode("utf-8")).hexdigest()[:12]
         return f"redacted-key:{digest}"
     return segment
+
+
+def normalize_lifecycle_stages(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return [LIFECYCLE_STAGE_ALIASES.get(str(stage), stage) for stage in value]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    output: list[str] = []
+    for value in values:
+        if value not in output:
+            output.append(value)
+    return output
 
 
 def _camel_to_snake_name(value: str) -> str:

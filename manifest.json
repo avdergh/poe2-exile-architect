@@ -80,6 +80,7 @@
     { "name": "query_research_memory", "description": "Query sanitized build-design memory and return safe evidence references." },
     { "name": "graph_tool_query", "description": "Run a bounded typed graph query without exposing raw graph query languages." },
     { "name": "suggest_build_lifecycle", "description": "Suggest a lifecycle route and transition gates for a build goal." },
+    { "name": "inspect_generation_preflight", "description": "Preflight the active generated build before consuming a dedicated Judge attempt." },
     { "name": "evaluate_generation_candidate", "description": "Snapshot and Judge an Agent-assembled active build, bound to a generation run." },
     { "name": "save_final_build_artifact", "description": "Save one final passing Agent-created PoB artifact after trusted Judge verification." },
     { "name": "list_final_build_artifacts", "description": "List safe metadata for saved final PoB artifacts." },

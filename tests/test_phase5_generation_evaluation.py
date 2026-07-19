@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import evaluation
+from server.generation import evaluation, run_store
 
 
 BUILD_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -67,9 +67,17 @@ def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
 class _ActiveEngine:
     def __init__(self, xml: str = BUILD_XML) -> None:
         self.xml = xml
+        self.get_xml_calls = 0
 
     def get_xml(self) -> str:
+        self.get_xml_calls += 1
         return self.xml
+
+    def get_build(self) -> dict[str, object]:
+        return {"class": "Ranger", "level": 68, "gear": {}}
+
+    def list_jewel_sockets(self) -> dict[str, object]:
+        return {"sockets": []}
 
 
 class _JudgeEngine:
@@ -148,7 +156,28 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
         engine = factory()
         assert engine.loaded == BUILD_XML
         assert source_context == "generated_candidate"
-        return _judge_result(snapshot_id)
+        result = _judge_result(snapshot_id)
+        result["rewardLimitReasons"] = ["non_endgame_scope"]
+        result["scoreBreakdown"] = {
+            "offense": {
+                "rawValue": 42_000,
+                "rawDps": 42_000,
+                "effectiveDps": 42_000,
+                "directDps": 42_000,
+                "fullDps": 42_000,
+                "sourceMetricDetail": "TotalDPS",
+                "evidenceLevel": "strong",
+                "metricStatus": "available",
+                "observedValue": 0.0,
+                "floorProgress": 0.84,
+                "floorProgressCredit": 0.0672,
+                "floorStatus": "missed",
+                "deliveryEvidenceStatus": "limited",
+                "scoreConfidenceFactor": 1.0,
+                "scorePolicy": "limited_evidence_floor_progress_credit",
+            }
+        }
+        return result
 
     monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
 
@@ -181,6 +210,23 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert result["judgeAdvisoryReport"]["qualityWarnings"] == []
     assert result["judgeAdvisoryReport"]["scoreApplicability"] == "applicable"
     assert result["judgeAdvisoryReport"]["rewardStrength"] == "limited"
+    assert result["judgeAdvisoryReport"]["rewardLimitReasons"] == ["non_endgame_scope"]
+    assert result["judgeAdvisoryReport"]["offenseEvidence"] == {
+        "rawDps": 42_000.0,
+        "effectiveDps": 42_000.0,
+        "directDps": 42_000.0,
+        "fullDps": 42_000.0,
+        "sourceMetric": "TotalDPS",
+        "evidenceLevel": "strong",
+        "metricStatus": "available",
+        "observedValue": 0.0,
+        "floorProgress": 0.84,
+        "floorProgressCredit": 0.0672,
+        "floorStatus": "missed",
+        "deliveryEvidenceStatus": "limited",
+        "scoreConfidenceFactor": 1.0,
+        "scorePolicy": "limited_evidence_floor_progress_credit",
+    }
     assert result["judgeAdvisoryReport"]["selectedSkill"] == {
         "skillName": "Lightning Arrow",
         "groupIndex": 1,
@@ -232,8 +278,44 @@ def test_evaluate_generation_candidate_rejects_snapshot_without_main_skill(tmp_p
     )
 
     assert result["status"] == "rejected"
-    assert result["errorCode"] == "missing_active_skill_group"
+    assert result["errorCode"] == "generation_preflight_failed"
+    assert result["preflight"]["blockingIssues"] == ["missing_active_skill_group"]
     assert not (run_dir / "trusted-evaluation.json").exists()
+
+
+def test_generation_preflight_blocks_duplicate_group_without_consuming_attempt(
+    tmp_path, monkeypatch
+):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    duplicate = BUILD_XML.replace(
+        "</SkillSet>",
+        """<Skill enabled="true">
+        <Gem nameSpec="Lightning Arrow" gemId="Metadata/Items/Gem/SkillGemLightningArrow" skillId="LightningArrowPlayer" />
+        <Gem nameSpec="Martial Tempo" gemId="Metadata/Items/Gems/SupportGemMartialTempo" skillId="SupportMartialTempoPlayer" />
+      </Skill></SkillSet>""",
+    )
+    active = _ActiveEngine(duplicate)
+    factory_called = False
+
+    def factory():
+        nonlocal factory_called
+        factory_called = True
+        return _JudgeEngine()
+
+    result = evaluation.evaluate_generation_candidate(
+        active,
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:duplicate",
+        version_context=_version_context(),
+        engine_factory=factory,
+    )
+
+    assert result["errorCode"] == "generation_preflight_failed"
+    assert result["preflight"]["blockingIssues"] == ["duplicate_enabled_skill_group"]
+    assert active.get_xml_calls == 1
+    assert factory_called is False
+    assert not (run_dir / "trusted-evaluations").exists()
 
 
 def test_snapshot_roles_only_follow_main_socket_group():
@@ -309,21 +391,52 @@ def test_evaluate_generation_candidate_rejects_fourth_attempt_before_snapshot(
     tmp_path, monkeypatch
 ):
     run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
-    receipts_dir = run_dir / "trusted-evaluations"
-    receipts_dir.mkdir()
+    bound = run_store.BoundRun(run_id=run_id, run_dir=run_dir, manifest={})
+    version = _version_context()
     for index in range(3):
-        (receipts_dir / f"attempt-{index}.json").write_text(
-            json.dumps(
+        snapshot = f"generation:test:{index}"
+        source_hash = f"source-hash-{index}"
+        assert (
+            run_store.write_trusted_evaluation(
+                bound,
                 {
-                    "schemaVersion": 1,
-                    "runId": run_id,
-                    "attemptIndex": index,
                     "candidateId": f"candidate:{index}",
-                    "transientBuildState": {},
-                    "judgeAdvisoryReport": {},
-                }
-            ),
-            encoding="utf-8",
+                    "transientBuildState": {
+                        "status": "available",
+                        "snapshotId": snapshot,
+                        "sourceHash": source_hash,
+                        "safeSummary": {},
+                        "testedSkillGroups": [
+                            {
+                                "groupIndex": 1,
+                                "role": "pob_main_group",
+                                "activeSkill": "Lightning Arrow",
+                                "activeSkills": ["Lightning Arrow"],
+                                "activeSkillCount": 1,
+                                "supports": [],
+                                "enabled": True,
+                            }
+                        ],
+                        "missingReasons": [],
+                        "versionContext": version,
+                        "noRawMaterial": True,
+                    },
+                    "judgeAdvisoryReport": {
+                        "reportId": f"judge:{snapshot}",
+                        "status": "evaluated",
+                        "hardFailures": [],
+                        "caveats": [],
+                        "aggregateScore": 0.5,
+                        "rewardStrength": "limited",
+                        "evaluatedSnapshotId": snapshot,
+                        "evaluatedSourceHash": source_hash,
+                        "passed": True,
+                        "versionContext": version,
+                        "noRawMaterial": True,
+                    },
+                },
+            )
+            == index
         )
 
     class SnapshotMustNotRun:
@@ -343,14 +456,8 @@ def test_evaluate_generation_candidate_rejects_fourth_attempt_before_snapshot(
     assert result["errorCode"] == "retry_limit_reached"
 
 
-def test_evaluate_generation_candidate_reports_multi_active_group_and_attribute_shortfall(
-    tmp_path, monkeypatch
-):
+def test_evaluate_generation_candidate_reports_attribute_shortfall(tmp_path, monkeypatch):
     run_id, token, _ = _bound_run(tmp_path, monkeypatch)
-    xml = BUILD_XML.replace(
-        '<Gem nameSpec="Martial Tempo" gemId="Metadata/Items/Gems/SupportGemMartialTempo" skillId="SupportMartialTempoPlayer" />',
-        '<Gem nameSpec="Freezing Salvo" gemId="Metadata/Items/Gem/SkillGemFreezingSalvo" skillId="FreezingSalvoPlayer" />',
-    )
 
     class ShortfallJudgeEngine(_JudgeEngine):
         def get_build(self) -> dict[str, object]:
@@ -358,11 +465,11 @@ def test_evaluate_generation_candidate_reports_multi_active_group_and_attribute_
             build["judgeSelectedSkill"] = {
                 "skillName": "Lightning Arrow",
                 "groupIndex": 1,
-                "activeSkillCount": 2,
+                "activeSkillCount": 1,
             }
             build["judgeSelectedSkillGroup"] = [
                 {"name": "Lightning Arrow", "isSupport": False},
-                {"name": "Freezing Salvo", "isSupport": False},
+                {"name": "Martial Tempo", "isSupport": True},
             ]
             build["attributes"] = {"strength": 20, "dexterity": 100, "intelligence": 40}
             build["attributeRequirements"] = {
@@ -378,7 +485,7 @@ def test_evaluate_generation_candidate_reports_multi_active_group_and_attribute_
         result.update(
             {
                 "pass": False,
-                "hardFailures": ["invalid_socket_setup", "attribute_requirement_unmet"],
+                "hardFailures": ["attribute_requirement_unmet"],
                 "qualityBand": "invalid",
                 "aggregateScore": {"value": 0.0},
             }
@@ -387,7 +494,7 @@ def test_evaluate_generation_candidate_reports_multi_active_group_and_attribute_
 
     monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
     result = evaluation.evaluate_generation_candidate(
-        _ActiveEngine(xml),
+        _ActiveEngine(),
         run_id=run_id,
         run_token=token,
         candidate_id="candidate:test:diagnostics",
@@ -396,12 +503,9 @@ def test_evaluate_generation_candidate_reports_multi_active_group_and_attribute_
     )
 
     report = result["judgeAdvisoryReport"]
-    assert report["selectedSkill"]["activeSkillCount"] == 2
-    assert report["skillGroupDiagnostics"][0]["activeSkills"] == [
-        "Lightning Arrow",
-        "Freezing Salvo",
-    ]
-    assert report["skillGroupDiagnostics"][0]["singleActiveSkillValid"] is False
+    assert report["selectedSkill"]["activeSkillCount"] == 1
+    assert report["skillGroupDiagnostics"][0]["activeSkills"] == ["Lightning Arrow"]
+    assert report["skillGroupDiagnostics"][0]["singleActiveSkillValid"] is True
     assert report["attributeShortfalls"] == [
         {"attribute": "strength", "current": 20.0, "required": 35.0, "shortfall": 15.0},
         {

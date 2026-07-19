@@ -269,12 +269,36 @@ def test_research_contract_calibration_is_backed_up_and_idempotent(tmp_path: Pat
             "component_mentions": mentions,
             "source_case_refs": [source_ref],
             "safe_evidence_refs": ["evidence:fixture"],
-            "typed_payload": {"familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"]},
+            "typed_payload": {
+                "familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"],
+                "supportPackages": [
+                    {
+                        "skillKey": "skill:MetaCastOnCritPlayer",
+                        "supportKeys": [key for _name, key in support_rows],
+                    }
+                ],
+            },
             "ascendancy_key": "ascendancy:sorceress:stormweaver",
         }
     )
     skill_result = service.propose_deep_research_records(skill_payload)
     assert skill_result["status"] == "accepted", skill_result
+    # The public proposal contract now rejects this historical shape. Seed a valid record first,
+    # then remove the field in storage so the maintenance test still exercises a true legacy row.
+    legacy_con = mature_learning.connect(db_path)
+    try:
+        legacy_con.execute(
+            """
+            UPDATE deep_research_records
+            SET typed_payload = ?
+            WHERE record_kind = 'skill_package'
+              AND status = 'valid'
+            """,
+            (json.dumps({"familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"]}),),
+        )
+        legacy_con.commit()
+    finally:
+        legacy_con.close()
 
     mutated_payload = _deep_payload()
     mutated = mutated_payload["deep_research_records"][0]

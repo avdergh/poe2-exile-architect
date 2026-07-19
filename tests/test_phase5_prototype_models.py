@@ -186,6 +186,21 @@ def test_candidate_rejects_untraceable_research_memory_decision():
     assert result["errorCode"] == "invalid_schema"
 
 
+def test_candidate_derives_denormalized_memory_references_from_typed_usage():
+    payload = agent_submission_payload()
+    payload["prototypeBuildCandidate"]["memory_references"] = []
+
+    result = prototype.validate_and_build_human_review_packet(payload)
+
+    assert result["status"] == "accepted"
+    assert result["humanReviewPacket"]["prototypeBuildCandidate"]["memoryReferences"] == [
+        "dq-0123456789abcdef",
+        "bf-1234567890abcdef",
+        "drr-1234567890abcdef",
+        "bdp-1234567890abcdef",
+    ]
+
+
 def test_not_evaluated_judge_requires_clear_missing_state_reason():
     payload = agent_submission_payload()
     payload["transientBuildState"]["missing_reasons"] = []
@@ -338,8 +353,8 @@ def test_public_camel_case_agent_payload_is_accepted():
     assert packet["prototypeBuildCandidate"]["targetLifecycleStages"] == [
         "campaign_late",
         "maps_entry",
-        "budget_endgame",
-        "final_endgame",
+        "endgame_budget",
+        "endgame_final",
     ]
 
 

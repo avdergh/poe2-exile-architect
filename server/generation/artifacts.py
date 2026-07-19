@@ -64,7 +64,10 @@ def save_final_build_artifact(
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
-    receipts = run_store.read_trusted_evaluations(bound_run)
+    try:
+        receipts = run_store.read_trusted_evaluations_strict(bound_run)
+    except run_store.RunStoreError as exc:
+        return models.rejected(exc.code)
     if attempt_index < 0 or attempt_index >= len(receipts):
         return models.rejected("trusted_evaluation_not_found")
     if attempt_index != len(receipts) - 1:

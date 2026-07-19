@@ -79,7 +79,9 @@ macOS / Linux：
 自然语言需求转成更具体的设计提示词或最小 BuildBrief 摘要，自己按需查询项目工具，并在活动
 PoB 中搭建候选 BD。程序先通过 `scripts/create_build.py start-run` 创建本次独立运行，再由
 `evaluate_generation_candidate` 捕获构筑并运行 Phase 1 Judge，最后由
-`scripts/create_build.py review-packet` 核对可信评估结果并整理人工验收包。程序不接管 BD 补全，
+`inspect_generation_preflight` 先检查活动构筑，再由 `scripts/create_build.py validate-output` 做
+非消费校验、`scripts/create_build.py review-packet --compact` 核对可信评估结果并整理人工验收包。
+程序不接管 BD 补全，
 Judge 结果也仍需人工判断。
 
 示例：
@@ -163,7 +165,8 @@ skill 内部使用这个产品化脚本。普通 Codex 桌面用户不需要手�
 .\.tools\uv\uv.exe run python scripts/research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
 .\.tools\uv\uv.exe run python scripts/research_mature_builds.py status --output-dir <runDir>
 .\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode memory_assisted
-.\.tools\uv\uv.exe run python scripts\create_build.py review-packet --run-id <runId> --run-token <runToken>
+.\.tools\uv\uv.exe run python scripts\create_build.py validate-output --run-id <runId> --run-token <runToken>
+.\.tools\uv\uv.exe run python scripts\create_build.py review-packet --compact --run-id <runId> --run-token <runToken>
 ```
 
 macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。

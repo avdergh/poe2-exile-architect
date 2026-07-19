@@ -72,12 +72,16 @@ def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
         out["scoreReviewReasons"] = list(unresolved)
         if not unresolved:
             out["scoreReviewNeeded"] = False
-            out["finalClassification"] = "judge_unsolved_modelability_gap"
+            out["finalClassification"] = (
+                "judge_offense_evidence_gap"
+                if _has_offense_evidence_gap(out)
+                else "judge_pass_and_scores_explained"
+            )
         elif _explained_as_real_low(out, unresolved):
             out["scoreReviewNeeded"] = False
             out["finalClassification"] = "judge_pass_and_scores_explained"
         else:
-            out["finalClassification"] = "judge_unsolved_modelability_gap"
+            out["finalClassification"] = "judge_score_review_required"
     else:
         out["finalClassification"] = "judge_pass_and_scores_explained"
     return out
@@ -119,11 +123,21 @@ def _offense_gap_explained(sample: dict[str, Any]) -> bool:
     evidence = str(offense.get("evidenceLevel") or "")
     provenance = str(offense.get("provenance") or "")
     caveats = set(sample.get("caveats") or [])
+    delivery = str(offense.get("deliveryEvidenceStatus") or "")
     return evidence == "limited" and (
-        provenance in {"isolated_full_dps_rollup", "minion_pob_output"}
+        delivery == "limited"
+        or provenance in {"isolated_full_dps_rollup", "minion_pob_output"}
         or "limited_offense_floor_unverified_caveat" in caveats
         or "full_dps_rollup_caveat" in caveats
     )
+
+
+def _has_offense_evidence_gap(sample: dict[str, Any]) -> bool:
+    offense = (sample.get("scoreBreakdown") or {}).get("offense") or {}
+    evidence = str(offense.get("evidenceLevel") or "")
+    delivery = str(offense.get("deliveryEvidenceStatus") or "")
+    value = float(offense.get("value") or 0.0)
+    return value < 0.5 and (evidence == "limited" or delivery == "limited")
 
 
 def _defense_gap_explained(sample: dict[str, Any]) -> bool:

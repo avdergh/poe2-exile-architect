@@ -151,7 +151,10 @@ def check_main_skill_group(
     known = known_supports or DEFAULT_KNOWN_SUPPORTS_V1
     gems = list(group or [])
     failures: list[str] = []
-    caveats = ["support_conflict_unverified_caveat"]
+    # Structural checks below do not prove support applicability, but an unconditional caveat on
+    # every valid group is not actionable. Concrete unknown/duplicate/disabled states are reported
+    # by their specific failures or PoB readback diagnostics.
+    caveats: list[str] = []
 
     active = [g for g in gems if not _is_support(g, known)]
     supports = [g for g in gems if _is_support(g, known)]

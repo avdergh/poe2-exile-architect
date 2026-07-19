@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v4"
-WEIGHT_PROFILE = "judge_v4_stage_aware"
+EVALUATOR_VERSION = "judge_phase1_v5"
+WEIGHT_PROFILE = "judge_v5_evidence_separated"
 
 LIMITED_REWARD_CAVEATS = {
     "lower_bound_dps_caveat",

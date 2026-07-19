@@ -174,3 +174,22 @@ def test_external_budget_anomaly_caveat_forces_limited_reward():
     assert result["rewardWinner"] == "unknown"
     assert result["comparisonStatus"] == "limited_evidence"
     assert result["rewardStrength"] == "limited"
+
+
+def test_explicit_reward_limit_reason_prevents_reward_winner_without_caveat():
+    candidate = _evaluation(
+        "candidate",
+        rewardLimitReasons=["non_endgame_scope"],
+        aggregateScore={"value": 0.8, "weightProfile": "judge_v5_evidence_separated"},
+    )
+    reference = _evaluation(
+        "reference",
+        aggregateScore={"value": 0.6, "weightProfile": "judge_v5_evidence_separated"},
+    )
+
+    result = comparison.compare_evaluations(candidate, reference)
+
+    assert result["selectionWinner"] == "candidate"
+    assert result["rewardWinner"] == "unknown"
+    assert result["comparisonStatus"] == "limited_evidence"
+    assert result["rewardStrength"] == "limited"

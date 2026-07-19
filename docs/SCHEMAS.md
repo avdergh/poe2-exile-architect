@@ -125,7 +125,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - `JudgeAdvisoryReport`：Phase 1 Judge 生成的参考评估。它表达硬阻断、分数、证据等级、可建模
   注意事项和失败原因；可信报告还应提供 Judge 实际选择的技能、选中技能组的安全插槽诊断和
   属性缺口摘要，使 Agent 与人工能定位硬阻断。条件性内部效果作为 supplemental component 单独
-  记录，不能因没有普通宝石插槽被判非法。它不是机制真值，也不替代 Agent 的失败核验。
+  记录，不能因没有普通宝石插槽被判非法。`offenseEvidence` 保存脱敏的 raw/effective DPS、
+  direct/full 诊断、阶段 floor 进度、evidence level 与 delivery status；`rewardLimitReasons`
+  显式说明非终局范围、有限证据或 partial modelability 为什么不能产生 strong reward。它不是
+  机制真值，也不替代 Agent 的失败核验。
 - P5.1 人工验收包里的 `JudgeAdvisoryReport` 只保留安全参考信号：Judge 出错时不能携带分数
   或奖励强度；成功评估的分数必须在 0 到 1 之间，并且必须带 `evaluatedSnapshotId` 和
   `evaluatedSourceHash` 以绑定对应 `TransientBuildStateRef`；P5.1 不透出 `strong` 奖励信号，
@@ -137,14 +140,18 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   不表示调用者传入的赛季、补丁、图或记忆版本已经获得程序签名。
 - `HumanReviewPacket`：供人工验收使用的安全报告。至少包含用户需求摘要、Agent 改写后的提示词
   或 `BuildBrief` 摘要、候选 BD 摘要、使用过的查询和工具引用、Judge 状态、硬阻断、注意事项、
-  人工评分字段和是否建议进入下一阶段。
+  人工评分字段和是否建议进入下一阶段。`lifecycleEvidenceCoverage` 只根据最终可信 snapshot
+  标出至多一个 `evaluatedStage`，其余候选声明阶段进入 `textOnlyStages`，不得把一轮 Judge
+  误写成完整生命周期验证。
 - `ToolFeedbackEvent`：开发/验收反馈，用于记录 Judge/工具无法评估、误判、覆盖缺口或接口难用；
   它不自动调整 graph / memory 权重，不自动放宽安全边界，也不自动改变工具行为。
 - `FailureAuditSummary`：Agent 对某一轮 Judge 结果的可审查结论摘要，绑定本轮候选编号和快照编号，
   只记录失败分类、重试/停止/接受决定、计划改动、保留注意事项和停止原因；不能保存逐步推理。
 - `GenerationAttemptRecord`：同一个生成运行中的一轮不可变评估记录，包含本轮 Agent 候选安全
   摘要、可信临时状态引用、可信 Judge 报告和 `FailureAuditSummary`。轮次从 0 开始，最多为 2；
-  非最后一轮必须明确选择继续重试，最后一轮必须接受或说明停止原因。
+  非最后一轮必须明确选择继续重试，最后一轮必须接受或说明停止原因。Agent 文件可以只提交
+  attempt index、candidate 和 failure audit；helper 从连续、严格校验的本 run trusted receipts
+  补全 state/Judge。显式提交可信字段时仍必须逐字段匹配 receipt。
 - `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它只比较同一用户请求下的安全摘要、
   Judge 结果和人工可审查差异，不写奖励记忆，不做长期进化式学习。
 
@@ -183,6 +190,11 @@ P5.1 证据可信度边界：
 - 同一运行在最终验收前可以写入初始评估和最多两次重试评估。每轮可信凭据独立保存且不可覆盖，
   `trusted-evaluation.json` 只作为最新一轮兼容指针；最终 helper 必须逐轮核对 Agent 提交的
   `generationAttempts` 与可信凭据；
+- `start-run` 初始化已绑定 run/prompt/packet 的最小 `agent-output.json`；`validate-output` 可在不
+  消费运行的情况下重复执行 canonicalization、schema、domain 与 retry 校验；`review-packet
+  --compact` 仍原子写入完整 review result，只缩短 stdout；
+- canonicalization 前先扫描原始 Agent 文件，之后 fail-closed 校验 receipt 连续性、最新指针与
+  typed state/Judge，再补全可信字段并重新执行安全检查；不能用 hydration 隐藏原始危险字段；
 - 所有 schema 使用 strict typed models，不接受开放 `Dict[str, Any]` 作为持久合同；
 - 所有 durable artifact 必须带 version / freshness / snapshot context 和 no-raw-material safety
   flags；
@@ -235,7 +247,7 @@ P5.1 证据可信度边界：
 - aggregate score：必须包含 weight profile；当前 `judge_v4_stage_aware` 保留现有阶段权重：
   campaign 为 0.35/0.30/0.20/0.15，maps-entry 为 0.375/0.35/0.175/0.10，endgame 为
   0.40/0.40/0.15/0.05；
-- quality band：`invalid`、`barely_playable`、`entry_endgame`、`solid`、`strong`；
+- quality band：`invalid`、`barely_playable`、`prototype_only`、`entry_endgame`、`solid`、`strong`；
 - 四层结果合同：`hardFailures` 仅表示确定性非法并决定 legality pass；
   `playabilityFailures` 表示合法但严重不可玩短板；`qualityWarnings` 表示未达到推荐质量目标；
   `modelability` / `scoreApplicability` 表示 PoB 数值是否可用于结论；

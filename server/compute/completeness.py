@@ -34,10 +34,14 @@ _RUNE_RELEVANT_SLOTS = {
 }
 
 
-def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
+def inspect_build_completeness(
+    engine: PobEngine,
+    *,
+    snapshot_xml: str | None = None,
+) -> dict[str, Any]:
     """Describe omitted real-build systems without deciding the build on the Agent's behalf."""
     build = engine.get_build()
-    gear = equipped_item_metadata(engine.get_xml())
+    gear = equipped_item_metadata(snapshot_xml if snapshot_xml is not None else engine.get_xml())
     if not gear:
         fallback = build.get("gear") or {}
         gear = fallback if isinstance(fallback, dict) else {}

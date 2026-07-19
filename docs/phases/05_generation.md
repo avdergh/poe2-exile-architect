@@ -102,18 +102,26 @@ Agent 负责：
 
 1. 用户输入自然语言需求。
 2. Agent 判断是否需要追问；如果信息足够，生成更具体的设计提示词或最小 `BuildBrief`。
-3. Agent 调用 `scripts/create_build.py start-run` 建立本次运行凭据和唯一产物路径。
+3. Agent 调用 `scripts/create_build.py start-run` 建立本次运行凭据和唯一产物路径；helper 同时
+   初始化已绑定 run、packet 和 prompt 的最小 `agent-output.json` 骨架。
 4. Agent 按需查询研究记忆、图工具、语料库、机制说明、构筑原则和 PoB/计算工具，生成候选概要。
 5. Agent 串行使用现有 PoB/计算工具，把概要落实成真实活动构筑。该状态至少包含职业、升华、
    等级、主技能与辅助技能、其他技能组、装备、天赋和战斗配置，并能读出属性、抗性、Spirit 与
    资源状态。程序不替 Agent 自动补全这些内容。
-6. Agent 调用 `evaluate_generation_candidate`。程序捕获当前 PoB 的不可变快照，在独立 Judge
+6. Agent 先调用 `inspect_generation_preflight`。该工具检查 main group、单主动技能、重复 support、
+   完全重复的 enabled skill group 和 completeness；blocking issue 不应消耗 Judge attempt。
+7. Agent 调用 `evaluate_generation_candidate`。程序只捕获一次当前 PoB XML；预检与独立 Judge
+   共享这份不可变快照，在独立 Judge
    引擎中运行 Phase 1 Judge，只持久化清洗后的状态引用和评估报告，并将可信凭据绑定到本次
    `runId` 与候选编号。该凭据的可信范围是快照和 Judge 结果；版本上下文仍来自 Agent 本次
    freshness/图/记忆查询，不因写入该凭据而自动变成程序签名事实。
-7. `review-packet` 核对 Agent 文件与可信凭据，生成 `HumanReviewPacket`。缺少可信凭据、候选
-   不一致或评估结果被改写时拒绝验收。
-8. 人工判断候选是否值得继续推进。
+8. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
+   `validate-output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
+   candidate/audit 可以从末轮推导，`memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
+9. `review-packet --compact` 核对 Agent 文件与可信凭据，原子写入完整 `HumanReviewPacket`，仅把
+   stdout 缩短为最终 Judge、重试差值和生命周期证据覆盖。缺少可信凭据、候选不一致或评估结果
+   被改写时拒绝验收。
+10. 人工判断候选是否值得继续推进。
 
 P5.1 不追求：
 
@@ -135,6 +143,8 @@ P5.1 最小产物：
 - `HumanReviewPacket`：供人工验收使用的安全报告，至少包含用户需求摘要、Agent 改写后的
   生成提示词或 `BuildBrief` 摘要、候选 BD 摘要、使用过的查询和工具引用、Judge 状态、硬阻断、
   注意事项、人工评分字段和是否建议进入下一阶段；
+- `LifecycleEvidenceCoverage`：只从最终可信 state/Judge 推导至多一个数值验证阶段，并把候选
+  声明但没有独立 snapshot 的阶段列为 text-only；
 - `ToolFeedbackEvent`：记录 Judge/工具无法评估、误判或缺口。
 
 当前实现进度：
@@ -145,6 +155,10 @@ P5.1 最小产物：
 - `evaluate_generation_candidate` 捕获活动 PoB、运行独立 Judge、生成无原始 XML 的可信凭据。
   已完成
 - `review-packet` 强制核对本次可信凭据，不接受 Agent 自填或改写的 Judge 结果。已完成
+- trusted receipt canonicalization、非消费 `validate-output`、compact attempt 与 compact review。
+  已完成
+- Judge 前活动构筑预检与同一 XML snapshot 复用。已完成
+- Judge offense 观察值/阶段 floor/delivery evidence 拆分，以及显式 reward limit reasons。已完成
 - 主技能组识别、多主动技能组诊断、Judge 实际选择技能和属性缺口安全摘要。已完成
 - PoB 当前技能组、Judge 评分组件和条件性附加伤害组件分层；击杀爆炸不再误触发插槽非法。
   已完成

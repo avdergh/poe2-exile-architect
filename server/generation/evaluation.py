@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from server.compute.engine import PobEngine
 from server.judge import evaluator, runner, sample_audit
 
-from . import models, run_store
+from . import models, preflight, run_store
 
 
 def evaluate_generation_candidate(
@@ -43,12 +43,23 @@ def evaluate_generation_candidate(
         return _rejected("generation_evaluation_in_progress")
 
     try:
-        if len(run_store.read_trusted_evaluations(bound_run)) >= 3:
+        try:
+            existing_receipts = run_store.read_trusted_evaluations_strict(bound_run)
+        except run_store.RunStoreError as exc:
+            return _rejected(exc.code)
+        if len(existing_receipts) >= 3:
             return _rejected("retry_limit_reached")
         try:
             xml = active_engine.get_xml()
         except Exception:  # noqa: BLE001 - MCP response must not expose engine internals.
             return _rejected("active_build_snapshot_failed")
+
+        preflight_report = preflight.inspect_generation_snapshot(active_engine, xml)
+        if not preflight_report.get("readyForJudge"):
+            return {
+                **_rejected("generation_preflight_failed"),
+                "preflight": preflight_report,
+            }
 
         parsed = _parse_build_snapshot(xml)
         if parsed.get("errorCode"):
@@ -254,11 +265,15 @@ def _build_judge_report(
         caveats=[str(item) for item in result.get("caveats") or []],
         aggregate_score=max(0.0, min(1.0, aggregate)),
         reward_strength=reward_strength,
+        reward_limit_reasons=[str(item) for item in result.get("rewardLimitReasons") or []],
         evaluated_snapshot_id=snapshot_id,
         evaluated_source_hash=source_hash,
         passed=bool(result.get("pass")),
         quality_band=str(result.get("qualityBand") or "unknown"),
         score_vector=_safe_score_vector(result.get("scoreVector") or {}),
+        offense_evidence=_safe_offense_evidence(
+            (result.get("scoreBreakdown") or {}).get("offense") or {}
+        ),
         modelability_status=modelability_status,
         score_applicability=score_applicability,
         level_band=str(result.get("levelBand") or "unknown"),
@@ -274,6 +289,42 @@ def _build_judge_report(
         no_raw_material=True,
     )
     return report.model_dump(mode="json", by_alias=True)
+
+
+def _safe_offense_evidence(value: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    evidence_level = str(value.get("evidenceLevel") or "unknown")
+    if evidence_level not in {"strong", "limited", "none", "unknown"}:
+        evidence_level = "unknown"
+    metric_status = str(value.get("metricStatus") or "unavailable")
+    if metric_status not in {"available", "unavailable"}:
+        metric_status = "unavailable"
+    floor_status = str(value.get("floorStatus") or "unavailable")
+    if floor_status not in {"met", "missed", "unverified", "unavailable"}:
+        floor_status = "unavailable"
+    delivery_status = str(value.get("deliveryEvidenceStatus") or "unavailable")
+    if delivery_status not in {"established", "limited", "unavailable"}:
+        delivery_status = "unavailable"
+    source_metric = str(
+        value.get("sourceMetricDetail") or value.get("sourceMetric") or "unavailable"
+    )
+    return {
+        "rawDps": _nonnegative_float(value.get("rawDps") or value.get("rawValue")),
+        "effectiveDps": _nonnegative_float(value.get("effectiveDps") or value.get("rawValue")),
+        "directDps": _nonnegative_float(value.get("directDps")),
+        "fullDps": _nonnegative_float(value.get("fullDps")),
+        "sourceMetric": source_metric,
+        "evidenceLevel": evidence_level,
+        "metricStatus": metric_status,
+        "observedValue": _bounded_score(value.get("observedValue")),
+        "floorProgress": _bounded_score(value.get("floorProgress")),
+        "floorProgressCredit": _bounded_score(value.get("floorProgressCredit")),
+        "floorStatus": floor_status,
+        "deliveryEvidenceStatus": delivery_status,
+        "scoreConfidenceFactor": _bounded_score(value.get("scoreConfidenceFactor")),
+        "scorePolicy": str(value.get("scorePolicy") or "unavailable"),
+    }
 
 
 def _selected_skill_diagnostic(build: dict[str, Any]) -> dict[str, Any] | None:
@@ -477,6 +528,18 @@ def _safe_score_vector(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "blocked": bool(raw.get("blocked")),
         }
     return output
+
+
+def _bounded_score(value: Any) -> float:
+    return min(1.0, _nonnegative_float(value))
+
+
+def _nonnegative_float(value: Any) -> float:
+    try:
+        parsed = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, parsed)
 
 
 def _equipped_gear_slot_count(root: ET.Element) -> int:

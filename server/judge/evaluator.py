@@ -181,10 +181,20 @@ def evaluate_readback(
         and not playability_failures
         and not modelability_result.get("coreBlocked")
     )
+    reward_limit_reasons: list[str] = []
     if _has_limited_reward_caveat(caveats) and reward_eligible:
         reward_eligible = "limited"
+        reward_limit_reasons.append("limited_evidence")
     if modelability_result.get("status") == "partial" and reward_eligible:
         reward_eligible = "limited"
+        reward_limit_reasons.append("partial_modelability")
+    offense_evidence = (score.get("scoreBreakdown") or {}).get("offense") or {}
+    if offense_evidence.get("deliveryEvidenceStatus") != "established" and reward_eligible:
+        reward_eligible = "limited"
+        reward_limit_reasons.append("offense_delivery_evidence")
+    if source_context == "generated_candidate" and band != "endgame" and reward_eligible:
+        reward_eligible = "limited"
+        reward_limit_reasons.append("non_endgame_scope")
     reward_strength = _reward_strength(reward_eligible)
     score_review_needed, score_review_reasons = _score_review_state(
         passed=passed,
@@ -209,6 +219,7 @@ def evaluate_readback(
         "pass": bool(passed),
         "rewardEligible": reward_eligible,
         "rewardStrength": reward_strength,
+        "rewardLimitReasons": _dedupe(reward_limit_reasons),
         "scoreReviewNeeded": score_review_needed,
         "hardFailures": _dedupe(hard_failures),
         "physicalInvalidFailures": physical_invalid,
@@ -266,6 +277,8 @@ def _metrics_with_judge_selection(metrics: dict[str, Any], build: dict[str, Any]
     out["JudgeDPS"] = selected_dps
     out["JudgeRawDPS"] = _num(selected.get("rawDps")) or _num(selected.get("dps")) or selected_dps
     out["JudgeEffectiveDPS"] = selected_dps
+    out["JudgeDirectDPS"] = _num(selected.get("directDps"))
+    out["JudgeFullDPS"] = _num(selected.get("fullDps"))
     out["JudgeDPSMetric"] = selected.get("sourceMetric") or "unknown"
     out["JudgeSkillName"] = selected.get("skillName") or build.get("mainSkill")
     out["JudgeMainSkill"] = build.get("mainSkill")

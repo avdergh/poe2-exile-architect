@@ -65,6 +65,7 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "optimize_supports" in skill
     assert "plan_gear" in skill
     assert "evaluate_build" in skill
+    assert "inspect_generation_preflight" in skill
     assert "evaluate_generation_candidate" in skill
     assert "不要用" in skill
     assert "冒充正式 Judge" in skill
@@ -83,6 +84,9 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "给 helper 的内部文件" in skill
     assert "不能换职业" in skill
     assert "review-packet" in skill
+    assert "validate-output" in skill
+    assert "review-packet --compact" in skill
+    assert "lifecycleEvidenceCoverage" in skill
     assert "HumanReviewPacket" in skill
     assert "无参数" in skill
     assert "先询问" in skill
@@ -124,6 +128,9 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "可信凭据" in phase5
     assert "独立 Judge" in phase5
     assert "evaluate_generation_candidate" in phase5
+    assert "inspect_generation_preflight" in phase5
+    assert "validate-output" in phase5
+    assert "LifecycleEvidenceCoverage" in phase5
     assert "设计判断和工具验证结论" in phase5
     assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
     assert "no_matching_memory" in phase5
@@ -135,6 +142,9 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "every PoB/compute tool sequentially" in guide
     assert "testedSkillGroups" in guide
     assert "evaluate_generation_candidate" in guide
+    assert "inspect_generation_preflight" in guide
+    assert "validate-output" in guide
+    assert "lifecycleEvidenceCoverage" in guide
     assert "trusted receipt" in guide
     assert "progressive research recall" in guide
     assert "recordKindCounts" in guide
@@ -203,5 +213,6 @@ def test_phase5_distribution_includes_generation_runtime_contracts():
         "query_research_memory",
         "graph_tool_query",
         "suggest_build_lifecycle",
+        "inspect_generation_preflight",
         "evaluate_generation_candidate",
     }.issubset(tool_names)
