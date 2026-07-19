@@ -51,6 +51,10 @@ verification-first 边界，也不是让程序替 Agent 自动补完整 BD，而
 `modelability.status=full`、`scoreApplicability=applicable`。但由于数值低于 maps-entry offense
 hard floor，offense 得分为 0，随后触发 `offense_delivery_not_established` 和 0.29 总分上限。
 
+归零的直接原因是 stage curve 把 hard floor 作为 0 分边界，并在 strong evidence 低于地板时
+触发 `below_playability_floor`；`offense_delivery_not_established` 是归零后的下游标签与 aggregate
+cap，不是归零原因。优化必须修正这两个概念的混用，不能用“delivery 不足”解释所有低分。
+
 这里混合了两个不同问题：
 
 - PoB 观察到的阶段伤害不足；
@@ -60,9 +64,12 @@ hard floor，offense 得分为 0，随后触发 `offense_delivery_not_establishe
 
 ### Caveat 和分类噪声
 
-- 合法单主动技能组默认得到 `support_conflict_unverified_caveat`；该信息不能指导修复。
+- 合法单主动技能组默认得到 `support_conflict_unverified_caveat`。它不参与 aggregate 或 reward
+  限制，但旧 Create 指南会因为它要求 Agent 继续核验，因此属于会浪费重试的操作噪声，而不是
+  Judge 数值惩罚。
 - `non_endgame_sample_caveat` 出现在明确的 campaign / maps-entry 请求中；level band 已足够表达
-  evaluation scope。
+  evaluation scope。该 caveat 原本不扣分也不限制 reward，问题仅是命名和展示把正常阶段说成
+  样本缺陷。
 - selected skill 使用直接 PoB DPS 时，来自其他 FullDPS 诊断的 caveat 可能继续污染主技能
   offense provenance。
 - `modelability.status=full` 的低分样本仍可能分类为
@@ -143,24 +150,25 @@ Judge offense breakdown 增加：
 - `metricStatus`：`available` 或 `unavailable`；
 - `floorStatus`：`met`、`missed`、`unverified` 或 `unavailable`；
 - `deliveryEvidenceStatus`：`established`、`limited` 或 `unavailable`；
-- `floorProgress`、`floorProgressCredit` 与 `scoreConfidenceFactor`；
-- `scorePolicy`：说明是否使用 limited-evidence floor-progress credit。
+- `floorProgress` 与 `scoreConfidenceFactor`；
+- `scorePolicy`：说明使用原始 stage curve 还是 limited-evidence confidence adjustment。
 
 规则：
 
-- 强证据且达到 hard floor：delivery evidence 为 `established`；
-- 有正 DPS，但 evidence limited 或仍低于阶段 hard floor：delivery evidence 为 `limited`；
+- 有正 DPS 且 evidence strong：delivery evidence 为 `established`，是否达到阶段地板由
+  `floorStatus` 单独表达；
+- 有正 DPS 但 evidence limited：delivery evidence 为 `limited`；
 - 没有可用 DPS：metric 和 delivery evidence 为 `unavailable`；
 - `floorProgress = clamp(effectiveDps / hardFloor, 0, 1)`；
-- `floorProgressCredit = 0.08 * floorProgress`；
-- `baseValue = max(observedValue, floorProgressCredit)`；
 - `scoreConfidenceFactor` 为 strong 1.0、limited 0.5、none 0.0；
-- `offenseValue = baseValue * scoreConfidenceFactor`；
+- `offenseValue = observedValue * scoreConfidenceFactor`；`floorProgress` 只作诊断，不加分；
 - physical-invalid、core-blocked、not-modelable 或 DPS<=0 时仍为 0；
 - strong evidence 低于 hard floor 继续产生 playability failure 和 `reward=none`；
 - limited evidence 低于 floor 继续保留 floor-unverified caveat，reward 最多 limited；
-- `offense_delivery_not_established` 仅表示 `deliveryEvidenceStatus != established`，不能再暗示
-  PoB 完全没有正 DPS；
+- strong evidence 低于 floor 时不再附加 `offense_delivery_not_established`；低伤害由
+  `floorStatus=missed` 和 `below_playability_floor` 解释；
+- `offense_delivery_not_established` 仅表示 evidence limited/unavailable，不能再暗示阶段伤害一定
+  低，也不能替代 hard-floor 判断；
 - limited delivery 继续限制 aggregate / quality band 和 reward，绝不能产生 strong reward。
 
 同 DPS 下 limited evidence 得分不得高于 strong evidence。`effectiveDps` 不再乘所谓实战 uptime
@@ -168,7 +176,7 @@ Judge offense breakdown 增加：
 
 脱敏 offense evidence 必须进入 `JudgeAdvisoryReport` 和 trusted receipt，而不是只留在 raw
 Judge result。字段包括 raw/effective DPS、source metric、evidence level、observed value、floor
-progress/credit/status、delivery evidence status 与 score policy。
+progress/status、delivery evidence status 与 score policy。
 
 本轮不尝试为 Tempest Bell 之类的轮转技能发明 uptime 或自动合并 DPS。条件性伤害继续作为
 supplemental diagnostic。
@@ -176,11 +184,13 @@ supplemental diagnostic。
 ### 5. 减少无操作价值的 caveat
 
 - 合法、单主动技能、support 已被 PoB 识别的 group 不再默认携带
-  `support_conflict_unverified_caveat`；具体 disable/unknown/duplicate 情况仍报告明确错误。
+  `support_conflict_unverified_caveat`；这是减少无效核验和 retry，不改变 aggregate 或 reward。
+  具体 disable/unknown/duplicate 情况仍报告明确错误。
 - campaign / maps-entry 通过 `levelBand` 表达评价范围，不再追加
-  `non_endgame_sample_caveat`。Evaluator 必须同时输出
-  `rewardLimitReasons=["non_endgame_scope"]`，并把 generated non-endgame reward 限为 limited；
-  comparison 也不得从该样本产生明确 reward winner。
+  `non_endgame_sample_caveat`，也不新增 blanket reward limit。同一 level band 内证据充分的阶段型
+  构筑可以产生 strong Judge evidence；Phase 5 人工验收包仍按自身原型安全合同不透出 strong
+  reward，二者不能混为一谈。跨 level band 比较返回 `level_band_mismatch`，这是比较合同不成立，
+  不是对非终局样本扣分。
 - FullDPS 的根因先在 `pob_headless.lua` 修正：direct DPS 与 FullDPS 相等或在容差内时优先
   direct；只有 FullDPS 实质更高或 direct=0 时才选 FullDPS。bridge 同时保留 direct/full
   diagnostic。`full_dps_rollup_caveat` 只在 offense source metric 确实为 FullDPS 时进入 offense
@@ -190,8 +200,8 @@ supplemental diagnostic。
 
 - core mechanic `not_modelable` / core-blocked：保留
   `judge_unsolved_modelability_gap`；
-- full/partial modelability 下，低分主要由 limited offense evidence 解释：
-  `judge_offense_evidence_gap`；
+- full/partial modelability 下，只有 delivery evidence 为 limited/unavailable 的低分才归为
+  `judge_offense_evidence_gap`；strong direct evidence 低于阶段 floor 属于真实阶段伤害不足；
 - modelability 可用但仍存在无法解释的低分：`judge_score_review_required`；
 - 已解释的真实低质量、合法性失败、严重可玩性失败和 source-data problem 保持现有分类。
 
@@ -213,7 +223,7 @@ final endgame；`budget_endgame/final_endgame` 规范化为 `endgame_budget/endg
 语义。后续若实现多阶段验证，应新增 stage-keyed receipt，而不是复用 attempt index。
 
 Judge 自身当前在 69→70 时把 DPS hard floor 从 5,000 跳到 50,000。这一阈值不连续列为后续
-校准项；本轮的小额 credit 只改善证据表达，不能证明该阈值已经合理。
+校准项；`floorProgress` 只改善诊断表达，不绕过或软化该阈值。
 
 ## 验收标准
 
@@ -229,12 +239,14 @@ Judge 自身当前在 69→70 时把 DPS hard floor 从 5,000 跳到 50,000。�
 
 ### Judge
 
-- 正 DPS、limited evidence 或低于 hard floor时 offense 不再机械等于 0；
-- breakdown 同时保留阶段门槛、原始观察分、有限 credit 和 delivery status；
+- 正 DPS 不再被误写成 metric unavailable；低于 hard floor 时仍可按既有 stage curve 得到 0 分，
+  但必须由 floor/playability 语义解释，不能归因于 delivery evidence；
+- breakdown 同时保留阶段门槛、原始观察分、floor progress 和 delivery status，不用未经校准的
+  credit 改写实际 offense 分；
 - limited delivery 仍不能获得 strong reward，quality band 不能伪装成完成态；
 - direct selected-skill DPS 不再继承无关 FullDPS caveat；
 - 合法 socket group 不再得到无条件 support-conflict caveat；
-- maps-entry sample 不再得到 non-endgame 缺陷 caveat，但显式 reward limit 仍存在；
+- maps-entry sample 不再得到 non-endgame 缺陷 caveat，也不因阶段本身受到 blanket reward limit；
 - full modelability 的 limited-offense case 不再分类为 modelability gap。
 
 ### 回归

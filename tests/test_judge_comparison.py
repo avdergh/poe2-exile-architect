@@ -57,6 +57,27 @@ def test_both_legal_full_modelability_chooses_reward_winner():
     assert result["rewardStrength"] == "strong"
 
 
+def test_different_level_bands_are_incomparable_without_penalizing_either_build():
+    candidate = _evaluation(
+        "candidate",
+        levelBand="maps_entry",
+        aggregateScore={"value": 0.8, "weightProfile": "judge_v6_evidence_separated"},
+    )
+    reference = _evaluation(
+        "reference",
+        levelBand="endgame",
+        aggregateScore={"value": 0.6, "weightProfile": "judge_v6_evidence_separated"},
+    )
+
+    result = comparison.compare_evaluations(candidate, reference)
+
+    assert result["selectionWinner"] == "unknown"
+    assert result["rewardWinner"] == "unknown"
+    assert result["comparisonStatus"] == "level_band_mismatch"
+    assert result["rewardEligible"] is False
+    assert result["rewardStrength"] == "none"
+
+
 def test_partial_modelability_is_limited_reward():
     candidate = _evaluation(
         "candidate",
@@ -179,12 +200,12 @@ def test_external_budget_anomaly_caveat_forces_limited_reward():
 def test_explicit_reward_limit_reason_prevents_reward_winner_without_caveat():
     candidate = _evaluation(
         "candidate",
-        rewardLimitReasons=["non_endgame_scope"],
-        aggregateScore={"value": 0.8, "weightProfile": "judge_v5_evidence_separated"},
+        rewardLimitReasons=["explicit_policy_limit"],
+        aggregateScore={"value": 0.8, "weightProfile": "judge_v6_evidence_separated"},
     )
     reference = _evaluation(
         "reference",
-        aggregateScore={"value": 0.6, "weightProfile": "judge_v5_evidence_separated"},
+        aggregateScore={"value": 0.6, "weightProfile": "judge_v6_evidence_separated"},
     )
 
     result = comparison.compare_evaluations(candidate, reference)

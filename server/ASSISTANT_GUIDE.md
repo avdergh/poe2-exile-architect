@@ -271,8 +271,9 @@ does not take over build completion.
 - Preflight and Judge use the same captured XML. A deterministic preflight blocker returns
   `generation_preflight_failed` without creating a Judge engine, receipt, or retry attempt.
 - Treat `rewardLimitReasons` and the sanitized `offenseEvidence` separately from legality. Positive
-  DPS below a stage floor may have limited delivery evidence without being an unavailable metric;
-  limited or non-endgame evidence must never become a strong reward.
+  strong-evidence DPS below a stage floor is an established measurement that missed the floor, not
+  a delivery-evidence gap. Limited evidence must never become a strong reward. A non-endgame level
+  is scope, not an automatic score or reward penalty; compare only within the same stage contract.
 - The helper receives Agent-produced safe artifacts: `agentRefinedBuildPrompt`,
   `prototypeBuildCandidate`, `transientBuildState`, `judgeAdvisoryReport`, and optional
   `toolFeedbackEvents`.

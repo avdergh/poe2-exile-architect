@@ -19,6 +19,11 @@ def compare_evaluations(candidate: dict[str, Any], reference: dict[str, Any]) ->
     if _core_blocked(candidate) or _core_blocked(reference):
         return _result("unknown", "unknown", "incomparable", False, "none")
 
+    candidate_band = candidate.get("levelBand")
+    reference_band = reference.get("levelBand")
+    if candidate_band and reference_band and candidate_band != reference_band:
+        return _result("unknown", "unknown", "level_band_mismatch", False, "none")
+
     selection = _higher_score(candidate, reference)
     if _limited_evidence(candidate) or _limited_evidence(reference):
         return _result(selection, "unknown", "limited_evidence", "limited", "limited")

@@ -86,7 +86,7 @@ def test_evaluator_requests_judge_metric_keys():
     assert "SpiritReserved" in engine.requested_keys
     assert result["scoreScale"] == "0_to_1"
     assert "scoreBreakdown" in result
-    assert result["aggregateScore"]["weightProfile"] == "judge_v5_evidence_separated"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v6_evidence_separated"
     assert result["defenseModel"]["poolModel"] == "life"
     assert result["defenseModel"]["confidence"] == "full"
     assert result["pass"] is True
@@ -583,14 +583,69 @@ def test_evaluator_ci_still_flags_uncapped_elemental_resistance():
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
 
 
-def test_evaluator_flags_non_endgame_caveat():
-    engine = _StubEngine(_build(level=75), _stats(TotalDPS=100_000), _defenses())
+def test_evaluator_reports_non_endgame_scope_without_score_or_reward_penalty():
+    engine = _StubEngine(
+        _build(
+            level=75,
+            mainSkillGroup=[
+                {"name": "Spark", "isSupport": False},
+                {"name": "Arcane Tempo", "isSupport": True},
+                {"name": "Controlled Destruction", "isSupport": True},
+            ],
+        ),
+        _stats(
+            JudgeDPS=100_000,
+            JudgeDPSMetric="TotalDPS",
+            JudgeRawDPS=100_000,
+            JudgeEffectiveDPS=100_000,
+            JudgeSkillName="Spark",
+            TotalDPS=100_000,
+            FullDPS=100_000,
+            EffectiveMovementSpeedMod=1.3,
+        ),
+        _defenses(),
+    )
 
     result = evaluator.evaluate_active_build(engine, "level-75")
 
     assert "non_endgame_sample_caveat" not in result["caveats"]
-    assert "non_endgame_scope" in result["rewardLimitReasons"]
+    assert "non_endgame_scope" not in result["rewardLimitReasons"]
     assert result["levelBand"] == "maps_entry"
+    assert result["rewardEligible"] is True
+    assert result["rewardStrength"] == "strong"
+
+
+def test_evaluator_treats_strong_dps_below_floor_as_stage_failure_not_evidence_gap():
+    engine = _StubEngine(
+        _build(
+            mainSkillGroup=[
+                {"name": "Spark", "isSupport": False},
+                {"name": "Arcane Tempo", "isSupport": True},
+                {"name": "Controlled Destruction", "isSupport": True},
+            ]
+        ),
+        _stats(
+            JudgeDPS=10_000,
+            JudgeDPSMetric="TotalDPS",
+            JudgeRawDPS=10_000,
+            JudgeEffectiveDPS=10_000,
+            JudgeSkillName="Spark",
+            TotalDPS=10_000,
+            FullDPS=10_000,
+            EffectiveMovementSpeedMod=1.3,
+        ),
+        _defenses(),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "strong-below-floor")
+
+    assert "below_playability_floor" in result["playabilityFailures"]
+    assert "offense_delivery_not_established" not in result["qualityWarnings"]
+    assert result["scoreBreakdown"]["offense"]["metricStatus"] == "available"
+    assert result["scoreBreakdown"]["offense"]["floorStatus"] == "missed"
+    assert result["scoreBreakdown"]["offense"]["deliveryEvidenceStatus"] == "established"
+    assert result["rewardEligible"] is False
+    assert result["rewardStrength"] == "none"
 
 
 def test_evaluator_allows_campaign_missing_ascendancy_with_caveat():

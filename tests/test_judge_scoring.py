@@ -59,6 +59,13 @@ def test_below_floor_triggers_critical_failure():
 
     assert "below_playability_floor" in result["failures"]
     assert result["scoreVector"]["offense"]["blocked"] is True
+    offense = result["scoreBreakdown"]["offense"]
+    assert offense["metricStatus"] == "available"
+    assert offense["floorStatus"] == "missed"
+    assert offense["deliveryEvidenceStatus"] == "established"
+    assert offense["floorProgress"] == pytest.approx(0.2)
+    assert offense["scorePolicy"] == "stage_curve"
+    assert "offense_delivery_not_established" not in result["qualityWarnings"]
 
 
 def test_zero_full_dps_falls_back_to_total_dps():
@@ -573,7 +580,7 @@ def test_flat_aggregate_does_not_include_scenario_fit():
     )
 
     assert result["scoreScale"] == "0_to_1"
-    assert result["aggregateScore"]["weightProfile"] == "judge_v5_evidence_separated"
+    assert result["aggregateScore"]["weightProfile"] == "judge_v6_evidence_separated"
     assert result["aggregateScore"]["value"] == pytest.approx(1.0)
     assert "mappingFit" in result["scenarioFit"]
     assert "scenarioFit" not in result["scoreVector"]
@@ -770,7 +777,7 @@ def test_limited_offense_keeps_observed_score_visible_without_source_prior():
     offense = result["scoreBreakdown"]["offense"]
     assert offense["observedValue"] == 0.0
     assert offense["value"] == 0.0
-    assert offense["scorePolicy"] == "standard_target_curve"
+    assert offense["scorePolicy"] == "stage_curve_confidence_adjusted"
     assert "trusted_reference_limited_offense_prior_caveat" not in result["caveats"]
     assert "limited_offense_floor_unverified_caveat" in result["caveats"]
 
@@ -796,10 +803,12 @@ def test_generated_limited_offense_stays_strict():
     assert "below_playability_floor" not in result["failures"]
     assert "limited_offense_floor_unverified_caveat" in result["caveats"]
     offense = result["scoreBreakdown"]["offense"]
-    assert offense["value"] == pytest.approx(0.002)
+    assert offense["value"] == 0.0
     assert offense["floorProgress"] == pytest.approx(0.05)
-    assert offense["floorProgressCredit"] == pytest.approx(0.004)
+    assert "floorProgressCredit" not in offense
+    assert offense["floorStatus"] == "unverified"
     assert offense["deliveryEvidenceStatus"] == "limited"
+    assert offense["scorePolicy"] == "stage_curve_confidence_adjusted"
     assert "offense_delivery_not_established" in result["qualityWarnings"]
     assert result["aggregateScore"]["value"] <= 0.34
     assert result["qualityBand"] == "prototype_only"

@@ -124,7 +124,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/judge/rules.py`：class/ascendancy、support/socket v1、PoB weaponCheck 和
   physical-invalid blocker；weapon/skill 兼容性以 PoB readback 的 `disableReason` 为权威，
   不要在 Python 里按技能名硬编码武器需求。
-- `server/judge/scoring.py`：`judge_v5_evidence_separated` 评分；hard floor 与 quality target
+- `server/judge/scoring.py`：`judge_v6_evidence_separated` 评分；hard floor 与 quality target
   分离，动态可用主资源池 recovery、异构 Max Hit、CI 混沌免疫、EHP 物理短板补偿和扁平
   aggregate 权重；`scoreBreakdown.offense` 必须输出 provenance、evidence level、raw/effective
   DPS 和 minion/count 诊断。

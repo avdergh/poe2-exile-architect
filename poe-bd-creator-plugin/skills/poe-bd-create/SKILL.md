@@ -442,7 +442,8 @@ receipt 补入。不要自行生成 `snapshotId`、`sourceHash`、Judge 分数�
 
 - `true_build_failure`：构筑确实存在合法性或质量问题；
 - `judge_modelability_gap`：PoB/Judge 对机制表达不足；
-- `judge_offense_evidence_gap`：已有正伤害指标，但阶段 floor 或 delivery evidence 仍不足；
+- `judge_offense_evidence_gap`：已有正伤害指标，但 delivery evidence 仍为 limited；strong evidence
+  低于阶段 floor 属于真实阶段伤害不足，不得写成 evidence gap；
 - `judge_score_review_required`：modelability 可用，但低分仍需要校准/人工审查；
 - `selected_skill_suspect`：Judge 本次选择的评分技能可疑；
 - `tool_or_data_gap`：工具或当前数据覆盖不足；

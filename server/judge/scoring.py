@@ -13,8 +13,6 @@ CRITICAL_FAILURE_PENALTIES_V1 = {
     "UNESTABLISHED_OFFENSE_SCORE_CAP": 0.34,
 }
 
-LIMITED_OFFENSE_FLOOR_PROGRESS_CREDIT_CAP = 0.08
-
 ELEMENTAL_RESISTANCE_SEVERE_FLOOR = {
     "campaign": 30.0,
     "maps_entry": 60.0,
@@ -205,30 +203,25 @@ def score_metrics(
     metric_status = "available" if dps > 0 else "unavailable"
     offense_evidence = str(offense_meta.get("evidenceLevel") or "none")
     floor_progress = _clamp(dps / offense_floor) if dps > 0 and offense_floor > 0 else 0.0
-    floor_progress_credit = (
-        LIMITED_OFFENSE_FLOOR_PROGRESS_CREDIT_CAP * floor_progress
-        if dps > 0 and source_context == "generated_candidate"
-        else 0.0
-    )
     confidence_factor = {"strong": 1.0, "limited": 0.5}.get(offense_evidence, 0.0)
-    offense_base_value = max(offense_observed, floor_progress_credit)
-    offense_value = offense_base_value * confidence_factor
+    offense_value = offense_observed * confidence_factor
     if dps <= 0:
         floor_status = "unavailable"
         delivery_evidence_status = "unavailable"
-    elif dps >= offense_floor:
-        floor_status = "met"
-        delivery_evidence_status = "established" if offense_evidence == "strong" else "limited"
     else:
-        floor_status = "unverified" if offense_evidence == "limited" else "missed"
-        delivery_evidence_status = (
-            "limited" if offense_evidence in {"strong", "limited"} else "unavailable"
+        floor_status = (
+            "met"
+            if dps >= offense_floor
+            else ("unverified" if offense_evidence == "limited" else "missed")
         )
-    score_policy = (
-        "limited_evidence_floor_progress_credit"
-        if floor_progress_credit > offense_observed
-        else "standard_target_curve"
-    )
+        delivery_evidence_status = {
+            "strong": "established",
+            "limited": "limited",
+        }.get(offense_evidence, "unavailable")
+    score_policy = {
+        "strong": "stage_curve",
+        "limited": "stage_curve_confidence_adjusted",
+    }.get(offense_evidence, "unavailable")
     offense_blocked = "offense" in blocked
     limited_offense = offense_meta.get("evidenceLevel") == "limited"
     offense_meta_caveats = list(offense_meta.get("caveats") or [])
@@ -258,7 +251,6 @@ def score_metrics(
         "target": offense_target,
         "metricStatus": metric_status,
         "floorProgress": round(floor_progress, 6),
-        "floorProgressCredit": round(floor_progress_credit, 6),
         "floorStatus": floor_status,
         "deliveryEvidenceStatus": delivery_evidence_status,
         "scoreConfidenceFactor": confidence_factor,

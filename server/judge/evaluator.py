@@ -192,9 +192,6 @@ def evaluate_readback(
     if offense_evidence.get("deliveryEvidenceStatus") != "established" and reward_eligible:
         reward_eligible = "limited"
         reward_limit_reasons.append("offense_delivery_evidence")
-    if source_context == "generated_candidate" and band != "endgame" and reward_eligible:
-        reward_eligible = "limited"
-        reward_limit_reasons.append("non_endgame_scope")
     reward_strength = _reward_strength(reward_eligible)
     score_review_needed, score_review_reasons = _score_review_state(
         passed=passed,

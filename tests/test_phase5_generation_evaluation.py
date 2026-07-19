@@ -157,7 +157,7 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
         assert engine.loaded == BUILD_XML
         assert source_context == "generated_candidate"
         result = _judge_result(snapshot_id)
-        result["rewardLimitReasons"] = ["non_endgame_scope"]
+        result["rewardLimitReasons"] = ["limited_evidence", "offense_delivery_evidence"]
         result["scoreBreakdown"] = {
             "offense": {
                 "rawValue": 42_000,
@@ -165,16 +165,15 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
                 "effectiveDps": 42_000,
                 "directDps": 42_000,
                 "fullDps": 42_000,
-                "sourceMetricDetail": "TotalDPS",
-                "evidenceLevel": "strong",
+                "sourceMetricDetail": "FullDPS",
+                "evidenceLevel": "limited",
                 "metricStatus": "available",
                 "observedValue": 0.0,
                 "floorProgress": 0.84,
-                "floorProgressCredit": 0.0672,
-                "floorStatus": "missed",
+                "floorStatus": "unverified",
                 "deliveryEvidenceStatus": "limited",
-                "scoreConfidenceFactor": 1.0,
-                "scorePolicy": "limited_evidence_floor_progress_credit",
+                "scoreConfidenceFactor": 0.5,
+                "scorePolicy": "stage_curve_confidence_adjusted",
             }
         }
         return result
@@ -210,22 +209,24 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert result["judgeAdvisoryReport"]["qualityWarnings"] == []
     assert result["judgeAdvisoryReport"]["scoreApplicability"] == "applicable"
     assert result["judgeAdvisoryReport"]["rewardStrength"] == "limited"
-    assert result["judgeAdvisoryReport"]["rewardLimitReasons"] == ["non_endgame_scope"]
+    assert result["judgeAdvisoryReport"]["rewardLimitReasons"] == [
+        "limited_evidence",
+        "offense_delivery_evidence",
+    ]
     assert result["judgeAdvisoryReport"]["offenseEvidence"] == {
         "rawDps": 42_000.0,
         "effectiveDps": 42_000.0,
         "directDps": 42_000.0,
         "fullDps": 42_000.0,
-        "sourceMetric": "TotalDPS",
-        "evidenceLevel": "strong",
+        "sourceMetric": "FullDPS",
+        "evidenceLevel": "limited",
         "metricStatus": "available",
         "observedValue": 0.0,
         "floorProgress": 0.84,
-        "floorProgressCredit": 0.0672,
-        "floorStatus": "missed",
+        "floorStatus": "unverified",
         "deliveryEvidenceStatus": "limited",
-        "scoreConfidenceFactor": 1.0,
-        "scorePolicy": "limited_evidence_floor_progress_credit",
+        "scoreConfidenceFactor": 0.5,
+        "scorePolicy": "stage_curve_confidence_adjusted",
     }
     assert result["judgeAdvisoryReport"]["selectedSkill"] == {
         "skillName": "Lightning Arrow",

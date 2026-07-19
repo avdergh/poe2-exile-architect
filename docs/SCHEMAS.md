@@ -127,7 +127,8 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   属性缺口摘要，使 Agent 与人工能定位硬阻断。条件性内部效果作为 supplemental component 单独
   记录，不能因没有普通宝石插槽被判非法。`offenseEvidence` 保存脱敏的 raw/effective DPS、
   direct/full 诊断、阶段 floor 进度、evidence level 与 delivery status；`rewardLimitReasons`
-  显式说明非终局范围、有限证据或 partial modelability 为什么不能产生 strong reward。它不是
+  显式说明有限证据、partial modelability 或其他真实证据限制为什么不能产生 strong reward；
+  lifecycle stage 本身由 `levelBand` 表达，不自动成为 reward limit。它不是
   机制真值，也不替代 Agent 的失败核验。
 - P5.1 人工验收包里的 `JudgeAdvisoryReport` 只保留安全参考信号：Judge 出错时不能携带分数
   或奖励强度；成功评估的分数必须在 0 到 1 之间，并且必须带 `evaluatedSnapshotId` 和
@@ -224,7 +225,7 @@ P5.1 证据可信度边界：
 必要概念：
 
 - pass/fail；
-- score scale：当前 Judge v3 使用 `0_to_1`；
+- score scale：当前 Judge v6 使用 `0_to_1`；
 - score vector：当前最小实现包含 offense、defense、recovery、mobility；physical-invalid 时
   这些维度必须标记 blocked；
 - score breakdown：每个维度应说明 raw value、hard floor、quality floor、target、
@@ -244,7 +245,7 @@ P5.1 证据可信度边界：
   `disableReason` 显示技能被当前武器禁用时，必须产生 `incompatible_weapon_skill_tags`；
   不允许用 Python 技能名表替代 PoB 兼容性判断；
 - scenario fit：当前作为展示型 mapping/bossing/hybrid fit，不参与 aggregate；
-- aggregate score：必须包含 weight profile；当前 `judge_v4_stage_aware` 保留现有阶段权重：
+- aggregate score：必须包含 weight profile；当前 `judge_v6_evidence_separated` 保留现有阶段权重：
   campaign 为 0.35/0.30/0.20/0.15，maps-entry 为 0.375/0.35/0.175/0.10，endgame 为
   0.40/0.40/0.15/0.05；
 - quality band：`invalid`、`barely_playable`、`prototype_only`、`entry_endgame`、`solid`、`strong`；
@@ -262,8 +263,9 @@ P5.1 证据可信度边界：
 - playability failure codes：`severe_elemental_resistance_shortfall`、
   `below_playability_floor`、`catastrophic_defense_shortboard`；
 - quality warnings：`elemental_resistance_below_cap`、`negative_chaos_resistance`、各 offense / Max Hit
-  quality target miss，以及生成候选 offense 分数为 0 时的
-  `offense_delivery_not_established`；后者限制综合档位和最终交付，但不属于确定性非法；
+  quality target miss，以及生成候选 offense delivery evidence 为 limited/unavailable 时的
+  `offense_delivery_not_established`；后者限制综合档位和最终交付，但不属于确定性非法。strong
+  direct DPS 低于地板时使用 `below_playability_floor`，不复用 delivery warning；
 - DPS 语义遵循 PoB：`AverageDamage` 是平均命中，`TotalDPS` 是 Hit DPS，`CombinedDPS` 加入当前
   技能的已建模次级/持续伤害，`FullDPS` 汇总被纳入的 skill actors/groups；
 - short-circuit state：physical-invalid failure 必须标记被 blocked 的 score dimensions；
@@ -315,9 +317,11 @@ Candidate vs reference 或 candidate vs prior round。
 - selection winner：`candidate`、`reference`、`prior`、`tie`、`unknown`；
 - reward winner：`candidate`、`reference`、`prior`、`tie`、`unknown`；
 - scenario / active-state comparison policy；
-- comparability/status：`comparable`、`partial_modelability`、`candidate_invalid`、
-  `reference_invalid`、`both_invalid`、`incomparable`；
+- comparability/status：`comparable`、`limited_evidence`、`partial_modelability`、
+  `level_band_mismatch`、`candidate_invalid`、`reference_invalid`、`both_invalid`、`incomparable`；
 - incomparable reason：例如 core_mechanic_not_modelable、missing_metric、different_active_state_policy；
+- `levelBand` 不同的 evaluation 不直接比较 aggregate，也不产生 selection/reward winner；这表示
+  比较合同不成立，不是对 campaign / maps-entry 构筑本身扣分；
 - reward eligibility：full comparable 才能进入 strong reward；partial modelability 只能进入
   limited reward；非法或 core-unmodelled comparison 不进入 reward memory；
 - limited evidence comparison：如果任一方只有 limited evidence，可以给出

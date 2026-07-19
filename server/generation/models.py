@@ -363,7 +363,6 @@ class JudgeOffenseEvidence(StrictModel):
     metric_status: Literal["available", "unavailable"]
     observed_value: float = Field(ge=0.0, le=1.0)
     floor_progress: float = Field(ge=0.0, le=1.0)
-    floor_progress_credit: float = Field(ge=0.0, le=1.0)
     floor_status: Literal["met", "missed", "unverified", "unavailable"]
     delivery_evidence_status: Literal["established", "limited", "unavailable"]
     score_confidence_factor: float = Field(ge=0.0, le=1.0)

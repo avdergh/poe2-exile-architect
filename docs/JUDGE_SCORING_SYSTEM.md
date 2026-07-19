@@ -157,7 +157,7 @@ endgame:    offense 0.40 / defense 0.40 / recovery 0.15 / mobility 0.05
 
 权重 profile（权重配置名）为：
 
-- `judge_v5_evidence_separated`
+- `judge_v6_evidence_separated`
 
 这组权重属于项目产品启发式，不是官方规则。阶段感知调整的依据是：剧情开荒的实际体验高度
 依赖资源恢复和移动/走位，而终局数值比较仍更依赖伤害与防御。权重仍需用真实构筑样本和人工
@@ -235,9 +235,10 @@ Judge 不是一套固定终局线打天下，而是按等级段使用不同标�
 - `>= 80` -> `endgame`
 
 等级段本身已经表达评价范围，因此 campaign / maps-entry 不再把
-`non_endgame_sample_caveat` 当作构筑缺陷。对系统生成的非终局候选，Evaluator 会显式输出
-`rewardLimitReasons=["non_endgame_scope"]` 并把 reward 限为 limited；比较时仍可选出更适合
-当前用途的候选，但不能产生确定的 `rewardWinner`。
+`non_endgame_sample_caveat` 当作构筑缺陷，也不因“非终局”本身降低分数或 reward。阶段型候选
+只能和相同目标阶段、版本及场景下的样本比较；证据 limited、partial modelability 或其他明确
+限制仍通过各自的 `rewardLimitReasons` 约束。`BuildComparison` 遇到不同 `levelBand` 时返回
+`level_band_mismatch`，不比较 aggregate，也不把范围不一致伪装成某一方的低分。
 
 ---
 
@@ -328,22 +329,22 @@ caveat 污染直接 PoB 证据。
 Judge 对 offense 明确区分 provenance（证据来源）和 evidence level（证据强度）。
 
 `scoreBreakdown.offense` 同时输出观察值与可信度：`metricStatus`、`floorStatus`、
-`deliveryEvidenceStatus`、`observedValue`、`floorProgress`、`floorProgressCredit`、
-`scoreConfidenceFactor` 和 `scorePolicy`。生成候选的阶段地板进度按下式保留为小额诊断信号：
+`deliveryEvidenceStatus`、`observedValue`、`floorProgress`、`scoreConfidenceFactor` 和
+`scorePolicy`。阶段地板进度只作诊断，不给未经校准的额外分：
 
 ```text
 floorProgress = clamp(effectiveDps / hardFloor, 0, 1)
-floorProgressCredit = 0.08 * floorProgress
-baseValue = max(observedValue, floorProgressCredit)
-offenseValue = baseValue * confidenceFactor
+offenseValue = observedValue * confidenceFactor
 ```
 
 strong / limited / none 的 confidence factor 分别为 1 / 0.5 / 0。正 DPS 低于 hard floor
-不再被描述成“指标不可用”；strong evidence 仍触发 playability failure 并阻断 reward，limited
-evidence 仍只允许有限诊断和 limited reward。物理非法、核心不可建模或 DPS 为 0 时仍为 0。
+不再被描述成“指标不可用”。strong direct evidence 的 delivery 已建立，即使其数值低于地板；
+此时用 `floorStatus=missed`、`below_playability_floor` 和 0 分表达阶段伤害不足，不再追加 delivery
+不足警告。limited evidence 继续标记 delivery limited，并且最多产生 limited reward。物理非法、
+核心不可建模或 DPS 为 0 时仍为 0。
 
 注意：当前 69→70 级会把 DPS hard floor 从 5,000 提高到 50,000。这个边界已用回归测试明确
-记录，但仍是待真实样本校准项，小额 floor-progress credit 不代表阈值已被证明合理。
+记录，但仍是待真实样本校准项。`floorProgress` 让人工看见距离，但不会绕过或软化该阈值。
 
 #### A. `direct_pob_dps`（PoB 直接伤害）
 

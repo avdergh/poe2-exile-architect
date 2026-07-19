@@ -319,7 +319,6 @@ def _safe_offense_evidence(value: dict[str, Any]) -> dict[str, Any] | None:
         "metricStatus": metric_status,
         "observedValue": _bounded_score(value.get("observedValue")),
         "floorProgress": _bounded_score(value.get("floorProgress")),
-        "floorProgressCredit": _bounded_score(value.get("floorProgressCredit")),
         "floorStatus": floor_status,
         "deliveryEvidenceStatus": delivery_status,
         "scoreConfidenceFactor": _bounded_score(value.get("scoreConfidenceFactor")),
