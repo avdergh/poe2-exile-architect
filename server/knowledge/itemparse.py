@@ -225,3 +225,69 @@ def parse_item(text: str) -> dict[str, Any]:
         if u:
             out["unique"] = {"base": u["base"], "text": u["text"]}
     return out
+
+
+def audit_item_legality(text: str) -> dict[str, Any]:
+    """Audit deterministic rare/magic affix constraints without exposing raw item text."""
+    parsed = parse_item(text)
+    if not parsed.get("ok"):
+        return {"ok": False, "issues": ["item_parse_failed"]}
+    rarity = str(parsed.get("rarity") or "").lower()
+    if rarity not in {"rare", "magic"}:
+        return {"ok": True, "issues": []}
+
+    issues: list[str] = []
+    limits = _AFFIX_LIMITS[rarity]
+    prefixes = int(parsed.get("prefixes") or 0)
+    suffixes = int(parsed.get("suffixes") or 0)
+    if prefixes > limits[0]:
+        issues.append("prefix_limit_exceeded")
+    if suffixes > limits[1]:
+        issues.append("suffix_limit_exceeded")
+
+    groups: dict[str, int] = defaultdict(int)
+    item_level = parsed.get("itemLevel")
+    over_item_level: list[dict[str, Any]] = []
+    for affix in parsed.get("affixes") or []:
+        if affix.get("kind") in _NON_AFFIX:
+            continue
+        group = str(affix.get("group") or "").strip()
+        if group:
+            groups[group] += 1
+        required = affix.get("requiredLevel")
+        if isinstance(item_level, int) and isinstance(required, int) and required > item_level:
+            over_item_level.append({"group": group or "unknown", "requiredLevel": required})
+    duplicate_groups = sorted(group for group, count in groups.items() if count > 1)
+    if duplicate_groups:
+        issues.append("duplicate_affix_group")
+    if over_item_level:
+        issues.append("affix_item_level_requirement_unmet")
+    out_of_range = [
+        str(affix.get("group") or "unknown")
+        for affix in parsed.get("affixes") or []
+        if affix.get("kind") not in _NON_AFFIX and affix.get("tier") is None
+    ]
+    if out_of_range:
+        issues.append("affix_roll_outside_known_tiers")
+
+    base = str(parsed.get("base") or "").strip()
+    affix_lines = [
+        str(affix.get("text") or "")
+        for affix in parsed.get("affixes") or []
+        if affix.get("kind") not in _NON_AFFIX
+    ]
+    base_illegal = db.illegal_affixes(base, affix_lines) if base and affix_lines else []
+    if base_illegal:
+        issues.append("affix_not_allowed_on_base")
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "prefixes": prefixes,
+        "suffixes": suffixes,
+        "duplicateGroups": duplicate_groups,
+        "overItemLevelAffixes": over_item_level,
+        "outOfRangeGroups": out_of_range,
+        "baseIllegalAffixCount": len(base_illegal),
+        "unrecognizedAffixCount": len(parsed.get("unrecognized") or []),
+    }

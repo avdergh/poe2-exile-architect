@@ -32,11 +32,31 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "runContext" in skill
     assert "禁止读取、复用或改写其他运行留下的" in skill
     assert "query_research_memory" in skill
+    assert 'detail_level="summary"' in skill
+    assert 'detail_level="record"' in skill
+    assert "ascendancy_key" in skill
+    assert "primary_skill_key" in skill
+    assert "build_family_keys" in skill
+    assert "record_kinds" in skill
+    assert "recordKindCounts" in skill
+    assert "supportPackages" in skill
+    assert "gearResponsibilities" in skill
+    assert "ascendancyResponsibilities" in skill
+    assert "resourceMechanisms" in skill
+    assert "buildFamilies" in skill
+    assert "deepResearchRecords" in skill
+    assert "buildPatterns" in skill
+    assert "semanticEdges" in skill
+    assert "case_observation" in skill
+    assert "researchMemoryUse" in skill
+    assert 'retrievalOutcome="no_matching_memory"' in skill
+    assert "insightDecisions" in skill
     assert "graph_tool_query" in skill
     assert "find_skills" in skill
     assert "find_supports_for" in skill
     assert "explain_mechanic" in skill
     assert "build_advice" in skill
+    assert "补丁敏感事实以当前 pinned PoB" in skill
     assert "suggest_build_lifecycle" in skill
     assert "不一定给具体技能名" in skill
     assert "new_build" in skill
@@ -105,6 +125,8 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "独立 Judge" in phase5
     assert "evaluate_generation_candidate" in phase5
     assert "设计判断和工具验证结论" in phase5
+    assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
+    assert "no_matching_memory" in phase5
     assert "/poe-bd-create" in guide
     assert "Agent-led prototype" in guide
     assert "scripts/create_build.py review-packet" in guide
@@ -114,6 +136,11 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "testedSkillGroups" in guide
     assert "evaluate_generation_candidate" in guide
     assert "trusted receipt" in guide
+    assert "progressive research recall" in guide
+    assert "recordKindCounts" in guide
+    assert "successful component resolution proves existence" in guide
+    assert "researchMemoryUse" in guide
+    assert "physical graph, and corpus override patch-sensitive prose" in guide
     assert "/poe-bd-create" in readme
     assert "Phase 5 Agent 主导生成原型" in readme
     assert "review-packet" in readme
@@ -131,14 +158,14 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
         assert "poe-bd-create" in json.dumps(payload)
 
 
-def test_installers_fallback_uninstall_knows_create_skill():
+def test_installers_fallback_uninstall_knows_all_product_skills():
     ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
     sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     sh_lines = {line.strip() for line in sh.splitlines()}
 
-    assert "@('poe-bd-research', 'poe-bd-create')" in ps1
+    assert "@('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop')" in ps1
     assert "printf '%s\\n' \"poe-bd-research\"" not in sh_lines
-    assert 'printf \'%s\\n\' "poe-bd-research" "poe-bd-create"' in sh
+    assert 'printf \'%s\\n\' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"' in sh
 
 
 def test_codex_installer_registers_poe2_mcp_server():
@@ -151,11 +178,15 @@ def test_codex_installer_registers_poe2_mcp_server():
     assert "Codex MCP installation requires uv" in ps1
     assert "[mcp_servers.poe2_build_mcp]" in ps1
     assert 'args = @("run", "python", "-m", "server.main")' in ps1
+    assert "-RegisterMcpOnly" in ps1
+    assert "$RepoDir = $ScriptRepoDir" in ps1
     assert "register_codex_mcp_server" in sh
     assert "resolve_uv_command" in sh
     assert "Codex MCP installation requires uv" in sh
     assert "[mcp_servers.poe2_build_mcp]" in sh
     assert 'args = ["run", "python", "-m", "server.main"]' in sh
+    assert "--register-mcp-only" in sh
+    assert 'REPO_DIR="$SCRIPT_DIR"' in sh
     assert "安装器还会为 Codex 注册本项目 MCP 服务" in readme
     assert "两者都不存在时会明确停止" in readme
     assert "poe2_build_mcp" in readme

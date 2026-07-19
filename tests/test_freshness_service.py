@@ -234,6 +234,39 @@ def test_service_uses_specified_timeout_budgets():
     assert service._HTTP_TIMEOUT_SECONDS == 5.0
 
 
+def test_github_api_requests_use_optional_token(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, *, timeout):
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(service.urllib.request, "urlopen", fake_urlopen)
+
+    service._http_transport(
+        service.TransportRequest("https://api.github.com/repos/example/project/commits/main")
+    )
+
+    headers = {key.casefold(): value for key, value in captured["headers"].items()}
+    assert headers["authorization"] == "Bearer test-token"
+    assert headers["accept"] == "application/vnd.github+json"
+
+
 def test_report_exposes_provider_status_alias(monkeypatch):
     install_matching_providers(monkeypatch)
 
@@ -323,6 +356,18 @@ def test_validated_release_requires_compatibility_before_emitting_claims():
         compatibility=None,
     )
     assert all(record.claims == () for record in unverified_records)
+
+
+def test_application_pob_version_enum_normalizes_unknown_version_and_commit():
+    current = providers.current_local_compatibility()
+
+    assert current is not None
+    assert current.pob_version == "0.22.0"
+    assert providers.resolve_pob_version_enum("unknown") == "0.22.0"
+    assert (
+        providers.resolve_pob_version_enum("860f4268299739ce9df87c4f373abe35824101cf") == "0.22.0"
+    )
+    assert providers.resolve_pob_version_enum("99.99.99") is None
 
 
 def test_all_required_live_and_local_evidence_matching_verifies_current(monkeypatch):

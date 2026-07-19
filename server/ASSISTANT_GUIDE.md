@@ -65,14 +65,15 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `find_skills`/`get_gem`/`find_supports_for`, `search_mods`/`reverse_lookup`,
   `search_uniques`/`get_unique`, `parse_item`, `list_ascendancies`, `corpus_info`, and the mechanics
   layer — `explain_mechanic` / `search_mechanics` / `relevant_mechanics` (wiki tier, PoE2 Wiki
-  **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (durable principles),
+  **CC BY-NC-SA 3.0** — cite the `attribution` it returns), `build_advice` (planning heuristics;
+  current pinned PoB data, physical graph, and corpus override patch-sensitive prose),
   and lifecycle memory/tools (`suggest_build_lifecycle`, `analyze_build_lifecycle`,
   `analyze_lifecycle_cohort`, `compare_lifecycle_routes`, `audit_lifecycle_route`,
   `evaluate_lifecycle_route`, `list_transition_gates`,
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
   `promote_technique_memory`, plus Phase 4 research-memory tools
   (`build_research_packet`, `validate_researcher_output`, `query_research_memory`,
-  `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
+  `propose_deep_research_records`, `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
   `propose_build_patterns`, `submit_revalidation_result`,
   `inspect_rejected_research_proposals`). Static facts to *find* options; the engine *values* them.
 - **Live (network — may be unavailable):** `get_prices`, `list_price_leagues`, `get_meta_builds`,
@@ -82,104 +83,100 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 
 ## Phase 4 research memory workflow
 
-Phase 4 tools are for external Researcher Agent workflows, not for copying mature builds. The
-user-facing product entry is `/poe-bd-research` / `$poe-bd-research`; internal phase names are not
-user commands.
+Phase 4 turns one mature PoE2 build at a time into copy-safe research memory. The product entry is
+`/poe-bd-research` / `$poe-bd-research`; internal phase names and script commands are not user
+commands.
 
-- Product skill flow:
-  `/poe-bd-research --limit 50 --worker-count 5` or
-  `$poe-bd-research --limit 50 --worker-count 5` queues mature samples, then the host agent claims
-  one case per Researcher worker, renders the worker's transient prompt, runs the tool-driven
-  Researcher SOP, and accepts the safe proposal/review through the gate.
-- Treat `/poe-bd-research` as a chat-level skill invocation, not a shell command for the user to
-  run. The host agent should execute the internal scripts with its tools. Do not ask Codex Desktop
-  users to paste PowerShell/Python commands into the chat box.
-- If `/poe-bd-research` is invoked with no arguments, ask for the run mode before any network crawl
-  or dry-run. If the host exposes an interactive choice/confirmation UI, use it. Offer: preflight 5
-  samples (recommended, `limit=5`, `worker-count=1`, `--dry-run`), small extraction (`limit=20`,
-  `worker-count=5`), large extraction (`limit=50`, `worker-count=5`), or resume existing queue.
-  `--resume` is an independent recovery mode and must not be tied only to the large-batch option.
-  If no choice UI is available, present the same options as plain text and wait for the user's
-  reply.
-- `/poe-bd-research` is a runtime product workflow, not a development task. While executing it, do
-  not edit repository source, tests, docs, schemas, installers, or plugin manifests; do not invoke
-  debugging/TDD/code-modification skills. If queue/collector/tooling fails, report the safe
-  `collector_failed` / `source_unavailable` / `runtime_failed` result and stop.
-- Script flow used by the skill:
-  - `scripts/research_mature_builds.py queue`
-  - `scripts/research_mature_builds.py claim`
-  - `scripts/research_mature_builds.py worker-brief --lease-token <leaseToken>`
-  - `scripts/research_mature_builds.py prompt --lease-token <leaseToken>`
-  - `scripts/research_mature_builds.py accept --lease-token <leaseToken> --review-file <safe-review.json>`
-  - `scripts/research_mature_builds.py status`
-- After `claim`, send the safe `workerPrompt` from `worker-brief` verbatim to the Researcher
-  worker. Do not send only a local `SKILL.md` path or ad-hoc prose. If the worker does not see MCP
-  proposal tools, it should write the safe review artifact described by `workerPrompt`; the host
-  then runs `accept`.
-- `--worker-count` means concurrent Researcher agent lanes. It does not mean pre-generating N raw
-  prompts for the main orchestrator. Codex can run multiple worker lanes; hosts without
-  programmatic subagents must report `requestedWorkers`, `effectiveWorkers=1`, and the fallback
-  reason, then run serially.
-- Batch mode is still one build sample per Researcher turn. Do not paste multiple complete PoB
-  samples into one prompt. Do not reuse raw-rich Researcher transcripts across cases; reuse only
-  the queue, skill instructions, scripts, and MCP tools.
-- Queue/status/claim/accept outputs are safe-only. The `prompt` subcommand is the only place raw
-  mature-build material may appear, and only for the worker holding a valid lease. Do not save it
-  into the repo, durable reports, or chat summaries.
-- Treat programmatic diagnostics, safe summaries, resolver shortlists, imported main skill, and
-  selected-skill probes as non-authoritative hints. They must not constrain the Researcher's
-  analysis or filter away useful raw-evidence signals. If the raw quarantine evidence suggests a
-  mechanism that the programmatic summary missed, analyze it safely and mark uncertainty or
-  verification tasks instead of discarding it.
-- Build raw-rich research context only with `build_research_packet`; raw PoB code/XML/full gear/full
-  passive path/full gem links may exist only in the transient packet.
-- Use the `research_mature_build_case` prompt to run a tool-driven Researcher flow. The Researcher
-  must not print final `ResearcherOutput schema_version=4` JSON as chat text; it submits findings
-  through `propose_research_fragments`, `propose_build_patterns`, and `propose_semantic_edges`.
-- Always call `query_research_memory` first; use its `dedupeQueryRef` before
-  `propose_research_fragments`.
-  If a similar fragment already exists, call `append_evidence_to_fragment` instead of creating a
-  duplicate.
-- Before constructing any semantic edge, call `graph_tool_query` with
-  `tool_name="resolve_graph_component"` for every source and target entity. `propose_semantic_edges`
-  may reference only resolver-returned Phase 3 stable keys. It never creates physical graph nodes
-  and never proves build legality.
-- Resolve secondary endpoints before proposing planner-visible edges. Concrete heralds, supports,
-  charges, ailment components, companion skills, reservation/spirit components, projectile delivery
-  skills, and cooldown support-like components must be resolver-backed if they appear in an edge.
-  Abstract layer labels are not graph endpoints; keep them as caveats or verification tasks unless
-  they can be converted into a concrete source-backed component.
-- If endpoint resolution is `ambiguous`, make at most 2 narrowed resolver attempts using explicit
-  type/context clues. If it remains ambiguous, report `requires_manual_endpoint_mapping`; never
-  choose the most likely candidate. If resolution is `missing` / `source_coverage_gap`, request a
-  static source refresh and keep `hallucinationVerdict=not_assessed`.
-- Each semantic edge must include `source_resolution` and `target_resolution` compact evidence from
-  `resolve_graph_component` (`tool_name`, `status`, `stable_key`, `snapshot_id`,
-  `evidence_path_nodes`, `source_refs`). Missing, mismatched, or stale resolver evidence is rejected.
-- For Phase 4.5 build-pattern extraction, submit `BuildDesignObservation` and typed pattern
-  proposals through `propose_build_patterns` before forcing a relationship into semantic edges.
-  Observations should capture BD design axes such as character shell, primary/secondary skill
-  package, passive tree shape, itemization, scaling axis, resource/Spirit engine, defense layers,
-  mechanic chain, rotation, transition gates, failure modes, and modelability caveats.
-- The Phase 4.5 extraction checklist is explicit: evaluate ascendancy + primary skill, primary +
-  secondary skill roles, skill + notable/keystone/passive anchors, unique + passive/skill relations,
-  support + active skill single pairs, scaling axes, weapon/base/stat priorities,
-  Spirit/reservation packages, defense package + content goal, generator -> transformer -> payoff
-  chains, transition gates, failure modes, variant relations, and modelability caveats. Do not
-  force an item just to fill the checklist; unsupported axes become unclear/deferred caveats.
-- Co-occurrence tiers are evidence-limited: one sample is only `case_observation`; do not call a
-  combination common/usual unless the pattern payload carries sufficient sample/source counts.
-  Pattern context is advisory for Phase 5 and never hard legality. Patterns can be patch-decayed
-  into `needs_revalidation`; stale or non-planner-visible patterns must not be used as strong
-  generation evidence until revalidated.
-- Do not use `validate_researcher_output` as a routine preflight; the propose tools perform
-  validation and return structured rejection envelopes. Keep `validate_researcher_output` for
-  explicit debugging, dry-run, and CI fixtures.
-- Use `submit_revalidation_result` after patch/freshness review. If knowledge is still valid, renew
-  it; if scope changed, let the backend create successor/deprecated state.
-- All Phase 4 outputs must keep `noRawMatureBuildMaterial`; never echo raw mature-build material in
-  messages, logs, reports, or creator-visible context.
+### Tool map
 
+- `scripts/research_mature_builds.py queue/claim/inspect/read/search`: lease one case and expose
+  bounded transient evidence. `inspect` lists sections; `read` paginates them; `search` locates a
+  concrete name but never replaces complete section reads.
+- `query_research_memory`: compare the independently reconstructed case with accepted memory.
+  Query summaries first and deep-read only selected record IDs.
+- `graph_tool_query(tool_name="search_graph_components")`: discover concrete graph candidates by
+  name and type. Candidate similarity is not endpoint authority.
+- `graph_tool_query(tool_name="resolve_graph_component")`: confirm a stable physical-graph key.
+  Only resolved keys may authorize semantic edges.
+- `propose_deep_research_records`, `propose_research_fragments`,
+  `propose_build_patterns`, and `propose_semantic_edges`: validate candidate schema, resolver
+  evidence and copy safety. In the queue workflow these tools do not persist durable memory.
+- `append_evidence_to_fragment`: add safe evidence to an already accepted equivalent fragment
+  instead of creating a duplicate.
+- `submit_revalidation_result`: renew, narrow or supersede accepted knowledge after version review.
+- `scripts/research_mature_builds.py review-contract`: disclose the exact safe-review structure and
+  canonical enums just before writing.
+- `scripts/research_mature_builds.py init-review`: atomically create the current lease's UTF-8,
+  two-space-indented review skeleton without overwriting an existing artifact.
+- `scripts/research_mature_builds.py accept --validate-only`: run the real acceptance logic without
+  changing durable memory or queue state. Plain `accept` is the only durable writer.
+
+If tools are not shown eagerly, use the host's normal tool discovery/search by exact name before
+declaring them unavailable. The unified MCP exposes the research tools; this behavior is not based
+on a documented tool-count cap.
+
+### Runtime flow
+
+- Never delegate a research case to a subagent or separate agent lane. The current main conversation
+  must read the bounded evidence, analyze the case, write the safe review and run acceptance.
+- If no arguments are supplied, ask for a mode before any network crawl: preflight 5
+  (`--dry-run`), small extraction 20, large extraction 50, or resume. Resume must not be tied only
+  to the large-batch option.
+- Use `--class "Blood Mage"` when the user supplies poe.ninja's `class` filter. It is passed through
+  to the list URL as `class=Blood+Mage`; URL-style input such as `--class "Blood+Mage"` is normalized
+  before encoding and must not become `class=Blood%2BMage`. On the current site this names an
+  ascendancy, not the PoB base class. The collector also applies the normalized class locally so
+  unrelated ascendancies cannot consume the requested sample limit. `--ascendancy` remains a local
+  post-render filter.
+- Treat the skill invocation as a chat request. Do not ask Codex Desktop users to paste PowerShell/Python commands into the chat box.
+- This is a runtime product workflow. Do not edit source, tests, docs, schemas or installers while
+  executing it. Report safe collector/source/runtime errors and stop.
+- Script order is `queue -> claim -> inspect/read/search -> memory/graph research ->
+  review-contract -> init-review -> edit safe review -> accept --validate-only -> accept -> status`.
+- A non-dry-run `queue` without an explicit output directory creates
+  `.poe-bd-research/runs/<runId>` and returns `runDir`. Preserve that value as `--output-dir` for
+  every later command in the run. Never fall back to the shared `.poe-bd-research` root. Existing
+  queue databases are not overwritten; `--resume` requires the original `runDir`.
+- `claim` atomically returns the safe `workerPrompt`, lease identity and review path. Follow it
+  directly; `worker-brief` is resume-only. Do not rely only on a local `SKILL.md` path.
+- Finish acceptance for the current case before claiming another. Do not carry transient evidence
+  across cases; reuse only tools, the skill and accepted memory.
+- Reconstruct skills/supports, rotation, mechanism chains, gear and passive responsibilities,
+  resource/defense engines, tradeoffs, failure conditions and modelability gaps before querying
+  durable memory. The research skill owns the full depth checklist and calibrated examples.
+- Keep one resolved ascendancy and one `primary_damage` skill consistent across a research group.
+  `clear_skill`, `boss_skill`, `triggered_payload`, and a `trigger_host` delivering a triggered or primary payload are inferred Family
+  core skills and must not be repeated in `typedPayload.familyCoreSkillKeys`. Supports stay outside
+  Family identity, but `skill_package` records preserve ownership in `typedPayload.supportPackages`.
+- `passiveAscendancy` coverage requires an ascendancy shell plus concrete resolved ascendancy
+  responsibilities. Mutated random item instances are case-only evidence, excluded from normal
+  creator retrieval and planner patterns.
+- A `resource_engine` based on ordinary leech, flasks or affixes needs lower_snake_case
+  `typedPayload.resourceMechanisms` when no resolved physical resource component identifies it.
+- Do not invent role, axis or pattern enums. A canonical role describes build function and may be
+  compatible with more than one physical graph node type; follow the just-in-time compatibility
+  map and resolver evidence, and put every resolved stable key in `componentKey`. Write the review
+  as UTF-8, two-space-indented JSON so a bounded repair can edit one field safely. Edit only the
+  lease-bound review file; do not assemble the complete JSON with PowerShell here-strings,
+  inline `ConvertTo-Json`, or `Set-Content`.
+- `readyForAccept=true` means a safe subset can be accepted. Prefer
+  `fullyResolvedForAccept=true` / `acceptanceMode=clean`; for `partial_with_deferred`, repair
+  type/role/query/key mistakes before accepting and retain only genuine source or bounded ambiguity
+  gaps.
+- One sample can establish only a `case_observation`, not a common or usual pattern. Patterns and
+  semantic edges remain advisory planning context, never hard legality.
+- Mark a pattern `transferScope=component` only when it expresses a causal module with explicit
+  applicability requirements, exclusions, rationale, and verification tasks. Single cases cannot
+  claim global scope. Cross-Family promotion is backend-derived and capped at `likely_pattern`;
+  `common_within_archetype` and `strong_ranking_hint` remain Family/archetype-only. Component scope
+  grants conditional cross-Family retrieval; it does not reduce the pattern's priority inside any
+  Family listed in `originFamilyKeys`.
+
+Queue, claim, inspect, read, search, review-contract, init-review, validation and acceptance outputs are safe-only.
+Raw PoB code/XML, account or character details and whole-character mirrors remain confined to the
+lease-bound OS-temp packet. Durable records may preserve a complete reusable core mechanism package,
+including exact key skill/support roles, local passive connections and item/resource interactions,
+without reproducing the whole third-party character.
 ## Phase 5 create workflow
 
 Phase 5 generation is being built incrementally. The user-facing product entry is
@@ -205,10 +202,37 @@ does not take over build completion.
   returns `trustedEvaluationScope=snapshot_and_judge_only` and `versionContextTrusted=false`;
   cross-check the supplied version context against this run's freshness result before making a
   current-season verified claim.
-- Normal create mode must call `query_research_memory` and carry its safe references. No-memory mode
-  skips only that tool, keeps every other corpus/graph/mechanic/PoB/Judge tool available, uses empty
-  `memoryReferences`, and sets `researchMemoryRef=disabled:no_memory_baseline`. The product does not
-  automatically compare or choose between these modes; the user may run the same request both ways.
+- Normal create mode uses progressive research recall. Resolve the intended ascendancy and primary
+  skill to stable graph keys. The first exact-Family query sets `ascendancy_key` and
+  `primary_skill_key`, while `component_keys` contains only those two identities; ordinary supports,
+  utility skills, and secondary skills must not become mandatory AND filters. Natural-language
+  `query` expresses planning intent and ranking preference, not Family identity.
+  `query_research_memory` treats graph-backed gem/active-skill keys as the same physical component.
+  Inspect `buildFamilies`, including `secondarySkillKeys` and `recordKindCounts`, plus
+  `deepResearchRecords`, `buildPatterns`, and `semanticEdges`. After selecting a Family, use
+  `build_family_keys` and `record_kinds` to fetch a bounded dimension-specific summary, then
+  `detail_level=record` with only the most relevant `record_ids`. Apply `supportPackages` as verified
+  support candidates, `gearResponsibilities` as gear roles rather than copied items,
+  `ascendancyResponsibilities` as node-selection evidence, and `resourceMechanisms` plus rotation
+  records as resource/failure-state checks. Record the real `dedupeQueryRef` values, recalled item IDs,
+  and adopted/caveated/rejected applications in `researchMemoryUse`. A `case_observation` is a
+  candidate hypothesis, not a general rule. Before adopting a claim about an item, passive, trigger,
+  conversion, or resource interaction, verify its premise against current static/mechanic evidence;
+  successful component resolution proves existence, not the claimed interaction. If exact Family
+  evidence is missing/thin or a concrete
+  design axis remains unresolved, query the primary skill alone and/or set `include_transferable=true`
+  with canonical `research_axes`. Read the separately returned `transferablePatterns` as lower-priority
+  conditional inspiration, never as current-Family evidence. A component-scoped pattern from the
+  queried Family is returned in `buildPatterns` with Family weight and is omitted from
+  `transferablePatterns` to avoid duplication. An explicit `no_matching_memory` result is valid; a
+  tool-only call with no structured use is not. No-memory mode skips only research memory, keeps
+  every other corpus/graph/mechanic/PoB/Judge tool available, leaves `memoryReferences` empty,
+  omits `researchMemoryUse`, and sets `researchMemoryRef=disabled:no_memory_baseline`. The product
+  does not automatically compare or choose between these modes; the user may run the same request
+  both ways.
+- If a retry changes the trusted ascendancy or primary skill, resolve the new identity and call
+  `query_research_memory` again. The new attempt must use a fresh `dedupeQueryRef`; support, gear,
+  passive-path, or configuration-only repairs do not require another memory query.
 - Probe MCP availability by actually calling `get_freshness_report`. Do not claim that the PoE2 MCP
   tools are unavailable merely because they were not found through shell/file search or were not
   shown in a UI group. If that MCP call is genuinely unavailable, stop the build-generation run;
@@ -218,6 +242,9 @@ does not take over build completion.
   and `0.5.4b` remain compatible with season `0.5`. Preserve the exact patch in provenance, but
   do not stop generation solely because those details differ. A cross-season or passive-tree
   conflict still blocks current verification.
+  A `github_rate_limited` provider diagnostic only means the latest official commit could not be
+  refreshed. If the report has already corroborated the same passive-tree generation from the
+  validated local runtime and poe.ninja and exposes no tree blocker, do not call the tree unusable.
   If the current game patch, league, and passive tree are known and only local `pob_engine` or
   `pob_data` is stale, continue in stale-PoB limited-evidence mode: assemble the build, run Judge,
   and clearly forbid current-patch verified claims. Stop or clarify when the current game rules,
@@ -272,18 +299,30 @@ does not take over build completion.
   infallible power oracle.
 - A Judge `error` means the Judge invocation failed; it must not carry build hard failures. If the
   snapshot tool rejects an incomplete active build, continue assembling it before review.
-- Judge `passed=true` means hard legality passed, not that the build is recommendation-quality. A
-  `barely_playable` candidate, a goal-critical zero score (for example offense or recovery in a
-  starter request), or an unresolved support conflict should be repaired when retries remain. If
+- Judge has four separate layers: `hardFailures` for deterministic illegality,
+  `playabilityFailures` for severe but legal weaknesses, `qualityWarnings` for missed quality
+  targets, and `modelability` for what PoB can support. `passed=true` means legality passed only. A
+  `barely_playable` candidate, any playability failure, a goal-critical zero score (for example
+  offense or recovery in a starter request), or an unresolved support conflict should be repaired
+  when retries remain. If
   retries are exhausted, present it only as a weak prototype with explicit gaps, not a recommended
   smooth starter. Starter review must cover clear speed, boss/single-target duty, and sustain.
-- If Judge fails and the Agent identifies a concrete repair, modify the active build without starting
+- Under the current temporary delivery policy, non-hard Judge findings do not block final artifact
+  save or export after retries are exhausted. A candidate may be exported when Judge evaluated it,
+  `passed=true`, there are no `hardFailures`, and the trusted active snapshot is still valid. Preserve
+  every playability failure, quality warning, zero-score caveat, quality band, and score-applicability
+  limitation in the user-facing result; exportability is not a quality endorsement.
+- `scoreApplicability="unavailable"` means the core mechanic cannot be scored reliably. Do not quote
+  aggregate/DPS strength, call the build illegal, or silently replace the requested archetype merely
+  to make it modelable; preserve it as a legal candidate requiring reference or in-game validation.
+- If legality fails or playability failures have a concrete repair, modify the active build without starting
   a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
   `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
   Each row carries a short failure-audit conclusion and planned changes, never hidden reasoning.
   Stop after the safe human review packet; do not start a Phase 7 critic/rollback loop.
-- If the final attempt passes and the Agent accepts it, call `save_final_build_artifact` before the
-  review helper consumes the run token. Only the latest trusted attempt can be saved. Failed and
+- If the final attempt passes legality, has no playability failures, has applicable scoring, and the
+  Agent accepts it, call `save_final_build_artifact` before the review helper consumes the run token.
+  Only the latest trusted attempt can be saved. Failed and
   older attempts keep safe Judge summaries but never persist full PoB XML. The artifact tool stores
   XML privately and returns only safe metadata; never copy XML into chat or the review packet.
 - After saving, call `export_final_build_package` once. It always inventories the expected PoB XML,
@@ -294,9 +333,12 @@ does not take over build completion.
 - The sections below describe general compute-tool usage. For `/poe-bd-create`, formal evaluation
   still ends with `evaluate_generation_candidate` and the safe human review packet.
 
-## One active build (shared session state)
+## One active build per MCP session
 
-All compute tools operate on a single in-memory build that persists across calls.
+All compute tools in one MCP session operate on one in-memory build that persists across calls.
+Different MCP sessions use isolated Headless PoB processes. The server caps total PoB processes at
+five by default (`POE2_MCP_MAX_ENGINES`), reserving capacity for dedicated Judge/optimizer work; a
+new compute session fails clearly when the cap is occupied instead of reusing another session's build.
 - `new_build` resets to a blank slate. `import_build` (PoB code, pobb.in/pastebin link, raw XML,
   or a local file path) and `set_class` **replace** the build — but `set_class` does NOT clear
   gear/skills/config, so call `new_build` first for a truly clean from-scratch start. `set_class`
@@ -378,7 +420,8 @@ stage as ready.
    gear. Re-check `get_defenses` after.
 5. Call `inspect_build_completeness` before the final gate. Fix hard level-requirement failures and
    either fill or explicitly justify each advisory for scaffold gear, item levels, runes/soul cores,
-   passive jewels, flasks, and charms. It diagnoses omissions; it does not choose the build for you.
+   passive jewels, flasks, and charms. Rare/magic items must also pass affix-count, mod-group and
+   affix item-level checks. It diagnoses omissions; it does not choose the build for you.
 6. `apply_combat_profile` to switch on the realistic fight (boss tier + shock/curse/charges the
    build maintains), **plus any build-specific enemy condition its ascendancy/keystones rely on**
    (scan `list_config_options`, e.g. Open Weakness, Critical Weakness; a conditional "more" stays
@@ -436,14 +479,12 @@ realize it, then re-check defenses.
 
 - **Fresh characters show deeply negative resists — expected.** PoB applies the endgame resist
   penalty; bring them to the 75% cap via gear/tree. `get_defenses` reports over-cap (a buffer).
-- **`TotalDPS` is ONE hit; read `FullDPS` for multi-hit/projectile skills.** TotalDPS is a single
-  hit of the main skill. `FullDPS` is PoB's all-hits-landing estimate (overlapping projectiles,
-  secondary/ailment, DoT) — an upper bound. The realistic single-target number is between TotalDPS
-  and FullDPS and depends on **how many of the skill's hits/projectiles overlap on one target, which
-  is per-skill in PoE2** — some skills shotgun, many don't, so don't assume either way; verify the
-  specific skill (`explain_mechanic`/`lookup_mechanic`/in-game). The `dpsNote` flags when the two
-  diverge. Comparing two builds? Use the same metric (FullDPS↔FullDPS) — don't pit one skill's
-  TotalDPS against another's FullDPS.
+- **Read PoB damage fields by their actual definitions.** `AverageDamage` is an average hit.
+  `TotalDPS` is Hit DPS: average hit multiplied by use rate and engine-modelled quantity. `CombinedDPS`
+  adds the selected skill's modelled DoT/secondary components. `FullDPS` rolls up the skill actors and
+  groups explicitly included in Full DPS. None of these automatically proves real encounter uptime or
+  projectile overlap. Inspect the selected metric, Full DPS components and combat configuration, and
+  compare like-for-like.
 - **A ~0-DPS result is often *uncomputable*, not a bug — read the `warning`.** Causes: an Attack
   with no weapon (equip Weapon 1), a buff/reservation skill that isn't a hit,
   an undamageable minion, or %-of-life/corpse detonation. Say "validate kill speed in-game," don't
@@ -490,6 +531,9 @@ realize it, then re-check defenses.
   A class's *campaign* default weapon is a starting suggestion, not a restriction.
 - **Sustain & pricing:** compare `ManaCost` vs Mana+regen/leech (and Spirit); pricing is
   league-specific (`list_price_leagues`).
+- **Do not use a fixed mana-pool multiple as a sustain gate.** Combine unreserved mana, use rate,
+  net recovery, flasks, on-hit/leech and the actual skill rotation. Missing rate evidence is a
+  caveat, not a reason to strip supports until a pool-size heuristic passes.
 - **Meta is context, not a target.** `get_meta_builds` is popularity, not a recommendation — build
   to the user's goal; cite meta only when asked, as a data point with its sample size. It is
   **ascendancy distribution only**. `get_meta_archetype_trends` is the safer build-level trend seam:

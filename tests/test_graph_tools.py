@@ -273,6 +273,85 @@ def test_resolve_graph_component_returns_ambiguous_with_source_backed_candidates
     assert result["sourceRefs"] == ["fixture:graph_tools"]
 
 
+def test_resolve_graph_component_filters_candidates_by_expected_node_type():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"query": "Lightning Arrow", "expected_node_types": ["active_skill"]},
+    )
+
+    assert result["status"] == "resolved"
+    assert result["resolvedSubject"]["stableKey"] == "skill:LightningArrowPlayer"
+
+
+def test_resolver_exposes_passive_ascendancy_ownership():
+    source = pg.GraphSource(
+        source_id="fixture:ascendancy-resolver",
+        kind="test_fixture",
+        source_file="tests/test_graph_tools.py",
+    )
+    service = gt.GraphQueryService.from_snapshot(
+        pg.GraphSnapshot(
+            snapshot_id="snapshot:ascendancy-resolver",
+            created_at=datetime(2026, 7, 16, tzinfo=UTC),
+            sources=(source,),
+            nodes=(
+                pg.GraphNode(
+                    "ascendancy:druid:oracle", "ascendancy", "Oracle", (source.source_id,)
+                ),
+                pg.GraphNode(
+                    "notable:pob:0_5:55135", "notable", "Forced Outcome", (source.source_id,)
+                ),
+            ),
+            edges=(
+                pg.GraphEdge(
+                    "belongs_to",
+                    "notable:pob:0_5:55135",
+                    "ascendancy:druid:oracle",
+                    (source.source_id,),
+                ),
+            ),
+            aliases=(
+                pg.GraphAlias("Forced Outcome", "notable:pob:0_5:55135", (source.source_id,)),
+            ),
+        )
+    )
+
+    result = service.run_tool(
+        "resolve_graph_component",
+        {"query": "Forced Outcome", "expected_node_types": ["notable"]},
+    )
+
+    assert result["status"] == "resolved"
+    assert result["resolvedSubject"]["ascendancyKey"] == "ascendancy:druid:oracle"
+    assert result["facts"]["candidates"][0]["ascendancyKey"] == "ascendancy:druid:oracle"
+
+
+def test_search_graph_components_discovers_candidates_without_resolving_endpoint():
+    result = _service().run_tool(
+        "search_graph_components",
+        {"query": "Lightning", "expected_node_types": ["active_skill"]},
+    )
+
+    assert result["status"] == "found"
+    assert result["resolvedSubject"] is None
+    assert result["facts"]["candidates"][0]["stableKey"] == "skill:LightningArrowPlayer"
+    assert "candidate_discovery_only" in result["caveats"]
+
+
+def test_player_scope_includes_support_granted_player_payloads():
+    result = _service().run_tool(
+        "search_graph_components",
+        {
+            "query": "Support Pierce",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+        },
+    )
+
+    assert result["status"] == "found"
+    assert result["facts"]["candidates"][0]["stableKey"] == "skill:SupportPiercePlayer"
+
+
 def test_resolve_graph_component_unknown_is_not_assessed_not_hallucinated():
     result = _service().run_tool(
         "resolve_graph_component",

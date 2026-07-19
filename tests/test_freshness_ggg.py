@@ -653,4 +653,4 @@ def test_provider_injects_cache_transport_store_throttle_and_coordinator(tmp_pat
     assert captured["refresh_coordinator"] is coordinator
     assert captured["policy"] is PATCH_POLICY
     assert TREE_POLICY.refresh_after == timedelta(hours=1)
-    assert TREE_POLICY.reject_after == timedelta(hours=6)
+    assert TREE_POLICY.reject_after == timedelta(days=7)

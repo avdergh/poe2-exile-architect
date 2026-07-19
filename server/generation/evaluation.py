@@ -240,10 +240,17 @@ def _build_judge_report(
     reward_strength = "limited" if raw_strength == "strong" else raw_strength
     if reward_strength not in {"limited", "none", "unknown"}:
         reward_strength = "unknown"
+    modelability_status = str((result.get("modelability") or {}).get("status") or "unknown")
+    score_applicability = str(
+        (result.get("scoreApplicability") or {}).get("status")
+        or ("unavailable" if modelability_status == "not_modelable" else "applicable")
+    )
     report = models.JudgeAdvisoryReport(
         report_id=f"judge:{snapshot_id}",
         status="evaluated",
         hard_failures=[str(item) for item in result.get("hardFailures") or []],
+        playability_failures=[str(item) for item in result.get("playabilityFailures") or []],
+        quality_warnings=[str(item) for item in result.get("qualityWarnings") or []],
         caveats=[str(item) for item in result.get("caveats") or []],
         aggregate_score=max(0.0, min(1.0, aggregate)),
         reward_strength=reward_strength,
@@ -252,7 +259,8 @@ def _build_judge_report(
         passed=bool(result.get("pass")),
         quality_band=str(result.get("qualityBand") or "unknown"),
         score_vector=_safe_score_vector(result.get("scoreVector") or {}),
-        modelability_status=str((result.get("modelability") or {}).get("status") or "unknown"),
+        modelability_status=modelability_status,
+        score_applicability=score_applicability,
         level_band=str(result.get("levelBand") or "unknown"),
         evaluator_version=str(
             (result.get("reproducibility") or {}).get("evaluatorVersion") or "unknown"

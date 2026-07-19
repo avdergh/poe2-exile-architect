@@ -45,12 +45,16 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 没有已存在 graph node，就不能创建 semantic graph edge。
 - 没有 typed tool，就不能让 agent 查询图。不要暴露 raw Cypher/Gremlin/SQL 拼接给
   agent。
+- 模糊组件查询只用于候选发现：先 `search_graph_components`，再用
+  `resolve_graph_component` 确认 stable key；模糊或向量相似度不能直接授权 semantic edge。
 - 没有 patch/version/status，就不能进入 durable memory。
 - 没有 copy-safety pass，就不能持久化成熟 BD 知识。
 - 没有 snapshot score improvement，就不能声称 loop 成功。
 - 没有 early stopping，就不能做 autonomous repair loop。
-- 不要持久化或暴露可复刻第三方成熟 BD 的材料：PoB code、raw XML、完整装备表、完整
-  passive path、完整 gem/support links、raw account/character 细节或长篇复制攻略文本。系统自己
+- 不要持久化或暴露第三方成熟 BD 的原始整角色材料：PoB code、raw XML、raw account/character
+  细节、长篇复制攻略文本，或由全部装备槽、整棵已分配天赋、全部技能组和完整配置组成的整角色
+  镜像。允许保存可复用核心机制包，包括关键技能与辅助组合、局部核心天赋连接、暗金/装备与技能、
+  天赋、资源系统的完整联动；不得按组件数量机械拒绝。系统自己
   生成、经过可信 Judge 且由 Agent 明确接受的最终候选，可以作为 Phase 6 本地私有
   `FinalBuildArtifact` 保存完整 PoB XML，但不得进入聊天、人工验收包、研究记忆或 Git。
 - 禁止游戏内交互、overlay、内存读取、自动化或 live-screen parsing。
@@ -160,6 +164,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/knowledge/mature_eval.py`：creator/evaluator contamination 和 typed gap 合同。
 - `server/knowledge/mature_fragment_extraction.py`：外部 agent research packet builder 和 clean
   fragment schema v3 validator。它不能调用模型 provider。
+- `server/knowledge/research_models.py`、`server/knowledge/research_memory.py`：Phase 4 typed
+  proposal、聚焦 `DeepResearchRecord`、SQLite 写入和两级召回合同。单条深度记录只回答一个主要
+  问题；中文正文原则上不超过 400 字，英文不超过 250 个单词。
 - `server/knowledge/mature_source_intake.py`：按 build family 聚合来源变体，并构建供外部
   agent 研究的 raw-rich、quarantine-only case。
 - `server/knowledge/mature_ninja_payload.py`：从渲染后的 poe.ninja build 页面提取 PoB import
@@ -201,7 +208,6 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/04_research_memory.md`：Researcher extraction 进入 semantic graph 和 memory。
 - `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
 - `docs/phases/06_build_export.md`：官方 `.build` export。
-- `docs/phases/06_5_system_optimization.md`：进入 Phase 7 前的全链路调优和仓库拆分调研。
 - `docs/phases/07_critic_loop.md`：rollback、repair 和 early stopping。
 - `docs/phases/08_reward_memory.md`：RLAIF-lite reward memory。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。

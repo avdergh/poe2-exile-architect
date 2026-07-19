@@ -79,6 +79,13 @@ def evaluate_readback(
     )
     hard_failures.extend(socket_failures)
     caveats.extend(socket_caveats)
+    caveats.extend(
+        rules.support_completeness_caveats(
+            evaluation_skill_group,
+            level=int(_num(build.get("level")) or 0),
+            source_context=source_context,
+        )
+    )
     supplemental_components = _supplemental_damage_components(build)
     if supplemental_components:
         caveats.append("conditional_supplemental_damage_caveat")
@@ -104,6 +111,9 @@ def evaluate_readback(
     item_requirements = rules.check_equipped_item_requirements(build)
     if not item_requirements.get("ok"):
         hard_failures.append("equipped_item_level_requirement_unmet")
+    item_affixes = rules.check_equipped_item_affixes(build)
+    if not item_affixes.get("ok"):
+        hard_failures.append("illegal_equipped_item_affixes")
     if (
         build.get("spiritUsed") is not None
         and build.get("spiritAvailable") is not None
@@ -144,6 +154,8 @@ def evaluate_readback(
 
     physical_invalid = rules.physical_invalid_failures(hard_failures)
     blocked_dimensions = rules.blocked_score_dimensions(physical_invalid)
+    if modelability_result.get("coreBlocked"):
+        blocked_dimensions.add("offense")
     score = scoring.score_metrics(
         metrics,
         level=int(_num(build.get("level")) or 0),
@@ -152,7 +164,8 @@ def evaluate_readback(
         keystones=build.get("keystones"),
         source_context=source_context,
     )
-    hard_failures.extend(score["failures"])
+    playability_failures = list(score.get("playabilityFailures") or score.get("failures") or [])
+    quality_warnings = list(score.get("qualityWarnings") or [])
     caveats.extend(score["caveats"])
     physical_invalid = rules.physical_invalid_failures(hard_failures)
 
@@ -163,7 +176,10 @@ def evaluate_readback(
 
     passed = not hard_failures
     reward_eligible: bool | str = bool(
-        passed and not physical_invalid and not modelability_result.get("coreBlocked")
+        passed
+        and not physical_invalid
+        and not playability_failures
+        and not modelability_result.get("coreBlocked")
     )
     if _has_limited_reward_caveat(caveats) and reward_eligible:
         reward_eligible = "limited"
@@ -185,6 +201,7 @@ def evaluate_readback(
     selected = build.get("judgeSelectedSkill") or {}
     if selected.get("skillName") and selected.get("skillName") != build.get("mainSkill"):
         summary["judgeSelectedSkill"] = selected.get("skillName")
+    score_applicable = not bool(modelability_result.get("coreBlocked"))
     result = {
         "snapshotId": snapshot_id,
         "sourceHash": source_hash,
@@ -195,6 +212,12 @@ def evaluate_readback(
         "scoreReviewNeeded": score_review_needed,
         "hardFailures": _dedupe(hard_failures),
         "physicalInvalidFailures": physical_invalid,
+        "playabilityFailures": _dedupe(playability_failures),
+        "qualityWarnings": _dedupe(quality_warnings),
+        "scoreApplicability": {
+            "status": "applicable" if score_applicable else "unavailable",
+            "reason": None if score_applicable else "core_mechanic_not_modelable",
+        },
         "caveats": _dedupe(caveats),
         "modelability": modelability_result,
         "defenseModel": _defense_model(build, metrics, defenses, score),
@@ -202,13 +225,14 @@ def evaluate_readback(
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
             "itemRequirements": item_requirements,
+            "itemAffixes": item_affixes,
         },
         "supplementalDamageComponents": supplemental_components,
         "scoreVector": score["scoreVector"],
         "scoreBreakdown": score.get("scoreBreakdown"),
         "scoreScale": score.get("scoreScale"),
         "scenarioFit": score.get("scenarioFit"),
-        "qualityBand": score.get("qualityBand"),
+        "qualityBand": score.get("qualityBand") if score_applicable else "unmodelled",
         "aggregateScore": score["aggregateScore"],
         "levelBand": score["levelBand"],
         "metricProvenance": score["metricProvenance"],

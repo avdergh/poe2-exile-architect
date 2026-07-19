@@ -45,6 +45,7 @@ Usage:
   install.sh [<platform>]            Install for <platform> (or prompt if omitted)
   install.sh --dry-run <platform>    Show actions without changing files
   install.sh --update                Pull latest changes
+  install.sh --register-mcp-only     Register this checkout's MCP server without cloning/linking
   install.sh --uninstall <platform>  Remove links for <platform>
   install.sh --help
 
@@ -120,7 +121,7 @@ list_skills() {
   root="$(skill_list_root)"
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
-      printf '%s\n' "poe-bd-research" "poe-bd-create"
+      printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"
       return 0
     fi
     say "Skills directory not found: $root"
@@ -139,7 +140,7 @@ list_skills_for_uninstall() {
   if [[ -d "$root" ]]; then
     list_skills
   else
-    printf '%s\n' "poe-bd-research" "poe-bd-create"
+    printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"
   fi
 }
 
@@ -387,7 +388,7 @@ cmd_install() {
   if [[ "$id" == "codex" ]]; then
     register_codex_mcp_server
   fi
-  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
+  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research, /poe-bd-create, and /poe-bd-research-loop."
 }
 
 cmd_uninstall() {
@@ -424,6 +425,11 @@ main() {
       ;;
     --update)
       cmd_update
+      ;;
+    --register-mcp-only)
+      REPO_DIR="$SCRIPT_DIR"
+      resolve_uv_command >/dev/null
+      register_codex_mcp_server
       ;;
     --uninstall)
       shift

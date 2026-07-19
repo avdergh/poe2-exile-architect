@@ -7,6 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from functools import partial
 import math
+import os
 from threading import Lock
 from time import monotonic
 from typing import Any
@@ -55,6 +56,11 @@ def _cache_store(name: str) -> FileCacheStore:
 
 def _http_transport(request: TransportRequest) -> TransportResponse:
     headers = {**_USER_AGENT, **dict(request.headers)}
+    if request.url.startswith("https://api.github.com/"):
+        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+        headers.setdefault("Accept", "application/vnd.github+json")
     http_request = urllib.request.Request(request.url, headers=headers)
     try:
         with urllib.request.urlopen(  # noqa: S310 - freshness providers use fixed HTTPS URLs.

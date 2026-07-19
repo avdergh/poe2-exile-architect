@@ -18,7 +18,7 @@ from typing import Any
 
 from .. import paths
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 SANITIZER_VERSION = "phase3n1-v1"
 EXTRACTOR_VERSION = "phase3n2-v1"
 EXTRACTION_METHOD = "deterministic_mature_case_summary"
@@ -481,6 +481,13 @@ CREATE TABLE IF NOT EXISTS research_build_patterns (
     component_keys TEXT NOT NULL,
     component_roles TEXT NOT NULL,
     confidence_tier TEXT NOT NULL,
+    transfer_scope TEXT NOT NULL DEFAULT 'family',
+    transfer_key TEXT,
+    applicability_axes TEXT NOT NULL DEFAULT '[]',
+    applicability_requirements TEXT NOT NULL DEFAULT '[]',
+    exclusion_conditions TEXT NOT NULL DEFAULT '[]',
+    transfer_rationale TEXT,
+    origin_family_keys TEXT NOT NULL DEFAULT '[]',
     sample_count INTEGER NOT NULL,
     family_count INTEGER NOT NULL,
     source_diversity_count INTEGER NOT NULL,
@@ -512,11 +519,100 @@ CREATE TABLE IF NOT EXISTS research_build_patterns (
     CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
     CHECK (status IN ('valid', 'needs_revalidation', 'stale', 'deprecated', 'quarantined')),
     CHECK (copy_safety_state IN ('passed', 'needs_review', 'rejected')),
+    CHECK (transfer_scope IN ('family', 'component', 'global')),
     CHECK (planner_visible IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_research_patterns_bucket
 ON research_build_patterns(visibility, split, knowledge_scope, pattern_type, planner_visible);
+
+CREATE TABLE IF NOT EXISTS deep_research_records (
+    record_id TEXT PRIMARY KEY,
+    research_group_id TEXT NOT NULL,
+    build_family_key TEXT,
+    knowledge_key TEXT,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    record_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_language TEXT NOT NULL,
+    length_exception_reason TEXT,
+    component_keys TEXT NOT NULL,
+    component_mentions TEXT NOT NULL DEFAULT '[]',
+    source_case_refs TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    conditions TEXT NOT NULL,
+    failure_conditions TEXT NOT NULL,
+    typed_payload TEXT NOT NULL,
+    class_key TEXT,
+    ascendancy_key TEXT,
+    extraction_method_version TEXT NOT NULL,
+    record_schema_version INTEGER NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    split TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    copy_safety_state TEXT NOT NULL,
+    current_version_context TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_validated_at TEXT,
+    superseded_by_id TEXT,
+    CHECK (
+        (visibility = 'creator_visible' AND split = 'train_context')
+        OR (visibility = 'evaluator_only' AND split = 'eval_holdout')
+        OR (visibility = 'quarantined' AND split = 'quarantine')
+    ),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral')),
+    CHECK (status IN ('valid', 'needs_revalidation', 'stale', 'deprecated', 'quarantined')),
+    CHECK (copy_safety_state IN ('passed', 'needs_review', 'rejected')),
+    CHECK (content_language IN ('zh-CN', 'en'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_deep_research_records_bucket
+ON deep_research_records(
+    visibility, split, knowledge_scope, status, record_kind, research_group_id
+);
+
+CREATE TABLE IF NOT EXISTS research_build_families (
+    build_family_key TEXT PRIMARY KEY,
+    ascendancy_key TEXT NOT NULL,
+    primary_skill_key TEXT NOT NULL,
+    secondary_skill_keys TEXT NOT NULL,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_build_family_evidence (
+    build_family_key TEXT NOT NULL,
+    source_case_ref TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (build_family_key, source_case_ref),
+    FOREIGN KEY (build_family_key) REFERENCES research_build_families(build_family_key)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS deep_research_record_evidence (
+    knowledge_key TEXT NOT NULL,
+    source_case_ref TEXT NOT NULL,
+    safe_evidence_refs TEXT NOT NULL,
+    observed_component_keys TEXT NOT NULL,
+    observed_component_mentions TEXT NOT NULL,
+    conditions TEXT NOT NULL,
+    failure_conditions TEXT NOT NULL,
+    game_patch TEXT NOT NULL,
+    passive_tree_version TEXT NOT NULL,
+    pob_version_or_commit TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (knowledge_key, source_case_ref)
+);
 
 CREATE TABLE IF NOT EXISTS research_rejected_proposals (
     rejection_id TEXT PRIMARY KEY,
@@ -621,6 +717,52 @@ def schema_version(con: sqlite3.Connection) -> int:
 def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
     _add_column_if_missing(
         con,
+        "deep_research_records",
+        "component_mentions",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(con, "deep_research_records", "build_family_key", "TEXT")
+    _add_column_if_missing(con, "deep_research_records", "knowledge_key", "TEXT")
+    _add_column_if_missing(
+        con,
+        "deep_research_records",
+        "evidence_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "transfer_scope",
+        "TEXT NOT NULL DEFAULT 'family'",
+    )
+    _add_column_if_missing(con, "research_build_patterns", "transfer_key", "TEXT")
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "applicability_axes",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "applicability_requirements",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "exclusion_conditions",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(con, "research_build_patterns", "transfer_rationale", "TEXT")
+    _add_column_if_missing(
+        con,
+        "research_build_patterns",
+        "origin_family_keys",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        con,
         "research_build_patterns",
         "status",
         "TEXT NOT NULL DEFAULT 'valid'",
@@ -642,6 +784,25 @@ def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
         "research_build_patterns",
         "superseded_by_id",
         "TEXT",
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_research_patterns_transfer
+        ON research_build_patterns(transfer_scope, transfer_key, confidence_tier, planner_visible)
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_deep_research_records_family
+        ON deep_research_records(build_family_key, record_kind, status)
+        """
+    )
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_research_records_canonical_knowledge
+        ON deep_research_records(knowledge_key)
+        WHERE knowledge_key IS NOT NULL AND superseded_by_id IS NULL
+        """
     )
     _migrate_revalidation_events_target_kind_check(con)
 

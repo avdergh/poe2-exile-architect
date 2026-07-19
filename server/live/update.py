@@ -18,6 +18,7 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +107,12 @@ def _verify(blob: bytes, sha: str | None) -> bool:
     return bool(sha) and hashlib.sha256(blob).hexdigest() == sha
 
 
-def apply_updates(force: bool = False) -> dict[str, Any]:
+def apply_updates(
+    force: bool = False,
+    *,
+    install_context: Callable[[bool], AbstractContextManager[Any]] | None = None,
+    validate_engine: Callable[[Path], None] | None = None,
+) -> dict[str, Any]:
     """Download + install the latest validated release into the user-data dir."""
     manifest = _fetch_manifest()
     if not manifest:
@@ -118,57 +124,117 @@ def apply_updates(force: bool = False) -> dict[str, Any]:
 
     data_dir = paths.user_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    corpus = manifest.get("corpus") or {}
-    if corpus.get("url"):
-        blob = _http(corpus["url"])
-        if not _verify(blob, corpus.get("sha256")):
-            return {"updated": False, "error": "corpus checksum missing or mismatched"}
-        db.reset()  # release the read handle before replacing the file
-        tmp = data_dir / "corpus.sqlite.tmp"
-        tmp.write_bytes(blob)
-        os.replace(tmp, data_dir / "corpus.sqlite")
-
     prev = installed_meta()
+    corpus = manifest.get("corpus") or {}
     engine = manifest.get("engine") or {}
     engine_sha = engine.get("sha256")
-    # Skip the engine download on data-only refreshes — its sha is unchanged from what's installed
-    # (the engine only moves on a real PoB bump / app release), so there's nothing new to fetch.
-    if engine.get("url") and (force or engine_sha != prev.get("engine_sha256")):
-        blob = _http(engine["url"])
-        if not _verify(blob, engine_sha):
-            return {"updated": False, "error": "engine checksum missing or mismatched"}
-        with tempfile.TemporaryDirectory() as td:
-            zpath = Path(td) / "engine.zip"
-            zpath.write_bytes(blob)
-            extract = Path(td) / "x"
-            with zipfile.ZipFile(zpath) as zf:
-                zf.extractall(extract)
-            src_pob = extract / "pob"
-            dst_pob = data_dir / "pob"
-            if src_pob.is_dir():
-                if dst_pob.exists():
-                    shutil.rmtree(dst_pob)
-                shutil.move(str(src_pob), str(dst_pob))
+    replace_engine = bool(engine.get("url") and (force or engine_sha != prev.get("engine_sha256")))
+    metadata = {
+        "version": latest,
+        "app_version": manifest.get("app_version") or latest,
+        "pob_commit": manifest.get("pob_commit") or prev.get("pob_commit"),
+        "pob_version": manifest.get("pob_version") or prev.get("pob_version"),
+        # Data-only refreshes must preserve the compatibility claims certified with the unchanged
+        # engine. Missing fields in a refreshed manifest cannot revoke an installed claim.
+        "game_patch": manifest.get("game_patch") or prev.get("game_patch"),
+        "passive_tree": manifest.get("passive_tree") or prev.get("passive_tree"),
+        "engine_sha256": engine_sha or prev.get("engine_sha256"),
+    }
 
-    (data_dir / "installed.json").write_text(
-        json.dumps(
-            {
-                "version": latest,
-                "app_version": manifest.get("app_version") or latest,
-                "pob_commit": manifest.get("pob_commit"),
-                # Freshness providers deliberately refuse to infer game compatibility from
-                # release names. Persist the certified claims published by update-manifest.json.
-                "game_patch": manifest.get("game_patch"),
-                "passive_tree": manifest.get("passive_tree"),
-                "engine_sha256": engine_sha or prev.get("engine_sha256"),
-            }
-        )
-    )
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=data_dir,
+            prefix=".update-stage-",
+            ignore_cleanup_errors=True,
+        ) as td:
+            stage = Path(td)
+            replacements: list[tuple[Path, Path]] = []
+            if corpus.get("url"):
+                blob = _http(corpus["url"])
+                if not _verify(blob, corpus.get("sha256")):
+                    return {"updated": False, "error": "corpus checksum missing or mismatched"}
+                staged_corpus = stage / "corpus.sqlite"
+                staged_corpus.write_bytes(blob)
+                replacements.append((staged_corpus, data_dir / "corpus.sqlite"))
+
+            if replace_engine:
+                blob = _http(engine["url"])
+                if not _verify(blob, engine_sha):
+                    return {"updated": False, "error": "engine checksum missing or mismatched"}
+                zpath = stage / "engine.zip"
+                zpath.write_bytes(blob)
+                extract = stage / "engine-extract"
+                with zipfile.ZipFile(zpath) as zf:
+                    _safe_extract(zf, extract)
+                staged_pob = extract / "pob"
+                if not staged_pob.is_dir():
+                    return {"updated": False, "error": "engine archive missing pob directory"}
+                if validate_engine is not None:
+                    try:
+                        validate_engine(staged_pob)
+                    except Exception as exc:  # noqa: BLE001 - reject before any runtime mutation.
+                        return {
+                            "updated": False,
+                            "error": f"staged engine validation failed: {type(exc).__name__}",
+                        }
+                replacements.append((staged_pob, data_dir / "pob"))
+
+            staged_metadata = stage / "installed.json"
+            staged_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+            replacements.append((staged_metadata, data_dir / "installed.json"))
+
+            context = (
+                install_context(replace_engine) if install_context is not None else nullcontext()
+            )
+            with context:
+                if corpus.get("url"):
+                    db.reset()
+                _install_replacements(replacements, stage / "backups")
+    except (OSError, zipfile.BadZipFile, ValueError) as exc:
+        return {"updated": False, "error": f"update installation failed: {type(exc).__name__}"}
     return {"updated": True, "version": latest}
 
 
-def auto_update(on_applied: Callable[[], None] | None = None) -> None:
+def _safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
+    root = destination.resolve()
+    for member in archive.infolist():
+        target = (destination / member.filename).resolve()
+        if target != root and root not in target.parents:
+            raise ValueError("engine archive contains an unsafe path")
+    archive.extractall(destination)
+
+
+def _install_replacements(replacements: list[tuple[Path, Path]], backup_root: Path) -> None:
+    backup_root.mkdir()
+    installed: list[tuple[Path, Path | None]] = []
+    try:
+        for index, (staged, target) in enumerate(replacements):
+            backup = backup_root / f"{index}-{target.name}"
+            previous = backup if target.exists() else None
+            if previous is not None:
+                os.replace(target, previous)
+            try:
+                os.replace(staged, target)
+            except BaseException:
+                if previous is not None:
+                    os.replace(previous, target)
+                raise
+            installed.append((target, previous))
+    except BaseException:
+        for target, previous in reversed(installed):
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink(missing_ok=True)
+            if previous is not None:
+                os.replace(previous, target)
+        raise
+
+
+def auto_update(
+    install_context: Callable[[bool], AbstractContextManager[Any]] | None = None,
+    validate_engine: Callable[[Path], None] | None = None,
+) -> None:
     """Throttled, best-effort startup update. Safe to run in a daemon thread."""
     if os.environ.get("POE2_MCP_NO_AUTOUPDATE"):
         return
@@ -184,8 +250,6 @@ def auto_update(on_applied: Callable[[], None] | None = None) -> None:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(now))
         if check_for_updates().get("available"):
-            res = apply_updates()
-            if res.get("updated") and on_applied:
-                on_applied()
+            apply_updates(install_context=install_context, validate_engine=validate_engine)
     except Exception:  # noqa: BLE001 - auto-update must never break the server
         pass

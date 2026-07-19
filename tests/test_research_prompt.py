@@ -20,7 +20,7 @@ def _packet() -> dict:
         "copySafetyRules": [
             "Final output must not contain raw PoB code, raw XML, full gear, full passive path, or full gem links."
         ],
-        "requestedOutputSchema": "ResearcherOutput schema_version=4",
+        "requestedOutputSchema": "ResearcherOutput schema_version=5",
     }
 
 
@@ -39,19 +39,23 @@ def test_researcher_prompt_is_tool_driven_not_plain_json_output():
     text = _prompt_text(package)
 
     assert package["ok"] is True
-    assert package["schemaVersion"] == 4
-    assert "ResearcherOutput schema_version=4" in text
+    assert package["schemaVersion"] == 5
+    assert "ResearcherOutput schema_version=5" in text
     assert "MUST NOT output the final JSON as regular text" in text
     assert "DO NOT output your final analysis as markdown JSON" in text
     assert "propose_research_fragments" in text
+    assert "propose_deep_research_records" in text
     assert "propose_semantic_edges" in text
     assert "Return exactly one JSON object" not in text
 
 
-def test_researcher_prompt_requires_query_before_write_and_append_evidence():
+def test_researcher_prompt_analyzes_current_case_before_memory_but_queries_before_write():
     text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
 
-    assert "STEP 1: Query & Deduplicate (Mandatory)" in text
+    assert "STEP 1: Independently Reconstruct the Current Build" in text
+    assert "STEP 2: Query, Compare, and Deduplicate (Mandatory Before Writing)" in text
+    assert "Do not query durable memory until that initial working model is complete" in text
+    assert "Durable memory must not define what you notice in the current case" in text
     assert "query_research_memory" in text
     assert "dedupeQueryRef" in text
     assert "append_evidence_to_fragment" in text
@@ -60,10 +64,18 @@ def test_researcher_prompt_requires_query_before_write_and_append_evidence():
     assert "Do not use validate_researcher_output as a routine preflight" in text
 
 
+def test_researcher_prompt_does_not_require_memory_as_first_tool_call():
+    text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
+
+    assert "Your first tool call must be query_research_memory" not in text
+    assert "Before writing anything, call query_research_memory" not in text
+    assert "query memory before any write proposal" in text
+
+
 def test_researcher_prompt_hard_locks_graph_resolution_before_edges():
     text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
 
-    assert "STEP 2: Resolve Physical Keys (Mandatory)" in text
+    assert "STEP 3: Resolve Physical Keys (Mandatory)" in text
     assert "graph_tool_query" in text
     assert "resolve_graph_component" in text
     assert "Before constructing ANY semantic edge" in text
@@ -99,9 +111,8 @@ def test_researcher_prompt_has_copy_safety_and_bounded_rejection_loop():
 
     assert "NEVER output raw PoB code" in text
     assert "raw XML" in text
-    assert "full gear tables" in text
-    assert "full passive trees" in text
-    assert "full gem/support links" in text
+    assert "whole-character snapshot" in text
+    assert "complete reusable core mechanism packages" in text
     assert "raw character URLs" in text
     assert "retry at most 2 times" in text
     assert "safe ids/status/caveats" in text
@@ -129,6 +140,9 @@ def test_researcher_prompt_requires_build_design_observation_and_pattern_axes():
     assert "common_within_archetype" in text
     assert "hard legality" in text
     assert "ascendancy_shell" in text
+    assert "familyCoreSkillKeys" in text
+    assert "resourceMechanisms" in text
+    assert "mana_leech" in text
 
 
 def test_researcher_prompt_lists_phase45_extraction_checklist_explicitly():
@@ -145,7 +159,7 @@ def test_researcher_prompt_lists_phase45_extraction_checklist_explicitly():
         "required/enabling, optional/chase, or budget_substitute",
         "support + active skill",
         "single pair",
-        "full support-link package",
+        "preserve the complete key package",
         "skill/archetype + scaling axis",
         "weapon/base/stat priority",
         "Spirit/reservation package + build shell",
@@ -183,7 +197,45 @@ def test_researcher_user_directives_include_pattern_submission_tool():
     package = research_prompt.build_researcher_prompt_package(_packet())
     user_text = package["messages"][1]["content"]
 
+    assert "Submit focused records through propose_deep_research_records" in user_text
     assert (
-        "Submit findings through propose_research_fragments, propose_build_patterns, and propose_semantic_edges"
+        "propose_research_fragments, propose_build_patterns, and propose_semantic_edges"
         in user_text
     )
+
+
+def test_researcher_prompt_requires_focused_deep_records_and_content_budget():
+    text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
+
+    assert "multiple focused DeepResearchRecord objects" in text
+    assert "one main question" in text
+    assert "400 Chinese characters" in text
+    assert "250 words" in text
+    assert "length_exception_reason" in text
+    assert '"deep_research_records"' in text
+    assert '"research_group_id"' in text
+    assert '"record_schema_version":1' in text
+
+
+def test_researcher_prompt_separates_caveats_from_family_and_requires_gear_responsibilities():
+    text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
+
+    assert "modelability_caveat" in text
+    assert "do not belong to the Family" in text
+    assert "supportCoverageExceptions" in text
+    assert "gearResponsibilities" in text
+    assert "physically belongs to that ascendancy" in text
+
+
+def test_researcher_prompt_inlines_deep_method_positive_example_and_shallow_counterexample():
+    text = _prompt_text(research_prompt.build_researcher_prompt_package(_packet()))
+
+    assert "DEEP RESEARCH PLAYBOOK" in text
+    assert "generator -> state -> transformer -> payoff -> refresh" in text
+    assert "CALIBRATED POSITIVE EXAMPLE" in text
+    assert "Killing Palm" in text
+    assert "Perpetual Charge" in text
+    assert "Culmination II" in text
+    assert "SHALLOW COUNTEREXAMPLE" in text
+    assert "This is not deep research" in text
+    assert "Generic advice with no skill/item/passive/ascendancy/mechanic anchor" in text

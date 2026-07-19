@@ -122,6 +122,79 @@ class ToolReference(StrictModel):
     summary: str = Field(min_length=1)
 
 
+class ResearchMemoryInsightDecision(StrictModel):
+    source_refs: list[str] = Field(min_length=1, max_length=12)
+    decision: Literal["adopted", "caveated", "rejected"]
+    summary: str = Field(min_length=1, max_length=320)
+    application: str = Field(min_length=1, max_length=320)
+
+
+class ResearchMemoryUse(StrictModel):
+    retrieval_outcome: Literal["matched", "no_matching_memory"]
+    dedupe_query_refs: list[str] = Field(min_length=1, max_length=8)
+    component_keys: list[str] = Field(default_factory=list, max_length=24)
+    build_family_keys: list[str] = Field(default_factory=list, max_length=12)
+    deep_record_ids: list[str] = Field(default_factory=list, max_length=24)
+    pattern_ids: list[str] = Field(default_factory=list, max_length=24)
+    semantic_edge_ids: list[str] = Field(default_factory=list, max_length=24)
+    memory_item_ids: list[str] = Field(default_factory=list, max_length=24)
+    insight_decisions: list[ResearchMemoryInsightDecision] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+    no_match_reason: str | None = Field(default=None, min_length=1, max_length=320)
+
+    @model_validator(mode="after")
+    def _usage_is_traceable(self) -> "ResearchMemoryUse":
+        list_fields = (
+            "dedupe_query_refs",
+            "component_keys",
+            "build_family_keys",
+            "deep_record_ids",
+            "pattern_ids",
+            "semantic_edge_ids",
+            "memory_item_ids",
+        )
+        for field_name in list_fields:
+            values = getattr(self, field_name)
+            if len(values) != len(set(values)):
+                raise ValueError(f"{field_name} must not contain duplicates")
+        if any(not re.fullmatch(r"dq-[0-9a-f]{16}", ref) for ref in self.dedupe_query_refs):
+            raise ValueError(
+                "dedupe_query_refs must use query_research_memory dedupeQueryRef values"
+            )
+
+        source_refs = set(self.source_refs())
+        if self.retrieval_outcome == "matched":
+            if not source_refs:
+                raise ValueError("matched research memory requires at least one recalled item")
+            if not self.insight_decisions:
+                raise ValueError("matched research memory requires an adoption decision")
+            if self.no_match_reason is not None:
+                raise ValueError("matched research memory cannot carry no_match_reason")
+            for decision in self.insight_decisions:
+                unknown = sorted(set(decision.source_refs) - source_refs)
+                if unknown:
+                    raise ValueError(
+                        "insight decision references memory items absent from research_memory_use"
+                    )
+        else:
+            if source_refs or self.insight_decisions:
+                raise ValueError("no_matching_memory cannot carry recalled items or decisions")
+            if not self.no_match_reason:
+                raise ValueError("no_matching_memory requires no_match_reason")
+        return self
+
+    def source_refs(self) -> list[str]:
+        return [
+            *self.build_family_keys,
+            *self.deep_record_ids,
+            *self.pattern_ids,
+            *self.semantic_edge_ids,
+            *self.memory_item_ids,
+        ]
+
+
 class PrototypeBuildCandidate(VersionedSafeModel):
     candidate_id: str = Field(min_length=1)
     prompt_ref: str = Field(min_length=1)
@@ -140,12 +213,33 @@ class PrototypeBuildCandidate(VersionedSafeModel):
     unresolved_caveats: list[str] = Field(default_factory=list)
     tool_references: list[ToolReference] = Field(default_factory=list)
     memory_references: list[str] = Field(default_factory=list)
+    research_memory_use: ResearchMemoryUse | None = None
     rationale_summary: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _candidate_contract_is_valid(self) -> "PrototypeBuildCandidate":
         _require_stage_contract(self.current_output_stages, self.target_lifecycle_stages)
         _require_class_only_lock(self.cross_stage_locked_dimensions)
+        if self.research_memory_use is not None:
+            usage = self.research_memory_use
+            memory_tool_refs = {
+                reference.query_ref
+                for reference in self.tool_references
+                if reference.tool_name.casefold().endswith("query_research_memory")
+            }
+            if not set(usage.dedupe_query_refs).issubset(memory_tool_refs):
+                raise ValueError(
+                    "research_memory_use query refs must match query_research_memory tool references"
+                )
+            required_memory_refs = set(usage.dedupe_query_refs) | set(usage.source_refs())
+            if not required_memory_refs.issubset(set(self.memory_references)):
+                raise ValueError(
+                    "memory_references must include research query and recalled item references"
+                )
+            if self.version_context.research_memory_ref not in usage.dedupe_query_refs:
+                raise ValueError(
+                    "version_context research_memory_ref must identify a recorded memory query"
+                )
         return self
 
 
@@ -245,6 +339,8 @@ class JudgeAdvisoryReport(StrictModel):
     report_id: str = Field(min_length=1)
     status: Literal["evaluated", "not_evaluated", "error"]
     hard_failures: list[str] = Field(default_factory=list)
+    playability_failures: list[str] = Field(default_factory=list)
+    quality_warnings: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
     aggregate_score: float | None = Field(default=None, ge=0.0, le=1.0)
     reward_strength: Literal["strong", "limited", "none", "unknown"] = "unknown"
@@ -254,6 +350,7 @@ class JudgeAdvisoryReport(StrictModel):
     quality_band: str | None = None
     score_vector: JudgeScoreVector | None = None
     modelability_status: str | None = None
+    score_applicability: Literal["applicable", "unavailable", "unknown"] = "unknown"
     level_band: str | None = None
     evaluator_version: str | None = None
     final_classification: str | None = None
@@ -303,6 +400,7 @@ class JudgeAdvisoryReport(StrictModel):
                     self.quality_band,
                     self.score_vector,
                     self.modelability_status,
+                    None if self.score_applicability == "unknown" else self.score_applicability,
                     self.level_band,
                     self.evaluator_version,
                     self.final_classification,
@@ -323,6 +421,8 @@ class JudgeAdvisoryReport(StrictModel):
                     raise ValueError("error judge report requires error_code")
                 if self.hard_failures:
                     raise ValueError("error judge report cannot carry build hard_failures")
+                if self.playability_failures or self.quality_warnings:
+                    raise ValueError("error judge report cannot carry build quality diagnostics")
         if self.status != "evaluated" and not self.caveats and not self.hard_failures:
             raise ValueError(
                 "not evaluated or error judge report requires caveats or hard_failures"

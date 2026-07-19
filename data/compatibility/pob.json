@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "current_pob_version": "0.22.0",
   "entries": [
     {
       "commit": "dc409a7073e4e2752e9a642db7544af53551d006",

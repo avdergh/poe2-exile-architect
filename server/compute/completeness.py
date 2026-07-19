@@ -6,6 +6,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from server.knowledge import itemparse
+
 from .engine import PobEngine
 
 _FLASK_SLOTS = ("Flask 1", "Flask 2")
@@ -47,6 +49,7 @@ def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
     scaffold_slots: list[str] = []
     rune_socketed_slots: list[str] = []
     rune_decision_slots: list[str] = []
+    illegal_affix_slots: list[dict[str, Any]] = []
     for slot, item in gear.items():
         if not isinstance(item, dict):
             continue
@@ -65,6 +68,11 @@ def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
             )
         if item.get("isScaffold"):
             scaffold_slots.append(str(slot))
+        legality = item.get("affixLegality")
+        if isinstance(legality, dict) and legality.get("ok") is False:
+            illegal_affix_slots.append(
+                {"slot": str(slot), "issues": list(legality.get("issues") or [])}
+            )
         if slot in _RUNE_RELEVANT_SLOTS:
             if int(item.get("runeSockets") or 0) > 0:
                 rune_socketed_slots.append(str(slot))
@@ -103,6 +111,8 @@ def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
         advisories.append("equipped_charms_exceed_belt_capacity")
 
     hard_failures = ["equipped_item_level_requirement_unmet"] if underlevelled else []
+    if illegal_affix_slots:
+        hard_failures.append("illegal_equipped_item_affixes")
     return {
         "status": "complete" if not hard_failures and not advisories else "needs_attention",
         "hardFailures": hard_failures,
@@ -110,6 +120,7 @@ def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
         "rarityCounts": rarity_counts,
         "missingItemLevelSlots": missing_item_levels,
         "underlevelledItems": underlevelled,
+        "illegalAffixItems": illegal_affix_slots,
         "scaffoldSlots": scaffold_slots,
         "runes": {
             "socketedSlots": rune_socketed_slots,
@@ -126,9 +137,8 @@ def inspect_build_completeness(engine: PobEngine) -> dict[str, Any]:
             "equippedSlots": equipped_charms,
         },
         "note": (
-            "Advisory completeness report. Only explicit level-requirement violations are hard "
-            "failures; rune, jewel, flask and charm choices remain Agent design decisions that "
-            "must be filled or explained before final acceptance."
+            "Advisory completeness report. Explicit item/affix legality violations are hard "
+            "failures; rune, jewel, flask and charm choices remain Agent design decisions."
         ),
     }
 
@@ -175,6 +185,8 @@ def artifact_blockers(xml: str) -> list[str]:
         if slot in _EQUIPMENT_SLOTS
     ):
         blockers.append("final_artifact_item_level_missing")
+    if any(item.get("affixLegality", {}).get("ok") is False for item in gear.values()):
+        blockers.append("final_artifact_illegal_affixes")
     return blockers
 
 
@@ -198,6 +210,7 @@ def _parse_item_text(raw: str) -> dict[str, Any]:
         "runes": runes,
         "charmSlots": charm_slots,
         "isScaffold": name.startswith("Scaffold "),
+        "affixLegality": itemparse.audit_item_legality(raw),
     }
 
 

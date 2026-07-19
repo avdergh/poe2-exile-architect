@@ -115,7 +115,9 @@ Planned modules should follow the same layering:
 
 ## Runtime State
 
-- Active build state lives in the shared Headless PoB session.
+- Active build state is isolated per MCP session. The process runs at most five Headless PoB
+  instances by default, and complete tool calls within one session are serialized so multi-step
+  optimizer state cannot interleave.
 - Durable generated reports are not stored in the repository.
 - Mature raw payloads are quarantine-only and transient.
 - Long-term knowledge must be clean, versioned, evidence-backed, and copy-safe.

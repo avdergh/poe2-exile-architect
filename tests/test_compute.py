@@ -187,7 +187,7 @@ def test_paste_tolerates_missing_count(engine):
 
 
 def test_multiprojectile_dps_note(engine):
-    # TotalDPS is per-projectile; a multi-projectile skill gets ProjectileCount + a dpsNote (#2).
+    # Hit DPS and projectile count need a per-skill overlap caveat, not a manual count multiplier.
     _spark_caster(engine)
     r = engine.paste_skill("Spark 20/20  1")
     assert (r["stats"].get("ProjectileCount") or 0) > 1

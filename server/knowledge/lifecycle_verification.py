@@ -272,8 +272,19 @@ def requested_metric_keys(stage: str) -> list[str]:
         for key in group:
             if key not in {"reference_range", "dominant_levers", "pinnacle_readiness"}:
                 keys.append(str(key))
-    # Add core pool/cost stats used by v1 checks even when a stage budget omits one.
-    keys.extend(["TotalEHP", "Life", "EnergyShield", "Mana", "ManaCost"])
+    # Sustain needs rate evidence; pool size alone cannot establish whether a skill is sustainable.
+    keys.extend(
+        [
+            "TotalEHP",
+            "Life",
+            "EnergyShield",
+            "Mana",
+            "ManaUnreserved",
+            "ManaCost",
+            "NetManaRegen",
+            "Speed",
+        ]
+    )
     return sorted(set(keys))
 
 
@@ -283,7 +294,10 @@ def _observations(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, 
     es = _number(stats.get("EnergyShield") or defenses.get("energyShield"))
     total_ehp = _number(defenses.get("totalEHP") or stats.get("TotalEHP"))
     mana = _number(stats.get("Mana") or defenses.get("mana"))
+    mana_unreserved = _number(stats.get("ManaUnreserved"))
     mana_cost = _number(stats.get("ManaCost"))
+    net_mana_regen = _number(stats.get("NetManaRegen"))
+    speed = _number(stats.get("Speed"))
     spirit = _number(stats.get("Spirit") or defenses.get("spirit"))
     return {
         "resistances": resists,
@@ -292,7 +306,10 @@ def _observations(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, 
         "totalPool": _sum_known(life, es),
         "totalEHP": total_ehp,
         "mana": mana,
+        "manaUnreserved": mana_unreserved,
         "manaCost": mana_cost,
+        "netManaRegen": net_mana_regen,
+        "skillUseRate": speed,
         "spirit": spirit,
         "offense": {
             "TotalDPS": _number(stats.get("TotalDPS")),
@@ -399,38 +416,57 @@ def _basic_defense_check(stage: str, observations: dict[str, Any]) -> dict[str, 
 
 def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
     mana = observations.get("mana")
+    mana_unreserved = observations.get("manaUnreserved")
     mana_cost = observations.get("manaCost")
+    net_mana_regen = observations.get("netManaRegen")
+    skill_use_rate = observations.get("skillUseRate")
+    detail = {
+        "mana": mana,
+        "manaUnreserved": mana_unreserved,
+        "manaCost": mana_cost,
+        "netManaRegen": net_mana_regen,
+        "skillUseRate": skill_use_rate,
+    }
     if mana_cost is None:
         return {
             "check": "sustain_ok",
             "status": "unknown",
             "ok": None,
-            "detail": {"mana": mana, "manaCost": mana_cost},
-            "target": "manaCost must be known for sustain verification",
+            "detail": detail,
+            "target": "mana cost and rate-based recovery evidence are required",
         }
     if mana_cost == 0:
         return {
             "check": "sustain_ok",
             "status": "passed",
             "ok": True,
-            "detail": {"mana": mana, "manaCost": mana_cost},
+            "detail": detail,
             "target": "manaCost is zero",
         }
-    if mana is None:
-        return {
-            "check": "sustain_ok",
-            "status": "unknown",
-            "ok": None,
-            "detail": {"mana": mana, "manaCost": mana_cost},
-            "target": "mana must be known when manaCost is non-zero",
-        }
-    ok = mana >= mana_cost * 5
+    if (
+        isinstance(net_mana_regen, (int, float))
+        and isinstance(skill_use_rate, (int, float))
+        and skill_use_rate > 0
+    ):
+        demand = mana_cost * skill_use_rate
+        detail["continuousManaDemand"] = demand
+        if net_mana_regen >= demand:
+            return {
+                "check": "sustain_ok",
+                "status": "passed",
+                "ok": True,
+                "detail": detail,
+                "target": "observed net mana recovery covers continuous skill use",
+            }
     return {
         "check": "sustain_ok",
-        "status": "passed" if ok else "failed",
-        "ok": ok,
-        "detail": {"mana": mana, "manaCost": mana_cost},
-        "target": "available mana at least 5x main skill mana cost",
+        "status": "unknown",
+        "ok": None,
+        "detail": detail,
+        "target": (
+            "requires cast/attack rate plus recovery, flask, on-hit/leech, rotation, or encounter "
+            "evidence; no fixed mana-pool multiplier is used"
+        ),
     }
 
 
@@ -449,8 +485,13 @@ def _recommended_actions(
         actions.append(
             "Raise the current stage's life/ES/EHP layer before trading defense for damage."
         )
-    if "sustain_ok" in failed or "sustain_ok" in unknown:
-        actions.append("Fix mana/Spirit/life sustain before adding supports or switching stages.")
+    if "sustain_ok" in failed:
+        actions.append("Fix resource sustain before switching stages.")
+    elif "sustain_ok" in unknown:
+        actions.append(
+            "Verify sustain with use rate, recovery, flasks and the real skill rotation; do not "
+            "remove supports from mana-pool size alone."
+        )
     if "pob_model_supported" in failed:
         actions.append(
             "PoB reports a modeling limitation; do not present the computed number as the true "

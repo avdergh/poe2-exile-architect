@@ -1,9 +1,10 @@
-# Path of Exile 2 — durable build-optimization principles
+# Path of Exile 2 — build-optimization principles
 
-Evergreen rules for making a PoE2 build stronger. These are *principles*, not a meta list —
-they stay true as skills and items get rebalanced. **The engine computes your build's actual
-numbers; this doc is how to reason about them.** Never quote a DPS/EHP/resist figure you didn't
-get from a compute tool — use these rules to decide *what* to change, then verify the effect.
+Durable planning heuristics for making a PoE2 build stronger. They are not a meta list or
+versioned mechanical authority. **For patch-sensitive facts, the current pinned PoB data,
+physical graph, and current corpus take precedence over this prose.** The engine computes your
+build's actual numbers; use these rules to decide *what* to change, then verify the effect.
+Never quote a DPS/EHP/resist figure you didn't get from a compute tool.
 
 ## The optimization loop
 
@@ -114,11 +115,11 @@ under-rates a lane you're still assembling, which is why reaching pinnacle takes
 archetype commitment, not slot-by-slot hill-climbing.
 
 **Measure the right number, with the fight realistic.** For multi-projectile/multi-hit skills read
-**FullDPS** (PoB's combined, all-hits-landing figure) alongside the per-hit `TotalDPS`. The true
-single-target number is between them and depends on **how many of the skill's hits/projectiles can
-overlap on one target — which is per-skill in PoE2** (some skills shotgun, many don't): don't assume,
-verify the specific skill (`explain_mechanic`/`lookup_mechanic`/in-game). Compare builds like-for-like
-(same metric — FullDPS↔FullDPS, never one's TotalDPS vs another's FullDPS). The engine's enemy
+**FullDPS** alongside `TotalDPS`. PoB defines `TotalDPS` as Hit DPS, while `FullDPS` rolls up the
+included skill actors and DoT components. Their difference is not automatically a lower/upper-bound
+interval: real single-target damage depends on uptime, rotation and per-skill projectile overlap.
+Verify the specific skill (`explain_mechanic`/`lookup_mechanic`/in-game) and compare like-for-like.
+The engine's enemy
 conditions are **off by default**, so a bare stat read understates a real fight: use
 `apply_combat_profile` to switch on the shock/curse/charges/boss-tier the build actually maintains
 before judging DPS (turn off any it can't sustain — they'd inflate the number). The mana *pool*
@@ -152,10 +153,10 @@ the player's stated goal.
   (attack-speed XOR cast-speed, whichever the skill uses). *"Increased" damage is near the bottom on
   a finished build* — it diminishes fast; spend on the multipliers above it.
 - **Defense = convert one resource into both damage and EHP.** Strong builds pick one identity and
-  commit: **ES via Chaos Inoculation** (life→1, chaos-immune; tankiest, can exceed 30k EHP), **mana
-  via Eldritch Battery + Mind over Matter** (mana is the hit-buffer and often the damage), or **life +
-  Mind over Matter**. Plain life/ES hybrid is fine for attack builds. Pick one and stop paying for the
-  stats it doesn't use.
+  commit: **ES via Chaos Inoculation** (life→1; immune to chaos damage and Bleeding in the current
+  0.5 tree; tankiest, can exceed 30k EHP), **mana via Eldritch Battery + Mind over Matter** (mana is
+  the hit-buffer and often the damage), or **life + Mind over Matter**. Plain life/ES hybrid is fine
+  for attack builds. Pick one and stop paying for the stats it doesn't use.
 - **The verified endgame bar:** finished single-target builds cluster around **~1M+ DPS** (≈1M–6M) at
   **~20–35k EHP** (CI/ES stackers higher), resists capped, chaos handled (capped or CI). Most run
   modest pools + recovery + dodge, not a huge HP bar. Use `benchmark_build` to see where the active
@@ -185,21 +186,24 @@ over-stacking one stat.
      little against spells and AoE. It's entropy-based, so it's consistent against many hits but
      never a guarantee against the one that matters.
    - **Energy Shield** is an extra hit pool that **recharges** after a short delay without
-     damage — great when you can avoid sustained damage. Caveats: **chaos damage removes ES at
-     2× rate**, **bleed and poison bypass ES entirely**, and **stun ignores ES by default**
-     (scale stun threshold if you go heavy ES). Evasion+ES is a strong hybrid: evasion buys the
-     downtime ES needs to recharge.
+     damage — great when you can avoid sustained damage. Without a relevant immunity, **chaos
+     damage is twice as effective against ES**, while **bleed and poison bypass ES**; **stun
+     ignores ES by default** (scale stun threshold if you go heavy ES). Current 0.5
+     `Chaos Inoculation` is the important exception: it grants immunity to chaos damage and
+     Bleeding. Its chaos-damage immunity prevents poison damage, but does not by itself prove
+     that poison cannot be applied. Evasion+ES is a strong hybrid: evasion buys the downtime ES
+     needs to recharge.
 3. **Build a real hit pool (EHP).** Avoidance and mitigation only matter if a pool sits behind
    them. Don't glass-cannon. Life scales with level and Strength (+2 Life per Strength); ES
-   layers on top. `Chaos Inoculation` (Life → 1, immune to chaos) only makes sense once ES is
-   the overwhelming majority of your effective HP.
+   layers on top. Current 0.5 `Chaos Inoculation` (Life → 1, immune to chaos damage and
+   Bleeding) only makes sense once ES is the overwhelming majority of your effective HP.
 4. **Have recovery, not just a pool.** Keep life flasks upgraded, then add a sustained source:
    regen, leech, or recoup (repays a portion of a hit over 8s). ES wants faster recharge *start*
    and recharge *rate* (or convert life regen via Zealot's Oath).
 5. **Defend against ailments — they're a top killer.** Capped resistances reduce the chance and
    magnitude; **ailment threshold** (scales with your pool) reduces it further; charms cleanse.
-   Watch **shock** (you take ~20% more damage), **freeze** (you can't act), and **bleed**
-   (physical DoT, *doubled while moving*).
+   Watch **shock** (you take ~20% more damage), **freeze** (you can't act), and, unless the
+   current build is immune, **bleed** (physical DoT, *doubled while moving*).
 6. **Use your active defense.** The **dodge roll** is your strongest tool — i-frames against
    strikes and projectiles (but **not** AoE). Good positioning and rolling beats raw stats.
 7. **Priority order when you're short:** ① cap resistances → ② ailment defense → ③ life pool +
@@ -272,10 +276,10 @@ the engine.
   damage (plus a crit support) — half-invested crit is wasted. Builds that don't commit scale
   hit/ailment damage instead. Pick one lane.
 - **Pick one defensive archetype and let it reshape the build.** Life, energy shield, or a hybrid
-  — the choice changes which stats matter. An ES-only identity (e.g. a keystone that sets life to
-  1 in exchange for chaos immunity) makes life *and* chaos resistance irrelevant; an evasion/ES
-  hybrid wants recharge uptime; an armour/life build wants flat life and big-hit mitigation.
-  Choose, then stop paying for stats your archetype doesn't use.
+  — the choice changes which stats matter. An ES-only identity such as current 0.5
+  `Chaos Inoculation` (Life → 1, immune to chaos damage and Bleeding) makes life *and* chaos
+  resistance irrelevant; an evasion/ES hybrid wants recharge uptime; an armour/life build wants
+  flat life and big-hit mitigation. Choose, then stop paying for stats your archetype doesn't use.
 - **Use every slot.** Complete builds fill gear *and* jewels, and cover ailments with charms — not
   just resistances. Empty slots and missing ailment coverage are unfinished work.
 - **Solve "tax" stats on suffixes; spend prefixes on the payoff.** Resistances and attributes are

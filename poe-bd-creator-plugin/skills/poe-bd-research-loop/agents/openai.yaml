@@ -1,0 +1,21 @@
+interface:
+  display_name: "PoE BD Research Loop"
+  short_description: "Run PoE2 research in visible Desktop tasks"
+  default_prompt: "Use $poe-bd-research-loop to validate the attached Markdown plan and orchestrate each research/review/fix/conditional-rereview cycle in a separate visible Codex Desktop sidebar task."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "poe_research_orchestrator"
+      description: "State-only Markdown claims, checkpoints, pause, resume, and retry tools"
+      transport: "stdio"
+      command: "E:\\poe-bd-creator\\.tools\\uv\\uv.exe"
+      args:
+        - "--project"
+        - "E:\\poe-research-orchestrator"
+        - "run"
+        - "poe-research-mcp"
+      cwd: "E:\\poe-research-orchestrator"
+
+policy:
+  allow_implicit_invocation: true

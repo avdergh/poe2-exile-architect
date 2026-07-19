@@ -116,6 +116,55 @@ def test_stale_pob_blocks_current_verification():
     assert any("pob-release" in reason for reason in report.blockers)
 
 
+def test_stale_official_tree_is_warning_when_current_local_and_meta_sources_agree():
+    base = current_manifest()
+    records = tuple(
+        FreshnessEvidence(
+            component=item.component,
+            source=item.source,
+            source_url=item.source_url,
+            observed_at=item.observed_at,
+            version=item.version,
+            status=SourceStatus.STALE,
+            claims=item.claims,
+        )
+        if item.source == "ggg-tree"
+        else item
+        for item in base.evidence
+    )
+
+    report = evaluate_freshness(FreshnessManifest(evidence=records, evaluated_at=NOW))
+
+    assert report.decision is FreshnessDecision.VERIFIED_CURRENT
+    assert report.blockers == ()
+    assert any(
+        "official passive_tree commit freshness is stale" in item for item in report.warnings
+    )
+
+
+def test_stale_official_tree_still_blocks_without_independent_tree_corroboration():
+    base = current_manifest()
+    records = tuple(
+        FreshnessEvidence(
+            component=item.component,
+            source=item.source,
+            source_url=item.source_url,
+            observed_at=item.observed_at,
+            version=item.version,
+            status=SourceStatus.STALE,
+            claims=item.claims,
+        )
+        if item.source == "ggg-tree"
+        else item
+        for item in base.evidence
+        if item.component is not Component.META_SNAPSHOT
+    )
+
+    report = evaluate_freshness(FreshnessManifest(evidence=records, evaluated_at=NOW))
+
+    assert report.decision is FreshnessDecision.BLOCKED_STALE
+
+
 def test_cross_season_conflict_has_priority_but_report_keeps_stale_blocker():
     manifest = current_manifest()
     stale_conflict = evidence(

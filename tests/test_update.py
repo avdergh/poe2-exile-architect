@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from pathlib import Path
 import zipfile
 
 from server import paths
@@ -88,6 +89,167 @@ def test_apply_updates_persists_certified_freshness_claims(tmp_path, monkeypatch
     assert installed["pob_commit"] == "abc123"
     assert installed["game_patch"] == "0.5.3"
     assert installed["passive_tree"] == "0_5"
+
+
+def test_failed_engine_validation_keeps_previous_corpus_and_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    old_corpus = b"old-corpus"
+    new_corpus = b"new-corpus"
+    bad_engine = b"bad-engine"
+    (tmp_path / "corpus.sqlite").write_bytes(old_corpus)
+    previous = {
+        "version": "0.1.19",
+        "pob_commit": "old-commit",
+        "game_patch": "0.5.3",
+        "passive_tree": "0_5",
+        "engine_sha256": "old-engine",
+    }
+    (tmp_path / "installed.json").write_text(json.dumps(previous), encoding="utf-8")
+    manifest = _manifest("0.1.20", new_corpus, bad_engine)
+    manifest["engine"]["sha256"] = "0" * 64
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        update,
+        "_http",
+        lambda url, timeout=60.0: new_corpus if "corpus" in url else bad_engine,
+    )
+    result = update.apply_updates()
+
+    assert result == {"updated": False, "error": "engine checksum missing or mismatched"}
+    assert (tmp_path / "corpus.sqlite").read_bytes() == old_corpus
+    assert json.loads((tmp_path / "installed.json").read_text(encoding="utf-8")) == previous
+
+
+def test_data_only_refresh_preserves_certified_compatibility_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0.1.20")
+    engine = _engine_zip()
+    corpus = b"new-corpus"
+    previous = {
+        "version": "0.1.20",
+        "app_version": "0.1.20",
+        "pob_commit": "abc123",
+        "pob_version": "0.22.0",
+        "game_patch": "0.5.4",
+        "passive_tree": "0_5",
+        "engine_sha256": hashlib.sha256(engine).hexdigest(),
+    }
+    (tmp_path / "installed.json").write_text(json.dumps(previous), encoding="utf-8")
+    manifest = _manifest("0.1.20.1", corpus, engine)
+    for key in ("game_patch", "passive_tree"):
+        manifest.pop(key)
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+    monkeypatch.setattr(update, "_http", lambda url, timeout=60.0: corpus)
+
+    result = update.apply_updates()
+
+    assert result["updated"] is True
+    installed = json.loads((tmp_path / "installed.json").read_text(encoding="utf-8"))
+    assert installed["game_patch"] == "0.5.4"
+    assert installed["passive_tree"] == "0_5"
+    assert installed["pob_version"] == "0.22.0"
+
+
+def test_install_failure_rolls_back_every_replacement(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    old_corpus = b"old-corpus"
+    new_corpus = b"new-corpus"
+    engine = _engine_zip()
+    (tmp_path / "corpus.sqlite").write_bytes(old_corpus)
+    previous = {
+        "version": "0.1.19",
+        "pob_commit": "old-commit",
+        "game_patch": "0.5.3",
+        "passive_tree": "0_5",
+        "engine_sha256": "old-engine",
+    }
+    (tmp_path / "installed.json").write_text(json.dumps(previous), encoding="utf-8")
+    old_pob = tmp_path / "pob"
+    old_pob.mkdir()
+    (old_pob / "marker.txt").write_text("old-engine", encoding="utf-8")
+    manifest = _manifest("0.1.20", new_corpus, engine)
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        update,
+        "_http",
+        lambda url, timeout=60.0: new_corpus if "corpus" in url else engine,
+    )
+    real_replace = update.os.replace
+
+    def fail_engine_install(source, target):
+        if Path(target) == tmp_path / "pob" and "engine-extract" in str(source):
+            raise OSError("simulated engine install failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(update.os, "replace", fail_engine_install)
+
+    result = update.apply_updates()
+
+    assert result["updated"] is False
+    assert (tmp_path / "corpus.sqlite").read_bytes() == old_corpus
+    assert json.loads((tmp_path / "installed.json").read_text(encoding="utf-8")) == previous
+    assert (tmp_path / "pob" / "marker.txt").read_text(encoding="utf-8") == "old-engine"
+
+
+def test_staged_engine_validation_runs_before_install_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    corpus = b"new-corpus"
+    engine = _engine_zip()
+    manifest = _manifest("0.1.20", corpus, engine)
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        update,
+        "_http",
+        lambda url, timeout=60.0: corpus if "corpus" in url else engine,
+    )
+    events: list[str] = []
+
+    class InstallContext:
+        def __enter__(self):
+            events.append("install-enter")
+
+        def __exit__(self, *exc):
+            events.append("install-exit")
+
+    def validate(staged_pob: Path):
+        assert (staged_pob / "pob_headless.lua").is_file()
+        events.append("validated")
+
+    result = update.apply_updates(
+        validate_engine=validate,
+        install_context=lambda replace_engine: InstallContext(),
+    )
+
+    assert result["updated"] is True
+    assert events == ["validated", "install-enter", "install-exit"]
+
+
+def test_staged_engine_validation_failure_does_not_enter_install_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    corpus = b"new-corpus"
+    engine = _engine_zip()
+    manifest = _manifest("0.1.20", corpus, engine)
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        update,
+        "_http",
+        lambda url, timeout=60.0: corpus if "corpus" in url else engine,
+    )
+    entered: list[bool] = []
+
+    result = update.apply_updates(
+        validate_engine=lambda _path: (_ for _ in ()).throw(RuntimeError("bad staged runtime")),
+        install_context=lambda replace_engine: entered.append(replace_engine),
+    )
+
+    assert result == {"updated": False, "error": "staged engine validation failed: RuntimeError"}
+    assert entered == []
+    assert not (tmp_path / "corpus.sqlite").exists()
+    assert not (tmp_path / "installed.json").exists()
 
 
 def test_check_for_updates_decouples_data_from_mcpb(tmp_path, monkeypatch):

@@ -81,9 +81,17 @@ class RouteTransport:
         return outcome
 
 
-def write_manifest(path: Path, entries: list[dict[str, Any]]) -> Path:
+def write_manifest(
+    path: Path,
+    entries: list[dict[str, Any]],
+    *,
+    current_pob_version: str | None = None,
+) -> Path:
+    payload: dict[str, Any] = {"schema_version": 1, "entries": entries}
+    if current_pob_version is not None:
+        payload["current_pob_version"] = current_pob_version
     path.write_text(
-        json.dumps({"schema_version": 1, "entries": entries}),
+        json.dumps(payload),
         encoding="utf-8",
     )
     return path
@@ -104,6 +112,33 @@ def compatibility_entry(
         "verified_by": ["golden-tests", "GGG-patch"],
         "verified_at": "2026-06-24T00:00:00+00:00",
     }
+
+
+def test_compatibility_manifest_uses_explicit_current_pob_version(tmp_path):
+    entries = [
+        compatibility_entry(commit="a" * 40, pob_version="0.21.1"),
+        compatibility_entry(commit="b" * 40, pob_version="0.22.0"),
+    ]
+    manifest = load_compatibility_manifest(
+        write_manifest(
+            tmp_path / "manifest.json",
+            entries,
+            current_pob_version="0.22.0",
+        )
+    )
+
+    assert manifest.current_pob_version == "0.22.0"
+
+
+def test_compatibility_manifest_rejects_unknown_current_pob_version(tmp_path):
+    path = write_manifest(
+        tmp_path / "manifest.json",
+        [compatibility_entry()],
+        current_pob_version="99.99.99",
+    )
+
+    with pytest.raises(pob_module.PobParseError, match="current_pob_version"):
+        load_compatibility_manifest(path)
 
 
 def make_provider(

@@ -1,5 +1,76 @@
 # Phase 4 - Researcher 语义记忆
 
+持续研究积累维护在：
+
+- `docs/research/BD_KNOWLEDGE.md`：成熟 BD 中提取的可复用知识与技巧；
+- `docs/research/EXTRACTION_METHOD.md`：每批样本反向总结的深度挖掘方法，后续用于调整本阶段的
+  schema、prompt、工具和验收标准。
+
+这两份文档是滚动研究记录，不替代本阶段的正式实现合同。新增样本时应同时更新两者，并继续
+遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
+
+下一版深度 memory MVP 采用两层持久化方向：一次研究先按知识单元保存一组聚焦、安全的
+`DeepResearchRecord`，再提炼 fragment/semantic edge/build pattern 作为召回索引。同一案例通过
+`research_group_id` 聚合，完整性由记录组共同保证；单条记录不能膨胀成整份案例报告。现有 fragment
+schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构化，也应先进入聚焦记录，后续再决定
+是否升级为 record kind、typed payload 或索引字段。详细设计见
+`docs/research/MEMORY_SYSTEM_DESIGN.md`。
+
+当前实现进度：
+
+- `deep_research_records` SQLite 存储和 strict `DeepResearchRecord` 合同：已完成；
+- `propose_deep_research_records` MCP 候选校验工具：已完成；队列研究只由 `accept` 入库；
+- `query_research_memory(detail_level=summary|record)` 两级召回：已完成；
+- `BuildFamily`（升华 + 核心主/副技能）归类、kind-specific `knowledge_key`、跨 source canonical
+  knowledge upsert 和逐来源 evidence：已完成；support、装备、防御和资源方案保留为 Family 内知识；
+- 历史 `DeepResearchRecord` 高置信回填：可识别记录归入 Family，同知识选择信息最完整的 canonical，
+  其他记录以 `deprecated/superseded_by_id` 保留审计；无法可靠识别的旧记录不强行合并；
+- `/poe-bd-research` skill 深度提取合同、lease-bound worker brief 和提交期 review contract：已完成；
+- 深挖方法、脱敏合格案例和浅层反例保留在 skill；worker brief 只携带当前案例导航和研究目标，精确
+  schema/枚举在写入前由 `review-contract` 渐进披露：已完成；
+- Researcher 顺序为“先独立分析当前案例，再查 memory 对照/查重，最后写入”，避免旧经验锚定新
+  案例发现：已完成；
+- fallback worker 可提交组件名称、角色和 resolver 查询词，由 accept gate 解析并回填稳定 ID：已完成；
+- safe review acceptance 对深度记录的 resolver/schema/copy-safety/版本验收，以及“整案至少一条
+  具体组件机制记录”的最低深度门槛：已完成；
+- 研究队列与 MCP 查询统一使用用户数据目录中的正式 mature-learning SQLite；队列创建时注入应用
+  当前 patch/tree 和 PoB 版本枚举，accept 时把缺失/`unknown` 归一为当前值并覆盖 worker 自填值：
+  已完成；
+- accept/status 按 typed reason 区分 schema、resolver、图源覆盖和提取深度问题：已完成；
+- `accept --validate-only` 复用正式 acceptance 逻辑，返回具体字段路径、提交值和 canonical 枚举，且
+  不写 durable memory、不改变 lease；Agent 必须自行修复后再正式 accept：已完成；
+- fragment/edge/pattern 继续作为短召回索引：已完成；
+- 更多职业样本回放、字段扩展候选和真实生成质量对照：等待后续案例验证。
+
+运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源：
+
+- MCP `ASSISTANT_GUIDE`：保留工具能力地图、选择条件、权威边界和安全边界；
+- `/poe-bd-research` skill：保留完整研究流程、深挖方法、覆盖维度及正反例；
+- `claim.workerPrompt`：只保留当前 lease 身份、证据读取顺序、质量目标和下一步；
+- `review-contract`：在写 artifact 前提供精确 JSON 形状、canonical role/axis/pattern 枚举与模板；
+- `init-review`：按当前 lease 原子创建 UTF-8、两空格缩进的 review 骨架，已有文件不覆盖；
+- `accept --validate-only`：以正式门禁规则给出可修复错误，不做 alias 猜测或自动改写。
+- canonical role 表达 BD 功能，通过兼容矩阵与 resolver 的物理 node type 对照；它不是 node type
+  alias。生成/兑现、被动转换器和武器职责可以由不同合法实体类型承担，但 stable key 仍必须唯一解析。
+- `readyForAccept` 表示安全子集可接收；`fullyResolvedForAccept` 与 `acceptanceMode=clean` 才表示无候选
+  暂缓和组件解析缺口。`partial_with_deferred` 先修复当前证据可解决的 role/type/query 问题。
+- `unresolvedDeepRecordMentionCount` 统计未解析提及次数，`unresolvedUniqueComponentCount` 统计去重
+  组件；兼容字段 `unresolvedDeepRecordComponentCount` 继续表示 mention 次数。
+- `createdDeepRecordCount`、`updatedDeepRecordCount` 与 `addedDeepRecordEvidenceCount` 分开报告；
+  同一 Family 的同知识再次出现时优先追加证据，不重复制造近义正文。
+- Family 自动使用 clear/boss/triggered-payload 和同一技能包/机制链中成对的 trigger-host，普通
+  secondary 只作为变体；不得在 `familyCoreSkillKeys` 重复声明这些自动角色，其他核心副技能才显式
+  声明。`skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持不同知识单元。
+  无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。
+  `unkeyedDeepRecordCount > 0` 时只能报告 partial，不能报告 clean。
+- `source_specific_random` 随机实例知识只解释来源案例，默认不进入 Create 召回或 planner Pattern。
+- supports 覆盖要求每个核心技能组有至少两个结构化辅助；passiveAscendancy 覆盖要求升华壳和具体
+  `ascendancyResponsibilities`，不能由任意普通 notable/keystone 代替。
+- `query_research_memory` 支持 `ascendancy_key` / `primary_skill_key` 精确 Family 身份、
+  `build_family_keys` / `record_kinds` 定向读取，并在 `buildFamilies` 返回 `recordKindCounts`；自然语言
+  目标只对精确 Family 内记录排序，不会把已有 Family 过滤掉。未使用精确身份参数时仍保留文本、
+  组件和 Family 主/副技能兼容召回。
+
 ## 状态
 
 Phase 4 基础闭环已完成：项目已经具备把外部 Researcher Agent 提交的
@@ -15,8 +86,9 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 
 ## Phase 4 已交付
 
-- `ResearcherOutput schema_version=4`、strict proposal schema、typed `context_requirements`
+- `ResearcherOutput schema_version=4` 基础合同、strict proposal schema、typed `context_requirements`
   和 structured rejection envelope。
+- 当前深度提取使用向后兼容的 `schema_version=5`，新增聚焦 `DeepResearchRecord`。
 - `build_research_packet` transient packet helper：raw PoB code/XML 只允许临时使用，支持
   tempfile 前缀目录、TTL 和清理。
 - `query_research_memory`、`propose_research_fragments`、`append_evidence_to_fragment`、
@@ -38,8 +110,10 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
   Gemini 等外部成熟 agent 执行。
 - raw mature-build material 只能出现在 quarantine-only transient packet 中，不能进入 durable
   report、state、memory、creator-visible context 或普通聊天输出。
-- 禁止持久化或暴露 PoB code、raw XML、完整装备表、完整 passive path、完整 gem/support links、
-  raw account / character details、完整 URL 或长篇复制攻略文本。
+- 禁止持久化或暴露 PoB code、raw XML、raw account/character details、完整 URL、长篇复制攻略文本，
+  或把全部装备槽、整棵已分配天赋、全部技能组和完整配置共同保存成第三方整角色镜像。
+- 允许完整保存可复用核心机制包，包括关键技能与辅助组合、局部核心天赋连接、暗金/装备与技能、
+  天赋、资源系统的联动。不得按辅助数量或局部节点数量机械拒绝。
 - 没有 static source，不能创建 physical graph node。
 - 没有 resolver-backed physical endpoint，不能创建 semantic edge。
 - mature BD semantic edges 和 build patterns 都是 advisory research context，不是 hard
@@ -49,10 +123,15 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 
 ## 产品化入口
 
+研究运行态禁止使用 subagent、子代理或独立 agent lane。研究 MCP 工具只保证在触发 skill 的当前
+主会话可用；当前 Agent 必须亲自完成 prompt 读取、深度提取、safe review 和 accept，并严格逐案串行。
+当前没有证据表明 98 个工具触发 Codex 数量上限；统一 `poe2_build_mcp` 可发现完整研究工具面。
+工具未直接显示时应先用宿主标准 tool discovery / tool search 按精确名称查找，再判断是否真的不可用。
+
 安装 skill 后，在 Codex 或支持 skill 的宿主中使用：
 
 ```text
-/poe-bd-research --limit 50 --worker-count 5
+/poe-bd-research --limit 50
 ```
 
 这是会话里的 skill invocation，不是要求用户在 Codex 输入框里执行 shell 命令；宿主 agent 应
@@ -61,18 +140,28 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 若无参数触发 `/poe-bd-research`，skill 应先询问运行数量和模式，而不是先联网 dry-run 或静默
 启动完整 live crawl。若宿主支持交互式选择/确认 UI，优先给出“预检 5 个样本（推荐）/ 小批量
 提取 20 个样本 / 大批量提取 50 个样本 / 恢复已有队列”这类可选项；否则退化为普通文字选项。
-`--resume` 是独立恢复模式，不绑定到 50 个样本。
+`--resume` 是独立恢复模式，不绑定到 50 个样本；恢复时必须同时提供原始 `queue` 返回的
+`--output-dir <runDir>`。
 
 等价的底层脚本入口是：
 
 ```powershell
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py queue --limit 50 --worker-count 5
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py claim --output-dir .poe-bd-research
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py worker-brief --output-dir .poe-bd-research --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py prompt --output-dir .poe-bd-research --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir .poe-bd-research --lease-token <leaseToken> --review-file <safe-review.json>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py status --output-dir .poe-bd-research
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py queue --limit 50
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py claim --output-dir <runDir>
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py worker-brief --output-dir <runDir> --lease-token <leaseToken>  # 仅恢复已领取任务
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py inspect --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py read --output-dir <runDir> --lease-token <leaseToken> --section skills
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py search --output-dir <runDir> --lease-token <leaseToken> --query "Bonestorm"
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py review-contract --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py init-review --output-dir <runDir> --lease-token <leaseToken>
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
+.\.tools\uv\uv.exe run python scripts\research_mature_builds.py status --output-dir <runDir>
 ```
+
+默认非 dry-run `queue` 会创建 `.poe-bd-research/runs/<runId>` 并返回 `runDir`；同一轮的所有后续
+命令都必须使用该目录。不同会话使用不同 run，可以并发执行。显式目录中已有队列时只能使用
+`--resume` 恢复，不能静默重建或覆盖。
 
 macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 
@@ -81,23 +170,35 @@ macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 - 从 poe.ninja 当前 softcore trade league 拉取样本；
 - 等级默认 90-100；
 - `--limit` 默认 50；
-- `--worker-count` 表示并发 Researcher agent lane 数，不表示预生成多个 raw prompt；
-- `worker-brief` 输出 safe-only `workerPrompt`，宿主必须把它原样发给 subagent，不能只发本机
-  `SKILL.md` 路径或临时口头说明；
+- 当前 Agent 一次只 claim 一个案例，并在完成该案例 accept 后再领取下一案；
+- `claim` 原子返回 safe-only `workerPrompt` 和 `reviewFile`，当前 Agent 必须直接遵守该 prompt，
+  不得转交给其他 agent，也不能只依赖本机 `SKILL.md` 路径或临时口头说明；
+- `worker-brief` 只用于恢复已经 claimed 的任务；
 - 支持 `--ascendancy`、`--league current|<league-url>`、`--level-min`、`--level-max`、
-  `--source-file`、`--source-batch-file`、`--resume`、`--dry-run`、`--db-path`、
+  `--class`（可选透传 poe.ninja URL class filter）、`--source-file`、`--source-batch-file`、
+  `--resume`、`--dry-run`、`--db-path`、
   `--output-dir`；
+- `--class` 同时接受空格名称和 poe.ninja URL 中的 `+` 分隔形式，编码前统一归一；列表返回后还会
+  按同一升华名本地复核，非目标升华不得占用 `limit`；
 - batch mode 仍必须一案一轮：一个 Researcher prompt 只包含一个完整 BD；
-- 默认不复用 raw-rich Researcher transcript，避免前一个样本污染后一个样本；
-- 不支持程序化 subagent 的宿主必须报告 `requestedWorkers`、`effectiveWorkers=1` 和降级原因，
-  然后串行执行。
+- 默认不复用上一案的 transient evidence，避免前一个样本污染后一个样本；
 - `/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、
   文档、schema、安装脚本或 plugin manifest；collector / source / runtime 失败时只报告
   safe error 并停止。
 
-`queue`、`claim`、`status`、`accept` 都只输出 safe metadata。`prompt --lease-token` 是唯一
-允许输出 raw-rich transient material 的子命令，只能由持有 lease 的 Researcher worker 临时
-读取；主 orchestrator 不应转述或持久化它。
+`queue`、`claim`、`status`、`accept` 都只输出 safe metadata。完整 raw-rich material 只保留在
+OS temp 的 lease-bound packet 中，不再通过终端输出。当前 Agent 使用 `inspect` 查看分区清单，
+再通过有界、可分页的 `read` / `search` 读取 `skills`、`gear`、`passives`、`config`、`build`；
+`prompt` 仅作为兼容 manifest。公开 `propose_*` 只验证候选，safe review + `accept` 是队列研究唯一
+durable write 路径。
+
+`init-review` 只负责可靠地创建当前 lease 绑定的空骨架，不生成研究内容，也不增加新的 durable writer。
+运行态 Agent 只能用文件编辑工具或 `apply_patch` 编辑这个 `reviewFile`，不能用 PowerShell here-string、
+内联 `ConvertTo-Json` 或 `Set-Content` 拼接整份 JSON，也不能借此修改源码或其他运行产物。
+
+产品默认 durable memory 是 `paths.mature_learning_path()` 指向的用户数据数据库，与 MCP
+`query_research_memory` 使用同一文件。仓库根的 `phase4_real_research_memory.sqlite` 仅是旧开发脚本
+历史路径，不再是 `/poe-bd-research` 默认写入目标。
 
 ## 提取目标
 
@@ -108,7 +209,8 @@ Phase 4.5 的 mature BD 设计观察包括：
   role；
 - 技能 + key passive / notable / keystone：必须 resolver-backed；
 - 暗金 + 天赋点 / 技能：区分 enabling、optional / chase、budget substitute；
-- support + active skill：允许单 pair，禁止复制完整 support link 套餐；
+- support + active skill：单 pair 可以作为小粒度关系；若多个 supports 共同决定机制行为，允许将完整
+  关键组合和技能归属保存在 `supportPackages` 中；
 - skill / archetype + scaling axis、weapon/base/stat priority；
 - Spirit / reservation package + build shell；
 - defense layer package + content goal；
@@ -119,6 +221,26 @@ Phase 4.5 的 mature BD 设计观察包括：
 部分提升为 semantic edge / cooccurrence pattern / planner hint。单样本只能写
 `case_observation`，不能声称 usually / commonly / 常见。跨样本 pattern 必须由样本数、
 family count、source diversity 和 resolver-backed evidence 支撑。
+
+Pattern 的 `component` 作用域表示在 Family 知识之上授予有条件的跨 Family 迁移资格，不是与
+Family 归属互斥的低权重分类。它在 `origin_family_keys` 对应 Family 内按 Family 权重召回，在其他
+Family 才进入较低权重公用通道。单案 Researcher 只有在候选解决可重复设计问题、具有明确因果链，
+并提交适用条件、排除条件、迁移理由和验证任务时，才能将其标成 `component`；单案例不能声明
+`global`。后端使用 pattern type、核心稳定组件/职责和适用轴生成确定性
+transfer key：同一 Family 的重复来源只增强 Family 内证据，不授权跨 Family 晋升；第二个独立 Family
+出现同一结构后才晋升为 `recurring_observation`。公用知识最高为 `likely_pattern`，
+`common_within_archetype` / `strong_ranking_hint` 只保留给 Family/Archetype 内排序。
+
+实际 skill 保留 `docs/research/EXTRACTION_METHOD.md` 的精简执行版，并带一个脱敏合格机制链示例和
+一个浅层反例；worker prompt 不重复整套方法和 schema。没有 resolver 工具时，worker 仍应提交具体组件名称、职责和查询词；
+accept gate 负责解析稳定 ID。`skill_package`、`mechanic_chain`、`rotation`、`gear_synergy`、
+`passive_package`、资源/防御引擎等具体记录没有可解析组件时会被暂缓；整案只有泛泛属性共现、通用
+警告或工具 caveat 时会被拒绝且不写入 durable memory。
+
+`pob_version_or_commit` 保留旧字段名以兼容已有 schema，但新写入语义是应用维护的 PoB 版本枚举，
+例如当前 `0.22.0`，不再默认保存 commit。新赛季/新认证 PoB 到来时更新
+`data/compatibility/pob.json` 和发布 runtime；来源案例没有声明版本或 worker 提交 `unknown` 时按应用
+当前值处理，只有显式提交不在兼容清单中的版本才拒绝。
 
 ## Legacy 兼容
 
@@ -148,3 +270,35 @@ Focused 验证：
 ```powershell
 .\scripts\verify.ps1 quick
 ```
+
+### 研究上下文传输真实验收（2026-07-15）
+
+使用独立验收目录从当前 poe.ninja 来源串行研究两条 100 级 Witch 案例。两案均通过
+`claim -> inspect -> read/search -> safe review -> accept`，未通过 prompt 或终端输出 raw XML、
+PoB code 或临时路径。
+
+- Abyssal Lich 案：`skills=13`、`gear=15`、`passives=159`、`config=17`、`build=1`；按默认
+  `limit=20` 分别读取 2、1、8、1、1 页，全部 `complete=true`，无遗漏或重复。最终接受 6 条
+  深度记录、3 条 observation、3 条 pattern，五个覆盖维度全部 `covered`。
+- Blood Mage 案：`skills=12`、`gear=15`、`passives=136`、`config=17`、`build=1`；分别读取
+  2、1、7、1、1 页，全部 `complete=true`，无遗漏或重复。校准后接受 7 条深度记录、3 条
+  observation、3 条 pattern，五个覆盖维度全部 `covered`，无 deferred 或未解析组件。
+- 两案分页响应的最大字符数约为 11.3K，低于 12K 目标。导入标签 `Blasphemy` / `Spellslinger`
+  未遮蔽实际多技能组；研究结果恢复了触发宿主、载荷、supports、装备职责、核心天赋、轮转和资源防御。
+- Acceptance 报告计数与独立验收数据库实际行数逐项一致。公开 `propose_*` 返回
+  `validationOnly=true` 且不返回 durable ID；只有 `accept` 写入 durable memory。
+
+### 组件发现与图解析边界
+
+- `search_graph_components` 用具体名称、预期节点类型做有界候选发现；后续可替换或补充向量召回。
+- `resolve_graph_component` 只负责稳定 ID、名称、别名或已发现 stable key 的最终确认。
+- `DeepResearchRecord` 可保存未唯一解析的 `component_mentions`，包括名称、角色、查询提示、预期类型和
+  解析状态；解析失败不等于研究内容无效。
+- `BuildPattern` 和 semantic edge 仍要求稳定端点。词法或向量相似度只能用于发现候选，不能自动写图。
+- 声明类型下找不到组件时，acceptance 会做一次不限类型诊断。唯一同名组件若存在于其他节点类型，
+  返回 `component_type_mismatch` 和建议角色；只有所有类型都找不到时才是 `source_coverage_gap`。
+- 不限类型诊断优先完全同名候选，再考虑包含词匹配，避免 `Critical Strike` 被
+  `Ballista Critical Strike` 等相关名称掩盖。功能 role 与该物理类型兼容时直接保留原功能角色，不要求
+  Agent 把 `payoff` 机械改写成 `passive_anchor`。
+- safe review 使用 UTF-8、两空格缩进的多行 JSON，保证 validate-only 后能对单个 role、query 或 key
+  做有界修复；压缩单行不是安全失败，但不符合运行合同。

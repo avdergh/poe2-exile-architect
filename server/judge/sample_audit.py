@@ -20,11 +20,26 @@ UNSOLVED_GAP_CAVEATS = {
 
 def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
     out = dict(sample)
+    caveats = set(out.get("caveats") or [])
+    if out.get("finalClassification") == "source_data_problem" or (
+        caveats & SOURCE_DATA_PROBLEM_CAVEATS
+    ):
+        out["scoreReviewNeeded"] = False
+        out["finalClassification"] = "source_data_problem"
+        return out
+    modelability = out.get("modelability") or {}
+    if bool(modelability.get("coreBlocked")) or modelability.get("status") == "not_modelable":
+        out["scoreReviewNeeded"] = False
+        out["finalClassification"] = "judge_unsolved_modelability_gap"
+        return out
+    if out.get("playabilityFailures"):
+        out["scoreReviewNeeded"] = False
+        out["finalClassification"] = "severe_playability_failure"
+        return out
     if not out.get("pass"):
         out["scoreReviewNeeded"] = False
         failures = set(out.get("hardFailures") or [])
         caveats = set(out.get("caveats") or [])
-        modelability = out.get("modelability") or {}
         if out.get("finalClassification") == "source_data_problem":
             return out
         if caveats & SOURCE_DATA_PROBLEM_CAVEATS:

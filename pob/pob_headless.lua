@@ -397,10 +397,10 @@ local function engineLimitationNote()
 	return nil
 end
 
--- DPS-reading guidance. TotalDPS is ONE hit of the main skill. When FullDPS is materially higher,
--- that's PoB aggregating hits the single figure omits (overlapping projectiles, secondary/ailment,
--- DoT) — surface it so a multi-hit build isn't under-read ~10x. Whether those hits overlap on
--- one target (shotgun) is per-skill in PoE2, so the note tells the reader to verify, not assume.
+-- DPS-reading guidance. PoB labels TotalDPS as Hit DPS: average hit multiplied by use rate and any
+-- quantity multiplier the engine models. FullDPS rolls up selected skill actors and DoT components.
+-- The gap is diagnostic, not a guaranteed lower/upper-bound interval, because uptime, overlap and
+-- simultaneous-effect assumptions remain skill- and configuration-specific.
 local function dpsNoteFor(out)
 	out = out or {}
 	local total = tonumber(out.TotalDPS) or 0
@@ -409,18 +409,16 @@ local function dpsNoteFor(out)
 	if total > 0 and full > total * 1.05 then
 		return "FullDPS ("
 			.. math.floor(full + 0.5)
-			.. ") is PoB's COMBINED, all-hits-landing number (every skill flagged for Full DPS plus "
-			.. "secondary hits/ailments/damage-over-time) — an UPPER bound. The true single-target figure "
-			.. "is between it and TotalDPS (ONE hit, a lower bound), depending on how many of this skill's "
-			.. "hits/projectiles overlap on one target — PER-SKILL in PoE2, so verify, don't assume "
-			.. "(explain_mechanic/lookup_mechanic/in-game). Compare like-for-like (FullDPS vs FullDPS)."
+			.. ") is PoB's rollup for the skill actors/groups included in Full DPS, including modelled "
+			.. "hit and damage-over-time components. TotalDPS is the selected skill's Hit DPS, not one hit. "
+			.. "Neither number automatically proves real encounter uptime or projectile overlap; inspect "
+			.. "the Full DPS components and verify the skill/configuration before comparison."
 	elseif proj > 1 and total > 0 then
 		return "This skill fires "
 			.. proj
-			.. " projectiles. TotalDPS is one projectile's hit. Whether projectiles can overlap (shotgun) "
-			.. "on one target is PER-SKILL in PoE2 — some skills allow it, many don't — so don't assume; "
-			.. "verify this skill (explain_mechanic/lookup_mechanic/in-game). Extra projectiles also add "
-			.. "clear/coverage and can feed ailments/secondary effects."
+			.. " projectiles. PoB TotalDPS is Hit DPS and may already include a quantity multiplier known "
+			.. "to the engine. Whether additional projectiles overlap one target, improve only coverage, "
+			.. "or feed secondary effects is per-skill; verify instead of multiplying projectile count."
 	end
 	return nil
 end
@@ -690,7 +688,7 @@ local function computeJudgeSelectedSkill()
 						candidate.caveats[#candidate.caveats + 1] = "minion_dps_unverified_caveat"
 					end
 					if asNumber(out.ProjectileCount) > 1 and metric.key ~= "FullDPS" then
-						candidate.caveats[#candidate.caveats + 1] = "lower_bound_dps_caveat"
+						candidate.caveats[#candidate.caveats + 1] = "projectile_overlap_unverified_caveat"
 					end
 					if summary.groupOrigin == "synthetic_on_kill" or summary.groupOrigin == "synthetic_reactive" then
 						supplemental[#supplemental + 1] = candidate
@@ -972,8 +970,7 @@ function methods.paste_skill(p)
 		build.skillsTab.controls.groupList.selValue = list[newIndex]
 	end
 	-- Compute FullDPS for the main skill (PoB only rolls it up for groups flagged "include in Full
-	-- DPS"; off by default). This makes the realistic multi-hit/overlap number available from scratch
-	-- for multi-projectile/multi-hit skills, where TotalDPS (one hit) badly under-reads the build.
+	-- DPS"; off by default). This exposes PoB's selected-actor/component rollup alongside Hit DPS.
 	if list[newIndex] then
 		list[newIndex].includeInFullDPS = true
 	end

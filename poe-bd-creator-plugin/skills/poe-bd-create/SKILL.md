@@ -13,9 +13,9 @@ argument-hint: ["[--no-memory] [natural language build request]"]
 
 普通用户只应该看到自然语言追问、构筑摘要和验收结论。不要让普通用户阅读或填写 JSON。
 
-默认模式必须调用一次 `query_research_memory`，让研究记忆参与设计。用户显式使用
-`--no-memory` 时，只跳过研究记忆；静态语料、图、机制、生命周期、PoB、计算和 Judge 工具仍
-正常使用。不要为无记忆模式创建另一套 skill 或另一套 MCP 工具。
+默认模式必须渐进查询 `query_research_memory`，并明确记录哪些研究结论被采用、保留为注意事项或
+拒绝。用户显式使用 `--no-memory` 时，只跳过研究记忆；静态语料、图、机制、生命周期、PoB、
+计算和 Judge 工具仍正常使用。不要为无记忆模式创建另一套 skill 或另一套 MCP 工具。
 
 ## 用户交互
 
@@ -65,9 +65,43 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 4. 先实际调用 MCP 的 `get_freshness_report`。调用成功说明 PoE2 MCP 可用；不能因为没有在界面中
    看到某个工具分组、没有搜索到工具说明或没有先找到 Python 函数，就声称 MCP 不可用。
 5. 按下面的 MCP 工具清单查询资料，基于查询结果设计候选构筑方向，不要临时猜工具名。普通模式
-   必须调用 `query_research_memory` 并保留安全引用；`--no-memory` 模式不得调用它，候选里的
-   `memoryReferences` 必须为空，`researchMemoryRef` 使用 `disabled:no_memory_baseline`。
-6. 调用 `new_build()` 清空共享状态，然后串行使用 PoB/计算工具，把候选方向落实成当前请求所需的
+   中，`build_advice` 只提供规划启发；补丁敏感事实以当前 pinned PoB、physical graph 和
+   current corpus 为准。
+   按以下顺序使用研究记忆：
+   - 先用 `graph_tool_query(tool_name="search_graph_components", ...)` 发现候选，再用
+     `graph_tool_query(tool_name="resolve_graph_component", ...)` 确认用户指定或初选的升华、主技能
+     stable key；模糊候选不能当作已确认 key。
+   - 精确 Family 首次查询同时传 `ascendancy_key`、`primary_skill_key`，并让 `component_keys`
+     只包含这两个稳定身份。普通辅助、utility 和副技能不能作为必需 AND 条件；它们由命中的
+     Family/记录返回后再按需解析。自然语言 `query` 只表达构筑目标和排序偏好，不能代替精确身份。
+     检查 `buildFamilies` 的 `secondarySkillKeys`、`recordKindCounts`，以及
+     `deepResearchRecords`、`buildPatterns`、`semanticEdges` 和旧 `results`，不要只看第一条摘要。
+   - 选定 Family 后，若其 `recordKindCounts` 显示存在尚未读取的相关知识，使用
+     `build_family_keys=[...]` 和 `record_kinds=[...]` 做定向摘要查询，再对高度相关的少量
+     `recordIds` 使用 `detail_level="record"`。不要靠提高总返回上限把整个 Family 塞进上下文。
+   - 精确 Family 无命中、有效深度记录过少，或候选在资源、防御、轮转、机制链等具体设计维度仍有
+     缺口时，执行第二次定向召回：同主技能跨升华查询只传主技能 key；机制缺口查询使用
+     `include_transferable=true` 和对应的 canonical `research_axes`。检查独立返回的
+     `transferablePatterns`，不要把它们写成当前 Family 的成熟经验。
+   - Family 知识始终优先。公用知识只占补充通道，`scopeWeightCap` 不得高于 Family；即使证据很多，
+     `component/global` 也不能获得 `common_within_archetype` 或 `strong_ranking_hint` 的跨流派权威。
+     `transferScope=component` 的 Pattern 在其 `originFamilyKeys` 对应 Family 内仍作为 Family 知识返回；
+     只有迁移到其他 Family 时才进入较低权重的 `transferablePatterns` 通道。
+   - 深读 `recordKind`、`componentMentions.role`、`conditions`、`failureConditions` 和
+     `typedPayload`。将 `supportPackages` 作为归属明确的辅助候选并交给当前版本 PoB/
+     `optimize_supports` 验证；将 `gearResponsibilities` 转成装备职责而不是照抄来源物品；将
+     `ascendancyResponsibilities` 用作升华节点取舍依据；将 `resourceMechanisms` 和轮转/机制链
+     转成资源预算、失效条件与 Judge 分状态检查。新字段提供设计证据，不授权程序自动组装 BD。
+   - `case_observation` 只可作为当前候选的待验证假设；只有更高证据等级才能支持跨案例的一般性
+     结论。采用涉及暗金、天赋、触发、转换或资源交互的结论前，必须用当前静态事实或机制工具
+     复核其前提；resolver 成功只证明组件存在，不证明机制解释正确。矛盾项应标为 `rejected`，
+     不能仅保留 caveat 后继续当作设计依据。所有记忆仍需经图、PoB 和 Judge 验证合法性与数值。
+   - 在 `researchMemoryUse` 中记录查询引用、命中的 Family/record/pattern/edge，以及每条被采用、
+     保留或拒绝的结论如何影响候选。若定向查询没有命中，显式使用
+     `retrievalOutcome="no_matching_memory"` 和 `noMatchReason`，不能伪造引用。
+   `--no-memory` 模式不得调用该工具，候选里的 `memoryReferences` 必须为空、
+   `researchMemoryUse` 必须省略，`researchMemoryRef` 使用 `disabled:no_memory_baseline`。
+6. 调用 `new_build()` 清空本 MCP session 的活动状态，然后串行使用 PoB/计算工具，把候选方向落实成当前请求所需的
    完整活动构筑。至少实际设置职业、升华、等级、主技能和辅助技能、其他技能组、装备、天赋和
    战斗配置，并检查属性、抗性、Spirit 与资源状态。不能拿只有职业和主技能的空骨架去验收。
    装备目标必须匹配当前阶段：剧情/开荒使用 `plan_gear(stage="campaign")`，刚进图使用
@@ -86,7 +120,8 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
      不要机械套用带 Perfect Essence 和腐化的终局 `craft_item` 结果；不使用时记录理由。
 8. 调用 `inspect_build_completeness()`。修复其中的硬失败；对物品等级、占位装备、符文/灵魂核心、
    天赋珠宝、药剂和护符提示逐项处理或记录明确设计理由。这个工具只做完整度诊断，不会替你设计
-   BD；不能仅因为 Judge 数值高就跳过。
+   BD；不能仅因为 Judge 数值高就跳过。黄装必须通过前后缀数量、词缀组排他和词缀物品等级
+   检查，不能用理论上不存在的黄装抬高伤害或防御数值。
 9. 调用 `get_build()` 复读活动构筑，确认 PoB 中的职业、技能、装备和天赋确实是本次候选；发现
    遗留状态或缺项时继续修正。
 10. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`。这个工具
@@ -99,22 +134,38 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 12. 对本轮结果做简短失败核验：区分真实构筑失败、PoB/Judge 建模缺口、Judge 选错技能、工具或
     数据缺口、混合问题，或者当前没有实质失败。只保存结论摘要、修改计划和保留的注意事项，
     不保存逐步推理。
-    `passed=true` 只表示没有硬阻断，不等于候选值得推荐。如果 `qualityBand="barely_playable"`、
-    offense/recovery 等与用户目标直接相关的维度为 0，或仍有 `support_conflict_unverified_caveat`，
+    `passed=true` 只表示确定性合法性通过，不等于候选值得推荐。按以下四层处理结果：
+    `hardFailures` 是确定性非法；`playabilityFailures` 是合法但存在严重可玩性短板；
+    `qualityWarnings` 是未达到推荐质量目标；`modelability` 是 PoB/Judge 能否可靠计算。
+    如果存在 `playabilityFailures`、`qualityBand="barely_playable"`、offense/recovery 等与用户
+    目标直接相关的维度为 0，或仍有 `support_conflict_unverified_caveat`，
     必须优先继续修正或核验。重试耗尽后可以交付给人工研究，但只能称为“弱原型/待完善候选”，
     不能称为“推荐方案”“开荒顺畅已验证”或“成品 BD”。
+    `scoreApplicability="unavailable"` 表示核心机制当前无法可靠数值验证。不得引用综合分或 DPS
+    强度，也不得把工具能力不足说成 BD 非法；保留该设计并明确需要机制参考或实战核验。
     对“开荒顺畅”请求，还必须检查清图职责、单体/Boss 职责和资源恢复；不能只证明三抗、属性和
     插槽合法就接受。若一个技能同时承担清图与单体，必须有 PoB/机制证据或明确实战 caveat；否则
     应补充独立单体技能/组合，或把结果降级为仅清图方向。
-13. 如果 Judge 未通过且存在明确可修正项，在当前会话、当前 `runId` 和当前需求上下文中直接修改
+    接近剧情结束或进入异界时，主输出仍只有零到一个辅助技能属于高优先级完整度提醒。调用
+    `optimize_supports` 测试阶段合理的组合，或说明少辅助为何是有意设计；它不是合法性硬规则。
+    不要用“总蓝量至少是单次耗蓝的固定倍数”删辅助。续航应结合未保留蓝量、使用频率、每秒
+    恢复、药剂、击回/偷取和实际技能轮转判断；证据不足时标记为待实测。
+13. 如果 Judge 未通过，或存在 `playabilityFailures` 且有明确可修正项，在当前会话、当前 `runId`
+    和当前需求上下文中直接修改
     活动构筑，再次调用 `evaluate_generation_candidate`。不要重新调用 `start-run`，也不要要求用户
     重复需求。最多重试两轮；程序返回 `retry_limit_reached` 后必须停止。
+    如果修正改变了升华或核心主技能，必须先重新解析身份并重新调用 `query_research_memory`；新一轮
+    `researchMemoryUse` 和 `versionContext.researchMemoryRef` 必须包含新的 `dedupeQueryRef`。只调整
+    supports、装备数值、天赋路径或配置时不要求重复查询。
 14. 每轮生成一项 `generationAttempts` 记录。非最后一轮的 `retryDecision` 必须是 `retry`；最后
     一轮必须是 `accept` 或带明确停止原因的 `stop`。顶层候选、临时状态和 Judge 报告使用最后一轮。
-15. 如果最后一轮 Judge 已评估、`passed=true`、没有硬阻断，且 Agent 判断该版本可以接受，必须在
+15. 如果最后一轮 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效，必须在
     调用 `review-packet` 前调用
     `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`。这个工具只保存当前
     最后一轮且仍与可信 Judge 快照完全一致的活动 PoB；失败轮次和旧 attempt 不保存完整 PoB。
+    当前临时交付策略下，`playabilityFailures`、`qualityBand="barely_playable"`、目标维度为 0、
+    `scoreApplicability="unavailable"` 和其他非硬性 Judge 警告不阻止保存与导出。它们仍必须原样
+    出现在用户可见 Judge 结论中，并将结果称为弱原型/待验证候选，不能称为推荐方案或已验证成品。
 16. 只把本次生成的安全摘要写入 `start-run` 返回的 `agentOutputFile`，并使用对应 `runId` 和
     `runToken` 调用 `review-packet`。最终 PoB XML 由专用 artifact 工具写入本地私有存储，不要写入
     `agentOutputFile`。
@@ -142,6 +193,9 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - 游戏补丁只在赛季大版本不同（例如 `0.5` 与 `0.6`）时视为数据不兼容；同一赛季内的精确
   补丁号差异只记录来源和注意事项，不应仅因此停止生成。以 freshness 返回的结构化结论为准，
   不要自行比较字符串。
+- `provider_status` 出现 `github_rate_limited`，但 freshness 已由本地已认证 PoB/语料和
+  poe.ninja 交叉确认同一树世代、顶层没有对应 blocker 时，只说明官方最新提交暂时无法刷新；
+  不要将其表述为“官方天赋树不可用”。
 - 当前游戏补丁、赛季和天赋树可确认，仅本地 `pob_engine` / `pob_data` 落后：继续查询、设计、
   搭建活动构筑并运行 Judge。把 PoB 数值和 Judge 评分明确标为“过期 PoB 有限证据”，不得宣称
   当前赛季已验证，但不能因此停止生成。
@@ -165,8 +219,15 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 
 构筑经验记忆：
 
-- `query_research_memory(query, limit=...)`：查历史构筑经验、机制模式、转型门槛和失败注意事项。
-- `build_advice(topic)`：查稳定构筑原则，例如开荒红线、终局伤害来源、防御短板。
+- `query_research_memory(query, component_keys=[...], ascendancy_key=...,
+  primary_skill_key=..., build_family_keys=[...], record_kinds=[...], limit=...,
+  detail_level="summary", include_transferable=false, research_axes=[])`：按精确 Family、稳定组件
+  和记录类型查询安全摘要、深度记录、模式与语义边。首查使用升华与核心主技能的精确参数；选定
+  Family 后按 `recordKindCounts` 定向查询。`gem:` 与对应 `skill:` 身份由工具依据物理图关系等价
+  处理。使用 `detail_level="record", record_ids=[...]` 只深读已选记录。需要跨 Family 机制时
+  显式启用 `include_transferable` 并按缺口提供 `research_axes`；结果在 `transferablePatterns`
+  中单列。每次返回的 `dedupeQueryRef` 是本次查询的安全引用。
+- `build_advice(topic)`：查构筑规划启发，例如开荒红线、终局伤害来源、防御短板。
 - `suggest_build_lifecycle(goal, ...)`：查生命周期路线骨架。这个工具可能只返回阶段、转型门槛和
   设计原则，不一定给具体技能名；如果没有技能名，由你继续用技能、机制和计算工具选择。
 
@@ -302,9 +363,18 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `unresolvedCaveats`
 - `toolReferences`
 - `memoryReferences`
+- `researchMemoryUse`
 - `rationaleSummary`
 - `versionContext`
 - `noRawMaterial`
+
+普通模式的 `researchMemoryUse` 至少包含：`retrievalOutcome`、`dedupeQueryRefs`、
+`componentKeys`、`buildFamilyKeys`、`deepRecordIds`、`patternIds`、`semanticEdgeIds`、
+`memoryItemIds`、`insightDecisions` 和可选的 `noMatchReason`。`insightDecisions` 每项使用
+`sourceRefs`、`decision`（`adopted` / `caveated` / `rejected`）、`summary` 和 `application`；
+`sourceRefs` 必须来自本次命中的安全记忆项。`memoryReferences` 保留兼容，但必须包含全部
+`dedupeQueryRefs` 和实际使用的记忆项 ID；`versionContext.researchMemoryRef` 使用其中一个真实
+`dedupeQueryRef`。
 
 `transientBuildState` 至少包含：
 

@@ -59,7 +59,7 @@ def save_final_build_artifact(
     candidate_id: str,
     attempt_index: int,
 ) -> dict[str, Any]:
-    """Persist exactly one passing, unchanged PoB snapshot for a generation run."""
+    """Persist exactly one hard-valid, unchanged PoB snapshot for a generation run."""
     try:
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
@@ -253,6 +253,10 @@ def _safe_manifest(manifest: FinalBuildArtifactManifest) -> dict[str, Any]:
         ],
         "judgeStatus": manifest.judge_report.status,
         "judgePassed": manifest.judge_report.passed,
+        "judgeQualityBand": manifest.judge_report.quality_band,
+        "judgeScoreApplicability": manifest.judge_report.score_applicability,
+        "judgePlayabilityFailures": manifest.judge_report.playability_failures,
+        "judgeQualityWarnings": manifest.judge_report.quality_warnings,
         "judgeCaveats": manifest.judge_report.caveats,
         "versionContext": manifest.version_context.model_dump(mode="json", by_alias=True),
         "createdAt": manifest.created_at,

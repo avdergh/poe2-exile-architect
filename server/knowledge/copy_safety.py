@@ -85,6 +85,17 @@ def copyability_flags(value: Any) -> list[str]:
     return sorted(flags)
 
 
+def durable_knowledge_flags(value: Any) -> list[str]:
+    """Apply copy-safety to cleaned knowledge without rejecting complete core mechanism packages."""
+    allowed_mechanism_flags = {
+        "full_support_link_like",
+        "full_gem_link_like",
+        "ordered_passive_path",
+        "slot_exact_gear_like",
+    }
+    return [flag for flag in copyability_flags(value) if flag not in allowed_mechanism_flags]
+
+
 def all_text(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]

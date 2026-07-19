@@ -1,6 +1,6 @@
 # Judge 评分系统说明
 
-最后更新：2026-07-01
+最后更新：2026-07-12
 
 本文档描述 Phase 1 当前实现的 Judge 评分系统，包括：
 
@@ -59,23 +59,23 @@
 
 Judge 不是一个新的数值引擎，而是一个 **evidence-aware evaluator（证据感知评估器）**。
 
-它的核心职责有四层：
+评估输出严格拆成四层，不能互相冒充：
 
-1. **Legality（合法性）**  
-   判断这个 BD 是否触发硬性非法条件。
+1. **Legality（合法性）**：`hardFailures`，只包含职业、插槽、武器、属性、预算和装备等
+   确定性非法；决定 `pass`。
+2. **Severe Playability（严重可玩性）**：`playabilityFailures`，表示 BD 合法但存在严重输出、
+   抗性或防御短板；不改变 legality pass，分类为 `severe_playability_failure`，不能作为最终推荐产物。
+3. **Quality（质量）**：`qualityWarnings` 与 score vector，表示未达到推荐质量目标，不是非法。
+4. **Modelability（可建模性）**：说明 PoB 是否足以支撑数值结论；核心不可建模时
+   `scoreApplicability=unavailable`，不能引用综合分作强度结论。
 
-2. **Score Vector（分项分数向量）**  
-   输出四个核心维度：
+Score Vector（分项分数向量）输出四个核心维度：
    - `offense`（进攻）
    - `defense`（防御）
    - `recovery`（恢复）
    - `mobility`（机动）
 
-3. **Modelability（可建模性）**  
-   判断当前 PoB readback（PoB 回读结果）是否足以支撑“强结论”。
-
-4. **Reward Safety（奖励安全）**  
-   防止有限证据、导入异常、PoB 表达盲区，污染后续 reward memory（奖励记忆）。
+Reward Safety（奖励安全）在四层之上防止有限证据和 PoB 盲区污染后续奖励记忆。
 
 换句话说，Judge 不承诺“把所有机制都算准”，但它必须诚实地说明：
 
@@ -114,7 +114,7 @@ Judge 不是一个新的数值引擎，而是一个 **evidence-aware evaluator�
 
 ### 3.1 分数范围
 
-当前所有核心分项和综合分都使用：
+当 `scoreApplicability=applicable` 时，核心分项和综合分使用：
 
 - `scoreScale = "0_to_1"`
 
@@ -122,6 +122,9 @@ Judge 不是一个新的数值引擎，而是一个 **evidence-aware evaluator�
 
 - `0.0` = 极差 / 不可用 / 被阻断
 - `1.0` = 达到当前 target（目标线）或超过目标线
+
+当核心机制 `not_modelable` 时，分数字段只保留内部诊断占位，`qualityBand=unmodelled`，不得用于
+强度结论、最终产物验收或 reward。
 
 ### 3.2 维度
 
@@ -144,19 +147,21 @@ Judge 当前输出这些主维度：
 
 ### 3.3 综合分权重
 
-当前综合分使用扁平权重：
+当前综合分按等级阶段使用不同权重。合法性与完整度独立判定，不进入加权分：
 
 ```text
-aggregate =
-  offense  * 0.40 +
-  defense  * 0.40 +
-  recovery * 0.15 +
-  mobility * 0.05
+campaign:   offense 0.35 / defense 0.30 / recovery 0.20 / mobility 0.15
+maps_entry: offense 0.375 / defense 0.35 / recovery 0.175 / mobility 0.10
+endgame:    offense 0.40 / defense 0.40 / recovery 0.15 / mobility 0.05
 ```
 
 权重 profile（权重配置名）为：
 
-- `judge_v3_evidence_aware`
+- `judge_v4_stage_aware`
+
+这组权重属于项目产品启发式，不是官方规则。阶段感知调整的依据是：剧情开荒的实际体验高度
+依赖资源恢复和移动/走位，而终局数值比较仍更依赖伤害与防御。权重仍需用真实构筑样本和人工
+验收继续校准，不能据此声称某个 BD 客观全局最优。
 
 ---
 
@@ -183,7 +188,7 @@ Judge 明确区分三类阈值：
 
 - 不代表一定非法；
 - 但该项质量分会很低，甚至为 0；
-- 同时会追加 `quality_target_missed_caveat`（未达到质量目标警示）。
+- 同时会在 `qualityWarnings` 追加具体维度的质量目标警示。
 
 ### 4.3 Target（目标线）
 
@@ -289,6 +294,15 @@ PoB 还会把部分升华、装备或机制产生的内部效果动态加入技�
 
 ### 7.2 offense 取值优先级
 
+PoB 字段按上游实际定义解释：
+
+- `AverageDamage`：平均单次命中；
+- `TotalDPS`：PoB 界面的 Hit DPS，即平均命中乘攻击/施法频率及引擎已识别的数量倍率；
+- `CombinedDPS`：当前技能的 Hit DPS 加 PoB 已建模的持续伤害和次级组件；
+- `FullDPS`：被纳入 Full DPS 的技能 actor、技能组与持续伤害汇总。
+
+这些字段都不自动证明真实战斗覆盖率、技能轮转同时成立或投射物重叠。
+
 Python 层优先看 `JudgeDPS`。如果 Lua 已经给出 `judgeSelectedSkill`，就使用它。
 
 否则才 fallback（回退）到 PoB 常规字段：
@@ -321,7 +335,7 @@ Judge 对 offense 明确区分 provenance（证据来源）和 evidence level（
 含义不是“这就是严格单体真 DPS”，而是：
 
 - 这是 PoB 对当前技能组的 rollup（汇总面板）；
-- 它比单 hit（单段）更完整；
+- 它汇总了被纳入 Full DPS 的 actor 与持续伤害组件；
 - 但仍不能自动等同于真实全命中、全覆盖、全时序成立的最终伤害。
 
 #### C. `minion_pob_output`（PoB 召唤物输出）
@@ -352,17 +366,14 @@ effectiveDps = rawMinionDps * count
 
 表示当前拿不到可靠 offense 数据。
 
-### 7.4 projectile lower bound（投射物下界）
+### 7.4 projectile overlap（投射物重叠）
 
 如果 `ProjectileCount > 1` 且当前用的不是 `FullDPS`，Judge 会追加：
 
-- `lower_bound_dps_caveat`
+- `projectile_overlap_unverified_caveat`
 
-含义是：
-
-- 这是下界；
-- 暂时不在 Phase 1 手写 overlap / shotgun（重叠 / 散弹）数学；
-- 但也不会把这个下界伪装成“最终真实输出”。
+含义是 PoB Hit DPS 可能已包含引擎认识的数量倍率，但额外投射物究竟能否重叠单体、只增加覆盖，
+或参与次级效果仍需按具体技能核验。Judge 不手工乘投射物数量，也不再把 `TotalDPS` 统称为下界。
 
 ### 7.5 offense 阈值
 
@@ -494,23 +505,18 @@ Judge 不会因为单个 `phys max hit` 低就直接判死。
 
 - `catastrophic_defense_shortboard`
 
-### 8.8 抗性失败
+### 8.8 抗性分层
 
-元素抗性任一 `< 75`，或者非 CI 构筑混沌抗性 `< 0`，会命中：
+75% 是默认元素抗性上限和推荐质量目标，不是合法性条件。当前使用三层结构：
 
-- `uncapped_resistance`
+- `campaign`：任一元素抗性 `< 30%` 才进入
+  `severe_elemental_resistance_shortfall`；
+- `maps_entry` / `endgame`：任一元素抗性 `< 60%` 才进入该严重可玩性失败；
+- 任一元素抗性 `< 75%` 时进入 `elemental_resistance_below_cap` 质量警示。
 
-对于生成构筑，这是强负面。  
-对于 `trusted_reference`（外部可信参考样本），当前会降级为：
-
-- `trusted_reference_uncapped_resistance_caveat`
-
-原因是 poe.ninja / PoB 导入态经常存在配置态、切换态、临时态问题，不能立刻把 archetype（流派）打死。
-
-剧情阶段的非 CI 构筑在混沌抗已经达到 `0%` 后，混沌 Max Hit 仍保留为诊断，但不再参与
-`max_hit_shortboard` 的最低项和平均值计算。这样不会通过 Judge 分数诱导 Agent 把剧情装备后缀
-继续投入到混沌抗 75%，同时混沌抗为负时仍保留 `uncapped_resistance` 硬失败。进图和终局阶段仍
-完整计入混沌 Max Hit。
+非 CI 构筑混沌抗性为负时使用 `negative_chaos_resistance` 质量警示，不再把它与确定性非法混合。
+剧情阶段混沌抗达到 `0%` 后，混沌 Max Hit 保留诊断，但不参与防御 shortboard，避免诱导 Agent
+牺牲输出、恢复、移动和属性去强追剧情混沌满抗。
 
 ---
 
@@ -693,6 +699,9 @@ mobility * 0.10
 
 - 被 blocked（阻断） -> `invalid`
 - 出现强底线失败 -> `barely_playable`
+- 生成候选的 offense（进攻）维度为 0 -> `offense_delivery_not_established`（进攻兑现尚未建立），
+  综合分上限为 0.29，因此不能被其他维度平均成 `solid`；这不是确定性非法，也不表示 PoB 已证明
+  真实 DPS 很低，而是表示当前候选还没有足够证据作为可交付成品
 - 综合分高 -> `solid` 或 `strong`
 
 ---
@@ -741,7 +750,6 @@ mobility * 0.10
 - `external_passive_budget_anomaly_caveat`
 - `external_weapon_set_budget_anomaly_caveat`
 - `trusted_reference_attribute_requirement_mismatch_caveat`
-- `trusted_reference_uncapped_resistance_caveat`
 - `trusted_reference_floor_unverified_caveat`
 
 这不代表“Judge 放过错误”，而是：
@@ -771,10 +779,12 @@ mobility * 0.10
 - `Cast on Ignite`
 - `Cast on Minion Death`
 
-并且它处在主技能组核心位置，就会触发：
+并且它处在主技能组核心位置，就会触发 `main_socket_group_core_unmodelled` 与
+`trigger_rate_unmodelled_caveat`。
 
-- `unmodelled_mechanic`
-- `main_socket_group_core_unmodelled`
+这不进入 `hardFailures`：Spirit 预算仍正常做确定性检查，但触发事件频率、Energy 累积、冷却与
+被触发技能总输出当前无法可靠计算，因此 `pass` 可以为 true，`scoreApplicability` 为
+`unavailable`，且不能保存为已数值验证的最终产物或产生正向 reward。
 
 这时比较结果会被判成：
 
@@ -784,7 +794,7 @@ mobility * 0.10
 
 以下 caveat 会把 reward 降为 limited：
 
-- `lower_bound_dps_caveat`
+- `projectile_overlap_unverified_caveat`
 - `minion_dps_unverified_caveat`
 - `minion_count_multiplier_caveat`
 - `full_dps_rollup_caveat`
@@ -798,6 +808,10 @@ mobility * 0.10
 - 可以展示分数；
 - 可以做 selection（选择）；
 - 但不能把它当成强 reward memory 的稳定监督信号。
+
+对于本系统生成的候选，limited offense evidence（有限进攻证据）仍可以保留用于诊断，但如果
+offense 分数实际为 0，则最终 PoB artifact（产物）保存门槛必须拒绝该候选。成熟参考 BD 的校准
+样本不套用这一生成候选交付上限，以免把 PoB 无法建模的成熟机制误写成真实失败。
 
 ---
 

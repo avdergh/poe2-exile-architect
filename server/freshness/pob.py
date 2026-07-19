@@ -104,6 +104,7 @@ class CompatibilityEntry:
 class CompatibilityManifest:
     schema_version: int
     entries: tuple[CompatibilityEntry, ...]
+    current_pob_version: str | None = None
 
 
 def pob_release_commit_api_url(tag: str) -> str:
@@ -152,7 +153,16 @@ def load_compatibility_manifest(path: str | Path) -> CompatibilityManifest:
             raise PobParseError(f"duplicate compatibility commit: {entry.commit}")
         commits.add(entry.commit)
         entries.append(entry)
-    return CompatibilityManifest(schema_version=1, entries=tuple(entries))
+    current_pob_version = _optional_string(manifest.get("current_pob_version"))
+    if current_pob_version is not None:
+        matches = [entry for entry in entries if entry.pob_version == current_pob_version]
+        if len(matches) != 1:
+            raise PobParseError("current_pob_version must identify exactly one compatibility entry")
+    return CompatibilityManifest(
+        schema_version=1,
+        entries=tuple(entries),
+        current_pob_version=current_pob_version,
+    )
 
 
 def resolve_compatibility(

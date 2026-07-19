@@ -16,7 +16,7 @@ def version_context() -> dict[str, str]:
         "passive_tree_version": "0_5",
         "pob_version_or_commit": "unknown",
         "graph_snapshot_id": "snapshot:phase5",
-        "research_memory_ref": "phase4-context:test",
+        "research_memory_ref": "dq-0123456789abcdef",
     }
 
 
@@ -80,11 +80,41 @@ def agent_submission_payload() -> dict[str, object]:
                 },
                 {
                     "tool_name": "query_research_memory",
-                    "query_ref": "research-memory:starter-projectile",
+                    "query_ref": "dq-0123456789abcdef",
                     "summary": "Found starter projectile advisory patterns.",
                 },
             ],
-            "memory_references": ["pattern:starter-projectile"],
+            "memory_references": [
+                "dq-0123456789abcdef",
+                "bf-1234567890abcdef",
+                "drr-1234567890abcdef",
+                "bdp-1234567890abcdef",
+            ],
+            "research_memory_use": {
+                "retrieval_outcome": "matched",
+                "dedupe_query_refs": ["dq-0123456789abcdef"],
+                "component_keys": [
+                    "ascendancy:ranger:deadeye",
+                    "skill:LightningArrowPlayer",
+                ],
+                "build_family_keys": ["bf-1234567890abcdef"],
+                "deep_record_ids": ["drr-1234567890abcdef"],
+                "pattern_ids": ["bdp-1234567890abcdef"],
+                "semantic_edge_ids": [],
+                "memory_item_ids": [],
+                "insight_decisions": [
+                    {
+                        "source_refs": [
+                            "drr-1234567890abcdef",
+                            "bdp-1234567890abcdef",
+                        ],
+                        "decision": "adopted",
+                        "summary": "投射物清图壳需要独立保留单体兑现方案。",
+                        "application": "候选保留单体技能组并交给 PoB/Judge 分别验证。",
+                    }
+                ],
+                "no_match_reason": None,
+            },
             "rationale_summary": ("职业先服务后期上限，开荒阶段只保留低成本、低复杂度的机制。"),
             "version_context": version_context(),
             "no_raw_material": True,
@@ -120,6 +150,10 @@ def test_agent_led_prototype_submission_builds_safe_human_review_packet():
         "campaign_late",
         "maps_entry",
     ]
+    assert packet["prototypeBuildCandidate"]["researchMemoryUse"]["retrievalOutcome"] == ("matched")
+    assert packet["prototypeBuildCandidate"]["researchMemoryUse"]["deepRecordIds"] == [
+        "drr-1234567890abcdef"
+    ]
     assert packet["judgeAdvisoryReport"]["status"] == "not_evaluated"
     assert packet["recommendedNextAction"] == "human_review_required"
     assert packet["humanReviewFields"]["briefFit"] == "pending"
@@ -132,11 +166,24 @@ def test_candidate_requires_agent_query_or_memory_evidence():
     payload = agent_submission_payload()
     payload["prototypeBuildCandidate"]["tool_references"] = []
     payload["prototypeBuildCandidate"]["memory_references"] = []
+    payload["prototypeBuildCandidate"]["research_memory_use"] = None
 
     result = prototype.validate_and_build_human_review_packet(payload)
 
     assert result["status"] == "rejected"
     assert result["errorCode"] == "missing_evidence_references"
+
+
+def test_candidate_rejects_untraceable_research_memory_decision():
+    payload = agent_submission_payload()
+    payload["prototypeBuildCandidate"]["research_memory_use"]["insight_decisions"][0][
+        "source_refs"
+    ] = ["drr-not-recalled"]
+
+    result = prototype.validate_and_build_human_review_packet(payload)
+
+    assert result["status"] == "rejected"
+    assert result["errorCode"] == "invalid_schema"
 
 
 def test_not_evaluated_judge_requires_clear_missing_state_reason():

@@ -117,9 +117,8 @@ def _retry_payload(
     memory_mode: str = "no_memory",
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     payload = agent_submission_payload()
-    version = _version(
-        "disabled:no_memory_baseline" if memory_mode == "no_memory" else "memory:query:1"
-    )
+    query_ref = "dq-fedcba9876543210"
+    version = _version("disabled:no_memory_baseline" if memory_mode == "no_memory" else query_ref)
     payload["agentRefinedBuildPrompt"]["version_context"] = version
     base_candidate = payload["prototypeBuildCandidate"]
     base_candidate["prompt_ref"] = payload["agentRefinedBuildPrompt"]["prompt_id"]
@@ -131,15 +130,35 @@ def _retry_payload(
         }
     ]
     base_candidate["memory_references"] = []
+    base_candidate["research_memory_use"] = None
     if memory_mode == "memory_assisted":
         base_candidate["tool_references"].append(
             {
                 "tool_name": "query_research_memory",
-                "query_ref": "memory:query:1",
+                "query_ref": query_ref,
                 "summary": "Relevant starter pattern queried.",
             }
         )
-        base_candidate["memory_references"] = ["pattern:starter:1"]
+        base_candidate["memory_references"] = [query_ref, "drr-fedcba9876543210"]
+        base_candidate["research_memory_use"] = {
+            "retrieval_outcome": "matched",
+            "dedupe_query_refs": [query_ref],
+            "component_keys": ["skill:LightningArrowPlayer"],
+            "build_family_keys": [],
+            "deep_record_ids": ["drr-fedcba9876543210"],
+            "pattern_ids": [],
+            "semantic_edge_ids": [],
+            "memory_item_ids": [],
+            "insight_decisions": [
+                {
+                    "source_refs": ["drr-fedcba9876543210"],
+                    "decision": "adopted",
+                    "summary": "投射物清图需要单体补充方案。",
+                    "application": "候选加入独立单体技能组并继续验证。",
+                }
+            ],
+            "no_match_reason": None,
+        }
 
     attempts = [
         _attempt(base_candidate, version, index=0, passed=False, score=0.2),
@@ -227,6 +246,99 @@ def test_memory_assisted_mode_accepts_memory_evidence():
 
     assert result["status"] == "accepted"
     assert result["experimentContext"]["memoryMode"] == "memory_assisted"
+
+
+def test_memory_assisted_mode_accepts_explicit_no_match():
+    payload, receipts = _retry_payload("memory_assisted")
+    for attempt in payload["generationAttempts"]:
+        candidate = attempt["prototypeBuildCandidate"]
+        query_ref = candidate["research_memory_use"]["dedupe_query_refs"][0]
+        candidate["memory_references"] = [query_ref]
+        candidate["research_memory_use"] = {
+            "retrieval_outcome": "no_matching_memory",
+            "dedupe_query_refs": [query_ref],
+            "component_keys": ["skill:LightningArrowPlayer"],
+            "build_family_keys": [],
+            "deep_record_ids": [],
+            "pattern_ids": [],
+            "semantic_edge_ids": [],
+            "memory_item_ids": [],
+            "insight_decisions": [],
+            "no_match_reason": "定向 summary 查询未返回同升华或同核心技能知识。",
+        }
+    payload["prototypeBuildCandidate"] = payload["generationAttempts"][-1][
+        "prototypeBuildCandidate"
+    ]
+    reviewed = prototype.validate_and_build_human_review_packet(payload, trusted_evaluation=True)
+
+    result = retry.validate_and_build_retry_report(
+        reviewed["humanReviewPacket"],
+        {
+            "experimentContext": {
+                "memoryMode": "memory_assisted",
+                "maxRetryCount": 2,
+            }
+        },
+        receipts,
+        run_id="run:test",
+    )
+
+    assert result["status"] == "accepted"
+
+
+def test_memory_assisted_retry_rejects_stale_query_after_primary_skill_change():
+    payload, receipts = _retry_payload("memory_assisted")
+    payload["generationAttempts"][1]["transientBuildState"]["safeSummary"]["mainSkill"] = (
+        "Ice Strike"
+    )
+    payload["prototypeBuildCandidate"] = payload["generationAttempts"][-1][
+        "prototypeBuildCandidate"
+    ]
+    payload["transientBuildState"] = payload["generationAttempts"][-1]["transientBuildState"]
+    receipts[1]["transientBuildState"] = payload["generationAttempts"][1]["transientBuildState"]
+    reviewed = prototype.validate_and_build_human_review_packet(payload, trusted_evaluation=True)
+    assert reviewed["status"] == "accepted"
+
+    result = retry.validate_and_build_retry_report(
+        reviewed["humanReviewPacket"],
+        {
+            "experimentContext": {
+                "memoryMode": "memory_assisted",
+                "maxRetryCount": 2,
+            }
+        },
+        receipts,
+        run_id="run:test",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["errorCode"] == "research_memory_requery_required"
+    assert result["caveats"] == ["Changed identity fields: primary_skill."]
+
+
+def test_memory_assisted_mode_rejects_tool_only_memory_evidence():
+    payload, receipts = _retry_payload("memory_assisted")
+    for attempt in payload["generationAttempts"]:
+        attempt["prototypeBuildCandidate"]["research_memory_use"] = None
+    payload["prototypeBuildCandidate"] = payload["generationAttempts"][-1][
+        "prototypeBuildCandidate"
+    ]
+    reviewed = prototype.validate_and_build_human_review_packet(payload, trusted_evaluation=True)
+
+    result = retry.validate_and_build_retry_report(
+        reviewed["humanReviewPacket"],
+        {
+            "experimentContext": {
+                "memoryMode": "memory_assisted",
+                "maxRetryCount": 2,
+            }
+        },
+        receipts,
+        run_id="run:test",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["errorCode"] == "memory_assisted_lane_missing_memory_evidence"
 
 
 def test_standard_compatibility_mode_cannot_skip_multiple_attempt_receipts():

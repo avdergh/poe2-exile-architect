@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -20,6 +21,13 @@ from mcp.server.fastmcp import FastMCP
 from . import paths
 from . import scaffold
 from .compute.engine import PobEngine
+from .compute.engine_pool import (
+    SessionCallGate,
+    SessionEnginePool,
+    current_session,
+    reset_current_session,
+    set_current_session,
+)
 from .compute import buildopt
 from .compute import craftopt
 from .compute import completeness
@@ -65,28 +73,48 @@ except OSError:
         "EHP, or resistances. One active build persists across calls."
     )
 
-mcp = FastMCP("poe2-build-mcp", instructions=_INSTRUCTIONS)
+_engine_pool = SessionEnginePool()
+_session_call_gate = SessionCallGate()
 
-_engine: PobEngine | None = None
-_engine_lock = threading.Lock()
+
+class _SessionIsolatedFastMCP(FastMCP):
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            session = self.get_context().session
+        except ValueError:
+            session = None
+        token = set_current_session(session)
+        try:
+            if name == "apply_updates":
+                return await super().call_tool(name, arguments)
+            async with _session_call_gate.hold(session):
+                return await super().call_tool(name, arguments)
+        finally:
+            reset_current_session(token)
+
+
+mcp = _SessionIsolatedFastMCP("poe2-build-mcp", instructions=_INSTRUCTIONS)
 
 
 def get_engine() -> PobEngine:
-    """Return the shared headless engine, (re)starting it if needed."""
-    global _engine
-    with _engine_lock:
-        if _engine is None or _engine.proc.poll() is not None:
-            _engine = PobEngine()
-        return _engine
+    """Return the current MCP session's headless engine, starting it if needed."""
+    return _engine_pool.get(current_session())
 
 
-def _reset_engine() -> None:
-    """Close the shared engine so the next call respawns it (e.g. after an update)."""
-    global _engine
-    with _engine_lock:
-        if _engine is not None:
-            _engine.close()
-            _engine = None
+@contextmanager
+def _runtime_install_context(replace_engine: bool):
+    with _session_call_gate.maintenance_sync():
+        context = _engine_pool.preserve_sessions() if replace_engine else nullcontext()
+        with context:
+            yield
+
+
+def _validate_staged_engine(staged_pob: Path) -> None:
+    with PobEngine(
+        src_dir=staged_pob / "PathOfBuilding-PoE2" / "src",
+        script=staged_pob / "pob_headless.lua",
+    ) as engine:
+        engine.ping()
 
 
 # PoB-PoE2 (pinned) has the gem DATA for energy-based meta triggers (Cast on Critical, the
@@ -1298,11 +1326,12 @@ def relevant_mechanics() -> dict[str, Any]:
 
 @mcp.tool()
 def build_advice(topic: str = "") -> dict[str, Any]:
-    """Evergreen PoE2 build-optimization principles — durable rules, not a meta snapshot.
+    """Curated PoE2 build-planning heuristics, not versioned mechanical authority.
 
     Omit `topic` for the framing + section list; pass a topic (e.g. "defense", "offense",
-    "resistances", "crit", "spirit", "red flags") to get that section. These are *principles*
-    for deciding what to change; the actual DPS/EHP numbers still come from the compute tools.
+    "resistances", "crit", "spirit", "red flags") to get that section. Current pinned PoB data,
+    the physical graph, and the current corpus override patch-sensitive statements in this prose;
+    actual DPS/EHP numbers still come from the compute tools.
     """
     return advice.advise(topic)
 
@@ -1798,13 +1827,35 @@ def query_research_memory(
     query: str,
     component_keys: list[str] | None = None,
     limit: int = 10,
+    detail_level: str = "summary",
+    record_ids: list[str] | None = None,
+    include_transferable: bool = False,
+    research_axes: list[str] | None = None,
+    ascendancy_key: str | None = None,
+    primary_skill_key: str | None = None,
+    build_family_keys: list[str] | None = None,
+    record_kinds: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Query creator-visible, copy-safe Phase 4 research memory and return a dedupe ref."""
-    return _research_memory_service().query_research_memory(
+    """Query safe Family memory with optional exact identity and record-kind filters."""
+    return _research_memory_service_with_graph().query_research_memory(
         query,
         component_keys=component_keys or [],
         limit=limit,
+        detail_level=detail_level,
+        record_ids=record_ids or [],
+        include_transferable=include_transferable,
+        research_axes=research_axes or [],
+        ascendancy_key=ascendancy_key,
+        primary_skill_key=primary_skill_key,
+        build_family_keys=build_family_keys or [],
+        record_kinds=record_kinds or [],
     )
+
+
+@mcp.tool()
+def propose_deep_research_records(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate focused deep-research records for later acceptance; does not persist them."""
+    return _research_memory_service_with_graph().validate_deep_research_records(payload)
 
 
 @mcp.tool()
@@ -1812,8 +1863,8 @@ def propose_research_fragments(
     payload: dict[str, Any],
     dedupe_query_ref: str | None = None,
 ) -> dict[str, Any]:
-    """Submit typed clean fragment proposals after query-before-propose dedupe."""
-    return _research_memory_service().propose_research_fragments(
+    """Validate clean fragment proposals after query-before-propose dedupe; does not persist."""
+    return _research_memory_service().validate_research_fragments(
         payload,
         dedupe_query_ref=dedupe_query_ref,
     )
@@ -1849,14 +1900,14 @@ def append_evidence_to_fragment(
 
 @mcp.tool()
 def propose_semantic_edges(payload: dict[str, Any]) -> dict[str, Any]:
-    """Submit typed semantic edge proposals; endpoints must already exist in the physical graph."""
-    return _research_memory_service_with_graph().propose_semantic_edges(payload)
+    """Validate semantic edge proposals; acceptance is the only durable writer."""
+    return _research_memory_service_with_graph().validate_semantic_edges(payload)
 
 
 @mcp.tool()
 def propose_build_patterns(payload: dict[str, Any]) -> dict[str, Any]:
-    """Submit typed build design observations and pattern proposals for Phase 5 context."""
-    return _research_memory_service_with_graph().propose_build_patterns(payload)
+    """Validate build observations and patterns for a later safe-review acceptance."""
+    return _research_memory_service_with_graph().validate_build_patterns(payload)
 
 
 @mcp.tool()
@@ -2046,10 +2097,10 @@ def check_for_updates() -> dict[str, Any]:
 @mcp.tool()
 def apply_updates() -> dict[str, Any]:
     """Download and install the latest validated release (engine + corpus) now."""
-    # Close the engine first so it doesn't hold a cwd lock on the files being replaced
-    # (matters on Windows when re-updating an engine already installed in user-data).
-    _reset_engine()
-    return live_update.apply_updates()
+    return live_update.apply_updates(
+        install_context=_runtime_install_context,
+        validate_engine=_validate_staged_engine,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2176,8 +2227,15 @@ def research_mature_build_case(
 
 def main() -> None:
     research_packet.cleanup_expired_packets()
+
     # Best-effort, throttled auto-update in the background; never blocks startup.
-    threading.Thread(target=live_update.auto_update, args=(_reset_engine,), daemon=True).start()
+    def _auto_update() -> None:
+        live_update.auto_update(
+            install_context=_runtime_install_context,
+            validate_engine=_validate_staged_engine,
+        )
+
+    threading.Thread(target=_auto_update, daemon=True).start()
     mcp.run()
 
 
