@@ -5,9 +5,9 @@ and silently drops any line it can't match — so a natural inline list like
 ``Arc 20/20 1 / Lightning Penetration`` (or the spaceless ``Arc/Lightning Penetration``) loses
 every support. This module makes the forgiving forms work by (a) splitting the inline separators
 people actually type (``/``, `` | ``, ``, ``) onto their own lines — a slash whether or not it has
-surrounding spaces, but NEVER the digit/digit ``20/20`` level/quality slash — and (b) giving bare
-gem names a default ``20/20 1`` and countless gem lines a
-trailing ``1`` (supports are fixed-effect in PoE2, so the level/quality is cosmetic).
+surrounding spaces, but NEVER the digit/digit ``20/20`` level/quality slash — and (b) optionally
+giving bare gem names a caller-selected default plus a trailing instance count.  The Headless PoB
+bridge preserves bare names here and applies its pinned-data, character-level-aware default.
 """
 
 from __future__ import annotations
@@ -24,8 +24,14 @@ _BARE_NAME = re.compile(r"^[A-Za-z][A-Za-z'. ]*$")  # gem name only (letters/spa
 _HEADER = re.compile(r"^(Label|Slot)\s*:", re.IGNORECASE)
 
 
-def normalize_skill_text(text: str) -> str:
-    """Return `text` reshaped into PoB's one-gem-per-line paste format (idempotent)."""
+def normalize_skill_text(text: str, *, default_level: int | None = 20) -> str:
+    """Return ``text`` reshaped into PoB's one-gem-per-line paste format.
+
+    ``default_level=None`` preserves bare gem names after splitting.  The Headless PoB bridge uses
+    that mode so it can choose an active gem level from the pinned gem requirement table and the
+    active character level.  The public/default behaviour remains backwards compatible for callers
+    that only need text normalization.
+    """
     if not text:
         return text
     t = _SEP_SLASH.sub("\n", text)
@@ -45,9 +51,9 @@ def normalize_skill_text(text: str) -> str:
             if not re.search(r"\d", line[m.end() :]):
                 line = line + "  1"
             out.append(line)
-        elif _BARE_NAME.match(line):
+        elif _BARE_NAME.match(line) and default_level is not None:
             # A bare gem name (e.g. "Lightning Penetration") — give it the default L/Q + count.
-            out.append(line + " 20/20 1")
+            out.append(f"{line} {int(default_level)}/20 1")
         else:
             out.append(line)
     return "\n".join(out)

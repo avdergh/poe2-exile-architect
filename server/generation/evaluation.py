@@ -92,6 +92,9 @@ def evaluate_generation_candidate(
         state = _build_state_ref(
             parsed,
             captured.get("build") or {},
+            completeness_advisories=[
+                str(item) for item in preflight_report.get("advisories") or []
+            ],
             snapshot_id=snapshot_id,
             source_hash=source_hash,
             version=version,
@@ -195,6 +198,7 @@ def _build_state_ref(
     parsed: dict[str, Any],
     build: dict[str, Any],
     *,
+    completeness_advisories: list[str],
     snapshot_id: str,
     source_hash: str,
     version: models.VersionContext,
@@ -216,6 +220,7 @@ def _build_state_ref(
         source_hash=source_hash,
         safe_summary=summary,
         tested_skill_groups=parsed["testedSkillGroups"],
+        completeness_advisories=list(dict.fromkeys(completeness_advisories)),
         missing_reasons=[],
         version_context=version,
         no_raw_material=True,

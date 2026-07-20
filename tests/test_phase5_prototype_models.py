@@ -461,6 +461,72 @@ def test_agent_reported_judge_result_still_requires_human_review():
     assert packet["judgeAdvisoryReport"]["evaluatedSourceHash"] == "sha256:abc123"
 
 
+def test_trusted_completeness_advisories_require_explicit_candidate_disclosures():
+    payload = agent_submission_payload()
+    payload["transientBuildState"] = {
+        "status": "available",
+        "snapshot_id": "snapshot:runtime:starter:completeness",
+        "source_hash": "sha256:completeness",
+        "safe_summary": {"class": "Ranger"},
+        "tested_skill_groups": [
+            {
+                "role": "pob_main_group",
+                "active_skill": "Lightning Arrow",
+                "supports": ["Martial Tempo"],
+                "enabled": True,
+            }
+        ],
+        "completeness_advisories": [
+            "rune_or_soul_core_decision_missing",
+            "charm_capacity_not_planned",
+        ],
+        "missing_reasons": [],
+        "version_context": version_context(),
+        "no_raw_material": True,
+    }
+    payload["judgeAdvisoryReport"] = {
+        "report_id": "judge:evaluated:completeness",
+        "status": "evaluated",
+        "hard_failures": [],
+        "caveats": [],
+        "aggregate_score": 0.6,
+        "reward_strength": "limited",
+        "evaluated_snapshot_id": "snapshot:runtime:starter:completeness",
+        "evaluated_source_hash": "sha256:completeness",
+        "version_context": version_context(),
+        "no_raw_material": True,
+    }
+
+    missing = prototype.validate_and_build_human_review_packet(payload)
+
+    assert missing["status"] == "rejected"
+    assert missing["errorCode"] == "invalid_schema"
+
+    payload["prototypeBuildCandidate"]["completeness_advisory_decisions"] = [
+        {
+            "advisory_code": "rune_or_soul_core_decision_missing",
+            "decision": "deferred",
+            "reason": "75级低预算阶段暂不投入符文，保留孔位给拾取到的实用符文。",
+        },
+        {
+            "advisory_code": "charm_capacity_not_planned",
+            "decision": "intentionally_unused",
+            "reason": "当前腰带没有护符容量，后续换带容量底材时再启用。",
+        },
+    ]
+
+    accepted = prototype.validate_and_build_human_review_packet(payload)
+
+    assert accepted["status"] == "accepted"
+    decisions = accepted["humanReviewPacket"]["prototypeBuildCandidate"][
+        "completenessAdvisoryDecisions"
+    ]
+    assert {row["advisoryCode"] for row in decisions} == {
+        "rune_or_soul_core_decision_missing",
+        "charm_capacity_not_planned",
+    }
+
+
 def test_evaluated_judge_report_must_bind_to_transient_state_hash():
     payload = agent_submission_payload()
     payload["transientBuildState"] = {

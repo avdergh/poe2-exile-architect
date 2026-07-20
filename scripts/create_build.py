@@ -222,6 +222,7 @@ def _compact_review_result(
 ) -> dict[str, Any]:
     packet = result.get("humanReviewPacket") or {}
     judge = packet.get("judgeAdvisoryReport") or {}
+    candidate = packet.get("prototypeBuildCandidate") or {}
     retry_report = result.get("retryComparisonReport") or {}
     attempts = retry_report.get("attempts") or packet.get("generationAttempts") or []
     compact = {
@@ -229,7 +230,7 @@ def _compact_review_result(
         "validationOnly": not consumed,
         "reviewResultFile": str(run_dir / "review-result.json") if consumed else None,
         "packetId": packet.get("packetId"),
-        "candidateId": (packet.get("prototypeBuildCandidate") or {}).get("candidateId"),
+        "candidateId": candidate.get("candidateId"),
         "attemptCount": len(attempts),
         "finalJudge": {
             "status": judge.get("status"),
@@ -248,6 +249,7 @@ def _compact_review_result(
             "programmaticOutcome": retry_report.get("programmaticOutcome"),
             "scoreDelta": retry_report.get("scoreDelta"),
         },
+        "requiredUserDisclosures": candidate.get("completenessAdvisoryDecisions") or [],
         "noRawMaterial": True,
         "noHiddenChainOfThought": True,
     }

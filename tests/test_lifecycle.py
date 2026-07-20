@@ -6,6 +6,8 @@ snapshot, but a staged route with transition gates and feedback memory.
 
 from __future__ import annotations
 
+import pytest
+
 from server.knowledge import lifecycle
 
 
@@ -397,6 +399,37 @@ def test_verify_stage_metrics_passes_maps_entry_with_rate_based_sustain_evidence
     assert result["pass"] is True
     assert result["status"] == "passed"
     assert result["failedChecks"] == []
+
+
+def test_verify_stage_metrics_classifies_mana_flask_dependency_and_boss_risk():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={
+            "Life": 2600,
+            "Mana": 533,
+            "ManaUnreserved": 533,
+            "ManaCost": 45.384615,
+            "Speed": 2.1375,
+            "ManaRegenRecovery": 58.4,
+            "ManaLeechGainRate": 0,
+            "ManaOnHitRate": 0,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 12000,
+        },
+        state={"manaFlaskEquipped": True},
+    )
+
+    sustain = result["observations"]["manaSustain"]
+    assert sustain["classification"] == "flask_assisted_required"
+    assert sustain["grossDemandPerSecond"] == pytest.approx(97.0096, rel=1e-4)
+    assert sustain["netDeficitPerSecond"] == pytest.approx(38.6096, rel=1e-4)
+    assert sustain["secondsFromFull"] == pytest.approx(13.8049, rel=1e-4)
+    assert sustain["bossRisk"] == "long_boss_fight_can_run_out_of_mana"
+    assert "sustain_ok" in result["failedChecks"]
 
 
 def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():

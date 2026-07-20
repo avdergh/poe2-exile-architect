@@ -109,7 +109,8 @@ Agent 负责：
    等级、主技能与辅助技能、其他技能组、装备、天赋和战斗配置，并能读出属性、抗性、Spirit 与
    资源状态。程序不替 Agent 自动补全这些内容。
 6. Agent 先调用 `inspect_generation_preflight`。该工具检查 main group、单主动技能、重复 support、
-   完全重复的 enabled skill group 和 completeness；blocking issue 不应消耗 Judge attempt。
+   完全重复的 enabled skill group、主动宝石等级和 completeness；blocking issue 不应消耗 Judge
+   attempt。主动宝石检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
 7. Agent 调用 `evaluate_generation_candidate`。程序只捕获一次当前 PoB XML；预检与独立 Judge
    共享这份不可变快照，在独立 Judge
    引擎中运行 Phase 1 Judge，只持久化清洗后的状态引用和评估报告，并将可信凭据绑定到本次
@@ -119,8 +120,9 @@ Agent 负责：
    `validate-output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
    candidate/audit 可以从末轮推导，`memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
 9. `review-packet --compact` 核对 Agent 文件与可信凭据，原子写入完整 `HumanReviewPacket`，仅把
-   stdout 缩短为最终 Judge、重试差值和生命周期证据覆盖。缺少可信凭据、候选不一致或评估结果
-   被改写时拒绝验收。
+   stdout 缩短为最终 Judge、重试差值、生命周期证据覆盖和 `requiredUserDisclosures`。可信快照中
+   每个未消失的完整度 advisory 都必须在候选中记录 `deferred` 或 `intentionally_unused` 及理由；
+   缺项、候选不一致或评估结果被改写时拒绝验收。
 10. 人工判断候选是否值得继续推进。
 
 P5.1 不追求：
@@ -162,6 +164,10 @@ P5.1 最小产物：
 - 主技能组识别、多主动技能组诊断、Judge 实际选择技能和属性缺口安全摘要。已完成
 - PoB 当前技能组、Judge 评分组件和条件性附加伤害组件分层；击杀爆炸不再误触发插槽非法。
   已完成
+- 活动技能组支持基于 `index + fingerprint + stateHash` 的原子替换、删除和状态切换；来源技能组、
+  主组约束、过期选择器和解析失败均失败关闭，不修改 PoB 存档格式。已完成
+- 天赋优化 v2 在独立 PoB 快照运行，支持无副作用预览、提交前状态比较、稳定多目标累加、量化
+  平局规则、精确路径节点和版本化输入/输出凭证；确定性测试比较实际节点与语义状态哈希。已完成
 - P5.1 真实用户场景人工验收。已完成
 
 人工验收记录：
@@ -519,11 +525,17 @@ Agent 不能用解释覆盖硬阻断；只能给出复核证据、修正候选�
 - `plan_gear` 按角色等级选择当前阶段可获得底材，以同一物品等级筛选词缀池，并把
   `Item Level` 写入 PoB 黄装。已完成
 - Judge 将装备需求等级高于角色等级视为硬非法，不能再让低等级角色穿终局底材通过。已完成
+- `set_skill` 对未写等级的主动宝石选择当前角色可用的最高基础等级；显式超等级会回滚。Preflight
+  和 Judge 也会拦截导入构筑或降级角色后遗留的超等级主动宝石。已完成
 - `inspect_build_completeness` 在正式 Judge 前报告占位装备、缺失物品等级、符文/灵魂核心决策、
   天赋珠宝、生命/魔力药剂和腰带护符容量。已完成
 - `scaffold_gear` 仍可用于中途计算，但所有 `Scaffold ...` 物品必须在最终验收前替换。已完成
 - 药剂、护符、珠宝和符文由 Agent 根据阶段、预算和构筑机制选择；程序只诊断遗漏，不机械塞入
   固定方案。已完成
+- `optimize_item` 和 `plan_gear` 返回候选前复用完整度层的黄装合法性审计；非法候选直接丢弃并
+  返回结构化错误，不再把工具自己生成的装备交给后续 Preflight 否决。已完成
+- 资源续航使用 `ManaCost × Speed` 与回复、偷取、击回比较。存在确定缺口且装备魔力瓶时标为
+  `flask_assisted_required`，同时给出每秒缺口、满蓝维持时间和长 Boss 断蓝风险。已完成
 
 这些检查不把 BD 创造转回程序化补全。它们只保证 Agent 最终接受的是可玩的阶段构筑，而不是为
 Judge 临时堆出的计算骨架。

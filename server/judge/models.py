@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v6"
+EVALUATOR_VERSION = "judge_phase1_v7"
 WEIGHT_PROFILE = "judge_v6_evidence_separated"
 
 LIMITED_REWARD_CAVEATS = {
@@ -41,6 +41,7 @@ FAILURE_CODES = {
     "invalid_support_gem",
     "attribute_requirement_unmet",
     "equipped_item_level_requirement_unmet",
+    "active_skill_gem_level_requirement_unmet",
     "illegal_equipped_item_affixes",
     "incompatible_weapon_skill_tags",
     "attack_skill_without_weapon",
@@ -54,6 +55,8 @@ FAILURE_CODES = {
     "negative_chaos_resistance",
     "offense_quality_target_missed",
     "offense_delivery_not_established",
+    "mana_sustain_unsustainable",
+    "mana_flask_dependency",
     "pob_compute_failed",
     "primary_pool_unavailable_caveat",
     "life_unreserved_missing_caveat",
@@ -64,6 +67,7 @@ FAILURE_CODES = {
     "state_or_import_suspect_caveat",
     "defense_state_unverified_caveat",
     "recharge_metric_unavailable_caveat",
+    "long_boss_mana_sustain_risk_caveat",
     "quality_target_missed_caveat",
     "auto_selected_damage_skill_caveat",
     "lower_bound_dps_caveat",

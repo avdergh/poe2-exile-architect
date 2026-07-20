@@ -30,16 +30,17 @@ def _group(
 
 
 class _Engine:
-    def __init__(self, xml: str) -> None:
+    def __init__(self, xml: str, *, build: dict[str, object] | None = None) -> None:
         self.xml = xml
         self.xml_reads = 0
+        self.build = build or {"class": "Monk", "level": 70, "gear": {}}
 
     def get_xml(self) -> str:
         self.xml_reads += 1
         return self.xml
 
     def get_build(self) -> dict[str, object]:
-        return {"class": "Monk", "level": 70, "gear": {}}
+        return self.build
 
     def list_jewel_sockets(self) -> dict[str, object]:
         return {"sockets": []}
@@ -82,3 +83,26 @@ def test_preflight_blocks_multi_active_and_duplicate_supports():
 
     assert result["readyForJudge"] is False
     assert result["blockingIssues"] == ["invalid_socket_setup", "duplicate_support_gem"]
+
+
+def test_preflight_blocks_active_gem_above_character_requirement():
+    build = {
+        "class": "Monk",
+        "level": 75,
+        "gear": {},
+        "activeSkillGemLevelViolations": [
+            {
+                "groupIndex": 1,
+                "name": "Storm Wave",
+                "gemLevel": 20,
+                "requiredLevel": 90,
+                "characterLevel": 75,
+                "maximumLegalLevel": 17,
+            }
+        ],
+    }
+
+    result = preflight.inspect_generation_preflight(_Engine(_xml(_group()), build=build))
+
+    assert result["readyForJudge"] is False
+    assert "active_skill_gem_level_requirement_unmet" in result["blockingIssues"]

@@ -9,6 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from server.compute import sustain
+
 _ELEMENTAL_RESISTS = ("fire", "cold", "lightning")
 _DEFENSE_FLOORS: dict[str, dict[str, float]] = {
     "campaign_early": {"pool": 300, "ehp": 600},
@@ -234,7 +236,7 @@ def verify_stage_metrics(
     if not plan.get("ok"):
         return {**plan, "status": "unknown", "pass": False}
 
-    observations = _observations(stats or {}, defenses or {})
+    observations = _observations(stats or {}, defenses or {}, state=state or {})
     checks = _evaluate_known_checks(stage, plan["targetChecks"], observations, engine_warning)
     failed = [row["check"] for row in checks if row["status"] == "failed"]
     unknown = [row["check"] for row in checks if row["status"] == "unknown"]
@@ -281,6 +283,9 @@ def requested_metric_keys(stage: str) -> list[str]:
             "Mana",
             "ManaUnreserved",
             "ManaCost",
+            "ManaRegenRecovery",
+            "ManaLeechGainRate",
+            "ManaOnHitRate",
             "NetManaRegen",
             "Speed",
         ]
@@ -288,7 +293,12 @@ def requested_metric_keys(stage: str) -> list[str]:
     return sorted(set(keys))
 
 
-def _observations(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, Any]:
+def _observations(
+    stats: dict[str, Any],
+    defenses: dict[str, Any],
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
     resists = _resistances(stats, defenses)
     life = _number(stats.get("Life") or defenses.get("life"))
     es = _number(stats.get("EnergyShield") or defenses.get("energyShield"))
@@ -297,8 +307,15 @@ def _observations(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, 
     mana_unreserved = _number(stats.get("ManaUnreserved"))
     mana_cost = _number(stats.get("ManaCost"))
     net_mana_regen = _number(stats.get("NetManaRegen"))
+    mana_regen_recovery = _number(stats.get("ManaRegenRecovery"))
+    mana_leech_gain_rate = _number(stats.get("ManaLeechGainRate"))
+    mana_on_hit_rate = _number(stats.get("ManaOnHitRate"))
     speed = _number(stats.get("Speed"))
     spirit = _number(stats.get("Spirit") or defenses.get("spirit"))
+    mana_sustain = sustain.classify_mana_sustain(
+        stats,
+        mana_flask_equipped=_optional_bool(state.get("manaFlaskEquipped")),
+    )
     return {
         "resistances": resists,
         "life": life,
@@ -309,7 +326,11 @@ def _observations(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, 
         "manaUnreserved": mana_unreserved,
         "manaCost": mana_cost,
         "netManaRegen": net_mana_regen,
+        "manaRegenRecovery": mana_regen_recovery,
+        "manaLeechGainRate": mana_leech_gain_rate,
+        "manaOnHitRate": mana_on_hit_rate,
         "skillUseRate": speed,
+        "manaSustain": mana_sustain,
         "spirit": spirit,
         "offense": {
             "TotalDPS": _number(stats.get("TotalDPS")),
@@ -415,49 +436,34 @@ def _basic_defense_check(stage: str, observations: dict[str, Any]) -> dict[str, 
 
 
 def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
-    mana = observations.get("mana")
-    mana_unreserved = observations.get("manaUnreserved")
-    mana_cost = observations.get("manaCost")
-    net_mana_regen = observations.get("netManaRegen")
-    skill_use_rate = observations.get("skillUseRate")
-    detail = {
-        "mana": mana,
-        "manaUnreserved": mana_unreserved,
-        "manaCost": mana_cost,
-        "netManaRegen": net_mana_regen,
-        "skillUseRate": skill_use_rate,
-    }
-    if mana_cost is None:
-        return {
-            "check": "sustain_ok",
-            "status": "unknown",
-            "ok": None,
-            "detail": detail,
-            "target": "mana cost and rate-based recovery evidence are required",
-        }
-    if mana_cost == 0:
+    detail = dict(observations.get("manaSustain") or {})
+    classification = detail.get("classification")
+    if classification == "sustainable_baseline":
         return {
             "check": "sustain_ok",
             "status": "passed",
             "ok": True,
             "detail": detail,
-            "target": "manaCost is zero",
+            "target": "continuous mana demand is covered without flask recovery",
         }
-    if (
-        isinstance(net_mana_regen, (int, float))
-        and isinstance(skill_use_rate, (int, float))
-        and skill_use_rate > 0
-    ):
-        demand = mana_cost * skill_use_rate
-        detail["continuousManaDemand"] = demand
-        if net_mana_regen >= demand:
-            return {
-                "check": "sustain_ok",
-                "status": "passed",
-                "ok": True,
-                "detail": detail,
-                "target": "observed net mana recovery covers continuous skill use",
-            }
+    if classification == "flask_assisted_required":
+        return {
+            "check": "sustain_ok",
+            "status": "failed",
+            "ok": False,
+            "detail": detail,
+            "target": (
+                "continuous use depends on a mana flask; long boss fights can run out of mana"
+            ),
+        }
+    if classification == "unsustainable":
+        return {
+            "check": "sustain_ok",
+            "status": "failed",
+            "ok": False,
+            "detail": detail,
+            "target": "continuous mana demand requires a recovery solution",
+        }
     return {
         "check": "sustain_ok",
         "status": "unknown",
@@ -468,6 +474,10 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "evidence; no fixed mana-pool multiplier is used"
         ),
     }
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _recommended_actions(

@@ -49,6 +49,7 @@ PHYSICAL_INVALID_FAILURES = {
     "invalid_support_gem",
     "attribute_requirement_unmet",
     "equipped_item_level_requirement_unmet",
+    "active_skill_gem_level_requirement_unmet",
     "illegal_equipped_item_affixes",
     "incompatible_weapon_skill_tags",
     "attack_skill_without_weapon",
@@ -74,6 +75,20 @@ def check_equipped_item_requirements(build: dict[str, Any]) -> dict[str, Any]:
                 {"slot": str(slot), "requiredLevel": int(required), "characterLevel": level}
             )
     return {"ok": not underlevelled, "underlevelledSlots": underlevelled}
+
+
+def check_active_skill_gem_requirements(build: dict[str, Any]) -> dict[str, Any]:
+    """Check base active-gem levels against pinned PoB's character-level requirements.
+
+    The bridge reports the socketed base gem level, so item/passive ``+levels`` do not create a
+    false failure.  Older/synthetic readbacks without this field remain unknown instead of being
+    guessed from skill names.
+    """
+    raw = build.get("activeSkillGemLevelViolations") or []
+    violations = (
+        [dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+    )
+    return {"ok": not violations, "violations": violations}
 
 
 def check_equipped_item_affixes(build: dict[str, Any]) -> dict[str, Any]:

@@ -116,6 +116,34 @@ def test_evaluator_flags_passive_over_budget():
     assert result["legality"]["passiveBudget"]["over"] == 7
 
 
+def test_evaluator_blocks_active_gem_level_requirement_violation():
+    build = _build(
+        level=75,
+        activeSkillGemLevelViolations=[
+            {
+                "groupIndex": 1,
+                "name": "Storm Wave",
+                "gemLevel": 20,
+                "requiredLevel": 90,
+                "characterLevel": 75,
+                "maximumLegalLevel": 17,
+            }
+        ],
+    )
+
+    result = evaluator.evaluate_readback(
+        build,
+        _stats(),
+        _defenses(),
+        snapshot_id="illegal-active-gem",
+    )
+
+    assert "active_skill_gem_level_requirement_unmet" in result["hardFailures"]
+    assert "active_skill_gem_level_requirement_unmet" in result["physicalInvalidFailures"]
+    assert result["pass"] is False
+    assert result["scoreVector"]["offense"]["blocked"] is True
+
+
 def test_evaluator_allows_current_league_extra_passive_point_with_caveat():
     engine = _StubEngine(
         _build(

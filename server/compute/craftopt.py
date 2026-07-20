@@ -145,6 +145,29 @@ def craft_item(
             extra_mods=extra if (extra["prefixes"] or extra["suffixes"]) else None,
             ilvl=ilvl,
         )
+        essence_candidates_rejected = False
+        if (
+            not opt.get("ok")
+            and opt.get("errorCode") == "generated_item_legality_check_failed"
+            and (extra["prefixes"] or extra["suffixes"])
+        ):
+            # Perfect-essence affixes can sit outside the ordinary base pool, but the final PoB
+            # item text does not carry trustworthy essence provenance for completeness to verify.
+            # Fall back to the normal legal pool instead of returning an item that our own final
+            # artifact audit would reject.
+            essence_candidates_rejected = True
+            opt = itemopt.optimize_item(
+                engine,
+                slot,
+                metric=metric,
+                base=base,
+                goals=goals,
+                rolls=rolls,
+                thorough=True,
+                keep_resists_capped=keep_resists_capped,
+                extra_mods=None,
+                ilvl=ilvl,
+            )
         if not opt.get("ok"):
             return opt
         affix_lines: list[str] = list(opt.get("affixes") or [])
@@ -253,6 +276,7 @@ def craft_item(
         "affixes": affix_lines,
         "crafting": {
             "essencesUsed": essences_used,
+            "essenceCandidatesRejectedByLegality": essence_candidates_rejected,
             "runes": [n for n, _ in chosen_runes],
             "runeSocketsAssumed": len(chosen_runes),
             "corruptedImplicit": chosen_corruption,
@@ -266,6 +290,11 @@ def craft_item(
             "target — price the steps. 'Bonded' rune set-bonuses aren't modelled."
         ),
     }
+    if essence_candidates_rejected:
+        out["note"] += (
+            " Perfect-essence-only affixes were omitted because the final item text did not carry "
+            "enough provenance for the shared legality audit to verify them."
+        )
     if weights:
         out["goals"] = weights
         out["metricsBefore"] = {k: r2(rare_stats.get(k)) for k in keys}

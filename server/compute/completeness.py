@@ -46,6 +46,11 @@ def inspect_build_completeness(
         fallback = build.get("gear") or {}
         gear = fallback if isinstance(fallback, dict) else {}
     level = int(build.get("level") or 0)
+    active_gem_level_violations = [
+        dict(row)
+        for row in (build.get("activeSkillGemLevelViolations") or [])
+        if isinstance(row, dict)
+    ]
 
     rarity_counts: dict[str, int] = {}
     missing_item_levels: list[str] = []
@@ -115,6 +120,8 @@ def inspect_build_completeness(
         advisories.append("equipped_charms_exceed_belt_capacity")
 
     hard_failures = ["equipped_item_level_requirement_unmet"] if underlevelled else []
+    if active_gem_level_violations:
+        hard_failures.append("active_skill_gem_level_requirement_unmet")
     if illegal_affix_slots:
         hard_failures.append("illegal_equipped_item_affixes")
     return {
@@ -124,6 +131,7 @@ def inspect_build_completeness(
         "rarityCounts": rarity_counts,
         "missingItemLevelSlots": missing_item_levels,
         "underlevelledItems": underlevelled,
+        "activeSkillGemLevelViolations": active_gem_level_violations,
         "illegalAffixItems": illegal_affix_slots,
         "scaffoldSlots": scaffold_slots,
         "runes": {
@@ -141,7 +149,8 @@ def inspect_build_completeness(
             "equippedSlots": equipped_charms,
         },
         "note": (
-            "Advisory completeness report. Explicit item/affix legality violations are hard "
+            "Advisory completeness report. Explicit item, active-gem, and affix legality "
+            "violations are hard "
             "failures; rune, jewel, flask and charm choices remain Agent design decisions."
         ),
     }

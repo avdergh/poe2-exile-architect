@@ -14,8 +14,9 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .. import paths
 from .skilltext import normalize_skill_text
@@ -142,7 +143,9 @@ class PobEngine:
             bufsize=1,
         )
         self._next_id = 0
-        self._lock = threading.Lock()
+        # Re-entrant so a typed transaction can hold the engine across several RPC frames while the
+        # individual calls keep using the same serialization primitive.
+        self._lock = threading.RLock()
         ready = self._read_frame()
         if not ready.get("ready"):
             raise PobEngineError(f"engine failed to initialise: {ready}")
@@ -196,6 +199,56 @@ class PobEngine:
             raise PobEngineError(resp.get("error", "unknown engine error"))
         return resp["result"]
 
+    @contextmanager
+    def transaction_lock(self) -> Iterator[None]:
+        """Serialize a multi-RPC read/check/mutate sequence on this engine."""
+
+        with self._lock:
+            yield
+
+    def compare_and_load_xml(
+        self,
+        *,
+        expected_state_hash: str,
+        xml: str,
+        name: str = "transaction-commit",
+    ) -> dict[str, Any]:
+        """Atomically load XML only if the active build still matches the observed snapshot."""
+
+        from .state import build_state_hash
+
+        with self._lock:
+            before_xml = self.get_xml()
+            actual = build_state_hash(before_xml)
+            if actual != expected_state_hash:
+                return {
+                    "ok": False,
+                    "errorCode": "build_state_conflict",
+                    "error": "the active build changed before the result could be committed",
+                    "expectedStateHash": expected_state_hash,
+                    "actualStateHash": actual,
+                }
+            expected_output = build_state_hash(xml)
+            try:
+                self.load_build_xml(xml, name=name)
+            except Exception:
+                try:
+                    self.load_build_xml(before_xml, name="transaction-exception-rollback")
+                except Exception:
+                    pass
+                raise
+            committed = build_state_hash(self.get_xml())
+            if committed != expected_output:
+                self.load_build_xml(before_xml, name="transaction-rollback")
+                return {
+                    "ok": False,
+                    "errorCode": "build_state_commit_mismatch",
+                    "error": "PoB did not preserve the planned state; the original build was restored",
+                    "expectedOutputStateHash": expected_output,
+                    "actualOutputStateHash": committed,
+                }
+            return {"ok": True, "stateHash": committed}
+
     # -- convenience wrappers ------------------------------------------------
     def ping(self) -> dict[str, Any]:
         return self.call("ping")
@@ -213,12 +266,12 @@ class PobEngine:
         return self.call("load_build_xml", xml=xml, name=name)
 
     def paste_skill(self, text: str) -> dict[str, Any]:
-        return self.call("paste_skill", text=normalize_skill_text(text))
+        return self.call("paste_skill", text=normalize_skill_text(text, default_level=None))
 
     def add_skill_group(self, text: str, include_in_full_dps: bool = False) -> dict[str, Any]:
         return self.call(
             "add_skill_group",
-            text=normalize_skill_text(text),
+            text=normalize_skill_text(text, default_level=None),
             includeInFullDPS=include_in_full_dps,
         )
 

@@ -229,14 +229,20 @@ def test_optimize_passives_spends_more_via_small_pass(engine):
 
 
 def test_optimize_passives_is_deterministic(engine):
-    # Stable candidate ordering -> identical allocation across runs (no pairs()-order drift). (#5)
+    # Stable scoring/order -> identical node set and semantic state, not merely the same point count.
+    from server.compute.state import build_state_hash
+
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1\nControlled Destruction 20/20  1")
-    first = engine.optimize_passives(metric="balanced", points=0)["pointsUsed"]
+    first = engine.optimize_passives(metric="balanced", points=0)
+    first_hash = build_state_hash(engine.get_xml())
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1\nControlled Destruction 20/20  1")
-    second = engine.optimize_passives(metric="balanced", points=0)["pointsUsed"]
-    assert first == second
+    second = engine.optimize_passives(metric="balanced", points=0)
+    second_hash = build_state_hash(engine.get_xml())
+    assert first["pointsUsed"] == second["pointsUsed"]
+    assert first["allocatedNodeIds"] == second["allocatedNodeIds"]
+    assert first_hash == second_hash
 
 
 def test_eval_items_batches_and_restores(engine):
@@ -293,6 +299,7 @@ def test_optimize_item_improves_and_is_valid(engine):
     base = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
     r = itemopt.optimize_item(engine, "Weapon 1", metric="TotalDPS", rolls="max", thorough=True)
     assert r["ok"] and r["metricAfter"] > r["metricBefore"]
+    assert r["legalityCheck"]["ok"] is True
     assert len(r["affixes"]) <= 6  # respects 3 prefix / 3 suffix
     # build-aware: a non-crit lightning build's max-DPS wand uses a Lightning mod
     assert any("Lightning" in a for a in r["affixes"])
@@ -492,6 +499,8 @@ def test_plan_gear_caps_resists_while_keeping_damage(engine):
         slots=["Amulet", "Body Armour", "Helmet", "Boots", "Belt", "Ring 2"],
     )
     assert r["ok"] and r["plan"]
+    assert not r["rejectedIllegalCandidates"]
+    assert all(item["legalityCheck"]["ok"] for item in r["plan"])
     pj = r["projected"]
     assert pj["resistsCapped"] is True  # defense slots pull resists to cap
     assert isinstance(pj["TotalDPS"], (int, float))
@@ -736,7 +745,7 @@ def test_campaign_plan_gear_does_not_keep_chasing_capped_chaos_resistance(engine
     engine.new_build()
     engine.set_class("Sorceress", "Stormweaver")
     engine.set_level(58)
-    engine.paste_skill("Spark 20/20 1")
+    engine.paste_skill("Spark")
     engine.add_item(
         "Rarity: Rare\nW\nDueling Wand\n+3 to Level of all Lightning Spell Skills\n"
         "Adds 20 to 250 Lightning Damage to Spells\n80% increased Spell Damage",
@@ -988,6 +997,36 @@ def test_set_skill_accepts_inline_separators(engine):
     assert "Controlled Destruction" in names and "Lightning Penetration" in names
 
 
+def test_set_skill_uses_highest_character_legal_active_gem_level_and_rolls_back_invalid(engine):
+    engine.new_build()
+    engine.set_class("Monk")
+    engine.set_level(75)
+
+    result = engine.paste_skill("Storm Wave")
+    group = engine.get_build()["mainSkillGroup"]
+
+    assert result.get("ok") is not False
+    assert group[0]["level"] == 17
+    assert group[0]["requiredLevel"] == 72
+    assert group[0]["maximumLegalLevel"] == 17
+
+    rejected = engine.paste_skill("Storm Wave 20/20 1")
+
+    assert rejected["ok"] is False
+    assert rejected["errorCode"] == "active_skill_gem_level_requirement_unmet"
+    assert rejected["violations"][0]["requiredLevel"] == 90
+    assert engine.get_build()["mainSkillGroup"][0]["level"] == 17
+
+    engine.add_item(
+        "Rarity: Rare\nLegal +Levels Staff\nSteelpoint Quarterstaff\nItem Level: 75\n"
+        "+3 to Level of all Melee Skills",
+        slot="Weapon 1",
+    )
+    readback = engine.get_build()
+    assert readback["mainSkillGroup"][0]["level"] == 17
+    assert readback["activeSkillGemLevelViolations"] == []
+
+
 def test_set_skill_replaces_main_group(engine):
     # set_skill REPLACES the main group (no pile-up) yet preserves aura groups from add_skill_group.
     _spark_caster(engine)
@@ -1151,7 +1190,7 @@ def test_optimize_build_rejects_unset_build(engine):
     assert not r["ok"] and "skill" in r["error"].lower()
 
     engine.set_level(5)
-    engine.paste_skill("Fireball 20/20  1")
+    engine.paste_skill("Fireball")
     r = buildopt.optimize_build(engine, levers=[], passes=1)
     assert not r["ok"] and "level" in r["error"].lower()
 

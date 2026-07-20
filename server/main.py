@@ -32,6 +32,8 @@ from .compute import buildopt
 from .compute import craftopt
 from .compute import completeness
 from .compute import itemopt
+from .compute import passiveopt
+from .compute import skillgroups
 from .compute import solver
 from .compute import supportopt
 from .compute.pob_code import PobCodeError, decode_code, encode_code, is_link, to_xml
@@ -332,8 +334,10 @@ def set_skill(skill: str) -> dict[str, Any]:
 
     Format: "<Gem> <level>/<quality> <count>", e.g. "<gem name> 20/0 1". List the main skill first,
     then its supports — one gem per line, OR separated inline by " / ", "," or "|" (all accepted);
-    a bare support name gets a default level/quality (supports are fixed-effect
-    in PoE2, so it's cosmetic). This REPLACES the current main skill group; auras/heralds/reservation buffs
+    a bare active gem name uses the highest base gem level legal for the current character level;
+    a bare support gets a cosmetic default because PoE2 supports are fixed-effect. An explicitly
+    over-levelled active gem is rejected and the build is left unchanged. This REPLACES the current
+    main skill group; auras/heralds/reservation buffs
     added via `add_skill_group` are separate groups and are preserved. If nothing parses (or the main
     gem name isn't a real skill) the build is left UNCHANGED and `ok:false` is returned — it won't
     silently drop supports or corrupt the skill. Returns updated stats, plus `ProjectileCount` + a
@@ -359,6 +363,97 @@ def add_skill_group(skill: str, in_full_dps: bool = False) -> dict[str, Any]:
     """
     return _flag_meta_trigger(
         get_engine().add_skill_group(skill, include_in_full_dps=in_full_dps), _gem_names_in(skill)
+    )
+
+
+@mcp.tool()
+def list_skill_groups() -> dict[str, Any]:
+    """List the active build's skill groups with safe selectors for precise edits.
+
+    Each group includes its current `index` and opaque `fingerprint`; the response also includes a
+    `stateHash`. Pass the fingerprint to every group mutation, and preferably pass the state hash as
+    `expected_state_hash`, so a stale index can never edit or delete the wrong group.
+    """
+
+    return skillgroups.list_skill_groups(get_engine())
+
+
+@mcp.tool()
+def replace_skill_group(
+    group_index: int,
+    expected_fingerprint: str,
+    skill: str,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Atomically replace one user-owned skill group without rebuilding the whole PoB.
+
+    Read `list_skill_groups` immediately beforehand. The group position, enabled state, Full DPS
+    flag and label are preserved. Item/passive-provided groups are immutable, invalid gem text or
+    illegal active-gem levels roll back, and stale selectors fail without changing the build.
+    """
+
+    return _flag_meta_trigger(
+        skillgroups.replace_skill_group(
+            get_engine(),
+            group_index=group_index,
+            expected_fingerprint=expected_fingerprint,
+            skill=skill,
+            expected_state_hash=expected_state_hash,
+        ),
+        _gem_names_in(skill),
+    )
+
+
+@mcp.tool()
+def remove_skill_group(
+    group_index: int,
+    expected_fingerprint: str,
+    replacement_main_group_index: int | None = None,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Atomically remove a user-owned skill group selected from `list_skill_groups`.
+
+    Item/passive-provided groups and the only remaining group cannot be removed. Removing the main
+    group requires `replacement_main_group_index`; main/calculation indices are updated together.
+    """
+
+    return skillgroups.remove_skill_group(
+        get_engine(),
+        group_index=group_index,
+        expected_fingerprint=expected_fingerprint,
+        replacement_main_group_index=replacement_main_group_index,
+        expected_state_hash=expected_state_hash,
+    )
+
+
+@mcp.tool()
+def set_skill_group_state(
+    group_index: int,
+    expected_fingerprint: str,
+    enabled: bool | None = None,
+    in_full_dps: bool | None = None,
+    make_main: bool = False,
+    active_skill_index: int | None = None,
+    label: str | None = None,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Atomically change typed state on one skill group.
+
+    Supports enabled/Full DPS flags, label, selected active skill and making the group main. The
+    current main group cannot be disabled until another group is selected. Stale fingerprints or
+    state hashes fail closed.
+    """
+
+    return skillgroups.set_skill_group_state(
+        get_engine(),
+        group_index=group_index,
+        expected_fingerprint=expected_fingerprint,
+        enabled=enabled,
+        in_full_dps=in_full_dps,
+        make_main=make_main,
+        active_skill_index=active_skill_index,
+        label=label,
+        expected_state_hash=expected_state_hash,
     )
 
 
@@ -516,10 +611,10 @@ def list_jewel_sockets() -> dict[str, Any]:
 def inspect_build_completeness() -> dict[str, Any]:
     """Inspect whether the active build is a playable loadout rather than a scoring skeleton.
 
-    Reports rare/magic item levels, under-level bases, scaffold placeholders, rune/soul-core
-    decisions, passive-tree jewel sockets, life/mana flasks, and belt-supported charms. Except for
-    explicit level-requirement violations, findings are advisory: the Agent chooses the build and
-    either fills each system or records why it is intentionally unused.
+    Reports active-gem and item level legality, rare/magic item levels, scaffold placeholders,
+    rune/soul-core decisions, passive-tree jewel sockets, life/mana flasks, and belt-supported
+    charms. Explicit level-requirement violations are hard failures; the remaining findings are
+    advisory and require an explicit design decision.
     """
     return completeness.inspect_build_completeness(get_engine())
 
@@ -906,8 +1001,10 @@ def optimize_passives(
     goals: dict[str, float] | None = None,
     require: list[str | int] | None = None,
     reset: bool = False,
+    preview: bool = False,
+    expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Greedily allocate passive points to maximize a goal on the active build.
+    """Reproducibly optimize passive points from an immutable snapshot.
 
     Three goal modes:
     - single `metric` (e.g. "TotalDPS", "Life", "TotalEHP") — maximizes that stat;
@@ -923,10 +1020,15 @@ def optimize_passives(
     rebuild the tree around jewel sockets instead of piling onto a full tree. `points` defaults to
     0 = the FULL remaining passive budget (the usual intent — allocate the whole tree); pass a
     positive number only to CAP allocation. Ascendancy is a SEPARATE 8-point pool, auto-allocated on
-    top regardless of `points`. Returns chosen nodes with per-step gains; `pointsRemaining` is the
-    build's TRUE unspent passive points. Bounded greedy search, not a global optimum.
+    top regardless of `points`. `preview=True` returns the exact plan without changing the active
+    build. A commit runs on an isolated PoB snapshot and succeeds only if the active state still
+    matches `expected_state_hash` (when supplied) and the captured input hash. The response binds the
+    plan to optimizer/request/input/output hashes and returns exact allocated/path node ids.
+
+    Bounded greedy search, not a global optimum.
     """
-    return get_engine().optimize_passives(
+    return passiveopt.optimize_passives(
+        get_engine(),
         metric=metric,
         points=points,
         node_type=node_type,
@@ -934,6 +1036,8 @@ def optimize_passives(
         goals=goals,
         require=require,
         reset=reset,
+        preview=preview,
+        expected_state_hash=expected_state_hash,
     )
 
 
@@ -1531,6 +1635,12 @@ def verify_lifecycle_stage(
         return plan
 
     eng = get_engine()
+    effective_state = dict(state or {})
+    if "manaFlaskEquipped" not in effective_state:
+        read_build = getattr(eng, "get_build", None)
+        build = read_build() if callable(read_build) else {}
+        gear = build.get("gear") if isinstance(build, dict) else {}
+        effective_state["manaFlaskEquipped"] = _mana_flask_equipped(gear)
     stat_keys = lifecycle.lifecycle_verification.requested_metric_keys(stage)
     stats_result = eng.get_stats(stat_keys)
     stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
@@ -1544,12 +1654,24 @@ def verify_lifecycle_stage(
         stage,
         stats=stats if isinstance(stats, dict) else {},
         defenses=defenses if isinstance(defenses, dict) else {},
-        state=state,
+        state=effective_state,
         engine_warning=engine_warning,
     )
     if build_id:
         result["buildId"] = build_id
     return result
+
+
+def _mana_flask_equipped(gear: Any) -> bool:
+    if not isinstance(gear, dict):
+        return False
+    for slot, item in gear.items():
+        if not str(slot).casefold().startswith("flask") or not isinstance(item, dict):
+            continue
+        text = f"{item.get('name') or ''} {item.get('base') or ''}".casefold()
+        if "mana flask" in text:
+            return True
+    return False
 
 
 @mcp.tool()

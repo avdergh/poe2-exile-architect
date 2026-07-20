@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from ..knowledge import db
+from ..knowledge import db, itemparse
 from .engine import PobEngine
 
 _RANGE = re.compile(r"\((\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\)")
@@ -84,6 +84,11 @@ def _item_text(base: str, lines: list[str], slot: str, *, ilvl: int | None = Non
     body = "\n".join(lines)
     level_line = f"Item Level: {int(ilvl)}\n" if ilvl is not None else ""
     return f"Rarity: Rare\nOptimized {slot}\n{base}\n{level_line}--------\n{body}"
+
+
+def _generated_item_legality(raw: str) -> dict[str, Any]:
+    """Run the exact deterministic legality audit used by completeness and final artifacts."""
+    return itemparse.audit_item_legality(raw)
 
 
 def _craft_summary(
@@ -286,6 +291,19 @@ def optimize_item(
 
         chosen = chosen_pre + chosen_suf
         final = _item_text(base, lines(), slot, ilvl=ilvl)
+        legality = _generated_item_legality(final)
+        if not legality.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "generated_item_legality_check_failed",
+                "error": (
+                    "The optimized candidate failed the same affix legality audit used by "
+                    "build completeness and was discarded."
+                ),
+                "slot": slot,
+                "base": base,
+                "legalityCheck": legality,
+            }
         engine.add_item(final, slot=slot)
         after_vals = engine.get_stats(keys)["stats"]
         warnings = []
@@ -326,6 +344,7 @@ def optimize_item(
         "base": base,
         "itemLevel": ilvl,
         "item": final,
+        "legalityCheck": legality,
         "affixes": [x["line"] for x in chosen],
         "attainability": [
             {"affix": c["line"], "ilvl": c.get("ilvl", 0), "tiers": c.get("tiers", 1)}
@@ -678,6 +697,7 @@ def plan_gear(
     snapshot = engine.get_xml()
     plan: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    rejected_illegal: list[dict[str, Any]] = []
     slot_base: dict[str, str] = {}
     try:
         attr = _attr_bias(engine) if auto_base else "int"
@@ -716,9 +736,30 @@ def plan_gear(
             if not item:
                 skipped.append({"slot": slot, "reason": "no improving affix in pool"})
                 continue
+            legality = _generated_item_legality(item)
+            if not legality.get("ok"):
+                skipped.append(
+                    {"slot": slot, "reason": "generated item failed the shared legality audit"}
+                )
+                rejected_illegal.append(
+                    {
+                        "slot": slot,
+                        "errorCode": "generated_item_legality_check_failed",
+                        "issues": list(legality.get("issues") or []),
+                    }
+                )
+                continue
             engine.add_item(item, slot=slot)  # persist so the next slot is crafted coherently
             affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
-            plan.append({"slot": slot, "item": item, "itemLevel": item_level, "affixes": affixes})
+            plan.append(
+                {
+                    "slot": slot,
+                    "item": item,
+                    "itemLevel": item_level,
+                    "affixes": affixes,
+                    "legalityCheck": legality,
+                }
+            )
         # EHP-floor recovery: if short of `min_ehp`, re-craft DEFENSE slots toward pure EHP (which
         # PoB's effective-HP also credits resists for) — the cheapest DPS to give up — until met.
         ehp_floor_met: bool | None = None
@@ -737,11 +778,27 @@ def plan_gear(
                 )
                 if not item:
                     continue
+                legality = _generated_item_legality(item)
+                if not legality.get("ok"):
+                    rejected_illegal.append(
+                        {
+                            "slot": slot,
+                            "errorCode": "generated_item_legality_check_failed",
+                            "issues": list(legality.get("issues") or []),
+                        }
+                    )
+                    continue
                 engine.add_item(item, slot=slot)
                 affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
                 plan[:] = [p for p in plan if p["slot"] != slot]
                 plan.append(
-                    {"slot": slot, "item": item, "itemLevel": item_level, "affixes": affixes}
+                    {
+                        "slot": slot,
+                        "item": item,
+                        "itemLevel": item_level,
+                        "affixes": affixes,
+                        "legalityCheck": legality,
+                    }
                 )
             ehp_floor_met = (engine.get_defenses().get("totalEHP") or 0) >= min_ehp
         stats = engine.get_stats(["TotalDPS", "FullDPS"])["stats"]
@@ -770,6 +827,7 @@ def plan_gear(
         "ok": True,
         "plan": plan,
         "skipped": skipped,
+        "rejectedIllegalCandidates": rejected_illegal,
         "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
         "stageProfile": profile,
         "itemLevel": item_level,

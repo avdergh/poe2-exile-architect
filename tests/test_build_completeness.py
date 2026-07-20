@@ -110,6 +110,48 @@ def test_equipped_item_requirement_check_blocks_overlevel_base():
     ]
 
 
+def test_active_gem_requirement_is_a_hard_completeness_and_judge_failure():
+    violation = {
+        "groupIndex": 1,
+        "name": "Storm Wave",
+        "gemLevel": 20,
+        "requiredLevel": 90,
+        "characterLevel": 75,
+        "maximumLegalLevel": 17,
+    }
+    build = {
+        "level": 75,
+        "gear": {},
+        "activeSkillGemLevelViolations": [violation],
+    }
+
+    report = completeness.inspect_build_completeness(_CompletenessEngine(build))
+    judge_check = rules.check_active_skill_gem_requirements(build)
+
+    assert "active_skill_gem_level_requirement_unmet" in report["hardFailures"]
+    assert report["activeSkillGemLevelViolations"] == [violation]
+    assert judge_check == {"ok": False, "violations": [violation]}
+
+
+def test_item_plus_levels_do_not_invalidate_a_legal_base_gem_level():
+    build = {
+        "level": 75,
+        "gear": {"Weapon 1": {"name": "+3 melee skill weapon"}},
+        "mainSkillGroup": [
+            {
+                "name": "Storm Wave",
+                "level": 17,
+                "requiredLevel": 72,
+                "maximumLegalLevel": 17,
+                "levelRequirementMet": True,
+            }
+        ],
+        "activeSkillGemLevelViolations": [],
+    }
+
+    assert rules.check_active_skill_gem_requirements(build) == {"ok": True, "violations": []}
+
+
 def test_equipped_item_metadata_reads_active_item_set_without_returning_raw_text():
     xml = """<PathOfBuilding2><Items activeItemSet="1">
     <Item id="1">Rarity: RARE\nOptimized Belt\nStalking Belt\nCharm Slots: 1\nItem Level: 58\nLevelReq: 50</Item>
@@ -184,3 +226,29 @@ def test_completeness_rejects_affix_above_item_level():
     legality = gear["Weapon 1"]["affixLegality"]
     assert legality["ok"] is False
     assert "affix_item_level_requirement_unmet" in legality["issues"]
+
+
+def test_item_legality_counts_multiline_hybrid_affix_as_one_prefix():
+    raw = (
+        "Rarity: Rare\nHybrid Gloves\nAdorned Gloves\nItem Level: 95\n--------\n"
+        "40% increased Energy Shield\n+28 to maximum Energy Shield"
+    )
+
+    legality = completeness._parse_item_text(raw)["affixLegality"]
+
+    assert legality["ok"] is True
+    assert legality["prefixes"] == 1
+    assert legality["duplicateGroups"] == []
+
+
+def test_item_legality_keeps_adjacent_independent_defense_prefixes_separate():
+    raw = (
+        "Rarity: Rare\nIndependent Prefixes\nFeathered Raiment\nItem Level: 82\n--------\n"
+        "109% increased Energy Shield\n+95 to maximum Energy Shield"
+    )
+
+    legality = completeness._parse_item_text(raw)["affixLegality"]
+
+    assert legality["ok"] is True
+    assert legality["prefixes"] == 2
+    assert legality["outOfRangeGroups"] == []

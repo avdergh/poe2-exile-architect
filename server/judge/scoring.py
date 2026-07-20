@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from server.compute import sustain
+
 from . import models
 
 CRITICAL_FAILURE_PENALTIES_V1 = {
@@ -272,6 +274,12 @@ def score_metrics(
         band,
     )
     recovery_value = _score_recovery(metrics, caveats, breakdown, keystones, source_context, band)
+    mana_sustain = (breakdown.get("recovery") or {}).get("manaSustain") or {}
+    if mana_sustain.get("classification") == "flask_assisted_required":
+        quality_warnings.append("mana_flask_dependency")
+        caveats.append("long_boss_mana_sustain_risk_caveat")
+    elif mana_sustain.get("classification") == "unsustainable":
+        playability_failures.append("mana_sustain_unsustainable")
     mobility_value = _score_mobility(metrics, caveats, breakdown, source_context, band)
     mobility_blocked = "mobility" in blocked
     if "mobility" in blocked:
@@ -740,6 +748,14 @@ def _score_recovery(
     observed_score = target_log_score(total_recovery, quality_floor=quality_floor, target=target)
     score = observed_score
     score_policy = "dynamic_recovery_pool"
+    mana_sustain = sustain.classify_mana_sustain(
+        metrics,
+        mana_flask_equipped=(
+            metrics.get("ManaFlaskEquipped")
+            if isinstance(metrics.get("ManaFlaskEquipped"), bool)
+            else None
+        ),
+    )
     breakdown["recovery"] = {
         "value": round(_clamp(score), 6),
         "observedValue": round(_clamp(observed_score), 6),
@@ -750,6 +766,7 @@ def _score_recovery(
         "sourceMetric": "dynamic_recovery_pool",
         "scorePolicy": score_policy,
         "diagnostics": _recovery_diagnostics(metrics, life_pool_source, primary_pool_source),
+        "manaSustain": mana_sustain,
     }
     return score
 

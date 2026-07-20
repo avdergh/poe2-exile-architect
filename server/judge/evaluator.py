@@ -111,6 +111,9 @@ def evaluate_readback(
     item_requirements = rules.check_equipped_item_requirements(build)
     if not item_requirements.get("ok"):
         hard_failures.append("equipped_item_level_requirement_unmet")
+    active_gem_requirements = rules.check_active_skill_gem_requirements(build)
+    if not active_gem_requirements.get("ok"):
+        hard_failures.append("active_skill_gem_level_requirement_unmet")
     item_affixes = rules.check_equipped_item_affixes(build)
     if not item_affixes.get("ok"):
         hard_failures.append("illegal_equipped_item_affixes")
@@ -233,6 +236,7 @@ def evaluate_readback(
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
             "itemRequirements": item_requirements,
+            "activeSkillGemRequirements": active_gem_requirements,
             "itemAffixes": item_affixes,
         },
         "supplementalDamageComponents": supplemental_components,
@@ -266,11 +270,12 @@ def _has_limited_reward_caveat(caveats: list[str]) -> bool:
 
 
 def _metrics_with_judge_selection(metrics: dict[str, Any], build: dict[str, Any]) -> dict[str, Any]:
+    out = dict(metrics)
+    out["ManaFlaskEquipped"] = _mana_flask_equipped(build.get("gear"))
     selected = build.get("judgeSelectedSkill") or {}
     selected_dps = _num(selected.get("effectiveDps")) or _num(selected.get("dps"))
     if not isinstance(selected, dict) or selected_dps <= 0:
-        return metrics
-    out = dict(metrics)
+        return out
     out["JudgeDPS"] = selected_dps
     out["JudgeRawDPS"] = _num(selected.get("rawDps")) or _num(selected.get("dps")) or selected_dps
     out["JudgeEffectiveDPS"] = selected_dps
@@ -286,6 +291,18 @@ def _metrics_with_judge_selection(metrics: dict[str, Any], build: dict[str, Any]
     out["JudgeActiveMinionLimit"] = selected.get("activeMinionLimit")
     out["JudgeSkillCaveats"] = list(selected.get("caveats") or [])
     return out
+
+
+def _mana_flask_equipped(gear: Any) -> bool:
+    if not isinstance(gear, dict):
+        return False
+    for slot, item in gear.items():
+        if not str(slot).casefold().startswith("flask") or not isinstance(item, dict):
+            continue
+        text = f"{item.get('name') or ''} {item.get('base') or ''}".casefold()
+        if "mana flask" in text:
+            return True
+    return False
 
 
 def _reward_strength(reward_eligible: bool | str) -> str:

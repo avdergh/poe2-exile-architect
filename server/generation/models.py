@@ -208,6 +208,12 @@ class ResearchMemoryUse(StrictModel):
         ]
 
 
+class CompletenessAdvisoryDecision(StrictModel):
+    advisory_code: str = Field(min_length=1)
+    decision: Literal["deferred", "intentionally_unused"]
+    reason: str = Field(min_length=1)
+
+
 class PrototypeBuildCandidate(VersionedSafeModel):
     candidate_id: str = Field(min_length=1)
     prompt_ref: str = Field(min_length=1)
@@ -224,6 +230,9 @@ class PrototypeBuildCandidate(VersionedSafeModel):
     passive_anchor_intents: list[str] = Field(default_factory=list)
     transition_gates: list[str] = Field(default_factory=list)
     unresolved_caveats: list[str] = Field(default_factory=list)
+    completeness_advisory_decisions: list[CompletenessAdvisoryDecision] = Field(
+        default_factory=list
+    )
     tool_references: list[ToolReference] = Field(default_factory=list)
     memory_references: list[str] = Field(default_factory=list)
     research_memory_use: ResearchMemoryUse | None = None
@@ -238,6 +247,9 @@ class PrototypeBuildCandidate(VersionedSafeModel):
     def _candidate_contract_is_valid(self) -> "PrototypeBuildCandidate":
         _require_stage_contract(self.current_output_stages, self.target_lifecycle_stages)
         _require_class_only_lock(self.cross_stage_locked_dimensions)
+        advisory_codes = [item.advisory_code for item in self.completeness_advisory_decisions]
+        if len(advisory_codes) != len(set(advisory_codes)):
+            raise ValueError("completeness advisory decisions must not contain duplicates")
         if self.research_memory_use is not None:
             usage = self.research_memory_use
             memory_tool_refs = {
@@ -325,6 +337,7 @@ class TransientBuildStateRef(VersionedSafeModel):
     source_hash: str | None = None
     safe_summary: dict[str, str] = Field(default_factory=dict)
     tested_skill_groups: list[TestedSkillGroup] = Field(default_factory=list)
+    completeness_advisories: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -339,6 +352,26 @@ class TransientBuildStateRef(VersionedSafeModel):
                 "missing or error transient state cannot carry snapshot, source hash, or tested skills"
             )
         return self
+
+
+def _require_completeness_advisory_decisions(
+    candidate: PrototypeBuildCandidate,
+    state: TransientBuildStateRef,
+) -> None:
+    required = set(state.completeness_advisories)
+    recorded = {decision.advisory_code for decision in candidate.completeness_advisory_decisions}
+    missing = sorted(required - recorded)
+    stale = sorted(recorded - required)
+    if missing:
+        raise ValueError(
+            "candidate must record a decision and reason for each trusted completeness advisory: "
+            + ", ".join(missing)
+        )
+    if stale:
+        raise ValueError(
+            "candidate carries completeness decisions absent from the trusted final snapshot: "
+            + ", ".join(stale)
+        )
 
 
 class JudgeScoreDimension(StrictModel):
@@ -548,6 +581,7 @@ class GenerationAttemptRecord(StrictModel):
             raise ValueError("failure audit snapshot_id must match attempt snapshot")
         if state.status != "available":
             raise ValueError("generation attempt requires an available transient state")
+        _require_completeness_advisory_decisions(candidate, state)
         if judge.status == "evaluated":
             if judge.evaluated_snapshot_id != state.snapshot_id:
                 raise ValueError("attempt Judge snapshot must match transient state")
@@ -619,6 +653,10 @@ class HumanReviewPacket(StrictModel):
                 raise ValueError("version_context mismatch inside human review packet")
         if self.agent_refined_build_prompt.prompt_id != self.prototype_build_candidate.prompt_ref:
             raise ValueError("candidate prompt_ref must match prompt_id")
+        _require_completeness_advisory_decisions(
+            self.prototype_build_candidate,
+            self.transient_build_state,
+        )
         if (
             self.agent_refined_build_prompt.current_output_stages
             != self.prototype_build_candidate.current_output_stages

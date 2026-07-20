@@ -177,9 +177,7 @@ def parse_item(text: str) -> dict[str, Any]:
     rarity = (info.get("rarity") or "").lower()
 
     skip = {info.get("name"), info.get("base")}
-    affixes: list[dict[str, Any]] = []
-    unrecognized: list[str] = []
-    pre = suf = 0
+    affix_lines: list[tuple[str, str]] = []
     for ln in lines:
         s = ln.strip()
         if not s or set(s) == {"-"} or ":" in s or s in skip:
@@ -189,17 +187,48 @@ def parse_item(text: str) -> dict[str, Any]:
         if mk:
             kind = mk.group(1).lower()
             s = _MARKER.sub("", s).strip()
-        info_affix = classify_affix(s)
+        affix_lines.append((s, kind))
+
+    # Some real PoE2 affixes are two or three display lines backed by one mod group.  Parsing each
+    # line independently can turn one legal hybrid prefix into two prefixes (or assign a sub-line
+    # to the wrong tier/group), causing completeness to reject gear generated from the real pool.
+    # Prefer the longest consecutive corpus match, then fall back to a single-line match.
+    affixes: list[dict[str, Any]] = []
+    unrecognized: list[str] = []
+    pre = suf = 0
+    index = 0
+    while index < len(affix_lines):
+        info_affix = None
+        matched_text = affix_lines[index][0]
+        matched_kind = affix_lines[index][1]
+        matched_width = 1
+        for width in range(min(3, len(affix_lines) - index), 0, -1):
+            chunk = affix_lines[index : index + width]
+            if any(kind != matched_kind for _text, kind in chunk):
+                continue
+            combined = "\n".join(text for text, _kind in chunk)
+            classified = classify_affix(combined)
+            # A numeric miss on a multi-line template can mean two independent adjacent affixes
+            # merely share the same words as a hybrid mod.  Only merge multi-line text when the
+            # rolls fit one real tier; retain the single-line fallback so true out-of-range rolls
+            # are still reported.
+            if classified and (width == 1 or classified.get("tier") is not None):
+                info_affix = classified
+                matched_text = combined
+                matched_width = width
+                break
         if not info_affix:
-            unrecognized.append(s)
+            unrecognized.append(matched_text)
+            index += 1
             continue
-        entry = {"text": s, "kind": kind, **info_affix}
+        entry = {"text": matched_text, "kind": matched_kind, **info_affix}
         affixes.append(entry)
-        if kind not in _NON_AFFIX:
+        if matched_kind not in _NON_AFFIX:
             if info_affix["type"] == "prefix":
                 pre += 1
             elif info_affix["type"] == "suffix":
                 suf += 1
+        index += matched_width
 
     out: dict[str, Any] = {
         "ok": True,
@@ -271,12 +300,16 @@ def audit_item_legality(text: str) -> dict[str, Any]:
         issues.append("affix_roll_outside_known_tiers")
 
     base = str(parsed.get("base") or "").strip()
-    affix_lines = [
-        str(affix.get("text") or "")
+    explicit_affix_lines = [
+        line
         for affix in parsed.get("affixes") or []
         if affix.get("kind") not in _NON_AFFIX
+        for line in str(affix.get("text") or "").splitlines()
+        if line
     ]
-    base_illegal = db.illegal_affixes(base, affix_lines) if base and affix_lines else []
+    base_illegal = (
+        db.illegal_affixes(base, explicit_affix_lines) if base and explicit_affix_lines else []
+    )
     if base_illegal:
         issues.append("affix_not_allowed_on_base")
 

@@ -1,7 +1,6 @@
 ---
 name: poe-bd-create
 description: Use when the user asks for a Path of Exile 2 build, starter build, endgame build, bossing build, mapping build, class build, skill build, or build recommendation.
-argument-hint: ["[--no-memory] [natural language build request]"]
 ---
 
 # /poe-bd-create
@@ -111,6 +110,9 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
    `scaffold_gear` 只能让中途骨架可计算，所有 `Scaffold ...` 占位物品必须在最终评估前替换。
    最终黄装必须带当前阶段合理的 `Item Level`，底材需求等级不能超过角色等级，词缀必须来自该
    物品等级可用池。不要为了面板分数把剧情角色穿上终局底材或默认 ilvl 82 黄装。
+   未显式写等级的主动宝石会自动使用当前角色可合法装备的最高基础等级；显式等级超过角色需求时
+   工具会回滚。最终仍要复读宝石等级。合法性只检查基础宝石等级，装备或天赋的 `+levels` 可以把
+   计算等级继续提高，不应为此降低基础宝石等级。
 7. 补齐真实装备系统，而不是只填十个基础装备槽：
    - 实际装备当前阶段生命药剂和魔力药剂；
    - 根据腰带提供的护符槽选择并装备护符，或明确说明为什么当前阶段没有可用护符槽；
@@ -121,7 +123,7 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 8. 调用 `inspect_build_completeness()`。修复其中的硬失败；对物品等级、占位装备、符文/灵魂核心、
    天赋珠宝、药剂和护符提示逐项处理或记录明确设计理由。这个工具只做完整度诊断，不会替你设计
    BD；不能仅因为 Judge 数值高就跳过。黄装必须通过前后缀数量、词缀组排他和词缀物品等级
-   检查，不能用理论上不存在的黄装抬高伤害或防御数值。
+   检查，不能用理论上不存在的黄装抬高伤害或防御数值。主动宝石超过角色等级需求同样是硬失败。
 9. 调用 `get_build()` 复读活动构筑，确认 PoB 中的职业、技能、装备和天赋确实是本次候选；发现
    遗留状态或缺项时继续修正。
 10. 调用 `inspect_generation_preflight()`。修复 blocking issues 后才进入正式 Judge；完全重复的
@@ -155,7 +157,9 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
     接近剧情结束或进入异界时，主输出仍只有零到一个辅助技能属于高优先级完整度提醒。调用
     `optimize_supports` 测试阶段合理的组合，或说明少辅助为何是有意设计；它不是合法性硬规则。
     不要用“总蓝量至少是单次耗蓝的固定倍数”删辅助。续航应结合未保留蓝量、使用频率、每秒
-    恢复、药剂、击回/偷取和实际技能轮转判断；证据不足时标记为待实测。
+    恢复、药剂、击回/偷取和实际技能轮转判断。若 `ManaCost × Speed` 已高于回复、偷取与击回，
+    且只有魔力瓶补缺口，必须明确写成“持续攻击依赖魔力瓶，Boss 长战存在断蓝风险”，并保留
+    每秒缺口与满蓝维持时间；不能再降级成笼统“建议实测”。只有指标缺失时才标记待实测。
 14. 如果 Judge 未通过，或存在 `playabilityFailures` 且有明确可修正项，在当前会话、当前 `runId`
     和当前需求上下文中直接修改
     活动构筑，再次调用 `evaluate_generation_candidate`。不要重新调用 `start-run`，也不要要求用户
@@ -177,7 +181,10 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 17. 只把本次生成的安全摘要写入 `start-run` 已初始化的 `agentOutputFile`。先调用
     `validate-output`；它不会消费 run，可以根据字段路径修正后重试。通过后再用对应 `runId` 和
     `runToken` 调用 `review-packet --compact`。完整 review 会写入 `reviewResultFile`，stdout 只返回
-    紧凑摘要。最终 PoB XML 由专用 artifact 工具写入本地私有存储，不要写入 `agentOutputFile`。
+    紧凑摘要。可信快照中每个仍存在的 completeness advisory，都必须在
+    `completenessAdvisoryDecisions` 中记录 `deferred` 或 `intentionally_unused` 及具体理由；已真正
+    处理且不再出现在最终快照中的提示不要保留陈旧决策。最终 PoB XML 由专用 artifact 工具写入
+    本地私有存储，不要写入 `agentOutputFile`。
 18. artifact 保存成功后，只调用一次
     `export_final_build_package(artifact_id, name, author, description)`。这个工具固定尝试导出 PoB XML、
     PoB 导入码文本和官方 `.build`，并返回完整 `artifacts` 清单。不要再自行分别调用多个导出工具
@@ -185,10 +192,12 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 19. 向用户展示自然语言构筑结果、Judge 结论、`lifecycleEvidenceCoverage`、内部重试改了什么、
     最终 artifact id，并逐项列出
     `export_final_build_package.artifacts` 中的全部三项。成功项必须给路径，失败项必须给 errorCode；
-    不得省略任何一项。不要展示 PoB XML 或导入码原文。
+    不得省略任何一项。还必须逐项展示 compact review 的 `requiredUserDisclosures`，不能把符文、
+    灵魂核心、珠宝、药剂或护符的暂缓/不用理由留在内部文件。不要展示 PoB XML 或导入码原文。
 
 内部重试不等于重新生成整个上下文。优先在当前活动构筑上做针对性修正；只有 Agent 判断设计方向
-本身需要推倒重建时，才可以在同一个 `runId` 内调用 `new_build` 重新搭建。无论哪种方式，前一轮
+本身需要推倒重建时，才可以在同一个 `runId` 内调用 `new_build` 重新搭建。技能组局部问题优先使用
+`list_skill_groups` 后的强类型原子修改，不要因为缺少精确编辑而重建整份 PoB。无论哪种方式，前一轮
 可信快照都已由程序保存，不能覆盖或伪造。
 
 如果 `get_freshness_report` 的实际 MCP 调用返回“工具不存在”或宿主明确拒绝调用，才可以判断
@@ -263,8 +272,16 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `set_level(level)`：设置当前阶段等级。
 - `set_skill(skill)`：设置主技能和辅助技能。
 - `add_skill_group(skill, in_full_dps=False)`：加入光环、保留、辅助伤害或其他技能组。
+- `list_skill_groups()`：读取当前技能组索引、内容指纹和构筑状态哈希。局部修正前必须重新读取，
+  不要跨越其他 mutation 保存裸索引。
+- `replace_skill_group(...)` / `remove_skill_group(...)` / `set_skill_group_state(...)`：使用刚读取的
+  `group_index + expected_fingerprint` 精确替换、删除或切换技能组；最好同时传
+  `expected_state_hash`。过期选择器、非法宝石、来源技能组或主组约束失败时不会改变活动构筑。
 - `equip_item(raw, slot=None)` / `equip_jewel(raw, socket=None)`：装备临时物品或珠宝。
 - `search_passives(query, ...)` / `alloc_passive(node)`：查并分配关键天赋点。
+- `optimize_passives(..., preview=False, expected_state_hash=None)`：在独立不可变快照上运行可复现的
+  天赋优化。重要重规划可先 `preview=True` 检查节点和 output hash，再以同一 input state hash
+  提交；状态已变化时必须重新规划，不能覆盖新修改。
 - `optimize_supports(skill, ...)`：用引擎测辅助技能组合。
 - `plan_gear(...)` / `optimize_item(...)` / `scaffold_gear(...)`：搭建或补足临时装备状态。
 - `plan_gear(stage=..., chaos_resist_target=...)`：整套装备规划必须传当前阶段。不要为提高 EHP/Judge
@@ -370,6 +387,8 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `passiveAnchorIntents`
 - `transitionGates`
 - `unresolvedCaveats`
+- `completenessAdvisoryDecisions`：最终可信快照仍存在的完整度提示；每项包含
+  `advisoryCode`、`decision`（`deferred` / `intentionally_unused`）和 `reason`
 - `toolReferences`
 - `memoryReferences`（可省略；helper 从 typed `researchMemoryUse` 生成完整去重并集）
 - `researchMemoryUse`

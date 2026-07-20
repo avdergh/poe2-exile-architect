@@ -2,7 +2,7 @@
 
 ## 阶段状态
 
-已完成。当前 Phase 1 以 `judge_phase1_v6` / `judge_v6_evidence_separated` 作为内部 Judge
+已完成。当前 Phase 1 以 `judge_phase1_v7` / `judge_v6_evidence_separated` 作为内部 Judge
 基线：合法性仍由 hard checks 和 PoB readback 兜底，质量评分输出 evidence-aware score
 vector，并明确区分 strong evidence、limited evidence、source-data problem 和
 unsolved modelability gap。

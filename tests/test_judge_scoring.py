@@ -254,6 +254,38 @@ def test_recovery_falls_back_to_life_when_life_unreserved_missing():
     assert "life_unreserved_missing_caveat" in result["caveats"]
 
 
+def test_judge_reports_measured_mana_flask_dependency():
+    result = scoring.score_metrics(
+        {
+            "TotalDPS": 500_000,
+            "PhysicalMaximumHitTaken": 12_000,
+            "FireMaximumHitTaken": 25_000,
+            "ColdMaximumHitTaken": 25_000,
+            "LightningMaximumHitTaken": 25_000,
+            "ChaosMaximumHitTaken": 18_000,
+            "Life": 5_000,
+            "LifeUnreserved": 5_000,
+            "LifeRegenRecovery": 150,
+            "Mana": 533,
+            "ManaUnreserved": 533,
+            "ManaCost": 45.384615,
+            "Speed": 2.1375,
+            "ManaRegenRecovery": 58.4,
+            "ManaLeechGainRate": 0,
+            "ManaOnHitRate": 0,
+            "ManaFlaskEquipped": True,
+        },
+        level=75,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": 30},
+    )
+
+    mana = result["scoreBreakdown"]["recovery"]["manaSustain"]
+    assert mana["classification"] == "flask_assisted_required"
+    assert mana["secondsFromFull"] == pytest.approx(13.8049, rel=1e-4)
+    assert "mana_flask_dependency" in result["qualityWarnings"]
+    assert "long_boss_mana_sustain_risk_caveat" in result["caveats"]
+
+
 def test_ehp_compensates_low_physical_shortboard_only_upward():
     result = scoring.score_metrics(
         {

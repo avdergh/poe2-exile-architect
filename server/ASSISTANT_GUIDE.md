@@ -355,8 +355,10 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   or a local file path) and `set_class` **replace** the build — but `set_class` does NOT clear
   gear/skills/config, so call `new_build` first for a truly clean from-scratch start. `set_class`
   re-roots the tree, so do it before searching/allocating passives.
-- `set_level`, `set_skill`, `add_skill_group`, `set_config`, `equip_item`, `unequip_item`,
-  `alloc_passive`/`dealloc_passive` **mutate** in place.
+- `set_level`, `set_skill`, `add_skill_group`, `replace_skill_group`, `remove_skill_group`,
+  `set_skill_group_state`, `set_config`, `equip_item`, `unequip_item`,
+  `alloc_passive`/`dealloc_passive` **mutate** in place. Read `list_skill_groups` first and pass its
+  fingerprint/state hash to precise group edits; stale selectors fail without touching the build.
 - `get_build` = full read-back; `export_build` = a PoB import code for the user.
 
 ## Canonical build (create → optimize → validate → cost → present)
@@ -407,13 +409,17 @@ stage as ready.
    rather than guess, once a weapon is on (for attacks) let `optimize_supports` pick the best set
    empirically (it measures each on the engine), then apply it with `set_skill`.
 2. `add_skill_group` for auras / heralds / reservation buffs — the persistent buffs that carry endgame
-   damage. They apply *without* replacing the main skill; watch Spirit reservation.
+   damage. They apply *without* replacing the main skill; watch Spirit reservation. During a retry,
+   use `list_skill_groups` plus `replace_skill_group`/`remove_skill_group` for a local correction
+   instead of rebuilding every skill group.
 3. **Allocate the ascendancy** (`search_passives query="<ascendancy>"` → `alloc_passive` the
    notables; ascendancy points are separate from the tree budget). Do this *early* — ascendancy
    notables are frequently the build's single biggest multiplier (e.g. a conditional "more vs
    bosses"), and easy to forget when building from scratch. Then `optimize_passives` for the tree —
    `metric="balanced"`, or `goals={"TotalDPS":.5,"Life":.5}` for a weighted mix, or `require=[…]`
-   to force keystones. `points=0` fills the budget.
+   to force keystones. `points=0` fills the budget. The optimizer runs against an immutable snapshot;
+   use `preview=true` to inspect the replayable plan without mutation, then commit with the returned
+   input state hash if the plan is acceptable.
 4. **Gear.** Fastest first pass: `plan_gear(stage=...)` crafts the WHOLE set at once (offense slots
    damage-leaning, defense slots EHP-leaning so elemental resists cap), then refine. Use `campaign`
    below level 70, `maps_entry` for early maps, and `endgame` only for established endgame gear.
@@ -433,7 +439,9 @@ stage as ready.
 5. Call `inspect_build_completeness` before the final gate. Fix hard level-requirement failures and
    either fill or explicitly justify each advisory for scaffold gear, item levels, runes/soul cores,
    passive jewels, flasks, and charms. Rare/magic items must also pass affix-count, mod-group and
-   affix item-level checks. It diagnoses omissions; it does not choose the build for you.
+   affix item-level checks. Active gem levels are base-gem legality: item/passive `+levels` do not
+   make a legal base gem fail, but a socketed base level above the character requirement is a hard
+   failure. It diagnoses omissions; it does not choose the build for you.
 6. `apply_combat_profile` to switch on the realistic fight (boss tier + shock/curse/charges the
    build maintains), **plus any build-specific enemy condition its ascendancy/keystones rely on**
    (scan `list_config_options`, e.g. Open Weakness, Critical Weakness; a conditional "more" stays
@@ -481,11 +489,19 @@ realize it, then re-check defenses.
 - Realistic boss DPS (not the bare default) → `apply_combat_profile`. Add tree jewels →
   `equip_jewel` (+ `list_jewel_sockets`). Curses/second damage skill → `add_skill_group`
   (`in_full_dps=True` for a second damage skill so FullDPS aggregates).
+- Repair one existing skill group → `list_skill_groups`, then `replace_skill_group`,
+  `set_skill_group_state`, or `remove_skill_group` with the returned fingerprint/state hash. Never
+  retain a bare group index across another mutation.
 - How does mechanic X work → `explain_mechanic`/`search_mechanics`; not in corpus → `lookup_mechanic`.
 - Complete a skeleton's defenses fast → `scaffold_gear`. Read an item's tiers → `parse_item`.
 - Is the active state a playable loadout rather than a scoring skeleton →
-  `inspect_build_completeness` (rare/magic ilvl, base requirements, scaffold placeholders, runes,
-  jewels, flasks, and charms).
+  `inspect_build_completeness` (active-gem/base requirements, rare/magic ilvl, scaffold placeholders,
+  runes, jewels, flasks, and charms). Every remaining advisory must have a typed deferred or
+  intentionally-unused decision with a reason; `review-packet --compact` returns these as
+  `requiredUserDisclosures`, which must be included in the final user response.
+- For mana sustain, compare `ManaCost × Speed` with regen, leech, and on-hit recovery. Report
+  `flask_assisted_required` as mana-flask dependency with long-boss risk; do not soften a measured
+  deficit into a generic “test it in game” note.
 
 ## Known limitations & gotchas
 
@@ -522,7 +538,9 @@ realize it, then re-check defenses.
 - **Some supports zero a skill's *base* crit** — then "increased crit" does nothing on top; a non-crit
   build can't be made crit without a base crit source. Check a support's actual effect, don't assume.
 - **Passive points are level-driven.** `optimize_passives(points<=0)` fills the remaining budget;
-  watch `unspentPoints`/`pointsRemaining`/`pointsNote` and `alloc_passive`'s over-budget warning.
+  watch `unspentPoints`/`pointsRemaining`/`pointsNote` and `alloc_passive`'s over-budget warning. Its
+  v2 response includes optimizer/request/input/output hashes and exact path node ids; compare those,
+  not only `pointsUsed`, when checking reproducibility.
 - **Crafts report realism, not a price.** `optimize_item` / `optimize_jewel` return `attainability`
   (per affix: required ilvl + tier depth, "top tier of N") and a coarse `craft` effort
   (trivial→very high) — a tier-depth heuristic (the data has no spawn-weights, and there's no live
