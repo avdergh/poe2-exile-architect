@@ -328,7 +328,18 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `get_build_planner_converter_status()`：检查固定版本的官方 `.build` 转换 provider 是否可用。
 - `export_final_build_artifact(artifact_id, name, author, description, link)`：把最终可信 PoB 导出为
   官方单阶段 `.build` 文件，返回本地路径、provider 信息、转换统计和注意事项。
+- `save_build_progression_route(route)`：用户明确要求完整成长流程时，只有在每个重要里程碑都已经
+  作为独立生成运行并保存可信 `FinalBuildArtifact` 后调用。route 必须记录相邻阶段的
+  typed changes 和 transition requirements；不能用文字阶段冒充 artifact，也不能从终局 PoB
+  自动删点降级来猜早期构筑。
+- `list_build_progression_routes()` / `load_build_progression_stage(route_id, lifecycle_stage)`：列出
+  已保存成长路线，或把其中一个可信阶段重新载入活动 PoB。响应不返回 XML。
 - `export_build()` 只能用于本地临时状态，不要把导入码写进用户输出或持久报告。
+
+当用户只要一个目标阶段时，继续使用现有单阶段 Create，不要擅自把运行时间扩大为多阶段。当用户
+明确要求“从开荒到目标等级的完整流程”时，先规划 2~8 个真正发生机制/技能/装备/资源变化的
+里程碑；每个里程碑分别完成 Create、Judge 和 artifact 保存，再组装 progression route。里程碑
+数量按实际需要决定，不机械填满全部 lifecycle enum。
 
 `evaluate_generation_candidate` 的 `version_context` 必须一次提供完整对象，字段使用下面这些名称；
 值来自本次 freshness、图和记忆查询，不要临时猜测，也不要通过搜索源码补字段：

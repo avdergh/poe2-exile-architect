@@ -271,7 +271,7 @@ P5.1 证据可信度边界：
 - short-circuit state：physical-invalid failure 必须标记被 blocked 的 score dimensions；
 - reward eligibility：熔断 evaluation 不能产生 positive reward；
 - reward strength：`BuildEvaluation` / `BuildComparison` 使用 `rewardStrength` 区分
-  `strong`、`limited` 和 `none`。只有 strong 才能被后续 Phase 8 作为强 reward memory
+  `strong`、`limited` 和 `none`。只有 strong 才能被未来明确规划的 reward memory
   消费；limited 只允许作为观察或弱信号；
 - 非终局空升华：campaign / maps-entry 样本缺失 ascendancy 可以追加
   `missing_ascendancy_non_endgame_caveat` 并继续评估；endgame 样本缺失 ascendancy 仍是
@@ -323,7 +323,7 @@ Candidate vs reference 或 candidate vs prior round。
 - `levelBand` 不同的 evaluation 不直接比较 aggregate，也不产生 selection/reward winner；这表示
   比较合同不成立，不是对 campaign / maps-entry 构筑本身扣分；
 - reward eligibility：full comparable 才能进入 strong reward；partial modelability 只能进入
-  limited reward；非法或 core-unmodelled comparison 不进入 reward memory；
+  limited reward；非法或 core-unmodelled comparison 不进入未来 reward memory；
 - limited evidence comparison：如果任一方只有 limited evidence，可以给出
   `selectionWinner`，但 `rewardWinner` 必须是 `unknown`，`rewardStrength=limited`，防止把
   FullDPS rollup、召唤物数量近似、投射物下界或关键指标缺失写成强学习信号；
@@ -782,6 +782,31 @@ Phase 6 MVP 不要求自动生成 `level_interval` 或多阶段生命周期。�
 保存前的活动构筑还需要通过装备完整度诊断：黄装/魔法装带物品等级、底材等级可穿戴、没有
 `Scaffold ...` 占位装；符文/灵魂核心、天赋珠宝、药剂和护符由 Agent 填写或记录明确不使用理由。
 除底材等级非法外，这些是 Agent 接受候选前的 advisory，不是程序自动配装规则。
+
+## ProgressionRouteArtifact
+
+Phase 8 的本地安全成长路线 manifest。它不复制阶段 XML，而是引用 2~8 个分别通过 Phase 5
+可信 Judge 的 `FinalBuildArtifact`。
+
+必要字段：
+
+- route id、route name、class shell 和 target final artifact id；
+- version context；
+- 等级和 lifecycle stage 严格递增的 `ProgressionStage`；
+- 每阶段 artifact id、用途、play pattern、获取优先级和 caveats；
+- 后续阶段相对上一阶段的 typed `ProgressionChange`；
+- 后续阶段的 typed `TransitionRequirement`；
+- 每个 artifact 的安全 source hash、职业、等级、升华、主技能和版本事实；
+- created at、local-only 和 no-raw-PoB 标记。
+
+约束：
+
+- 每个阶段必须绑定不同且可重新校验的可信 artifact，文字阶段不能冒充 verified stage；
+- 所有阶段职业一致；升华、技能、辅助、天赋、装备、配置和资源允许变化；
+- route version 与每个 artifact 的 patch、tree 和 PoB version 一致；
+- 第一阶段没有 `changesFromPrevious`，后续阶段必须同时有 typed changes 和 transition requirements；
+- delta 只保存相邻阶段的关键变化，不能复制全部装备槽、整棵天赋或所有技能组；
+- 按阶段加载时复用 `FinalBuildArtifact` hash/Judge 校验，响应不返回 XML。
 
 ## FinalPobExportReport
 

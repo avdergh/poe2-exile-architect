@@ -194,6 +194,17 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - Reference/Profile 与 Comparator 使用同一可见任务；Create 必须是另一个任务。task/thread 创建与
   协调由 `$poe-bd-learning-loop` skill 完成。
 
+### Build Progression 层
+
+- `server/generation/progression.py`：Phase 8 多阶段成长路线合同、本地 manifest、可信
+  `FinalBuildArtifact` 绑定和按阶段加载。
+- 完整成长流程的每个重要里程碑必须分别运行 Phase 5 Create/Judge 并保存 artifact；不能从终局
+  PoB 自动删点、降级装备来伪造早期阶段。
+- progression manifest 只保存有界 typed delta、transition requirements、安全 artifact facts 和
+  artifact 引用；阶段 XML 仍只存在本地私有 artifact store。
+- 职业是跨阶段唯一硬锁。程序验证等级、stage、职业、版本和 artifact 可信性，但不替 Agent 设计
+  技能、天赋、装备或转型路线。
+
 ### Live / Freshness 层
 
 - `server/freshness/*`：patch/tree/PoB/poe.ninja freshness providers、cache 和 evaluator。
@@ -229,7 +240,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
 - `docs/phases/06_build_export.md`：官方 `.build` export。
 - `docs/phases/07_critic_loop.md`：同 Family/同等级对照学习循环与轻量自进化 Memory。
-- `docs/phases/08_reward_memory.md`：待 Phase 7 实跑后重新规划的后续阶段。
+- `docs/phases/08_build_progression.md`：用多个可信阶段 artifact 交付完整 BD 成长流程。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。
 
 ## 编辑政策

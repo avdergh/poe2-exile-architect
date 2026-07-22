@@ -60,6 +60,7 @@ from .generation import evaluation as generation_evaluation
 from .generation import delivery as generation_delivery
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
+from .generation import progression as generation_progression
 from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
@@ -776,6 +777,45 @@ def export_final_build_package(
         author=author,
         description=description,
         link=link,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Verified multi-stage build progression (trusted artifacts, not prose-only stages)
+# --------------------------------------------------------------------------------------
+@mcp.tool()
+def save_build_progression_route(route: dict[str, Any]) -> dict[str, Any]:
+    """Save an ordered progression whose every milestone is a trusted FinalBuildArtifact.
+
+    The route records typed deltas and transition requirements, but never derives early stages by
+    downgrading the final PoB and never exposes raw XML.
+    """
+    return generation_progression.save_progression_route(route)
+
+
+@mcp.tool()
+def list_build_progression_routes() -> dict[str, Any]:
+    """List local verified progression routes without exposing their private PoB XML."""
+    return generation_progression.list_progression_routes()
+
+
+@mcp.tool()
+def load_build_progression_stage(
+    route_id: str,
+    lifecycle_stage: Literal[
+        "campaign_early",
+        "campaign_mid",
+        "campaign_late",
+        "maps_entry",
+        "endgame_budget",
+        "endgame_final",
+        "budget_endgame",
+        "final_endgame",
+    ],
+) -> dict[str, Any]:
+    """Load one trusted milestone from a saved progression route into the active PoB session."""
+    return generation_progression.load_progression_stage(
+        get_engine(), route_id=route_id, lifecycle_stage=lifecycle_stage
     )
 
 

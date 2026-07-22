@@ -50,6 +50,11 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
    setup, or late passive cluster. When the user asks for a strong build without a full anchor, start
    with `suggest_build_lifecycle`: present campaign starter → transition gate → budget endgame →
    final endgame. Never recommend switching stages until the transition gate is met.
+10. **A verified progression requires real milestone artifacts.** When the user explicitly asks
+    for a complete campaign-to-target progression, build each meaningful milestone as a separate
+    Phase 5 run, pass Judge, and save its `FinalBuildArtifact`. Only then call
+    `save_build_progression_route` with typed changes and transition requirements. Never present a
+    prose-only stage, or an automatically downgraded final PoB, as independently verified.
 
 ## Three kinds of facts
 

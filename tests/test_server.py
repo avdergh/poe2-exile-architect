@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 121
+    assert len(tools) == 124
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -97,6 +97,9 @@ def test_tool_surface_intact():
         "load_final_build_artifact",
         "export_final_pob_artifact",
         "export_final_build_package",
+        "save_build_progression_route",
+        "list_build_progression_routes",
+        "load_build_progression_stage",
         "get_build_planner_converter_status",
         "export_final_build_artifact",
         "list_reference_builds",

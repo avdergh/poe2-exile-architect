@@ -25,9 +25,10 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 - 当前 Researcher Agent 每次只处理一个 transient 案例，并通过有界清单、分区读取和搜索获得证据。
 - 通过 resolver、typed schema、copy-safety 和 acceptance gate 后才入库。
 
-Phase 7 功能正在建设；十案例趋势只能证明方向性信号，不能证明 Memory 与质量提升之间的因果。
-分场景多技能组合评分和 Phase 8 仍待后续规划。当前导出能力用于交付和暴露前置构筑问题，不代表
-Agent 已能稳定创造所有类型的高水平 BD，也不代表完整产品闭环已经成熟。
+Phase 7 十案例趋势只能证明方向性信号，不能证明 Memory 与质量提升之间的因果。Phase 8 正在把
+文字阶段路线升级为由多个可信 PoB artifact 组成的完整成长流程；当前只完成首个合同切片，尚未
+接入完整 Create 编排与多阶段导出。当前能力不代表 Agent 已能稳定创造所有类型的高水平 BD，也
+不代表完整产品闭环已经成熟。
 
 ## 安装
 
