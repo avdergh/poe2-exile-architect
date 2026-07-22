@@ -1244,13 +1244,13 @@ def test_crafting_options_surfaces_pob_data(engine):
     assert any(e.get("special") for e in co["essences"])  # Perfect (beyond-pool) essences present
 
 
-@pytest.mark.timeout(900)
+@pytest.mark.timeout(1800)
 def test_optimize_build_crafting_keeps_resists_capped(engine):
     # The crafting post-pass re-crafts every slot independently, which can strip the cross-slot resist
     # balance plan_gear set up. The re-cap pass must restore it — a crafted build must stay capped.
-    # Slow on Windows/PoB headless (~7 min observed during PoB v0.21.1 certification):
-    # full crafting on a whole gear set. Keep an explicit timeout so the global certification
-    # gate can stay strict for ordinary tests while this end-to-end path must still finish.
+    # Slow on Windows/PoB headless (about 15 min on the current pinned runtime, and slower after
+    # earlier tests reuse the session engine): full crafting on a whole gear set. Match the
+    # compute/full profile's 30-minute heavy-test budget while ordinary tests remain strict.
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1")
     r = buildopt.optimize_build(

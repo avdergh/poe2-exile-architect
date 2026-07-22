@@ -331,7 +331,8 @@ does not take over build completion.
   a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
   `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
   Each row carries a short failure-audit conclusion and planned changes, never hidden reasoning.
-  Stop after the safe human review packet; do not start a Phase 7 critic/rollback loop.
+  Stop after the safe human review packet. A normal `/poe-bd-create` run does not start comparative
+  learning by itself.
 - If the final attempt passes legality, has no playability failures, has applicable scoring, and the
   Agent accepts it, call `save_final_build_artifact` before the review helper consumes the run token.
   Only the latest trusted attempt can be saved. Failed and
@@ -344,6 +345,37 @@ does not take over build completion.
   is an Agent judgment; PoB/Judge-verified defenses, sustain, and stage gates are evidence claims.
 - The sections below describe general compute-tool usage. For `/poe-bd-create`, formal evaluation
   still ends with `evaluate_generation_candidate` and the safe human review packet.
+
+## Phase 7 comparative learning
+
+- Use `$poe-bd-learning-loop` only when the user asks to profile a reference build, run comparative
+  learning, resume a learning campaign, or inspect its status. The repository state service does not
+  create Desktop tasks or call a model; the skill coordinates visible tasks.
+- A case uses one Reference/Comparator task and a different Create task. The Create task receives
+  only the exact `FamilyTarget`, target level, version context, and the default goal: softcore trade,
+  no fixed budget, favor overall strength and playability.
+- Query Learning Memory inside the active Create claim. The service binds Family/level/version,
+  persists only a safe query receipt, and returns a new campaign revision. The final
+  `learningMemoryUse` must match that receipt and record an adopted/caveated/rejected decision for
+  every recalled lesson.
+- Never include reference gear, passives, skill groups, mechanism summaries, configuration, Judge
+  results, source URLs, PoB code, or XML in a blind Create packet. Ambiguous Family or level evidence
+  fails closed.
+- The Phase 5 run may use its existing bounded internal attempts, but after comparison the same case
+  is never regenerated or repaired. Improvements apply only to later cases.
+- Compare damage loop/delivery, skill duties/supports, configuration realism, trigger/conversion
+  chains, gear/passive/ascendancy synergy, clear/boss/burst, defenses/recovery/resources/Spirit,
+  mobility/playability, legality/modelability, and gear effort/attainability.
+- Judge data must be attached with `advisoryOnly=true`. It must never automatically choose the
+  overall verdict or write a reward.
+- Route concrete skills, mechanisms, rotations, gear, passives, defenses, resources, tradeoffs,
+  failures, and modelability knowledge through Research schemas. Learning Memory is only for
+  cross-dimensional guidance about how a future Create should reason or verify.
+- Learning Memory corrections are append-only. Recall both the effective lesson and relevant
+  correction/do-not-repeat summaries; a corrected equivalent lesson needs the old correction ref
+  plus new evidence before it can be submitted again.
+- Campaigns default to ten strictly serial cases with a three-case rolling window. A first-three vs
+  last-three improvement is directional evidence only, never a causal claim.
 
 ## One active build per MCP session
 

@@ -21,19 +21,30 @@ def _monk_with_two_groups(engine):
 def test_semantic_state_hash_ignores_pob_serialization_noise():
     first = """<PathOfBuilding2><Build className="Monk" level="80">
     <PlayerStat stat="TotalDPS" value="100"/></Build>
-    <Tree activeSpec="1"><Spec nodes="3,1,2" classId="10"><URL>old</URL></Spec></Tree>
+    <Tree activeSpec="1"><Spec nodes="3,1,2" classId="10"><URL>old</URL>
+    <AttributeOverride strNodes="6,4,5" dexNodes="9,7,8" intNodes="12,10,11"/>
+    </Spec></Tree>
     <Skills activeSkillSet="1" sortGemsByDPS="true"><SkillSet id="1">
     <Skill label="" includeInFullDPS="nil" mainActiveSkill="nil"/>
     </SkillSet></Skills></PathOfBuilding2>"""
     second = """<PathOfBuilding2><Skills sortGemsByDPS="false" activeSkillSet="1">
     <SkillSet id="1"><Skill mainActiveSkill="1" includeInFullDPS="false" label=""
     mainActiveSkillCalcs="1"/></SkillSet></Skills>
-    <Tree activeSpec="1"><Spec classId="10" nodes="2,3,1"><URL>new</URL></Spec></Tree>
+    <Tree activeSpec="1"><Spec classId="10" nodes="2,3,1"><URL>new</URL>
+    <AttributeOverride intNodes="11,12,10" strNodes="4,6,5" dexNodes="8,9,7"/>
+    </Spec></Tree>
     <Build level="80" className="Monk"><PlayerStat value="999" stat="TotalDPS"/></Build>
     </PathOfBuilding2>"""
 
     assert build_state_hash(first) == build_state_hash(second)
     assert build_state_hash(first) != build_state_hash(first.replace('level="80"', 'level="79"'))
+    repeated_first = first.replace('strNodes="6,4,5"', 'strNodes="6,4,5,5"')
+    repeated_second = second.replace('strNodes="4,6,5"', 'strNodes="5,4,6,5"')
+    assert build_state_hash(repeated_first) == build_state_hash(repeated_second)
+    assert build_state_hash(first) != build_state_hash(repeated_first)
+    assert build_state_hash(first) != build_state_hash(
+        first.replace('strNodes="6,4,5"', 'strNodes="6,4"')
+    )
 
 
 def test_skill_group_replace_remove_and_stale_selector_fail_closed(engine):
@@ -191,3 +202,58 @@ def test_passive_optimizer_preview_falls_back_safely_when_process_cap_is_full(en
     assert result["executionMode"] == "active_snapshot_fallback"
     assert result["committed"] is False
     assert build_state_hash(engine.get_xml()) == initial_hash
+
+
+def test_passive_optimizer_reset_required_plan_commits_previewed_snapshot(engine):
+    engine.new_build()
+    engine.set_class("Monk", "Martial Artist")
+    engine.set_level(85)
+    engine.paste_skill("Whirling Assault")
+    initial_hash = build_state_hash(engine.get_xml())
+    required = [
+        1739,
+        19370,
+        17356,
+        39595,
+        34324,
+        51707,
+        34300,
+        25362,
+    ]
+
+    preview = passiveopt.optimize_passives(
+        engine,
+        metric="TotalDPS",
+        points=60,
+        candidates=32,
+        goals={"TotalDPS": 1.0, "TotalEHP": 0.65},
+        require=required,
+        reset=True,
+        preview=True,
+        expected_state_hash=initial_hash,
+    )
+    committed = passiveopt.optimize_passives(
+        engine,
+        metric="TotalDPS",
+        points=60,
+        candidates=32,
+        goals={"TotalDPS": 1.0, "TotalEHP": 0.65},
+        require=required,
+        reset=True,
+        expected_state_hash=preview["inputStateHash"],
+    )
+
+    assert preview["ok"] is True
+    failure = {
+        key: committed.get(key)
+        for key in (
+            "errorCode",
+            "expectedStateHash",
+            "actualStateHash",
+            "expectedOutputStateHash",
+            "actualOutputStateHash",
+        )
+    }
+    assert committed["ok"] is True, failure
+    assert committed["committed"] is True
+    assert committed["committedStateHash"] == preview["outputStateHash"]

@@ -846,3 +846,75 @@ error-level warning 时，导出失败而不是静默切换到名称猜测。
 edge。验收报告中的 `unresolvedDeepRecordMentionCount` 统计未解析提及次数，
 `unresolvedUniqueComponentCount` 统计去重后的组件；旧字段 `unresolvedDeepRecordComponentCount` 保持为
 mention 次数以兼容现有消费者。
+
+## Phase 7 对照学习合同
+
+### FamilyTarget
+
+对照学习中唯一允许传给盲测 Create 的 reference 派生合同：
+
+- `schemaVersion`；
+- `buildFamilyKey`；
+- `ascendancyKey`；
+- `primarySkillKey`；
+- `secondarySkillKeys`；
+- `targetLevel`；
+- `versionContext`：game patch、passive tree、PoB version/commit；
+- `safeEvidenceRefs`。
+
+Family 身份必须由现有 `BuildFamilyIdentity` 推导。升华、主技能、核心次级技能或等级歧义时不生成
+`FamilyTarget`。装备、天赋、辅助、配置、机制摘要、来源 URL 和 Judge 结果都不是该合同字段。
+
+### BlindCreatePacket
+
+必要字段：case/campaign 的安全引用、`FamilyTarget`、默认目标、Research/Memory 使用许可和
+`referenceBlind=true`。默认目标固定为“软核交易、无固定预算、综合强度与可玩性优先”。
+
+packet validator 必须递归拒绝 reference gear、passives、skill groups、mechanic summary、raw source、
+PoB code/XML、完整 URL、reference Judge 和 comparison 内容。Create 结果必须记录
+`learningMemoryUse`：绑定活动 Create claim 的 query receipt、完整召回 ID、每条经验的
+`adopted/caveated/rejected`、应用说明和 harmful/incorrect 观察；提交时必须与服务端安全收据
+完全一致。
+
+### BuildComparisonReport
+
+报告引用两个安全 evidence packet，不嵌入完整构筑镜像。固定十个维度；每项包含：
+
+- dimension；
+- verdict：`generated_advantage/reference_advantage/tradeoff/tie/unknown`；
+- generated/reference safe evidence refs；
+- 简短 rationale；
+- critical gap 标记。
+
+总结果只允许 `generated_stronger/reference_stronger/tradeoff/incomparable`。Judge 附件必须带
+`advisoryOnly=true`，报告 validator 禁止出现自动 winner 来源。reference 更强时，root cause 使用
+Phase 7 固定七类。报告同时保存 Family/等级匹配、合法性/modelability 状态和安全的时间指标。
+
+### LearningMemoryEntry 与 LearningMemoryCorrection
+
+Learning Memory 是 Research SQLite 之外的本地 append-only store。
+
+Entry 必要字段：lesson id、lesson、scope、Family/等级约束、dimension、conditions、exclusions、
+recommended Create behavior、verification tasks、安全 comparison/source/candidate refs、patch/tree/PoB
+版本、状态、copy-safety、reviewed case 和时间戳。状态只允许
+`active/narrowed/superseded/deprecated/stale`。
+
+能归入 `DeepResearchRecord` 现有 record kind 的具体技能包、机制链、轮转、装备、天赋、防御、
+资源等知识，必须以 `dbFit=true` 拒绝写入 Learning Memory。
+
+Correction 是不可变追加事件，action 只允许 `narrow/revise/supersede/deprecate`，保存修改前后
+摘要、原因、触发案例、安全 evidence refs 和 replacement lesson（如适用）。查询返回当前有效
+lesson 及相关 correction/do-not-repeat 摘要。已被 correction 覆盖的同义 lesson 再次提交时，必须
+引用旧 correction 并提供新证据；否则以 `corrected_lesson_requires_new_evidence` 拒绝。
+
+### LearningCampaignState
+
+Campaign 默认为 10 个串行案例和 3 案例滚动窗口。durable control state 只保存安全引用，使用
+`campaignId/caseId/taskId/claimId/threadId/phase/revision` 做 CAS。Reference/Profile 与 Comparator
+共用任务绑定；Create 必须使用不同任务。Phase checkpoint 可暂停、恢复和显式 retry，但 Create
+一旦提交后不能为同一案例再次启动，Compare 后也不能回到 Create。
+
+Campaign summary 保存每案例累计指标和阶段耗时。趋势判断只比较前 3 例与后 3 例；只有
+not-weaker 上升、reference-advantage 中位数下降、critical gap 不增加、合法性和 Family 匹配不退化
+时才输出 `initial_progress_signal`，否则输出 `function_complete_learning_unproven`。该结论不是因果
+证明，也不是 Judge reward。

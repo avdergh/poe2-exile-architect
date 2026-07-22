@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-07-10
+最后更新：2026-07-21
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -15,7 +15,7 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 标之间的组合空间，发现人类玩家不容易系统搜索到的机制联动，并为不同场景提供高质量
 的配装、技能、天赋和升级路线方案。
 
-研究成熟 BD、提取知识、建立图记忆和运行 Critic loop 都是实现这个愿景的手段，不是
+研究成熟 BD、提取知识、建立图记忆和运行对照学习循环都是实现这个愿景的手段，不是
 产品终点。
 
 ## 工程目标与验证哲学
@@ -34,7 +34,7 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 - 更少 critical gaps；
 - 更好的 Spirit、抗性、属性和天赋点预算合法性；
 - 更安全的 non-copyable 知识提取；
-- repair loop 更快收敛。
+- 相同 Family、相同等级盲测 Create 相对成熟原 BD 的差距持续收窄。
 
 在这个验证哲学下，Judge 的职责不是“为所有 PoE2 机制强行算出一个看似精确的真 DPS /
 真 EHP”，而是先建立物理边界与证据边界：
@@ -56,9 +56,10 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
   -> 外部 Architect Agent 按需查询图、记忆、语料和 PoB/计算工具
   -> Agent 主导候选 BD 创造和可评估临时状态搭建
   -> Headless PoB Judge + 安全报告
-  -> reference comparison + 外部 Critic Agent
-  -> rollback / repair / early stopping
-  -> reward events 调整 graph 和 memory 权重
+  -> 同 Family / 同等级的 reference profile 与盲测 Create
+  -> 独立 Comparator 逐维比较（Judge 仅作参考）
+  -> Research 回流 + 本地 Learning Memory
+  -> 后续案例召回与趋势复审
 ```
 
 长期记忆采用双轨结构，而不是纯文本记忆：
@@ -70,7 +71,8 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
   机制理解、研究摘要和可复用原则，用于语义检索与 Researcher / Architect 上下文组装。
 
 Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产物写入 semantic graph
-和 vector memory；Phase 8 才根据 reward events 调整 graph / memory ranking。
+和 vector memory；Phase 7 另外维护不适合进入 Research DB 的本地轻量 Learning Memory。
+Phase 8 的 reward/ranking 方向留待 Phase 7 实跑后重新规划。
 
 ## 已有底座
 
@@ -139,14 +141,14 @@ Phase 0 文档与边界
   -> Phase 4 Researcher 语义记忆
   -> Phase 5 Agent 主导的生成原型
   -> Phase 6 官方 .build 导出
-  -> Phase 7 Critic loop / rollback / early stopping
-  -> Phase 8 RLAIF-lite reward memory
+  -> Phase 7 同 Family / 同等级对照学习循环
+  -> Phase 8 待 Phase 7 实跑后重新规划
   -> Phase 9 scale / revalidation / productization
 ```
 
 其中 Phase 1 是所有“好坏判断”的前置门槛；Phase 2 和 Phase 3 是图记忆可用性的前置
 门槛；Phase 4 负责把成熟 BD 研究变成可复用长期知识；Phase 5 之后才开始验证生成能
-力；Phase 7 和 Phase 8 只有在生成与 judge 可用后才有意义。
+力；Phase 7 只有在生成、Research 和 Judge 可用后才有意义；Phase 8 等 Phase 7 实跑证据再定。
 
 ### 待优化提示：复合输出与多场景评估
 
@@ -162,10 +164,11 @@ PoE2 BD 通常不是单一技能、单一面板和单一战斗场景。清图、
 - Phase 5 P5.1-P5.3：已用 Agent 实际生成的候选发现并修复条件性内部效果误选、插槽误判和
   逐轮可信核对问题；Agent 说明各技能职责，可信报告保存足够诊断。完整轮转和组合建模继续作为
   后续跨阶段优化，不在 Phase 5 手写全知评分器。
-- Phase 7：消费已经可信的分场景 Judge 诊断做 Critic、修复、回滚和提前停止；不负责发明缺失
-  的底层数值真值。
-- Phase 8：只有场景证据和 confidence 足够时才允许写 reward memory；多技能组合或时序关系未
-  解决时必须限制或禁止强奖励。
+- Phase 7：对成熟原 BD 做安全 Profile，形成唯一 `FamilyTarget`，只给独立 Create 任务相同 Family 和等级，再由独立
+  Comparator 逐维比较。Judge 只作为 advisory evidence，不能按 aggregate 自动选赢家；具体
+  build knowledge 回到 Research，不适合 Research schema 的跨维生成经验才进入 Learning Memory。
+- Phase 8：暂不调整详细设计，待 Phase 7 的十案例实跑、Memory 污染修正和趋势结果完成后重新
+  规划。
 
 这是一项跨阶段待优化能力，不因 Phase 1 基线状态为“已完成”而视为已经解决。后续优先由
 Phase 5 真实失败样例驱动，不提前手写一套脱离 PoB 和游戏机制的全知评分器。
@@ -183,8 +186,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
 | Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
-| Phase 7 | 未开始 | Phase 1、5，按需依赖 Phase 6 | 建立生成-评估-修复闭环，支持 snapshot、rollback、early stopping 和 failure pattern。 | `docs/phases/07_critic_loop.md` |
-| Phase 8 | 未开始 | Phase 4、5、7 | 用 judge 和 Critic 结果更新 graph/memory 权重，实现 RLAIF-lite，而不是训练 LLM。 | `docs/phases/08_reward_memory.md` |
+| Phase 7 | 开发中 | Phase 1、4、5，按需依赖 Phase 6 | 建立成熟原 BD Profile、同 Family/同等级盲测 Create、独立逐维比较和面向后续案例的 Research/轻量 Learning Memory 回流；首轮固定 10 个串行案例。 | `docs/phases/07_critic_loop.md` |
+| Phase 8 | 待重新规划 | Phase 4、5、7 | 详细目标留待 Phase 7 十案例实跑后重定，不在 Phase 7 中预先实现 reward/ranking 方案。 | `docs/phases/08_reward_memory.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
 
 ## 硬边界
@@ -228,9 +231,10 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 - typed graph tool 的确定性、provenance 完整度、上下文校验和防幻觉能力；
 - Phase 4 之后 graph / vector / text retrieval 组合相对纯文本检索的质量；
 - copy-safety pass rate；
-- repair-loop score improvement；
-- rollback 和 early-stopping behavior；
-- reward-memory A/B uplift。
+- 同 Family、同等级 Create 的接受率和 Family 匹配率；
+- generated stronger/not-weaker 比例、reference-advantage 维度数和 critical gap；
+- Learning Memory 的召回、采用、拒绝、污染与 correction；
+- 第一批 10 案例中最后 3 例相对最初 3 例的方向性趋势。
 
 Judge 的评分语义也必须接受分层验证，而不是只看单一 aggregate：
 
@@ -281,7 +285,7 @@ PoB 数据版本兼容性按赛季大版本比较，精确补丁号只用于来�
 根 `README.md` 现在允许存在，但定位很窄：它是安装/自动化 README，只写安装、skill
 自动化入口、成熟 BD 研究命令、已验证的单阶段生成/导出能力、平台能力矩阵和安全边界。它可以
 准确说明 Phase 5/6 已完成的 Agent 主导生成、最终 PoB 保存和官方 `.build` 导出，但不能据此
-宣称生成质量、复合技能评分、Critic loop 或 reward memory 已成为成熟产品。完整 public product
+宣称生成质量、复合技能评分、对照学习效果或 reward memory 已成为成熟产品。完整 public product
 narrative 仍等 learning/generation/evaluation loop 有 benchmark 证据后再扩展。
 
 ## 接续指南

@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-07-09
+Last updated: 2026-07-21
 
 本文档说明高层模块布局和数据流。详细实现工作放在 `docs/phases/`。Architecture 是当前
 唯一维护英文和中文两版的文档；project spec、schemas 和 phase plans 只维护中文。
@@ -11,7 +11,7 @@ Last updated: 2026-07-09
 
 ```text
 External Agents
-  Researcher / Architect / Critic
+  Researcher / Architect / Reference-Comparator
         |
         v
 server/main.py  (MCP tools, prompts, instructions)
@@ -21,8 +21,9 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         |
         +-- compute: Headless PoB, build mutation, item/support/passive tools
         +-- knowledge: corpus, mature learning, copy-safety, lifecycle, schemas
-        +-- graph/memory: physical facts, semantic edges, reward-weighted memory
-        +-- judge: build evaluation, comparison, modelability, benchmark reporting
+        +-- graph/memory: physical facts, semantic edges, Research DB, local Learning Memory
+        +-- judge: build evaluation、modelability 与 advisory-only 数值附件
+        +-- comparative learning: quarantine case、blind packet、comparison、campaign state
         +-- agent helper tools: 查询、PoB 操作、候选状态整理、`.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
@@ -52,13 +53,17 @@ source probe
   -> Agent 使用工具搭建可评估临时构筑状态
   -> BuildSnapshot / 本地临时状态引用
   -> Headless PoB Judge
-  -> BuildEvaluation / BuildComparison
-  -> Critic Agent gaps
-  -> rollback / repair / early stop
-  -> StatePruner / ContextPack
-  -> compact agent retry context
-  -> RewardEvent
-  -> graph/memory weight updates
+  -> BuildEvaluation / 最终本地 artifact
+
+成熟原 BD
+  -> case-bound quarantine
+  -> Reference/Comparator Agent 安全 Profile
+  -> FamilyTarget + reference evidence
+  -> 独立 Create Agent 只接收 FamilyTarget + 等级
+  -> generated evidence + Judge advisoryOnly
+  -> Reference/Comparator Agent 逐维比较
+  -> Research 回流 / Learning Memory lesson + correction
+  -> 下一案例 Create 召回
 ```
 
 ## 核心 Runtime 模块
@@ -73,6 +78,7 @@ source probe
 | Mature intake | `server/knowledge/mature_*`, `server/live/mature_*` | Quarantine-only mature sample intake 和 clean fragment contracts。 |
 | Copy-safety | `server/knowledge/copy_safety.py` | 防止 reconstructable build material 的 guardrails。 |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | 现有 route、verification、quality 和 evaluation helpers。 |
+| Comparative learning | `server/learning/*` | Phase 7 typed contracts、隔离案例、盲测 packet、比较报告、Learning Memory 和可恢复 campaign 状态。 |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context。 |
 | Scripts | `scripts/*` | Verification、smoke tests、packaging、source probes。 |
 
@@ -84,7 +90,7 @@ source probe
   plan，程序自动补完整 BD”的流程；
 - workflow orchestration 应在 `server/main.py` 变成 coordination bottleneck 前移入 router/service
   modules；
-- repair loops 应向 agent 传递压缩后的 `ContextPack`，完整 snapshots 和 round logs 保存在本地状态；
+- 对照循环只把 `FamilyTarget + 等级` 发给 Create；reference 细节只能留在隔离的 Comparator 上下文；
 - MCP tools 只包装已经在 lower layer 测试过的函数。
 
 ## 权威边界
@@ -94,8 +100,9 @@ source probe
 - 外部 agent 负责推理和提出 semantic links，但不负责 validation。
 - 外部 Architect Agent 负责 BD 创造、查询取舍、临时状态搭建策略和失败修正方向。
 - Validators 负责 schema、copy-safety、graph-resolution 和 split-boundary enforcement。
-- Judge outputs 对 reward signals 负责。
-- State pruning 对 rollback/repair loop 的 agent-facing retry context 负责；完整本地历史不会自动重发给外部 agent。
+- Comparator Agent 对逐维 tradeoff 和总结果负责；Judge 数值只作为 `advisoryOnly` 附件。
+- Phase 7 状态服务负责 CAS、幂等、暂停、恢复和安全 checkpoint，不创建任务或调用模型。
+- Research schema 对具体 build knowledge 负责；Learning Memory 只接收跨维 Create 行为经验及其 correction。
 - Phase benchmark reports 对进度声明负责。
 
 ## 文档地图
@@ -113,5 +120,6 @@ source probe
   同一 session 的完整工具调用串行执行，避免多步 optimizer 状态互相穿插。
 - Durable generated reports 不存入仓库。
 - Mature raw payloads 只允许 quarantine-only transient 使用。
+- Phase 7 原始来源按 case 隔离保存；控制状态、报告和 Learning Memory 只能持久化 hash/ref 与安全摘要。
 - Long-term knowledge 必须 clean、versioned、evidence-backed 且 copy-safe。
 - User-data/runtime 目录可以保存本地状态；仓库文档应描述 contracts，而不是偶然的本地 artifacts。

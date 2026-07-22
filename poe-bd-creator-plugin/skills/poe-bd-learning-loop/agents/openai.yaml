@@ -1,0 +1,4 @@
+interface:
+  display_name: "PoE BD Learning Loop"
+  short_description: "用原始 BD 运行对照学习并持续改进后续 Create 结果"
+  default_prompt: "使用 $poe-bd-learning-loop 对一批同 Family、同等级 BD 运行十案例对照学习。"

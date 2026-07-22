@@ -2,8 +2,9 @@
 
 Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生成工具基座。它不尝试在项目内部重新训练或内置一个模型循环，而是让 Codex、Claude Code 等成熟 agent 负责研究与推理；仓库负责确定性工具、MCP 合同、图谱、记忆、安全边界和验收。
 
-当前可用的两条产品入口是成熟 BD 研究提取和 Agent 主导的 BD 生成原型：前者把安全机制知识写入
-长期记忆，后者让 Agent 查询这些知识、搭建活动 PoB、运行 Judge 并进行有限内部修正。
+当前产品入口包括成熟 BD 研究提取、Agent 主导的 BD 生成，以及 Phase 7 对照学习：先对原 BD
+安全建模，再让独立 Create 只按相同 Family 和等级盲测生成，最后由独立 Comparator 逐维比较，
+把具体知识回流 Research、把跨维生成经验写入本地 Learning Memory。
 
 ## 能做什么
 
@@ -17,14 +18,16 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
   不创建会话、不调用模型，也不启动后台控制台。
 - 用 `/poe-bd-create` 或 `$poe-bd-create` 启动 Phase 5 Agent 主导生成原型；Agent 负责理解、
   查询、候选设计和活动 PoB 搭建，程序负责运行绑定、快照捕获、Judge 调用和人工验收包生成。
+- 用 `/poe-bd-learning-loop` 或 `$poe-bd-learning-loop` 运行 Phase 7 对照学习。默认首批 10 个案例
+  严格串行；每案例只运行一次 Create，Judge 只作参考，改进只影响后续案例。
 - 对最终通过且被 Agent 接受的候选，保存本地私有 PoB artifact，并导出桌面 PoB XML、PoB
   导入码文本和官方单阶段 `.build` 文件。
 - 当前 Researcher Agent 每次只处理一个 transient 案例，并通过有界清单、分区读取和搜索获得证据。
 - 通过 resolver、typed schema、copy-safety 和 acceptance gate 后才入库。
 
-仍在建设中的能力包括完整 Critic 修复/回滚/提前停止循环、分场景多技能组合评分和 reward
-memory。当前导出能力用于交付和暴露前置构筑问题，不代表 Agent 已能稳定创造所有类型的高水平
-BD，也不代表完整产品闭环已经成熟。
+Phase 7 功能正在建设；十案例趋势只能证明方向性信号，不能证明 Memory 与质量提升之间的因果。
+分场景多技能组合评分和 Phase 8 仍待后续规划。当前导出能力用于交付和暴露前置构筑问题，不代表
+Agent 已能稳定创造所有类型的高水平 BD，也不代表完整产品闭环已经成熟。
 
 ## 安装
 
@@ -62,8 +65,9 @@ macOS / Linux：
 ```
 
 安装器会链接 `poe-bd-creator-plugin/skills/poe-bd-research`、
-`poe-bd-creator-plugin/skills/poe-bd-create` 和
-`poe-bd-creator-plugin/skills/poe-bd-research-loop`，不会覆盖已有真实目录；卸载只删除自己
+`poe-bd-creator-plugin/skills/poe-bd-create`、
+`poe-bd-creator-plugin/skills/poe-bd-research-loop` 和
+`poe-bd-creator-plugin/skills/poe-bd-learning-loop`，不会覆盖已有真实目录；卸载只删除自己
 创建的 symlink/junction。
 
 安装器还会为 Codex 注册本项目 MCP 服务 `poe2_build_mcp`，这样 `/poe-bd-create` 运行时才能

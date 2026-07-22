@@ -72,6 +72,10 @@ def _semantic_element(node: ET.Element) -> list[Any]:
         attrs.pop("viewMode", None)
     elif node.tag == "Spec" and "nodes" in attrs:
         attrs["nodes"] = _sorted_csv_numbers(attrs["nodes"])
+    elif node.tag == "AttributeOverride":
+        for key in ("strNodes", "dexNodes", "intNodes"):
+            if key in attrs:
+                attrs[key] = _sorted_csv_numbers_preserving_multiplicity(attrs[key])
 
     children: list[list[Any]] = []
     for child in node:
@@ -103,3 +107,11 @@ def _sorted_csv_numbers(value: str) -> str:
         return ",".join(str(number) for number in sorted({int(part) for part in parts}))
     except ValueError:
         return ",".join(sorted(set(parts)))
+
+
+def _sorted_csv_numbers_preserving_multiplicity(value: str) -> str:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    try:
+        return ",".join(str(number) for number in sorted(int(part) for part in parts))
+    except ValueError:
+        return ",".join(sorted(parts))

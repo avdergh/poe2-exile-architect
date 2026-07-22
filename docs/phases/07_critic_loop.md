@@ -1,73 +1,189 @@
-# Phase 7 - 带 Rollback 与 Early Stopping 的 Critic Loop
+# Phase 7 - BD 对照学习循环与轻量自进化 Memory
 
 ## 阶段状态
 
-未开始。
+开发中。第一轮验收固定为 10 个严格串行案例；功能验收与学习效果验收分开报告。
 
 ## 目标
 
-让 generate-evaluate-repair loop 能持续改善最佳候选，而不是震荡或浪费 agent/tool budget。
+Phase 7 不再对同一个生成候选反复 Critic、修复、回滚或 Early Stop。它建立一个由外部
+Agent 主导的对照学习循环：先安全建模一个成熟原 BD，再让独立 Create 任务只根据相同
+Family 和相同等级盲测生成，随后由独立 Comparator 逐维比较，并把可复用改进作用于后续
+案例。
 
-## 依赖
+每个案例只调用一次现有 `/poe-bd-create` 流程。Create 自身最多三次可信 Judge attempt
+仍属于 Phase 5 有限内部修正；比较完成后不得重新生成或修复本案例。
 
-- Phase 1 judge。
-- Phase 5 generation。
-- 当 `.build` artifact 进入 loop 时，按需依赖 Phase 6 export。
+## 依赖与边界
 
-## 工作项
+- 依赖 Phase 1 Judge、Phase 4 Research、Phase 5 Create；读取最终本地 artifact 时按需依赖
+  Phase 6。
+- Family 唯一定义复用 `BuildFamilyIdentity`：升华、主伤技能和已确认的核心/次级技能。
+- Create 只看到 `FamilyTarget`、目标等级、当前版本和默认目标：软核交易、无固定预算、综合
+  强度与可玩性优先。
+- 原 BD 的装备、天赋、技能组、机制摘要、Judge 结果和来源信息不得进入 Create packet。
+- 只限制等级，不限制预算；装备投入与可获得性是比较维度，不是 Create 的硬锁。
+- Judge 是 `advisoryOnly` 证据附件，不自动决定比较赢家，也不写 reward。
+- 仓库只保存状态和 typed contract，不调用模型 provider、不隐藏运行 agent loop。Desktop
+  skill 创建和协调用户可见任务。
+- 原始 PoB code/XML 只允许进入 case-bound quarantine；不得进入控制状态、比较报告、Learning
+  Memory、聊天或 Git。
 
-- 保存每一轮 loop：
-  - round id；
-  - PoB XML snapshot；
-  - optional `.build` draft；
-  - BuildEvaluation；
-  - score；
-  - gap list；
-  - changed components；
-  - graph edges used；
-  - repair strategy；
-  - modelability caveats。
-- Critic Agent 可输出 structured gaps：
-  - numeric underperformance；
-  - defense gap；
-  - Spirit gap；
-  - missing core mechanism；
-  - unsafe transition；
-  - wrong passive anchor；
-  - support mismatch；
-  - gear constraint conflict；
-  - modelability issue；
-  - patch stale issue；
-  - budget unrealistic。
-- 当 repair 降低分数时回滚到 best snapshot。
-- 追踪 failed strategies。
-- 增加 `StatePruner` / `ContextPack`：
-  - 本地保留完整 snapshots、round logs、gap history 和 failed strategies；
-  - 发给外部 Critic/Architect Agent 的 retry context 只包含 best snapshot summary、关键失败摘要、禁用策略、未解决 gaps、modelability caveats 和下一步约束；
-  - rollback 后不把完整失败历史、完整 PoB/XML 或长对话日志继续塞回 prompt；
-  - context pack 必须可追溯到本地 snapshot/round ids。
-- Early stop 条件：
-  - repeated low score gain；
-  - repeated rollback；
-  - repeated critical gap failure；
-  - modelability blocker；
-  - solver infeasibility；
-  - iteration 或 token budget exhaustion。
-- 产出 low-trust failure pattern candidates。
+## 四阶段循环
 
-## 验收
+### 1. Profile
 
-- Loop 内 best score 单调不下降。
-- Critical gaps 减少，或 loop 带清晰原因停止。
-- Rollback 能恢复预期 snapshot。
-- Retry context 在固定 round history 下可重复生成，并且明显小于完整历史。
-- ContextPack 不包含完整 PoB/XML、长失败日志或可复刻成熟 BD material。
-- Failure patterns 能被后续相似 briefs 检索到。
+输入支持 PoB code/link、本地 source file，以及复用现有 poe.ninja collector 的自动抓取。
+每个来源先写入独立 quarantine case，再由 Reference/Comparator 任务重建原 BD、调用现有
+Family inference 并生成安全的 reference evidence。
 
-## 验证
+`FamilyTarget` 必须包含：
 
-运行 loop benchmark，然后运行：
+- `buildFamilyKey`；
+- `ascendancyKey`；
+- `primarySkillKey`；
+- `secondarySkillKeys`；
+- `targetLevel`；
+- patch、天赋树、PoB 版本上下文；
+- 不泄露原 BD 内容的安全 evidence refs。
 
-```powershell
-.\scripts\verify.ps1 quick
+升华、主技能、核心次级技能或等级无法唯一确认时，案例失败关闭，不猜测。
+
+### 2. Create
+
+每个案例创建一个与 Reference/Comparator 完全独立的可见 Create 任务。盲测 packet 只能包含
+`FamilyTarget`、等级、版本和默认目标，并明确允许正常使用 Research DB 与 Learning Memory。
+
+Create 完成后必须：
+
+- 产生通过 Phase 5 可信回读的最终 artifact；
+- 从最终 artifact/readback 重新推导 Family 和等级；
+- Family 与等级完全匹配，否则案例失败；
+- 在活动 Create claim 内查询 Learning Memory，由服务端按 Family/等级/版本绑定并保存安全 query
+  receipt；提交必须与 receipt 一致；
+- 对每条召回经验记录 `adopted/caveated/rejected` 决策、应用方式，以及是否观察到
+  harmful/incorrect。
+
+### 3. Compare
+
+比较回到原 Reference/Comparator 任务。Comparator 接收双方各自的安全证据包，逐维输出证据、
+结论和未知项，不能接收第三方原始 code/XML，也不能按 Judge aggregate 直接选胜者。
+
+固定维度：
+
+1. 伤害循环与投送机制；
+2. 主副技能职责和辅助组合；
+3. 配置条件及其真实性；
+4. 关键触发、转换和机制链；
+5. 装备、天赋、升华协同；
+6. 清图、Boss 和条件爆发；
+7. 防御层、恢复、资源、Spirit 和续航；
+8. 机动性与实际操作；
+9. 完整性、合法性和 modelability；
+10. 装备投入与可获得性。
+
+单维结论只允许 `generated_advantage`、`reference_advantage`、`tradeoff`、`tie`、`unknown`；
+总结果只允许 `generated_stronger`、`reference_stronger`、`tradeoff`、`incomparable`。
+
+当生成 BD 更弱时，gap 必须至少归入一个 typed 根因：
+
+- `missing_critical_technique`；
+- `create_instruction_tool_or_data_defect`；
+- `research_knowledge_or_retrieval_defect`；
+- `learning_memory_missing_or_polluted`；
+- `judge_or_modelability_gap`；
+- `unrealistic_reference_configuration`；
+- `insufficient_evidence`。
+
+### 4. Fix/Learn 与条件复审
+
+- 技能包、机制链、轮转、装备、天赋、防御、资源或其他能归入现有 Research schema 的知识，
+  必须进入 Research 流程，不写 Learning Memory。
+- 无法归入 Research DB、但能指导未来 Create 取舍的综合经验，可写 Learning Memory。
+- 可复现的小型确定性代码/流程缺陷允许在 `codex/*` 分支做最小修复并补测试；在 `main` 上
+  必须先暂停。
+- 架构、产品取舍或证据不足项进入 backlog，状态机暂停等待人工决定。
+- 发生代码、Research 数据或 Learning Memory 修改后，Comparator 对原报告做条件复审。
+- 不修复、不重跑本案例 Create；所有改进只影响后续案例。
+
+## Learning Memory
+
+Learning Memory 是本地 user-data 中的独立 append-only JSONL store，不进入 Research SQLite，
+不进入 Git。每条 lesson 包含：
+
+- 简短 lesson；
+- `global/family/level_band` 作用域及对应 Family/等级条件；
+- 改进维度、适用条件、排除条件；
+- 推荐 Create 行为和验证任务；
+- comparison/source/candidate 的安全引用；
+- patch、天赋树、PoB 版本；
+- `active/narrowed/superseded/deprecated/stale` 状态；
+- copy-safety 与复审信息。
+
+单案例 lesson 经 Fix/复审后立即可供下一案例召回。修正采用追加事件：`narrow`、`revise`、
+`supersede`、`deprecate`；事件记录修改前后摘要、原因、触发案例和证据。查询同时返回有效
+lesson 和相关 correction/do-not-repeat 摘要。
+
+如果已经被修正的同义 lesson 再次提交，必须引用旧 correction 并提供新的安全证据，否则拒绝，
+防止反复“记录 → 修正 → 再记录”。
+
+## Desktop 状态机
+
+状态机按 campaign/case 保存安全控制状态，并使用 task id、claim id、thread id、当前 phase 和
+revision 做 CAS。默认同一 campaign 只允许一个 active case：
+
+```text
+profile_pending -> profile_running -> create_pending -> create_running
+-> compare_pending -> compare_running -> learn_pending -> learn_running
+-> rereview_pending? -> completed
 ```
+
+任一 phase 可进入 `paused` 或 `failed`。恢复从最后一个已提交 checkpoint 开始；显式 retry
+只重试失败 phase，不得绕过已消费的 Create，也不得在 Compare 后创建第二个候选。
+
+Reference/Profile 与 Comparator 绑定同一个可见任务；Create 必须绑定另一个可见任务。任务创建
+由 Desktop skill 完成，状态服务只保存 claim、packet、checkpoint、暂停、恢复和重试元数据。
+
+## 第一轮 10 案例验收
+
+- 默认一个案例完全结束后才启动下一个；
+- 每案例完成后记录累计指标和阶段耗时；
+- 使用 3 个案例的滚动窗口；
+- 最初 3 例与最后 3 例做方向性对比，中间 4 例作为持续学习过程；
+- 不运行额外 Holdout，不运行逐案例 memory-on/off A/B。
+
+跟踪指标：Create 接受率、Family 匹配率、generated stronger/not-weaker 比例、reference-advantage
+维度数、critical gap 数、Memory 召回/采用/拒绝/污染/修正、Create/Research 缺陷分类、Judge/
+modelability 可用率，以及各阶段和每案例耗时。
+
+只有最初/最后 3 例都具备完整 Comparator 报告，且最后 3 例相对最初 3 例同时满足下列条件，才
+报告“出现初步进步信号”：
+
+- not-weaker 比例上升；
+- reference-advantage 中位数下降；
+- critical gap 不增加；
+- 合法性和 Family 匹配不退化。
+
+10 个案例且没有 A/B 只能提供方向性证据，不能声明因果证明。如果趋势没有改善，Phase 7 标记为
+“功能实现完成、学习效果未证实”，保留全部根因和 Memory correction，再决定下一批案例或
+Phase 8 方案。
+
+已消费 Create 后发生 Family/等级回读不匹配属于终态失败：记录指标并释放严格串行槽位，不允许
+重放该 Create；失败尝试计入十案例总数，但因比较证据不完整，不能支持“初步进步信号”。
+
+## 自动测试与验证
+
+- Family 精确复用、等级一致和歧义失败关闭；
+- Create packet 不泄露 reference 细节；
+- code/XML 不进入 durable artifacts；
+- Reference/Comparator 与 Create 独立任务绑定；
+- 状态机 CAS、幂等、暂停、恢复和 phase retry；
+- Judge 不参与自动 winner；
+- DB-fit 经验不能误入 Learning Memory；
+- Memory 下一案例立即召回；
+- correction 历史、污染修正和防振荡；
+- 显式 source 与自动抓取各至少一个 E2E；
+- Create、Research 和导出流程无回归。
+
+验证梯度：focused tests → `verify.ps1 quick` → `verify.ps1 noncompute` → 最终
+`verify.ps1 full`，然后代码审查和真实 Desktop 任务验收。

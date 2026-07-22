@@ -128,7 +128,7 @@ function Get-SkillNamesForUninstall {
     if (Test-Path $root) {
         return @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     }
-    return @('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop')
+    return @('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop', 'poe-bd-learning-loop')
 }
 
 function Test-IsReparse([string]$Path) {
@@ -349,7 +349,7 @@ function Cmd-Install([string]$Id) {
     Link-Plugin-Root
     Install-BuildConverterProvider
     if ($Id -eq 'codex') { Register-Codex-McpServer }
-    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research, /poe-bd-create, and /poe-bd-research-loop."
+    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop."
 }
 
 function Cmd-Uninstall([string]$Id) {
