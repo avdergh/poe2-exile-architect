@@ -121,7 +121,7 @@ list_skills() {
   root="$(skill_list_root)"
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
-      printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"
+      printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
       return 0
     fi
     say "Skills directory not found: $root"
@@ -140,7 +140,7 @@ list_skills_for_uninstall() {
   if [[ -d "$root" ]]; then
     list_skills
   else
-    printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"
+    printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
   fi
 }
 
@@ -388,7 +388,7 @@ cmd_install() {
   if [[ "$id" == "codex" ]]; then
     register_codex_mcp_server
   fi
-  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research, /poe-bd-create, and /poe-bd-research-loop."
+  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop."
 }
 
 cmd_uninstall() {

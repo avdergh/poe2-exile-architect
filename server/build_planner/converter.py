@@ -18,6 +18,7 @@ PROVIDER_ID = "praedythxiv-poe2-build-converter"
 PROVIDER_COMMIT = "27f5dad0d0979aa23a604defd11fcf7ae4668444"
 PROVIDER_VERSION = "0.3.0"
 MINIMUM_NODE_MAJOR = 20
+NODE_PROBE_TIMEOUT_SECONDS = 15
 _ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _GEM_RE = re.compile(r"^Metadata/Items/Gems?/")
 _INVENTORY_IDS = {
@@ -242,7 +243,11 @@ def _node_runtime() -> tuple[Path | None, tuple[int, int, int] | None]:
         return None, None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=5, check=False
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=NODE_PROBE_TIMEOUT_SECONDS,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None, None

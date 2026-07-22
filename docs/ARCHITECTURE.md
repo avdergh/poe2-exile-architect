@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-07-09
+Last updated: 2026-07-21
 
 This document describes the high-level module layout and data flow. Detailed implementation work
 belongs in `docs/phases/`. Architecture is the only document family currently maintained in both
@@ -12,7 +12,7 @@ English and Chinese; the project spec, schemas, and phase plans are Chinese-only
 
 ```text
 External Agents
-  Researcher / Architect / Critic
+  Researcher / Architect / Reference-Comparator
         |
         v
 server/main.py  (MCP tools, prompts, instructions)
@@ -22,8 +22,9 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         |
         +-- compute: Headless PoB, build mutation, item/support/passive tools
         +-- knowledge: corpus, mature learning, copy-safety, lifecycle, schemas
-        +-- graph/memory: physical facts, semantic edges, reward-weighted memory
-        +-- judge: build evaluation, comparison, modelability, benchmark reporting
+        +-- graph/memory: physical facts, semantic edges, Research DB, local Learning Memory
+        +-- judge: build evaluation, modelability, advisory-only numeric evidence
+        +-- comparative learning: quarantine cases, blind packets, comparisons, campaign state
         +-- agent helper tools: lookup, PoB operations, candidate-state shaping, `.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
@@ -55,13 +56,17 @@ User request / BuildBrief summary
   -> Agent uses tools to assemble an evaluable transient build state
   -> BuildSnapshot / local transient state reference
   -> Headless PoB Judge
-  -> BuildEvaluation / BuildComparison
-  -> Critic Agent gaps
-  -> rollback / repair / early stop
-  -> StatePruner / ContextPack
-  -> compact agent retry context
-  -> RewardEvent
-  -> graph/memory weight updates
+  -> BuildEvaluation / final local artifact
+
+Mature reference build
+  -> case-bound quarantine
+  -> safe Profile by a Reference/Comparator Agent
+  -> FamilyTarget + reference evidence
+  -> independent Create Agent receives only FamilyTarget + level
+  -> generated evidence + Judge advisoryOnly
+  -> dimension-by-dimension comparison by the Reference/Comparator Agent
+  -> Research feedback / Learning Memory lesson + correction
+  -> recall for the next case
 ```
 
 ## Core Runtime Modules
@@ -76,6 +81,7 @@ User request / BuildBrief summary
 | Mature intake | `server/knowledge/mature_*`, `server/live/mature_*` | Quarantine-only mature sample intake and clean fragment contracts. |
 | Copy-safety | `server/knowledge/copy_safety.py` | Guardrails against reconstructable build material. |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | Existing route, verification, quality, and evaluation helpers. |
+| Comparative learning | `server/learning/*` | Phase 7 typed contracts, case quarantine, blind packets, comparison reports, Learning Memory, and recoverable campaign state. |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context. |
 | Scripts | `scripts/*` | Verification, smoke tests, packaging, source probes. |
 
@@ -87,8 +93,8 @@ Planned modules should follow the same layering:
   must not become an "agent writes a plan, the program automatically completes the whole build" flow;
 - workflow orchestration should move into router/service modules before `server/main.py` becomes a
   coordination bottleneck;
-- repair loops should pass compact `ContextPack` inputs to agents while full snapshots and round
-  logs stay in local state;
+- comparative learning must send only `FamilyTarget + level` to Create; reference details remain in
+  the isolated Comparator context;
 - MCP tools should wrap already-tested lower-layer functions.
 
 ## Authority Boundaries
@@ -99,9 +105,12 @@ Planned modules should follow the same layering:
 - The external Architect Agent owns build creation, query choices, transient-state assembly strategy,
   and failure-correction direction.
 - Validators own schema, copy-safety, graph-resolution, and split-boundary enforcement.
-- Judge outputs own reward signals.
-- State pruning owns the agent-facing retry context for rollback/repair loops; full local history is
-  not automatically resent to external agents.
+- The Comparator Agent owns dimension tradeoffs and the overall verdict; Judge numbers are an
+  `advisoryOnly` attachment.
+- The Phase 7 state service owns CAS, idempotency, pause, resume, and safe checkpoints; it does not
+  create tasks or call models.
+- Research schemas own concrete build knowledge. Learning Memory accepts only cross-dimensional
+  Create behavior lessons and their corrections.
 - Phase benchmark reports own claims of progress.
 
 ## Documentation Map
@@ -120,6 +129,8 @@ Planned modules should follow the same layering:
   optimizer state cannot interleave.
 - Durable generated reports are not stored in the repository.
 - Mature raw payloads are quarantine-only and transient.
+- Phase 7 raw sources are isolated per case; control state, reports, and Learning Memory persist only
+  safe hashes/references and summaries.
 - Long-term knowledge must be clean, versioned, evidence-backed, and copy-safe.
 - User-data/runtime directories may hold local state; repository docs must describe contracts, not
   accidental local artifacts.

@@ -28,9 +28,11 @@ Agent 主导。
   -> 外部 Architect Agent 按需查询图、记忆、语料和 PoB/计算工具
   -> Agent 主导候选 BD 创造和可评估临时状态搭建
   -> Headless PoB judge 与安全报告
-  -> reference comparison 与 Critic Agent gaps
-  -> rollback / repair / early stopping
-  -> reward events 调整 graph 和 memory 权重
+  -> 成熟原 BD 的安全 Profile 与 FamilyTarget
+  -> 同 Family / 同等级的独立盲测 Create
+  -> 独立 Comparator 逐维比较（Judge 仅作 advisory）
+  -> 具体知识回流 Research，跨维生成经验进入本地 Learning Memory
+  -> 后续案例召回、correction 与趋势复审
 ```
 
 仓库不应再增长项目内 autonomous LLM/provider loop。不要新增项目自带的 OpenAI/Claude
@@ -49,8 +51,14 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   `resolve_graph_component` 确认 stable key；模糊或向量相似度不能直接授权 semantic edge。
 - 没有 patch/version/status，就不能进入 durable memory。
 - 没有 copy-safety pass，就不能持久化成熟 BD 知识。
-- 没有 snapshot score improvement，就不能声称 loop 成功。
-- 没有 early stopping，就不能做 autonomous repair loop。
+- 没有后 3 例相对前 3 例的四项联合趋势，就不能声称 Phase 7 出现初步进步信号；十案例趋势
+  不能声明因果证明。
+- Phase 7 不允许比较后修复或重新生成同一案例；Phase 5 已有有限内部 retry 不受此条影响。
+- Judge 数值只能作为 Phase 7 `advisoryOnly` 附件，不能自动决定 Comparator winner 或写 reward。
+- Create packet 只能包含 FamilyTarget、等级、版本和默认目标，不能泄露原 BD 装备、天赋、技能组、
+  机制摘要或 Judge 结果。
+- 能归入 Research schema 的知识不能写 Learning Memory；Memory correction 必须追加事件并保留
+  do-not-repeat 历史。
 - 不要持久化或暴露第三方成熟 BD 的原始整角色材料：PoB code、raw XML、raw account/character
   细节、长篇复制攻略文本，或由全部装备槽、整棵已分配天赋、全部技能组和完整配置组成的整角色
   镜像。允许保存可复用核心机制包，包括关键技能与辅助组合、局部核心天赋连接、暗金/装备与技能、
@@ -72,7 +80,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `scripts/verify.ps1`：验证 profile。
 
 根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的
-生成、导出、Critic loop 或 reward-memory 能力；详细阶段细节仍维护在 `docs/phases/`。
+生成、导出、对照学习效果或 reward-memory 能力；详细阶段细节仍维护在 `docs/phases/`。
 
 ## 命令
 
@@ -174,6 +182,18 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/knowledge/mature_pobb_payload.py`：把 pobb.in 链接或 raw build source 导入为
   quarantine-only payload row。
 
+### Comparative Learning 层
+
+- `server/learning/models.py`：FamilyTarget、盲测 Create packet、逐维 comparison、Memory、correction
+  和 campaign state typed contracts。
+- `server/learning/case_store.py`：case-bound quarantine；原始 code/XML 只存在本地隔离目录。
+- `server/learning/memory.py`：Research SQLite 之外的本地 append-only Learning Memory、召回、修正
+  和防振荡。
+- `server/learning/service.py`：Phase 7 CAS、幂等、暂停、恢复、显式 phase retry、串行 case gate 和
+  十案例趋势汇总。它不创建 Desktop task、不调用模型。
+- Reference/Profile 与 Comparator 使用同一可见任务；Create 必须是另一个任务。task/thread 创建与
+  协调由 `$poe-bd-learning-loop` skill 完成。
+
 ### Live / Freshness 层
 
 - `server/freshness/*`：patch/tree/PoB/poe.ninja freshness providers、cache 和 evaluator。
@@ -208,8 +228,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/04_research_memory.md`：Researcher extraction 进入 semantic graph 和 memory。
 - `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
 - `docs/phases/06_build_export.md`：官方 `.build` export。
-- `docs/phases/07_critic_loop.md`：rollback、repair 和 early stopping。
-- `docs/phases/08_reward_memory.md`：RLAIF-lite reward memory。
+- `docs/phases/07_critic_loop.md`：同 Family/同等级对照学习循环与轻量自进化 Memory。
+- `docs/phases/08_reward_memory.md`：待 Phase 7 实跑后重新规划的后续阶段。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。
 
 ## 编辑政策

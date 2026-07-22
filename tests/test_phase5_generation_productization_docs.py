@@ -173,9 +173,15 @@ def test_installers_fallback_uninstall_knows_all_product_skills():
     sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     sh_lines = {line.strip() for line in sh.splitlines()}
 
-    assert "@('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop')" in ps1
+    assert (
+        "@('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop', "
+        "'poe-bd-learning-loop')" in ps1
+    )
     assert "printf '%s\\n' \"poe-bd-research\"" not in sh_lines
-    assert 'printf \'%s\\n\' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop"' in sh
+    assert (
+        'printf \'%s\\n\' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" '
+        '"poe-bd-learning-loop"' in sh
+    )
 
 
 def test_codex_installer_registers_poe2_mcp_server():

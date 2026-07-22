@@ -60,6 +60,7 @@ from .generation import evaluation as generation_evaluation
 from .generation import delivery as generation_delivery
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
+from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
 
@@ -776,6 +777,392 @@ def export_final_build_package(
         description=description,
         link=link,
     )
+
+
+# --------------------------------------------------------------------------------------
+# Phase 7 comparative-learning tools (safe state only; Desktop skill owns task creation)
+# --------------------------------------------------------------------------------------
+@mcp.tool()
+def start_learning_campaign(operation_id: str, case_limit: int = 10) -> dict[str, Any]:
+    """Start the fixed ten-case, strictly serial Phase 7 comparative-learning campaign.
+
+    The service stores only safe control state and never creates Desktop tasks or calls a model.
+    Reusing the same operation id is idempotent.
+    """
+    return learning_service.start_campaign(operation_id=operation_id, case_limit=case_limit)
+
+
+@mcp.tool()
+def intake_learning_case(
+    campaign_id: str,
+    expected_revision: int,
+    operation_id: str,
+    source: str,
+    source_mode: Literal["direct", "source_file", "automatic"] = "direct",
+    source_ref: str = "",
+) -> dict[str, Any]:
+    """Put one reference PoB source into case-bound quarantine.
+
+    `direct` accepts a PoB code/link/XML, `source_file` accepts a local file path, and `automatic`
+    accepts import material already collected by the existing poe.ninja collector. Raw code/XML is
+    never returned and is never written to campaign state, reports, Memory, or Git.
+    """
+    return learning_service.intake_case(
+        campaign_id=campaign_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        source=source,
+        source_mode=source_mode,
+        source_ref=source_ref,
+    )
+
+
+@mcp.tool()
+def claim_learning_phase(
+    campaign_id: str,
+    case_id: str,
+    phase: Literal["profile", "create", "compare", "learn", "rereview"],
+    task_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Claim one Phase 7 checkpoint with CAS and an explicit Desktop task/thread binding.
+
+    Profile/Compare/Learn/Rereview must use the same Reference/Comparator task. Create must use a
+    different task and thread. One campaign has only one active case.
+    """
+    return learning_service.claim_phase(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        phase=phase,
+        task_id=task_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def load_learning_reference_case(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    """Load a claimed quarantined reference into this task's active PoB session without raw output."""
+    return learning_service.load_reference_into_engine(
+        get_engine(),
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+    )
+
+
+@mcp.tool()
+def submit_learning_profile(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    identity_records: list[dict[str, Any]],
+    target_level: int,
+    version_context: dict[str, Any],
+    reference_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Infer the exact existing Research Family and persist a safe reference Profile.
+
+    Ambiguous Family evidence or a level mismatch fails the case closed. The output FamilyTarget
+    excludes reference gear, passives, skill groups, configuration, mechanisms, and Judge results.
+    """
+    return learning_service.submit_profile(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        identity_records=identity_records,
+        target_level=target_level,
+        version_context=version_context,
+        reference_evidence=reference_evidence,
+    )
+
+
+@mcp.tool()
+def get_learning_create_packet(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    """Return the Create task's blind FamilyTarget + level packet; never reference build details."""
+    return learning_service.get_blind_create_packet(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+    )
+
+
+@mcp.tool()
+def query_learning_memory(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    dimensions: list[str] | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Recall Memory in an active Create claim and persist a safe use-audit receipt."""
+    return learning_service.query_memory_for_create(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        dimensions=dimensions,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def submit_learning_create_result(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    identity_records: list[dict[str, Any]],
+    target_level: int,
+    artifact_id: str,
+    generated_evidence: dict[str, Any],
+    learning_memory_use: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit the one allowed Create result after exact Family/level readback and Memory-use audit."""
+    return learning_service.submit_create_result(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        identity_records=identity_records,
+        target_level=target_level,
+        artifact_id=artifact_id,
+        generated_evidence=generated_evidence,
+        learning_memory_use=learning_memory_use,
+    )
+
+
+@mcp.tool()
+def submit_learning_comparison(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit the independent Comparator's ten-dimension report.
+
+    Judge attachments must say `advisoryOnly=true`; the service validates but never derives a
+    winner from Judge scores and never writes reward.
+    """
+    return learning_service.submit_comparison(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        report=report,
+    )
+
+
+@mcp.tool()
+def propose_learning_lesson(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    proposal: dict[str, Any],
+) -> dict[str, Any]:
+    """Append one reviewed cross-dimensional Create lesson to local Learning Memory.
+
+    Concrete knowledge that fits a Research record kind must be sent through Research instead;
+    this schema requires `dbFit=false`.
+    """
+    return learning_service.propose_memory_lesson(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        proposal=proposal,
+    )
+
+
+@mcp.tool()
+def append_learning_memory_correction(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    correction: dict[str, Any],
+) -> dict[str, Any]:
+    """Append narrow/revise/supersede/deprecate history; never overwrite a prior lesson."""
+    return learning_service.correct_memory_lesson(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        correction=correction,
+    )
+
+
+@mcp.tool()
+def complete_learning_case_feedback(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    mutations: list[Literal["none", "research", "memory", "code"]],
+    research_refs: list[str] | None = None,
+    memory_lesson_ids: list[str] | None = None,
+    correction_ids: list[str] | None = None,
+    code_change_refs: list[str] | None = None,
+    backlog: list[str] | None = None,
+) -> dict[str, Any]:
+    """Record Fix/Learn routing and require conditional rereview after any mutation.
+
+    A backlog pauses for human product/architecture decisions. This never regenerates the case.
+    """
+    return learning_service.complete_learning(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        mutations=mutations,
+        research_refs=research_refs,
+        memory_lesson_ids=memory_lesson_ids,
+        correction_ids=correction_ids,
+        code_change_refs=code_change_refs,
+        backlog=backlog,
+    )
+
+
+@mcp.tool()
+def submit_learning_rereview(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    accepted: bool,
+    summary: str,
+    safe_evidence_refs: list[str],
+) -> dict[str, Any]:
+    """Finish conditional rereview of code/Research/Memory changes without rerunning Create."""
+    return learning_service.submit_rereview(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        accepted=accepted,
+        summary=summary,
+        safe_evidence_refs=safe_evidence_refs,
+    )
+
+
+@mcp.tool()
+def fail_learning_phase(
+    campaign_id: str,
+    case_id: str,
+    claim_id: str,
+    thread_id: str,
+    expected_revision: int,
+    operation_id: str,
+    error_code: str,
+) -> dict[str, Any]:
+    """Mark the currently claimed phase failed so it can be explicitly retried."""
+    return learning_service.fail_phase(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim_id,
+        thread_id=thread_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        error_code=error_code,
+    )
+
+
+@mcp.tool()
+def retry_learning_phase(
+    campaign_id: str,
+    case_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Explicitly retry a failed phase; a consumed Create result can never be retried."""
+    return learning_service.retry_failed_phase(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def pause_learning_campaign(
+    campaign_id: str,
+    expected_revision: int,
+    operation_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Pause at a safe checkpoint; a running claim returns to its pending phase."""
+    return learning_service.pause_campaign(
+        campaign_id=campaign_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        reason=reason,
+    )
+
+
+@mcp.tool()
+def resume_learning_campaign(
+    campaign_id: str,
+    expected_revision: int,
+    operation_id: str,
+    human_decision: str = "",
+) -> dict[str, Any]:
+    """Resume a paused campaign, optionally recording a safe human backlog decision."""
+    return learning_service.resume_campaign(
+        campaign_id=campaign_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        human_decision=human_decision,
+    )
+
+
+@mcp.tool()
+def get_learning_campaign_status(campaign_id: str) -> dict[str, Any]:
+    """Return safe case progress, accumulated metrics, rolling windows, and the ten-case trend."""
+    return learning_service.campaign_status(campaign_id=campaign_id)
 
 
 @mcp.tool()

@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Exile Architect",
     "shortDescription": "Research mature PoE2 builds safely through agent skills and MCP gates.",
-    "longDescription": "Queues mature PoE2 build samples, lets external agents analyze one case at a time, and accepts only copy-safe, resolver-backed knowledge into durable memory.",
+    "longDescription": "Queues mature PoE2 build samples, creates verified builds, and runs visible same-Family comparative learning with copy-safe Research and local Learning Memory gates.",
     "developerName": "avdergh",
     "category": "Developer Tools",
     "capabilities": [
@@ -33,7 +33,8 @@
       "/poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD",
       "/poe-bd-research --limit 20",
       "/poe-bd-research --source-batch-file samples.txt",
-      "/poe-bd-research --ascendancy Deadeye --limit 30"
+      "/poe-bd-research --ascendancy Deadeye --limit 30",
+      "/poe-bd-learning-loop 使用 10 个同 Family 同等级案例做对照学习"
     ],
     "brandColor": "#2563EB"
   }

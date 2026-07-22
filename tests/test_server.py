@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 103
+    assert len(tools) == 121
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -133,6 +133,24 @@ def test_tool_surface_intact():
         "propose_build_patterns",
         "submit_revalidation_result",
         "inspect_rejected_research_proposals",
+        "start_learning_campaign",
+        "intake_learning_case",
+        "claim_learning_phase",
+        "load_learning_reference_case",
+        "submit_learning_profile",
+        "get_learning_create_packet",
+        "query_learning_memory",
+        "submit_learning_create_result",
+        "submit_learning_comparison",
+        "propose_learning_lesson",
+        "append_learning_memory_correction",
+        "complete_learning_case_feedback",
+        "submit_learning_rereview",
+        "fail_learning_phase",
+        "retry_learning_phase",
+        "pause_learning_campaign",
+        "resume_learning_campaign",
+        "get_learning_campaign_status",
     } <= names
 
 

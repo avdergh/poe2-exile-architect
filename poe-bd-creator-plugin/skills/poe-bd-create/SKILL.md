@@ -16,6 +16,11 @@ description: Use when the user asks for a Path of Exile 2 build, starter build, 
 拒绝。用户显式使用 `--no-memory` 时，只跳过研究记忆；静态语料、图、机制、生命周期、PoB、
 计算和 Judge 工具仍正常使用。不要为无记忆模式创建另一套 skill 或另一套 MCP 工具。
 
+当输入是 `referenceBlind=true` 的 `BlindCreatePacket` 时，进入对照学习盲测模式：不得追问或改写
+锁定的 `FamilyTarget`，不得索取、搜索或推断原 BD 的装备、天赋、技能组、机制摘要、配置或 Judge
+结果。只按目标 Family、等级、版本和默认目标进行正常创建。除 Research 记忆外，还必须在活动
+Create claim 内调用 `query_learning_memory`，并记录单独的 `learningMemoryUse`。
+
 ## 用户交互
 
 无参数触发时，先询问用户目标，不要直接生成构筑。
@@ -100,6 +105,13 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
      `retrievalOutcome="no_matching_memory"` 和 `noMatchReason`，不能伪造引用。
    `--no-memory` 模式不得调用该工具，候选里的 `memoryReferences` 必须为空、
    `researchMemoryUse` 必须省略，`researchMemoryRef` 使用 `disabled:no_memory_baseline`。
+   对照学习盲测模式在 Research 查询后调用
+   `query_learning_memory(campaign_id, case_id, claim_id, thread_id, expected_revision,
+   operation_id, dimensions=None, limit=8)`；Family、等级和版本由服务端从 FamilyTarget 绑定，
+   提交 Create 结果时使用查询返回的新 revision：
+   同时阅读有效 lesson 与 `correctionsAndDoNotRepeat`。为每条召回 lesson 记录
+   `adopted/caveated/rejected`、实际应用、`harmfulOrIncorrect` 和观察；没有命中也保存真实
+   `queryRef` 与空决策。修正历史优先于旧 lesson，不得把已废弃做法重新采用。
 6. 调用 `new_build()` 清空本 MCP session 的活动状态，然后串行使用 PoB/计算工具，把候选方向落实成当前请求所需的
    完整活动构筑。至少实际设置职业、升华、等级、主技能和辅助技能、其他技能组、装备、天赋和
    战斗配置，并检查属性、抗性、Spirit 与资源状态。不能拿只有职业和主技能的空骨架去验收。
@@ -195,6 +207,11 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
     不得省略任何一项。还必须逐项展示 compact review 的 `requiredUserDisclosures`，不能把符文、
     灵魂核心、珠宝、药剂或护符的暂缓/不用理由留在内部文件。不要展示 PoB XML 或导入码原文。
 
+对照学习盲测模式完成 artifact 后，还必须重新读取并解析最终升华、主技能和已确认核心次级技能，
+用本任务收到的 claim 调用 `submit_learning_create_result`。提交内容只包含 identity records、目标
+等级、artifact id、安全 generated evidence 和 `learningMemoryUse`。Family 或等级回读不一致时
+让案例失败，不得为同一案例重新调用 Create；后续比较和改进由对照学习入口负责。
+
 内部重试不等于重新生成整个上下文。优先在当前活动构筑上做针对性修正；只有 Agent 判断设计方向
 本身需要推倒重建时，才可以在同一个 `runId` 内调用 `new_build` 重新搭建。技能组局部问题优先使用
 `list_skill_groups` 后的强类型原子修改，不要因为缺少精确编辑而重建整份 PoB。无论哪种方式，前一轮
@@ -247,6 +264,10 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
   显式启用 `include_transferable` 并按缺口提供 `research_axes`；结果在 `transferablePatterns`
   中单列。每次返回的 `dedupeQueryRef` 是本次查询的安全引用。
 - `build_advice(topic)`：查构筑规划启发，例如开荒红线、终局伤害来源、防御短板。
+- `query_learning_memory(campaign_id, case_id, claim_id, thread_id, expected_revision,
+  operation_id, dimensions=None, limit=8)`：仅在 `referenceBlind=true` 的活动 Create claim 中，
+  召回跨案例 Create 行为经验及 correction/do-not-repeat 摘要，并把安全查询收据绑定到案例。它不
+  替代 `query_research_memory`，也不提供原 BD 内容。
 - `suggest_build_lifecycle(goal, ...)`：查生命周期路线骨架。这个工具可能只返回阶段、转型门槛和
   设计原则，不一定给具体技能名；如果没有技能名，由你继续用技能、机制和计算工具选择。
 
@@ -403,6 +424,11 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 `sourceRefs` 必须来自本次命中的安全记忆项。`memoryReferences` 保留兼容，但不必手工复制；
 helper 会加入全部 `dedupeQueryRefs` 和实际使用的记忆项 ID；`versionContext.researchMemoryRef`
 使用其中一个真实 `dedupeQueryRef`。
+
+对照学习盲测的独立 `learningMemoryUse` 至少包含 `queryRef`、`recalledLessonIds` 和 `decisions`。
+每项 decision 包含 `lessonId`、`decision`（`adopted/caveated/rejected`）、`application`、
+`harmfulOrIncorrect` 和可选 `observation`。它提交给 `submit_learning_create_result`，不混入 Research
+SQLite 引用，也不得写入原始来源信息。
 
 `transientBuildState` 至少包含：
 

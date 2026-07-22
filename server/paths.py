@@ -67,6 +67,16 @@ def mature_learning_path() -> Path:
     return user_data_dir() / "mature_build_learning.sqlite"
 
 
+def comparative_learning_dir() -> Path:
+    """Writable, local-only root for Phase 7 campaign and quarantine state."""
+    return user_data_dir() / "comparative-learning"
+
+
+def comparative_learning_memory_path() -> Path:
+    """Append-only Phase 7 Learning Memory, separate from Research SQLite and Git."""
+    return comparative_learning_dir() / "learning-memory.jsonl"
+
+
 def mature_learning_seed_fixtures_path() -> Path:
     """Bundled sanitized seed fixtures for the mature-learning store."""
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"
