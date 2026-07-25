@@ -145,6 +145,9 @@ FinalBuildArtifact PoB XML + export metadata
 - 新增安装脚本，执行固定 lockfile 安装、编译、零高危漏洞审计和运行依赖裁剪。已完成
 - 新增 `get_build_planner_converter_status`，检查 provider identity、version、commit、license、
   runner 和 Node 版本。已完成
+- Node 运行时通过共享 resolver 发现：优先尊重显式配置和系统 PATH，并可自动使用 Codex
+  Desktop 随附 runtime；验证脚本同样复用该 resolver 和可用的 `npx` / `pnpm` runner，不要求
+  全局安装 `npx`。provider 仍要求 Node 20 或更高版本。已完成
 - provider 缺失、进程失败、超时、非 JSON、请求/hash 不匹配和畸形响应均返回结构化错误。已完成
 - provider 子进程通信固定使用 UTF-8，避免 Windows 中文系统按 GBK 解码装备提示中的 Unicode
   符号而产生内部空值错误。已完成

@@ -57,6 +57,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - Judge 数值只能作为 Phase 7 `advisoryOnly` 附件，不能自动决定 Comparator winner 或写 reward。
 - Create packet 只能包含 FamilyTarget、等级、版本和默认目标，不能泄露原 BD 装备、天赋、技能组、
   机制摘要或 Judge 结果。
+- Phase 7 Blind Create 不得读取或调用 Phase 8 `StarterResearchPacket`、starter cache 或
+  progression 状态；联网开荒证据只属于显式 progression 模式。
 - 能归入 Research schema 的知识不能写 Learning Memory；Memory correction 必须追加事件并保留
   do-not-repeat 历史。
 - 不要持久化或暴露第三方成熟 BD 的原始整角色材料：PoB code、raw XML、raw account/character
@@ -116,6 +118,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 - `server/compute/engine.py`：长生命周期 Headless PathOfBuilding-PoE2 JSON-RPC 进程和
   build state 调用，是数值权威。
+- `server/runtime/node.py`：Node/npm package runner 的共享宿主发现层。converter 和 manifest
+  验证必须复用它，支持显式环境变量、系统 PATH 和 Codex Desktop 随附 runtime；不要重新引入
+  对全局 `node` / `npx` 的硬依赖。
 - `pob/pob_headless.lua`：进入 pinned PoB-PoE2 代码的 Lua bridge。
 - `server/compute/pob_code.py`：PoB share code/link/XML import/export codec。
 - `server/compute/buildopt.py`：整体 build optimizer。
@@ -196,14 +201,22 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 ### Build Progression 层
 
-- `server/generation/progression.py`：Phase 8 多阶段成长路线合同、本地 manifest、可信
-  `FinalBuildArtifact` 绑定和按阶段加载。
+- `server/generation/progression.py`：Phase 8 Route v2、本地 manifest、可信
+  `FinalBuildArtifact` 绑定和按 stage id 加载。
+- `server/generation/progression_research.py`：StarterResearchPacket intake、URL 哈希、安全
+  patch-scoped cache；它不联网、不写 Research/Memory。
+- `server/generation/progression_service.py`：Phase 8 CAS、幂等、暂停、恢复、阶段 run 绑定和
+  严格串行 gate；它不创建 Desktop task、不调用模型。
+- `server/generation/progression_costs.py`、`progression_delivery.py`：粗粒度 unique/craft effort
+  成本画像和完整成长包导出。
 - 完整成长流程的每个重要里程碑必须分别运行 Phase 5 Create/Judge 并保存 artifact；不能从终局
   PoB 自动删点、降级装备来伪造早期阶段。
-- progression manifest 只保存有界 typed delta、transition requirements、安全 artifact facts 和
-  artifact 引用；阶段 XML 仍只存在本地私有 artifact store。
-- 职业是跨阶段唯一硬锁。程序验证等级、stage、职业、版本和 artifact 可信性，但不替 Agent 设计
-  技能、天赋、装备或转型路线。
+- 开荒与目标阶段只锁基础职业，允许不同升华、技能、天赋、装备和资源。外部 Agent 有界搜索
+  开荒资料；程序只验证安全摘要，社区攻略不能直接进入 Research 或 Learning Memory。
+- progression manifest 只保存有界 typed delta、transition bridge、安全 evidence/artifact facts
+  和引用；网页原文、完整 URL 与阶段 XML 不进入其中。
+- 价格只作风险和获取难度说明。转型必须由技能、升华、天赋、Spirit、资源、防御、必需物品和
+  Judge 等机制 readiness 决定，不能由价格档位自动触发。
 
 ### Live / Freshness 层
 

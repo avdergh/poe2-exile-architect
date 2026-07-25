@@ -76,6 +76,187 @@ def inspect_generation_snapshot(engine: Any, xml: str) -> dict[str, Any]:
     }
 
 
+def inspect_main_skill_socketed(xml: str) -> dict[str, Any]:
+    """Return bounded evidence that the active PoB main group has one enabled active gem.
+
+    Lifecycle verification calls this against the exact XML snapshot whose hash it reports.
+    Keeping the check here ensures the Phase 5 preflight and lifecycle gate interpret socket
+    groups identically without accepting a caller-supplied boolean as proof.
+    """
+    parsed = _parse_skill_groups(xml)
+    if parsed.get("errorCode"):
+        return {
+            "status": "failed",
+            "socketed": False,
+            "errorCode": str(parsed["errorCode"]),
+            "activeSkillCount": 0,
+        }
+    main_group = next(
+        (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
+        None,
+    )
+    active_count = len(main_group["activeIds"]) if main_group else 0
+    socketed = active_count == 1
+    return {
+        "status": "passed" if socketed else "failed",
+        "socketed": socketed,
+        "groupIndex": main_group["groupIndex"] if main_group else None,
+        "activeSkillCount": active_count,
+        "activeSkills": list(main_group["activeNames"])[:2] if main_group else [],
+    }
+
+
+def inspect_lifecycle_skill_evidence(
+    xml: str,
+    *,
+    single_target_skill_name: str | None = None,
+) -> dict[str, Any]:
+    """Read bounded lifecycle skill/ascendancy evidence from one active XML snapshot."""
+    parsed = _parse_skill_groups(xml)
+    if parsed.get("errorCode"):
+        return {
+            "status": "failed",
+            "errorCode": str(parsed["errorCode"]),
+            "ascendancyOrKeySupport": {"verified": False},
+            "singleTargetDuty": {"verified": False},
+        }
+    main_group = next(
+        (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
+        None,
+    )
+    ascendancy = str(parsed.get("ascendancy") or "").strip()
+    ascendancy_active = bool(ascendancy and ascendancy.casefold() not in {"none", "unascended"})
+    support_count = len(main_group["supportIds"]) if main_group else 0
+
+    requested = str(single_target_skill_name or "").strip()
+    matched_group = None
+    matched_skill = ""
+    if requested:
+        for group in parsed["groups"]:
+            for skill_name in group["activeNames"]:
+                if str(skill_name).strip().casefold() == requested.casefold():
+                    matched_group = group
+                    matched_skill = str(skill_name).strip()
+                    break
+            if matched_group is not None:
+                break
+
+    return {
+        "status": "passed",
+        "ascendancyOrKeySupport": {
+            "verified": ascendancy_active or support_count > 0,
+            "ascendancy": ascendancy or "None",
+            "ascendancyActive": ascendancy_active,
+            "mainGroupSupportCount": support_count,
+        },
+        "singleTargetDuty": {
+            "verified": matched_group is not None,
+            "requestedSkillName": requested,
+            "matchedSkillName": matched_skill,
+            "groupIndex": matched_group["groupIndex"] if matched_group else None,
+            "role": matched_group["role"] if matched_group else None,
+        },
+    }
+
+
+def inspect_lifecycle_component_evidence(
+    xml: str,
+    *,
+    component_kind: str | None,
+    component_name: str | None,
+) -> dict[str, Any]:
+    """Match one declared build-defining component against the active XML snapshot."""
+    kind = str(component_kind or "").strip()
+    requested = str(component_name or "").strip()
+    if not kind or not requested:
+        return {"verified": False, "kind": kind, "requestedName": requested}
+
+    parsed = _parse_skill_groups(xml)
+    if parsed.get("errorCode"):
+        return {
+            "verified": False,
+            "kind": kind,
+            "requestedName": requested,
+            "errorCode": str(parsed["errorCode"]),
+        }
+    if kind == "skill":
+        for group in parsed["groups"]:
+            for skill_name in group["activeNames"]:
+                if str(skill_name).strip().casefold() == requested.casefold():
+                    return {
+                        "verified": True,
+                        "kind": kind,
+                        "requestedName": requested,
+                        "matchedName": str(skill_name).strip(),
+                        "groupIndex": group["groupIndex"],
+                        "role": group["role"],
+                    }
+    elif kind == "ascendancy":
+        ascendancy = str(parsed.get("ascendancy") or "").strip()
+        if ascendancy.casefold() == requested.casefold():
+            return {
+                "verified": True,
+                "kind": kind,
+                "requestedName": requested,
+                "matchedName": ascendancy,
+            }
+    elif kind == "item":
+        matched_item = _match_equipped_item(xml, requested)
+        if matched_item is not None:
+            return {
+                "verified": True,
+                "kind": kind,
+                "requestedName": requested,
+                **matched_item,
+            }
+    return {
+        "verified": False,
+        "kind": kind,
+        "requestedName": requested,
+        "matchedName": "",
+    }
+
+
+def _match_equipped_item(xml: str, requested: str) -> dict[str, Any] | None:
+    try:
+        root = ET.fromstring(xml)
+    except (ET.ParseError, TypeError, ValueError):
+        return None
+    items = root.find("Items")
+    if items is None:
+        return None
+    active_set_id = str(items.get("activeItemSet") or "1")
+    item_set = next(
+        (node for node in items.findall("ItemSet") if str(node.get("id")) == active_set_id),
+        None,
+    )
+    if item_set is None:
+        return None
+    item_text = {
+        str(item.get("id") or ""): [
+            line.strip() for line in str(item.text or "").splitlines() if line.strip()
+        ]
+        for item in items.findall("Item")
+    }
+    for slot in item_set.findall("Slot"):
+        lines = item_text.get(str(slot.get("itemId") or ""), [])
+        candidate_names = [
+            line
+            for line in lines[:4]
+            if not line.casefold().startswith(("rarity:", "item level:", "levelreq:"))
+        ]
+        matched = next(
+            (line for line in candidate_names if line.casefold() == requested.casefold()),
+            None,
+        )
+        if matched:
+            return {
+                "matchedName": matched,
+                "slot": str(slot.get("name") or ""),
+            }
+    return None
+
+
 def _parse_skill_groups(xml: str) -> dict[str, Any]:
     try:
         root = ET.fromstring(xml)
@@ -115,7 +296,10 @@ def _parse_skill_groups(xml: str) -> dict[str, Any]:
         )
     if not groups or not any(group["role"] == "pob_main_group" for group in groups):
         return {"errorCode": "missing_active_skill_group"}
-    return {"groups": groups}
+    return {
+        "groups": groups,
+        "ascendancy": str(build.get("ascendClassName") or "None"),
+    }
 
 
 def _gem_identity(gem: ET.Element) -> str:

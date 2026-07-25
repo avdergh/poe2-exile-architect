@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 124
+    assert len(tools) == 139
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -100,6 +100,21 @@ def test_tool_surface_intact():
         "save_build_progression_route",
         "list_build_progression_routes",
         "load_build_progression_stage",
+        "start_build_progression",
+        "intake_starter_research_packet",
+        "submit_build_progression_blueprint",
+        "revise_future_build_progression_stages",
+        "claim_build_progression_stage",
+        "bind_build_progression_stage_run",
+        "complete_build_progression_stage",
+        "fail_build_progression_stage",
+        "retry_build_progression_stage",
+        "pause_build_progression",
+        "resume_build_progression",
+        "get_build_progression_status",
+        "classify_build_progression_costs",
+        "finalize_build_progression",
+        "export_build_progression_package",
         "get_build_planner_converter_status",
         "export_final_build_artifact",
         "list_reference_builds",
@@ -155,6 +170,48 @@ def test_tool_surface_intact():
         "resume_learning_campaign",
         "get_learning_campaign_status",
     } <= names
+
+
+def test_progression_tools_publish_nested_typed_input_schemas():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    start_schema = tools["start_build_progression"].inputSchema
+    assert start_schema["properties"]["version_context"] == {"$ref": "#/$defs/VersionContext"}
+    version_properties = start_schema["$defs"]["VersionContext"]["properties"]
+    assert "trade/SSF mode belongs" in version_properties["ruleset"]["description"]
+    assert (
+        "StageCreatePacket value verbatim" in version_properties["researchMemoryRef"]["description"]
+    )
+    packet_schema = tools["intake_starter_research_packet"].inputSchema
+    assert packet_schema["properties"]["packet"] == {"$ref": "#/$defs/StarterResearchSubmission"}
+    assert (
+        packet_schema["$defs"]["StarterSourceInput"]["properties"]["explicitLevelBands"]["type"]
+        == "boolean"
+    )
+    blueprint_schema = tools["submit_build_progression_blueprint"].inputSchema
+    assert blueprint_schema["properties"]["blueprint"] == {"$ref": "#/$defs/ProgressionBlueprint"}
+    assert "targetIntent" in blueprint_schema["$defs"]["ProgressionBlueprint"]["properties"]
+    cost_schema = tools["classify_build_progression_costs"].inputSchema
+    assert cost_schema["properties"]["cost_request"] == {"$ref": "#/$defs/CostRequest"}
+    completion_schema = tools["complete_build_progression_stage"].inputSchema
+    assert completion_schema["properties"]["completion_report"] == {
+        "$ref": "#/$defs/StageCompletionReport"
+    }
+    lifecycle_schema = tools["verify_lifecycle_stage"].inputSchema
+    assert lifecycle_schema["properties"]["state"] == {
+        "anyOf": [
+            {"$ref": "#/$defs/LifecycleStageVerificationState"},
+            {"type": "null"},
+        ],
+        "default": None,
+    }
+    lifecycle_state = lifecycle_schema["$defs"]["LifecycleStageVerificationState"]
+    assert "singleTargetSkillName" in lifecycle_state["properties"]
+    assert "singleTargetEvidenceRefs" in lifecycle_state["properties"]
+    assert "buildDefiningComponentKind" in lifecycle_state["properties"]
+    assert "buildDefiningComponentName" in lifecycle_state["properties"]
+    assert "buildDefiningComponentKey" in lifecycle_state["properties"]
+    assert "buildDefiningEvidenceRefs" in lifecycle_state["properties"]
 
 
 def test_graph_tool_query_exposes_typed_payload_schema():
@@ -659,6 +716,9 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
     from server import main
 
     class _Stub:
+        def get_xml(self):
+            return "<PathOfBuilding><Build/></PathOfBuilding>"
+
         def get_stats(self, keys=None):
             return {
                 "stats": {
@@ -687,6 +747,180 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
     assert result["pass"] is True
     assert result["stateSnapshot"]["level"] == 68
     assert "engine-computed" in result["evidenceTags"]
+    assert result["evaluatedSourceHash"]
+
+
+def test_verify_campaign_early_derives_main_skill_from_same_xml_snapshot(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" level="22" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Glacial Cascade" gemId="Metadata/Items/Gems/SkillGemGlacialCascade"
+      skillId="GlacialCascadePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 900,
+                    "Mana": 400,
+                    "ManaUnreserved": 400,
+                    "ManaCost": 10,
+                    "Speed": 1.5,
+                    "NetManaRegen": 20,
+                }
+            }
+
+        def get_defenses(self):
+            return {"totalEHP": 2500}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "campaign_early",
+        state={"mainSkillSocketed": False},
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["mainSkillSocketed"] is True
+    assert result["stateSnapshot"]["mainSkillSocketEvidence"]["activeSkills"] == ["Glacial Cascade"]
+    assert result["evaluatedSourceHash"]
+
+
+def test_verify_campaign_mid_matches_named_single_target_skill_to_same_xml(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" ascendClassName="Martial Artist" level="40"
+    mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+        skillId="StormWavePlayer" />
+      <Gem nameSpec="Close Combat" gemId="Metadata/Items/Gems/SupportGemCloseCombat"
+        skillId="SupportCloseCombatPlayer" />
+    </Skill>
+    <Skill enabled="true">
+      <Gem nameSpec="Tempest Bell" gemId="Metadata/Items/Gems/SkillGemTempestBell"
+        skillId="TempestBellPlayer" />
+    </Skill>
+  </SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "TotalDPS": 5000,
+                    "Life": 1400,
+                    "Mana": 500,
+                    "ManaUnreserved": 500,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 50,
+                }
+            }
+
+        def get_defenses(self):
+            return {"totalEHP": 8000}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "campaign_mid",
+        state={
+            "singleTargetSkillName": "Tempest Bell",
+            "singleTargetEvidenceRefs": [
+                "gem:TempestBellPlayer",
+                "mechanic:bell_single_target",
+            ],
+        },
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["ascendancyOrKeySupport"]["verified"] is True
+    assert result["stateSnapshot"]["singleTargetDuty"]["verified"] is True
+    assert result["stateSnapshot"]["singleTargetDuty"]["matchedSkillName"] == "Tempest Bell"
+    assert result["evaluatedSourceHash"]
+
+
+def test_verify_endgame_budget_matches_build_defining_skill_to_same_xml(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" ascendClassName="Martial Artist" level="82"
+    mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Whirling Assault"
+        gemId="Metadata/Items/Gems/SkillGemWhirlingAssault"
+        skillId="WhirlingAssaultPlayer" />
+      <Gem nameSpec="Close Combat" gemId="Metadata/Items/Gems/SupportGemCloseCombat"
+        skillId="SupportCloseCombatPlayer" />
+    </Skill>
+  </SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "TotalDPS": 10000,
+                    "Life": 4000,
+                    "Mana": 600,
+                    "ManaUnreserved": 600,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 50,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 14000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "endgame_budget",
+        state={
+            "buildDefiningComponentKind": "skill",
+            "buildDefiningComponentName": "Whirling Assault",
+            "buildDefiningComponentKey": "skill:WhirlingAssaultPlayer",
+            "buildDefiningEvidenceRefs": [
+                "skill:WhirlingAssaultPlayer",
+                "dq-0123456789abcdef",
+            ],
+        },
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["buildDefiningComponent"]["verified"] is True
+    assert result["stateSnapshot"]["buildDefiningComponent"]["matchedName"] == "Whirling Assault"
+    assert result["evaluatedSourceHash"]
 
 
 def test_audit_lifecycle_route_tool_forwards_route(monkeypatch):

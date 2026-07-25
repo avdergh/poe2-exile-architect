@@ -66,13 +66,34 @@ class StrictModel(BaseModel):
 
 
 class VersionContext(StrictModel):
-    league: str = Field(min_length=1)
-    ruleset: str = Field(min_length=1)
-    game_patch: str = Field(min_length=1)
-    passive_tree_version: str = Field(min_length=1)
-    pob_version_or_commit: str = Field(min_length=1)
-    graph_snapshot_id: str = Field(min_length=1)
-    research_memory_ref: str = Field(min_length=1)
+    league: str = Field(min_length=1, description="Exact league provenance used by this run.")
+    ruleset: str = Field(
+        min_length=1,
+        description=(
+            "Exact game ruleset from freshness (for example `poe2`); trade/SSF mode belongs in "
+            "the build goal, not this field."
+        ),
+    )
+    game_patch: str = Field(min_length=1, description="Exact game patch from freshness.")
+    passive_tree_version: str = Field(
+        min_length=1,
+        description="Exact passive-tree generation from freshness.",
+    )
+    pob_version_or_commit: str = Field(
+        min_length=1,
+        description="Exact validated PoB version or commit.",
+    )
+    graph_snapshot_id: str = Field(
+        min_length=1,
+        description="Physical graph snapshot used for component resolution.",
+    )
+    research_memory_ref: str = Field(
+        min_length=1,
+        description=(
+            "Research query provenance for this exact candidate. In progression mode copy the "
+            "current StageCreatePacket value verbatim; each stage may use a different ref."
+        ),
+    )
 
 
 class VersionedSafeModel(StrictModel):

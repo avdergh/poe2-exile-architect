@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-07-22
+Last updated: 2026-07-24
 
 This document describes the high-level module layout and data flow. Detailed implementation work
 belongs in `docs/phases/`. Architecture is the only document family currently maintained in both
@@ -25,7 +25,7 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         +-- graph/memory: physical facts, semantic edges, Research DB, local Learning Memory
         +-- judge: build evaluation, modelability, advisory-only numeric evidence
         +-- comparative learning: quarantine cases, blind packets, comparisons, campaign state
-        +-- build progression: trusted FinalBuildArtifacts, typed deltas, transition gates
+        +-- build progression: patch-scoped starter evidence, recoverable orchestration, artifacts
         +-- agent helper tools: lookup, PoB operations, candidate-state shaping, `.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
@@ -70,11 +70,12 @@ Mature reference build
   -> recall for the next case
 
 Complete progression request
-  -> Architect Agent selects a small set of materially different milestones
-  -> each milestone runs its own Phase 5 Create / Judge / artifact save
-  -> validate level, stage, class, and version relationships
-  -> ProgressionRouteArtifact + typed stage deltas / transition requirements
-  -> load any milestone as a real PoB
+  -> external Agent performs bounded current-patch starter research for the base class
+  -> safe StarterResearchPacket cache; no page prose or full URL is persisted
+  -> independent starter selection + independent target build + TransitionBridge
+  -> recoverable Progression service serializes milestone Phase 5 runs
+  -> bind lifecycle/Judge hashes and trusted artifacts
+  -> ProgressionRouteArtifact v2 + multi-stage delivery package
 ```
 
 ## Core Runtime Modules
@@ -90,7 +91,7 @@ Complete progression request
 | Copy-safety | `server/knowledge/copy_safety.py` | Guardrails against reconstructable build material. |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | Existing route, verification, quality, and evaluation helpers. |
 | Comparative learning | `server/learning/*` | Phase 7 typed contracts, case quarantine, blind packets, comparison reports, Learning Memory, and recoverable campaign state. |
-| Build progression | `server/generation/progression.py` | Phase 8 trusted multi-stage routes, artifact binding, typed deltas/gates, and stage loading. |
+| Build progression | `server/generation/progression*.py` | Phase 8 starter evidence, blueprints, CAS state, trusted artifacts, cost profiles, and multi-stage export. |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context. |
 | Scripts | `scripts/*` | Verification, smoke tests, packaging, source probes. |
 
@@ -120,8 +121,12 @@ Planned modules should follow the same layering:
   create tasks or call models.
 - Research schemas own concrete build knowledge. Learning Memory accepts only cross-dimensional
   Create behavior lessons and their corrections.
-- The Phase 8 progression service only validates and links trusted milestones separately created by
-  the Agent; it never derives early builds by downgrading a final PoB.
+- The external Phase 8 Agent owns web research and stage design. The progression service validates
+  safe summaries, orchestration state, and trusted artifacts; it does not crawl, call models, or
+  derive early builds by downgrading a final PoB.
+- Starter and target stages share only the base class. Community guides are candidate evidence and
+  never write directly to Research or Learning Memory; current graph/corpus/mechanic evidence must
+  revalidate their premises.
 - Phase benchmark reports own claims of progress.
 
 ## Documentation Map
@@ -142,8 +147,8 @@ Planned modules should follow the same layering:
 - Mature raw payloads are quarantine-only and transient.
 - Phase 7 raw sources are isolated per case; control state, reports, and Learning Memory persist only
   safe hashes/references and summaries.
-- Phase 8 progression manifests store only safe stage deltas and artifact references; milestone XML
-  remains in the local private artifact store.
+- Phase 8 starter caches and progression manifests store only safe summaries, source hashes, stage
+  deltas, and artifact references. Page prose, full URLs, and milestone XML remain outside them.
 - Long-term knowledge must be clean, versioned, evidence-backed, and copy-safe.
 - User-data/runtime directories may hold local state; repository docs must describe contracts, not
   accidental local artifacts.

@@ -51,10 +51,19 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
    with `suggest_build_lifecycle`: present campaign starter → transition gate → budget endgame →
    final endgame. Never recommend switching stages until the transition gate is met.
 10. **A verified progression requires real milestone artifacts.** When the user explicitly asks
-    for a complete campaign-to-target progression, build each meaningful milestone as a separate
-    Phase 5 run, pass Judge, and save its `FinalBuildArtifact`. Only then call
-    `save_build_progression_route` with typed changes and transition requirements. Never present a
-    prose-only stage, or an automatically downgraded final PoB, as independently verified.
+    for a complete campaign-to-target progression, use `start_build_progression`, submit bounded
+    starter evidence and a blueprint, then claim each milestone serially. Every milestone gets a
+    separate Phase 5 run, Judge, same-hash lifecycle verification and `FinalBuildArtifact`. Complete
+    every stage before `finalize_build_progression`; never present a prose-only stage or an
+    automatically downgraded final PoB as independently verified.
+11. **A starter is not the final build with fewer points.** For a complete progression, the base
+    class is the only hard cross-stage lock. The campaign starter may use a different ascendancy,
+    skill package, tree, gear and resource loop from the high-ceiling target. Use bounded current-
+    patch web research when the host supports it, submit only safe starter claims, and independently
+    verify every real milestone. Web failure permits a labelled limited-evidence fallback.
+12. **Price is advisory, not the transition clock.** Use live unique prices and craft effort to
+    label acquisition risk. Switch only when the target mechanic's skill, ascendancy, passive,
+    Spirit, resource, defense and required-item gates are actually ready.
 
 ## Three kinds of facts
 
@@ -366,6 +375,8 @@ does not take over build completion.
 - Never include reference gear, passives, skill groups, mechanism summaries, configuration, Judge
   results, source URLs, PoB code, or XML in a blind Create packet. Ambiguous Family or level evidence
   fails closed.
+- Blind Create must not query or consume Phase 8 starter-research packets, starter cache entries or
+  progression state. Those web-derived candidates belong only to an explicit progression request.
 - The Phase 5 run may use its existing bounded internal attempts, but after comparison the same case
   is never regenerated or repaired. Improvements apply only to later cases.
 - Compare damage loop/delivery, skill duties/supports, configuration realism, trigger/conversion
@@ -381,6 +392,73 @@ does not take over build completion.
   plus new evidence before it can be submitted again.
 - Campaigns default to ten strictly serial cases with a three-case rolling window. A first-three vs
   last-three improvement is directional evidence only, never a causal claim.
+
+## Phase 8 multi-stage progression
+
+- Enter progression mode only for an explicit complete campaign-to-target request. A normal
+  single-stage Create keeps the Phase 5 save/export flow.
+- Call `start_build_progression` with the base class, target level, safe goal and current
+  `VersionContext`. Preserve every returned revision and use a unique operation id for each
+  mutation.
+- If a fresh exact-patch `StarterResearchPacket` is reused, read the safe packet returned by start
+  or status before writing evidence-use decisions. Otherwise the host Agent may perform bounded web
+  research: at most six sources, preferably current-patch level-banded guides.
+  Aggregators/comments only discover sources. Two independent current-patch sources, or one
+  exact-patch structured/official/creator guide with explicit level bands, is required for
+  `supported`; otherwise submit `limited`. If the web is unavailable, submit
+  `limited_offline_inference` and continue with clear caveats.
+- An expired or same-season mismatched cache entry is returned only as a safe
+  `starterResearchCandidate`. Revalidate it and submit a new packet; never bind it directly.
+- Read each progression tool's nested input schema before assembling starter packets, blueprints,
+  cost requests or completion reports; do not infer typed fields through repeated failed calls.
+- Pass source URLs only through transient `intake_starter_research_packet` input. It hashes them
+  immediately. Never put page prose, full URLs, PoB material, whole gear/passive/skill mirrors or
+  account/character data in starter claims, blueprint state or chat.
+- `ProgressionBlueprint` normally has four real milestones, may merge unchanged milestones, and is
+  capped at five. Every milestone has a stable `stageId`. The base class is the only cross-stage
+  lock. Resolve and query Research separately for every actual stage Family; a changed ascendancy
+  or primary skill needs a fresh query ref. Each stage carries its own evidence status; starter
+  stages must match the starter packet, while transition/target stages use their own Research,
+  mechanic and PoB evidence.
+- Every later `TransitionBridge` needs at least one blocking non-price mechanic gate covering the
+  relevant skill, ascendancy points, respec/passive threshold, Spirit/attributes, resource loop,
+  defense, required-owned item or Judge readiness. `budget` and `price` gates are advisory and
+  non-blocking.
+- For each stage: `claim_build_progression_stage` → start a new Phase 5 run →
+  `bind_build_progression_stage_run` → assemble the real active build →
+  `inspect_build_completeness`/preflight → `verify_lifecycle_stage` → formal Judge →
+  save artifact/review → `classify_build_progression_costs` →
+  `complete_build_progression_stage`. First stage starts blank; later stages normally load the
+  previous artifact, while large Family transitions may rebuild from blank.
+- Copy the claimed `StageCreatePacket.versionContext` verbatim into that stage's Phase 5/Judge
+  evaluation. `ruleset` is the freshness game ruleset, not trade/SSF mode, and the stage-bound
+  `researchMemoryRef` must not be replaced by a later ad-hoc query.
+- The lifecycle result must carry the same `evaluatedSourceHash` as the final Judge artifact.
+  A hard-valid artifact with playability/modelability gaps may be saved but makes the route
+  `limited`. A failed/unknown lifecycle stage is not a verified milestone.
+- For campaign mid/late single-target checks, pass `singleTargetSkillName` plus safe
+  `singleTargetEvidenceRefs` to `verify_lifecycle_stage`. The tool matches that name to an enabled
+  skill in the same XML and requires positive PoB offense; this verifies duty coverage, not
+  gameplay feel. Ascendancy/key-support evidence is read from that XML automatically.
+- For `endgame_budget`, pass `buildDefiningComponentKind`, `buildDefiningComponentName`,
+  `buildDefiningComponentKey`, and safe `buildDefiningEvidenceRefs`. The named skill, ascendancy,
+  or equipped item must match the same active XML; a caller-supplied boolean is never proof that
+  the mechanism is online. Do not label a sub-82 stage `endgame_budget` or a sub-92 stage
+  `endgame_final`. A level-80 target normally remains `maps_entry`; if the high-ceiling mechanism
+  is not closed, preserve the verified starter/bridge form and disclose the future switch.
+- Stage failure pauses the route. Phase 5 keeps its two internal repairs; after stage failure only
+  one explicit `retry_build_progression_stage` is allowed. Started, retried and completed stages
+  are immutable; only not-yet-started future stages may be revised. Status recovery returns the
+  active safe `StageCreatePacket`.
+- Cost output is risk-only. Uniques use live Divine-equivalent bands; rares use craft effort.
+  Never fabricate a full-set total or trigger a switch from a price band. Disclose unknown required
+  dependencies separately. Live-price failure lowers evidence but does not block the route.
+- Progression-bound stages save artifacts but do not export them individually. After all stages,
+  call `finalize_build_progression` and then `export_build_progression_package` once. Report its
+  complete inventory: each stage's XML/import-code files, route guide, and only the target
+  single-stage official `.build`.
+- If the target mechanic still is not closed at the requested level, keep the final artifact in its
+  verified starter/bridge form and label the future target switch as unverified.
 
 ## One active build per MCP session
 

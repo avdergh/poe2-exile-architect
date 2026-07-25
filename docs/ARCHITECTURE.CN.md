@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-07-22
+Last updated: 2026-07-24
 
 本文档说明高层模块布局和数据流。详细实现工作放在 `docs/phases/`。Architecture 是当前
 唯一维护英文和中文两版的文档；project spec、schemas 和 phase plans 只维护中文。
@@ -24,7 +24,7 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         +-- graph/memory: physical facts, semantic edges, Research DB, local Learning Memory
         +-- judge: build evaluation、modelability 与 advisory-only 数值附件
         +-- comparative learning: quarantine case、blind packet、comparison、campaign state
-        +-- build progression: 多个可信 FinalBuildArtifact、typed delta、transition gate
+        +-- build progression: patch-scoped 开荒证据、可恢复编排、可信阶段 artifact
         +-- agent helper tools: 查询、PoB 操作、候选状态整理、`.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
@@ -67,11 +67,12 @@ source probe
   -> 下一案例 Create 召回
 
 完整成长流程请求
-  -> Architect Agent 规划少量有实质变化的里程碑
-  -> 每个里程碑分别运行 Phase 5 Create / Judge / artifact 保存
-  -> 校验等级、阶段、职业和版本关系
-  -> ProgressionRouteArtifact + typed stage delta / transition requirements
-  -> 按阶段加载真实 PoB
+  -> 外部 Agent 有界检索同职业当前版本开荒资料
+  -> StarterResearchPacket 安全缓存；原文和完整 URL 不落盘
+  -> 独立开荒选择 + 独立目标流派 + TransitionBridge
+  -> 可恢复 Progression service 串行驱动各阶段 Phase 5 run
+  -> Judge / lifecycle hash / artifact 绑定
+  -> ProgressionRouteArtifact v2 + 多阶段交付包
 ```
 
 ## 核心 Runtime 模块
@@ -87,7 +88,7 @@ source probe
 | Copy-safety | `server/knowledge/copy_safety.py` | 防止 reconstructable build material 的 guardrails。 |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | 现有 route、verification、quality 和 evaluation helpers。 |
 | Comparative learning | `server/learning/*` | Phase 7 typed contracts、隔离案例、盲测 packet、比较报告、Learning Memory 和可恢复 campaign 状态。 |
-| Build progression | `server/generation/progression.py` | Phase 8 可信多阶段路线、artifact 绑定、typed delta/gate 和阶段加载。 |
+| Build progression | `server/generation/progression*.py` | Phase 8 开荒证据、路线蓝图、CAS 状态、可信 artifact 绑定、成本画像和多阶段导出。 |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context。 |
 | Scripts | `scripts/*` | Verification、smoke tests、packaging、source probes。 |
 
@@ -112,7 +113,10 @@ source probe
 - Comparator Agent 对逐维 tradeoff 和总结果负责；Judge 数值只作为 `advisoryOnly` 附件。
 - Phase 7 状态服务负责 CAS、幂等、暂停、恢复和安全 checkpoint，不创建任务或调用模型。
 - Research schema 对具体 build knowledge 负责；Learning Memory 只接收跨维 Create 行为经验及其 correction。
-- Phase 8 progression 服务只验证和连接 Agent 分别创造的可信阶段 artifact，不从终局 PoB 自动推导早期构筑。
+- Phase 8 外部 Agent 负责联网研究和阶段设计；服务只校验安全摘要、编排状态和可信 artifact，不
+  爬网、不调用模型，也不从终局 PoB 自动推导早期构筑。
+- 开荒与目标阶段只锁基础职业。社区攻略是候选证据，不能直接进入 Research/Learning Memory；
+  技能与机制前提仍由当前 graph/corpus/mechanic 复核。
 - Phase benchmark reports 对进度声明负责。
 
 ## 文档地图
@@ -131,6 +135,7 @@ source probe
 - Durable generated reports 不存入仓库。
 - Mature raw payloads 只允许 quarantine-only transient 使用。
 - Phase 7 原始来源按 case 隔离保存；控制状态、报告和 Learning Memory 只能持久化 hash/ref 与安全摘要。
-- Phase 8 progression manifest 只保存安全阶段 delta 和 artifact 引用；各阶段 XML 仍留在本地私有 artifact store。
+- Phase 8 starter cache 和 progression manifest 只保存安全摘要、来源哈希、阶段 delta 和 artifact
+  引用；网页原文、完整 URL 与各阶段 XML 不进入这些状态。
 - Long-term knowledge 必须 clean、versioned、evidence-backed 且 copy-safe。
 - User-data/runtime 目录可以保存本地状态；仓库文档应描述 contracts，而不是偶然的本地 artifacts。

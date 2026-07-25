@@ -57,10 +57,17 @@ from .live import wiki as live_wiki
 from .freshness import service as freshness_service
 from .generation import artifacts as generation_artifacts
 from .generation import evaluation as generation_evaluation
+from .generation import models as generation_models
 from .generation import delivery as generation_delivery
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
 from .generation import progression as generation_progression
+from .generation import progression_costs as generation_progression_costs
+from .generation import progression_delivery as generation_progression_delivery
+from .generation import progression_models as generation_progression_models
+from .generation import progression_research as generation_progression_research
+from .generation import progression_service as generation_progression_service
+from .judge import evaluator as judge_evaluator
 from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
@@ -802,20 +809,288 @@ def list_build_progression_routes() -> dict[str, Any]:
 @mcp.tool()
 def load_build_progression_stage(
     route_id: str,
-    lifecycle_stage: Literal[
-        "campaign_early",
-        "campaign_mid",
-        "campaign_late",
-        "maps_entry",
-        "endgame_budget",
-        "endgame_final",
-        "budget_endgame",
-        "final_endgame",
-    ],
+    stage_id: str = "",
+    lifecycle_stage: (
+        Literal[
+            "campaign_early",
+            "campaign_mid",
+            "campaign_late",
+            "maps_entry",
+            "endgame_budget",
+            "endgame_final",
+            "budget_endgame",
+            "final_endgame",
+        ]
+        | None
+    ) = None,
 ) -> dict[str, Any]:
-    """Load one trusted milestone from a saved progression route into the active PoB session."""
+    """Load one trusted milestone by stable stage id or a uniquely matching lifecycle stage."""
     return generation_progression.load_progression_stage(
-        get_engine(), route_id=route_id, lifecycle_stage=lifecycle_stage
+        get_engine(),
+        route_id=route_id,
+        stage_id=stage_id or None,
+        lifecycle_stage=lifecycle_stage,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Phase 8 Agent-led progression orchestration (safe state only; no model or web crawler)
+# --------------------------------------------------------------------------------------
+def _typed_payload(value: Any) -> dict[str, Any]:
+    """Normalize FastMCP Pydantic inputs while preserving direct-call test compatibility."""
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if not callable(dump):
+        raise TypeError("typed MCP payload must be a mapping or Pydantic model")
+    return dump(mode="json", by_alias=True)
+
+
+@mcp.tool()
+def start_build_progression(
+    operation_id: str,
+    base_class: str,
+    target_level: int,
+    goal: str,
+    version_context: generation_models.VersionContext,
+) -> dict[str, Any]:
+    """Start a recoverable progression; a fresh exact-version starter packet may be reused."""
+    return generation_progression_service.start_build_progression(
+        operation_id=operation_id,
+        base_class=base_class,
+        target_level=target_level,
+        goal=goal,
+        version_context=_typed_payload(version_context),
+    )
+
+
+@mcp.tool()
+def intake_starter_research_packet(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+    packet: generation_progression_research.StarterResearchSubmission,
+) -> dict[str, Any]:
+    """Sanitize bounded external-Agent starter research and bind it to one progression.
+
+    Source URLs are converted to hashes before persistence. Raw pages, copied guide prose, PoB
+    material and whole-character mirrors are rejected.
+    """
+    return generation_progression_service.intake_starter_research_packet(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        packet=_typed_payload(packet),
+    )
+
+
+@mcp.tool()
+def submit_build_progression_blueprint(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+    blueprint: generation_progression_models.ProgressionBlueprint,
+) -> dict[str, Any]:
+    """Submit two to five event-driven milestones with independent starter and target Families."""
+    return generation_progression_service.submit_build_progression_blueprint(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        blueprint=_typed_payload(blueprint),
+    )
+
+
+@mcp.tool()
+def revise_future_build_progression_stages(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+    blueprint: generation_progression_models.ProgressionBlueprint,
+) -> dict[str, Any]:
+    """Version only not-yet-started future milestones; completed stages remain immutable."""
+    return generation_progression_service.revise_future_build_progression_stages(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        blueprint=_typed_payload(blueprint),
+    )
+
+
+@mcp.tool()
+def claim_build_progression_stage(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Claim the next strictly serial stage and return its safe StageCreatePacket."""
+    return generation_progression_service.claim_build_progression_stage(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def bind_build_progression_stage_run(
+    progression_id: str,
+    stage_id: str,
+    claim_id: str,
+    run_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Bind the newly started Phase 5 run to the claimed progression stage."""
+    return generation_progression_service.bind_build_progression_stage_run(
+        progression_id=progression_id,
+        stage_id=stage_id,
+        claim_id=claim_id,
+        run_id=run_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def complete_build_progression_stage(
+    progression_id: str,
+    stage_id: str,
+    claim_id: str,
+    artifact_id: str,
+    lifecycle_verification: dict[str, Any],
+    cost_profile: dict[str, Any],
+    completion_report: generation_progression_service.StageCompletionReport,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Accept one stage only when run, artifact, class, level, version and XML hash all match."""
+    return generation_progression_service.complete_build_progression_stage(
+        progression_id=progression_id,
+        stage_id=stage_id,
+        claim_id=claim_id,
+        artifact_id=artifact_id,
+        lifecycle_verification=lifecycle_verification,
+        cost_profile=cost_profile,
+        completion_report=_typed_payload(completion_report),
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def fail_build_progression_stage(
+    progression_id: str,
+    stage_id: str,
+    claim_id: str,
+    failure_code: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Pause a failed stage for review without automatically restarting the route."""
+    return generation_progression_service.fail_build_progression_stage(
+        progression_id=progression_id,
+        stage_id=stage_id,
+        claim_id=claim_id,
+        failure_code=failure_code,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def retry_build_progression_stage(
+    progression_id: str,
+    stage_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Open the one allowed explicit external retry for a failed progression stage."""
+    return generation_progression_service.retry_build_progression_stage(
+        progression_id=progression_id,
+        stage_id=stage_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def pause_build_progression(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Pause a progression while preserving the current stage/run binding."""
+    return generation_progression_service.pause_build_progression(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        reason=reason,
+    )
+
+
+@mcp.tool()
+def resume_build_progression(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Resume the exact state captured by pause."""
+    return generation_progression_service.resume_build_progression(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def get_build_progression_status(progression_id: str) -> dict[str, Any]:
+    """Inspect safe progression state without PoB XML, import codes or web URLs."""
+    return generation_progression_service.get_build_progression_status(progression_id)
+
+
+@mcp.tool()
+def classify_build_progression_costs(
+    cost_request: generation_progression_costs.CostRequest,
+) -> dict[str, Any]:
+    """Classify named uniques by live Divine value and rares by craft effort.
+
+    The response reports risk bands and coverage, never a fabricated total build price. Price
+    failure lowers evidence quality but does not block or trigger a transition.
+    """
+    return generation_progression_costs.classify_build_progression_costs(
+        _typed_payload(cost_request)
+    )
+
+
+@mcp.tool()
+def finalize_build_progression(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+    route_summary: str,
+) -> dict[str, Any]:
+    """Bind all completed stages into a Route v2 artifact after the final milestone."""
+    return generation_progression_service.finalize_build_progression(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        route_summary=route_summary,
+    )
+
+
+@mcp.tool()
+def export_build_progression_package(
+    route_id: str,
+    name: str = "",
+    author: str = "",
+    description: str = "",
+) -> dict[str, Any]:
+    """Export each stage's PoB files, a route guide and only the target official `.build`."""
+    return generation_progression_delivery.export_build_progression_package(
+        route_id,
+        name=name,
+        author=author,
+        description=description,
     )
 
 
@@ -2048,7 +2323,7 @@ def plan_lifecycle_stage_verification(
 @mcp.tool()
 def verify_lifecycle_stage(
     stage: str,
-    state: dict[str, Any] | None = None,
+    state: lifecycle.lifecycle_verification.LifecycleStageVerificationState | None = None,
     build_id: str = "",
 ) -> dict[str, Any]:
     """Execute a read-only lifecycle-stage verification against the active build.
@@ -2057,12 +2332,57 @@ def verify_lifecycle_stage(
     build's PoB stats/defenses, evaluates the stage target checks, and returns pass/fail/unknown
     without mutating gear, passives, level, or config. Use it before claiming a stage is viable.
     """
-    plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state)
+    state_payload = _typed_payload(state) if state is not None else {}
+    plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state_payload)
     if not plan.get("ok"):
         return plan
 
     eng = get_engine()
-    effective_state = dict(state or {})
+    try:
+        source_before = eng.get_xml()
+    except Exception:  # noqa: BLE001 - return a stable safe error, never engine internals.
+        return {
+            "ok": False,
+            "stage": stage,
+            "status": "unknown",
+            "pass": False,
+            "errorCode": "lifecycle_snapshot_unavailable",
+        }
+    source_hash = judge_evaluator.compute_source_hash(source_before)
+    effective_state = dict(state_payload)
+    main_skill_evidence = generation_preflight.inspect_main_skill_socketed(source_before)
+    # This evidence must come from the exact active XML snapshot. Never accept a caller-supplied
+    # boolean as proof that the main skill is socketed.
+    effective_state["mainSkillSocketed"] = bool(main_skill_evidence.get("socketed"))
+    effective_state["mainSkillSocketEvidence"] = main_skill_evidence
+    lifecycle_skill_evidence = generation_preflight.inspect_lifecycle_skill_evidence(
+        source_before,
+        single_target_skill_name=effective_state.get("singleTargetSkillName"),
+    )
+    effective_state["ascendancyOrKeySupport"] = lifecycle_skill_evidence.get(
+        "ascendancyOrKeySupport"
+    )
+    single_target_evidence = dict(lifecycle_skill_evidence.get("singleTargetDuty") or {})
+    evidence_refs = list(effective_state.get("singleTargetEvidenceRefs") or [])
+    single_target_evidence["evidenceRefs"] = evidence_refs
+    single_target_evidence["verified"] = bool(
+        single_target_evidence.get("verified") and evidence_refs
+    )
+    effective_state["singleTargetDuty"] = single_target_evidence
+    build_defining_evidence = generation_preflight.inspect_lifecycle_component_evidence(
+        source_before,
+        component_kind=effective_state.get("buildDefiningComponentKind"),
+        component_name=effective_state.get("buildDefiningComponentName"),
+    )
+    build_defining_evidence["componentKey"] = effective_state.get("buildDefiningComponentKey")
+    build_defining_refs = list(effective_state.get("buildDefiningEvidenceRefs") or [])
+    build_defining_evidence["evidenceRefs"] = build_defining_refs
+    build_defining_evidence["verified"] = bool(
+        build_defining_evidence.get("verified")
+        and build_defining_evidence.get("componentKey")
+        and build_defining_refs
+    )
+    effective_state["buildDefiningComponent"] = build_defining_evidence
     if "manaFlaskEquipped" not in effective_state:
         read_build = getattr(eng, "get_build", None)
         build = read_build() if callable(read_build) else {}
@@ -2084,6 +2404,25 @@ def verify_lifecycle_stage(
         state=effective_state,
         engine_warning=engine_warning,
     )
+    try:
+        source_after = eng.get_xml()
+    except Exception:  # noqa: BLE001 - return a stable safe error, never engine internals.
+        return {
+            "ok": False,
+            "stage": stage,
+            "status": "unknown",
+            "pass": False,
+            "errorCode": "lifecycle_snapshot_unavailable",
+        }
+    if judge_evaluator.compute_source_hash(source_after) != source_hash:
+        return {
+            "ok": False,
+            "stage": stage,
+            "status": "unknown",
+            "pass": False,
+            "errorCode": "lifecycle_snapshot_changed_during_verification",
+        }
+    result["evaluatedSourceHash"] = source_hash
     if build_id:
         result["buildId"] = build_id
     return result

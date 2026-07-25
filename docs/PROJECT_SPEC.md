@@ -1,6 +1,6 @@
 # PoE2 BD Creator 项目规格
 
-最后更新：2026-07-21
+最后更新：2026-07-24
 
 本文档是项目的中文唯一总纲，用来维护产品方向、不可协商边界、验证哲学，以及各
 Phase 的关系和完成状态。每个 Phase 的详细执行清单、验收项和阶段内进度放在
@@ -72,8 +72,10 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 
 Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产物写入 semantic graph
 和 vector memory；Phase 7 另外维护不适合进入 Research DB 的本地轻量 Learning Memory。
-Phase 8 改为交付可验证的完整 BD 成长流程；reward/ranking 不再预占阶段编号，等有更强实跑证据
-后另行规划。
+Phase 8 改为交付可验证的完整 BD 成长流程：外部 Agent 先用有界联网资料选择同职业开荒流派，
+再用成熟 Research 设计独立目标流派，并用真实阶段 PoB 求解转型桥梁。reward/ranking 不再预占
+阶段编号，等有更强实跑证据后另行规划。
+Phase 8 多可信阶段 artifact 仍是最终可验证交付的基础；联网证据不能替代任一阶段的真实 PoB。
 
 ## 已有底座
 
@@ -143,14 +145,14 @@ Phase 0 文档与边界
   -> Phase 5 Agent 主导的生成原型
   -> Phase 6 官方 .build 导出
   -> Phase 7 同 Family / 同等级对照学习循环
-  -> Phase 8 多可信阶段 artifact 的完整成长流程
+  -> Phase 8 联网开荒研究 + 多可信阶段 artifact 的完整成长流程
   -> Phase 9 scale / revalidation / productization
 ```
 
 其中 Phase 1 是所有“好坏判断”的前置门槛；Phase 2 和 Phase 3 是图记忆可用性的前置
 门槛；Phase 4 负责把成熟 BD 研究变成可复用长期知识；Phase 5 之后才开始验证生成能
 力；Phase 7 只有在生成、Research 和 Judge 可用后才有意义；Phase 8 复用 Phase 5/6 的可信
-artifact，把文字生命周期路线升级为真实阶段构筑链。
+artifact，把独立开荒流派、目标流派和转型桥梁升级为真实阶段构筑链。
 
 ### 待优化提示：复合输出与多场景评估
 
@@ -169,8 +171,9 @@ PoE2 BD 通常不是单一技能、单一面板和单一战斗场景。清图、
 - Phase 7：对成熟原 BD 做安全 Profile，形成唯一 `FamilyTarget`，只给独立 Create 任务相同 Family 和等级，再由独立
   Comparator 逐维比较。Judge 只作为 advisory evidence，不能按 aggregate 自动选赢家；具体
   build knowledge 回到 Research，不适合 Research schema 的跨维生成经验才进入 Learning Memory。
-- Phase 8：不扩写全知评分器，先解决用户交付缺口：每个重要成长里程碑都必须有独立可信 PoB
-  artifact、typed delta 和 transition gate，不能继续只靠文字阶段描述。
+- Phase 8：不扩写全知评分器。外部 Agent 有界搜索 patch-scoped 开荒资料，开荒和目标阶段只锁
+  基础职业、允许完全不同的升华与技能；每个重要成长里程碑仍必须有独立可信 PoB artifact、
+  typed delta 和由机制闭环驱动的 transition gate。价格只作获取风险说明，不能自动决定转型。
 
 这是一项跨阶段待优化能力，不因 Phase 1 基线状态为“已完成”而视为已经解决。后续优先由
 Phase 5 真实失败样例驱动，不提前手写一套脱离 PoB 和游戏机制的全知评分器。
@@ -189,7 +192,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
 | Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 功能实现完成、首轮实跑暂停于 6/10、学习效果未评估 | Phase 1、4、5，按需依赖 Phase 6 | 建立成熟原 BD Profile、同 Family/同等级盲测 Create、独立逐维比较和面向后续案例的 Research/轻量 Learning Memory 回流；首轮计划 10 个串行案例，恢复后再执行固定趋势验收。 | `docs/phases/07_critic_loop.md` |
-| Phase 8 | 进行中：可信多阶段路线首个合同切片 | Phase 4、5、6 | 用多个 Judge 通过的 FinalBuildArtifact 组成完整成长路线，记录相邻阶段的 typed changes 与 transition requirements，并支持按阶段加载；后续接入 Create 编排和完整成长包导出。 | `docs/phases/08_build_progression.md` |
+| Phase 8 | 功能实现完成候选，最终验收中 | Phase 4、5、6 | 以同职业独立开荒流派、目标高上限流派和转型桥梁组成 2~5 个真实阶段；每阶段绑定 Phase 5 artifact，价格只作 advisory，并支持恢复、加载和完整成长包导出。完成真实四阶段任务、新插件进程复验和 full 门禁后再标记完成。 | `docs/phases/08_build_progression.md` |
 | Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
 
 ## 硬边界

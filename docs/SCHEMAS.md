@@ -1,6 +1,6 @@
 # PoE2 BD Creator 数据结构合同
 
-最后更新：2026-07-10
+最后更新：2026-07-24
 
 本文档在产品层定义核心 artifact contracts。精确字段校验应放在代码和测试里。
 
@@ -783,20 +783,119 @@ Phase 6 MVP 不要求自动生成 `level_interval` 或多阶段生命周期。�
 `Scaffold ...` 占位装；符文/灵魂核心、天赋珠宝、药剂和护符由 Agent 填写或记录明确不使用理由。
 除底材等级非法外，这些是 Agent 接受候选前的 advisory，不是程序自动配装规则。
 
-## ProgressionRouteArtifact
+## StarterResearchPacket
 
-Phase 8 的本地安全成长路线 manifest。它不复制阶段 XML，而是引用 2~8 个分别通过 Phase 5
+Phase 8 外部 Agent 联网检索后提交的安全开荒证据。intake 可以临时接收来源 URL，但必须立即转换
+为 `safe_url_ref`；持久 packet、MCP 响应和 Create output 不得保留原 URL 或网页正文。
+
+必要字段：
+
+- packet id、base class、game patch、passive tree version、captured at；
+- evidence status：`supported`、`limited` 或 `limited_offline_inference`；
+- packet status：`active` 或 `deprecated`；cache lookup 另外返回
+  `fresh / expired_revalidation_required / same_season_revalidation_required`；
+- 最多六个 source descriptors：safe source ref、host、source kind、claimed patch、
+  updated at、explicit level-band 标志；
+- 有界 stage claims：level range、claim kind、summary、component names 和 verification tasks；
+- contradictions、unresolved premises、no-raw/no-url 标志。
+
+`supported` 必须有两个独立 host 的当前版本来源收敛，或一个当前版本且明确给出等级分段的
+structured/official-forum/creator guide。aggregator/comment 只能发现候选，不能独立形成
+supported。
+packet 以 base class + 精确 patch + tree version 缓存七天；同赛季但版本不一致或过期时只能作为
+stale candidate，跨赛季不能采用。它不进入 Research SQLite 或 Learning Memory。
+
+## ProgressionBlueprint / StageCreatePacket
+
+`ProgressionBlueprint` 是 Agent 主导的完整路线设计，不是程序自动生成器。
+
+- base class 是唯一跨阶段硬锁；
+- starter selection 和 target intent 分开记录，允许升华、技能、天赋、装备、防御和资源完全不同；
+- 默认四个、最多五个事件驱动 `StageBlueprint`；无实质变化时合并；
+- 每阶段有稳定 `stageId`、route role、target level、lifecycle stage、技能/升华意图、职责覆盖、
+  独立 evidence status、Starter/Research evidence use、cost profile 和 transition bridge；
+- `StageFamilyIdentity.ascendancyKey` 必须是 `ascendancy:` stable key，主副技能必须是
+  `skill:` stable key，不能用任意安全字符串冒充已解析 Family；
+- starter 阶段的 evidence status 必须与 packet 一致，不能让有限或离线社区证据冒充
+  `supported`；target/transition 阶段按自己的 Research、mechanic 和 PoB 证据记录；
+- `StarterEvidenceUse` 逐 claim 记录 `adopted/caveated/rejected`、application 和 verification refs；
+  所有 claim 都必须有决策，且至少一条必须是 `adopted` 或 `caveated`；全部 rejected 的 packet
+  不能授权开荒蓝图；
+- `TransitionBridge` 至少包含一个非价格的机制 readiness requirement。价格不能作为唯一转型门槛；
+- 如果目标等级尚未满足终局机制，target stage 可以继续使用 starter/bridge Family。
+
+`StageCreatePacket` 只包含当前阶段所需安全蓝图、上一 artifact ref、完整生命周期目标和版本。
+第一阶段从空 PoB 创建；后续阶段可以加载上一 artifact 正向修改，也可以在大规模转型时重新搭建。
+每个阶段仍使用独立 Phase 5 run 和独立 Research query。
+
+## ProgressionRunState
+
+Phase 8 本地安全控制状态。所有 mutation 使用唯一 `operationId` 和 `expectedRevision`：
+
+```text
+research_pending -> blueprint_pending
+  -> stage_pending -> stage_running -> stage_completed
+  -> finalize_pending -> completed
+```
+
+另有 `paused` 和 `failed`。每次只允许一个阶段 running；阶段绑定 Phase 5 run id 后，完成时必须
+回读 artifact 的 run id、职业、等级、版本、source hash 和 lifecycle verification hash。Phase 5
+内部允许既有两次 retry；整个阶段失败后只允许一次显式外部 retry。已经开始过的阶段（包括已进入
+显式 retry 的阶段）不可修改，只能通过版本化操作调整尚未开始的未来阶段。
+
+### LifecycleStageVerificationState
+
+Phase 8 在 `verify_lifecycle_stage` 处使用的有界外部证据：
+
+- `level`、`manaFlaskEquipped` 为可选阶段状态；
+- `singleTargetSkillName` 必须精确匹配同一活动 XML 中一个启用的 active skill；
+- `singleTargetEvidenceRefs` 必须是非空安全 graph/mechanic/Research 引用，不能含 URL 或正文；
+  两个单体职责字段要么同时提供，要么同时省略；
+- `buildDefiningComponentKind` 只允许 `skill / ascendancy / item`，
+  `buildDefiningComponentName` 必须精确匹配同一活动 XML 中的启用技能、升华或当前 ItemSet 已装备
+  物品；
+- `buildDefiningComponentKey` 必须是已解析的稳定组件 key，
+  `buildDefiningEvidenceRefs` 必须是非空安全 graph/mechanic/Research 引用；四个成型组件字段要么
+  全部提供，要么全部省略；
+- 升华、主组辅助、技能组存在性和正伤害由运行时从同一 XML/PoB 快照读取，调用者不能用布尔值
+  伪造；
+- `single_target_feels_ok` 的通过只表示“单体职责有真实技能、外部机制依据和正的 PoB offense”，
+  不认证实际操作手感；
+- `build_defining_component_online` 只表示“声明的成型组件存在于同一 XML、已有 stable key 和外部
+  证据引用”，不自动证明整套机制或伤害上限；
+- lifecycle stage 与验证预算绑定：`endgame_budget` 的最低目标等级为 82，
+  `endgame_final` 为 92。80 级目标应使用 `maps_entry` 或保留已验证桥接形态，不能借高阶段标签
+  跳过验证。
+
+## StageCostProfile
+
+价格是 advisory，不产生自动转型决定：
+
+- unique/currency 使用当前联盟 live price 和 Divine anchor；
+- market band：`cheap`（<=0.1D）、`moderate`（<=0.5D）、`expensive`（<=2D）、
+  `chase`（>2D）、`unknown`；
+- rare gear 只使用 `optimize_item`/`optimize_jewel` 的 craft effort，映射到
+  `routine/moderate/expensive/chase`，不携带伪造市场价；
+- profile 只报告最高必需档位、付费依赖数量、未知必需依赖数量、平替覆盖、风险和 live
+  coverage，不生成整套总价；付费依赖包括已有可换算报价的必需暗金，以及高于 routine 的必需
+  黄装制作；
+- captured at、league、base currency、source status 和六小时快照有效期；
+- live source 失败只把价格标为 unknown，不阻断路线。
+
+## ProgressionRouteArtifact v2
+
+Phase 8 的本地安全成长路线 manifest。它不复制阶段 XML，而是引用 2~5 个分别通过 Phase 5
 可信 Judge 的 `FinalBuildArtifact`。
 
 必要字段：
 
-- route id、route name、class shell 和 target final artifact id；
-- version context；
-- 等级和 lifecycle stage 严格递增的 `ProgressionStage`；
-- 每阶段 artifact id、用途、play pattern、获取优先级和 caveats；
-- 后续阶段相对上一阶段的 typed `ProgressionChange`；
-- 后续阶段的 typed `TransitionRequirement`；
-- 每个 artifact 的安全 source hash、职业、等级、升华、主技能和版本事实；
+- route id、route name、class shell、`targetArtifactId`、version context；
+- artifact coverage 和 quality status：`verified` 或 `limited`；
+- 等级严格递增、lifecycle stage 非递减的 `ProgressionStage`；
+- 每阶段稳定 stage id、route role、artifact id、用途、play pattern、证据状态、成本画像引用、
+  acquisition priorities 和 caveats；
+- 后续阶段相对上一阶段的 typed `ProgressionChange` 和 `TransitionBridge`；
+- 每个 artifact 的安全 source hash、run id、职业、等级、升华、主技能、Judge 与版本事实；
 - created at、local-only 和 no-raw-PoB 标记。
 
 约束：
@@ -804,9 +903,24 @@ Phase 8 的本地安全成长路线 manifest。它不复制阶段 XML，而是�
 - 每个阶段必须绑定不同且可重新校验的可信 artifact，文字阶段不能冒充 verified stage；
 - 所有阶段职业一致；升华、技能、辅助、天赋、装备、配置和资源允许变化；
 - route version 与每个 artifact 的 patch、tree 和 PoB version 一致；
-- 第一阶段没有 `changesFromPrevious`，后续阶段必须同时有 typed changes 和 transition requirements；
-- delta 只保存相邻阶段的关键变化，不能复制全部装备槽、整棵天赋或所有技能组；
-- 按阶段加载时复用 `FinalBuildArtifact` hash/Judge 校验，响应不返回 XML。
+- 第一阶段没有 changes/bridge，后续阶段必须同时有 typed changes 和非价格-only bridge；
+- delta 只保存相邻阶段关键变化，不能复制全部装备槽、整棵天赋或所有技能组；
+- hard-valid 但保留 playability/modelability 缺口的 artifact 可以进入 route，但整体只能是
+  `limited`，不得称为完整推荐方案；
+- v1 route 继续读取并归一为 legacy stage id/role，不原地重写；新保存只写 v2；
+- lifecycle stage 重复时必须按 stage id 加载；旧 selector 仅在唯一命中时成功。
+
+## ProgressionDeliveryReport
+
+完整成长包固定清点：
+
+- route guide；
+- 每阶段一份 PoB XML；
+- 每阶段一份 import-code 文本；
+- 目标阶段一份官方单阶段 `.build`。
+
+每项包含 stage id、artifact id、format、status、output path 或 error code。除非 provider 将来能
+忠实表达多阶段，否则不得生成伪造 level interval。MCP 响应不包含 XML、导入码正文或来源 URL。
 
 ## FinalPobExportReport
 

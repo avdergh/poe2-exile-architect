@@ -54,6 +54,18 @@ Phase 5 仍遵守项目硬边界：
 - Agent 只能通过结构化工具查询数据库和图，不暴露原生 SQL、Cypher 或 Gremlin 查询语句；
 - 跨阶段唯一硬锁是职业；开荒、攻坚、终局之间可以洗升华、换技能、换天赋、换装备和辅助技能。
 
+完整成长请求由 Phase 8 progression 编排，但每个真实里程碑仍是一个完整 Phase 5 run。开荒阶段
+可以使用与目标阶段完全不同的 Family；当前 run 只能按当前阶段实际升华和主技能查询 Research，
+不能拿目标 Family 的记忆冒充开荒知识。
+
+Phase 8 可以让外部 Agent 在 run 外先做有界联网开荒研究。网页结论只是 patch-scoped 候选：
+
+- 原始网页、攻略正文和完整 URL 不能进入 Phase 5 output；
+- Starter evidence 必须是安全 source ref 和短 claim，并记录 adopted/caveated/rejected；
+- graph/corpus/mechanic 负责复核组件与机制，PoB/Judge 负责数值和合法性；
+- 联网失败可以按 limited evidence 继续，但不能声称开荒体验已经由成熟样本证明；
+- 价格只作获取风险说明，不能自动决定何时换升华、技能或天赋。
+
 ## Agent 与程序分工
 
 Agent 负责：
@@ -83,6 +95,10 @@ Agent 负责：
 - 过早规定候选空间必须有几个变体、哪些字段齐全；
 - 在没有 PoB/Judge 证据时替 Agent 声称候选已验证；
 - 判断候选是否“像不像别人”。Phase 5 只关心是否安全、可解释、可验证和有设计价值。
+
+Progression-bound run 保存 artifact 后不立即导出单阶段完整包。控制流程先把 artifact 绑定到当前
+stage、完成全部阶段并保存 route，最后统一导出每阶段 PoB 文件和目标阶段 `.build`。普通单阶段
+Create 的保存与导出行为保持不变。
 
 ## 原型阶段拆分
 

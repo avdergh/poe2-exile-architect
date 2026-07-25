@@ -59,6 +59,11 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 当用户说“先给开荒，后期洗点转攻坚/终局”时，本次输出只需要覆盖当前阶段，但职业选择和转型
 门槛必须考虑后期目标。
 
+当用户明确要求从开荒到目标等级的完整可执行流程时，进入 progression 模式。开始任何构筑操作
+前，必须完整读取并遵循 [progression-mode.md](references/progression-mode.md)。该模式把
+“同职业开荒流派”“目标高上限流派”和“转型桥梁”作为三个独立设计问题；开荒升华和技能可以与
+目标完全不同。普通单阶段 Create 仍按下方工作流执行，不要擅自扩大成多阶段任务。
+
 ## 工作流程
 
 1. 将用户需求整理成结构化需求摘要。
@@ -197,10 +202,11 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
     `completenessAdvisoryDecisions` 中记录 `deferred` 或 `intentionally_unused` 及具体理由；已真正
     处理且不再出现在最终快照中的提示不要保留陈旧决策。最终 PoB XML 由专用 artifact 工具写入
     本地私有存储，不要写入 `agentOutputFile`。
-18. artifact 保存成功后，只调用一次
+18. 普通单阶段 Create 在 artifact 保存成功后，只调用一次
     `export_final_build_package(artifact_id, name, author, description)`。这个工具固定尝试导出 PoB XML、
     PoB 导入码文本和官方 `.build`，并返回完整 `artifacts` 清单。不要再自行分别调用多个导出工具
-    拼接交付结果；除非用户明确只补导某一种格式。
+    拼接交付结果；除非用户明确只补导某一种格式。progression-bound 阶段不得逐阶段导出；只保存
+    artifact 并提交阶段，整条路线完成后统一调用 `export_build_progression_package`。
 19. 向用户展示自然语言构筑结果、Judge 结论、`lifecycleEvidenceCoverage`、内部重试改了什么、
     最终 artifact id，并逐项列出
     `export_final_build_package.artifacts` 中的全部三项。成功项必须给路径，失败项必须给 errorCode；
@@ -328,18 +334,33 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `get_build_planner_converter_status()`：检查固定版本的官方 `.build` 转换 provider 是否可用。
 - `export_final_build_artifact(artifact_id, name, author, description, link)`：把最终可信 PoB 导出为
   官方单阶段 `.build` 文件，返回本地路径、provider 信息、转换统计和注意事项。
-- `save_build_progression_route(route)`：用户明确要求完整成长流程时，只有在每个重要里程碑都已经
-  作为独立生成运行并保存可信 `FinalBuildArtifact` 后调用。route 必须记录相邻阶段的
-  typed changes 和 transition requirements；不能用文字阶段冒充 artifact，也不能从终局 PoB
-  自动删点降级来猜早期构筑。
-- `list_build_progression_routes()` / `load_build_progression_stage(route_id, lifecycle_stage)`：列出
-  已保存成长路线，或把其中一个可信阶段重新载入活动 PoB。响应不返回 XML。
+- `start_build_progression`、`intake_starter_research_packet`、
+  `submit_build_progression_blueprint`：启动 progression 模式，提交外部 Agent 整理的安全开荒证据和
+  2–5 阶段蓝图。来源 URL 会在入口哈希；网页正文、整角色材料和完整 URL 不落盘。
+- `claim_build_progression_stage`、`bind_build_progression_stage_run`、
+  `complete_build_progression_stage`：严格串行领取阶段、绑定本阶段新建的 Create run，并用同一
+  source hash 的 lifecycle verification、可信 artifact 和成本画像完成阶段。
+- `fail_build_progression_stage` / `retry_build_progression_stage`：阶段失败后暂停；每个阶段最多一次
+  显式外部重试，不自动重启整条路线。
+- `pause_build_progression` / `resume_build_progression` / `get_build_progression_status`：用 CAS
+  revision 暂停、恢复和检查安全控制状态；恢复信息包含安全 starter packet 和活动
+  `StageCreatePacket`，不依赖先前聊天。
+- `revise_future_build_progression_stages`：只修改尚未开始的未来阶段；已开始、进入显式 retry 或
+  已完成阶段，以及职业、目标等级、版本上下文和顶层路线意图都不可改。
+- `classify_build_progression_costs`：暗金按当前联盟 Divine 换算给粗粒度档位，黄装只按 craft
+  effort 分类；不返回虚假的整套总价，无法定价的必需依赖单独计数，价格也不能作为自动转型
+  门槛。
+- `finalize_build_progression` / `export_build_progression_package`：全部阶段完成后保存 Route v2，
+  再统一导出每阶段 XML/导入码、路线说明，以及仅目标阶段的官方 `.build`。
+- `save_build_progression_route` / `list_build_progression_routes` /
+  `load_build_progression_stage(route_id, stage_id=..., lifecycle_stage=...)`：底层兼容接口。新路线按
+  稳定 `stageId` 加载；lifecycle selector 只有唯一命中时可用，重复命中会明确返回歧义。
 - `export_build()` 只能用于本地临时状态，不要把导入码写进用户输出或持久报告。
 
 当用户只要一个目标阶段时，继续使用现有单阶段 Create，不要擅自把运行时间扩大为多阶段。当用户
-明确要求“从开荒到目标等级的完整流程”时，先规划 2~8 个真正发生机制/技能/装备/资源变化的
-里程碑；每个里程碑分别完成 Create、Judge 和 artifact 保存，再组装 progression route。里程碑
-数量按实际需要决定，不机械填满全部 lifecycle enum。
+明确要求“从开荒到目标等级的完整流程”时，默认规划 4 个真正发生机制/技能/装备/资源变化的
+里程碑；没有实质变化时可合并，最多 5 个。每个里程碑分别完成 Create、Judge、生命周期验证和
+artifact 保存，再组装 progression route；不能机械填满 lifecycle enum。
 
 `evaluate_generation_candidate` 的 `version_context` 必须一次提供完整对象，字段使用下面这些名称；
 值来自本次 freshness、图和记忆查询，不要临时猜测，也不要通过搜索源码补字段：

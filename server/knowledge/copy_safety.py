@@ -164,6 +164,17 @@ def safe_url_ref(url: str) -> str:
     return f"source-url:{host_label}:{digest}"
 
 
+def contains_raw_url(value: Any) -> bool:
+    """Detect full URLs while allowing the opaque references returned by ``safe_url_ref``."""
+
+    safe_ref = re.compile(r"\bsource-url:[a-z0-9.-]+:[0-9a-f]{12}\b", re.IGNORECASE)
+    for fragment in all_text(value):
+        scrubbed = safe_ref.sub("", fragment)
+        if re.search(r"https?://[^\s)]+|(?<![A-Za-z0-9_.-])www\.[^\s)]+", scrubbed, re.I):
+            return True
+    return False
+
+
 def _contains_gear_slot_like(text: str) -> bool:
     slot_pattern = re.compile(
         r"\b(ring 1|ring 2|amulet|helmet|body armour|body armor|gloves|boots|weapon|"

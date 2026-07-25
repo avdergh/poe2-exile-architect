@@ -401,6 +401,100 @@ def test_verify_stage_metrics_passes_maps_entry_with_rate_based_sustain_evidence
     assert result["failedChecks"] == []
 
 
+def test_verify_campaign_early_uses_snapshot_backed_main_skill_evidence():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "campaign_early",
+        stats={
+            "Life": 900,
+            "Mana": 400,
+            "ManaUnreserved": 400,
+            "ManaCost": 10,
+            "Speed": 1.5,
+            "NetManaRegen": 20,
+        },
+        defenses={"totalEHP": 2500},
+        state={
+            "mainSkillSocketed": True,
+            "mainSkillSocketEvidence": {
+                "status": "passed",
+                "socketed": True,
+                "groupIndex": 1,
+                "activeSkillCount": 1,
+                "activeSkills": ["Glacial Cascade"],
+            },
+        },
+    )
+
+    assert result["pass"] is True
+    check = next(row for row in result["checks"] if row["check"] == "main_skill_socketed")
+    assert check["status"] == "passed"
+    assert check["detail"]["activeSkills"] == ["Glacial Cascade"]
+
+
+def test_verify_campaign_mid_requires_readback_and_external_single_target_evidence():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "campaign_mid",
+        stats={
+            "TotalDPS": 5000,
+            "Life": 1400,
+            "Mana": 500,
+            "ManaUnreserved": 500,
+            "ManaCost": 20,
+            "Speed": 2,
+            "NetManaRegen": 50,
+        },
+        defenses={"totalEHP": 8000},
+        state={
+            "ascendancyOrKeySupport": {
+                "verified": True,
+                "ascendancy": "Martial Artist",
+                "mainGroupSupportCount": 3,
+            },
+            "singleTargetDuty": {
+                "verified": True,
+                "matchedSkillName": "Tempest Bell",
+                "groupIndex": 2,
+                "evidenceRefs": ["gem:TempestBellPlayer", "mechanic:bell_single_target"],
+            },
+        },
+    )
+
+    assert result["pass"] is True
+    assert result["unknownChecks"] == []
+    single_target = next(
+        row for row in result["checks"] if row["check"] == "single_target_feels_ok"
+    )
+    assert single_target["detail"]["positiveModelledOffense"] is True
+    assert (
+        single_target["detail"]["scope"]
+        == "single_target_duty_present_not_gameplay_feel_certification"
+    )
+
+
+def test_lifecycle_stage_verification_state_rejects_raw_url_evidence():
+    from pydantic import ValidationError
+
+    from server.knowledge import lifecycle_verification
+
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            singleTargetSkillName="Tempest Bell",
+            singleTargetEvidenceRefs=["https://example.com/guide"],
+        )
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            singleTargetSkillName="Tempest Bell",
+        )
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            singleTargetEvidenceRefs=["skill:TempestBellPlayer"],
+        )
+
+
 def test_verify_stage_metrics_classifies_mana_flask_dependency_and_boss_risk():
     from server.knowledge import lifecycle_verification
 
@@ -465,6 +559,77 @@ def test_verify_stage_metrics_returns_actions_for_unknown_endgame_checks():
     joined = " ".join(result["recommendedActions"]).lower()
     assert "build-defining" in joined
     assert result["status"] == "unknown"
+
+
+def test_verify_endgame_budget_accepts_snapshot_backed_build_defining_component():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "endgame_budget",
+        stats={
+            "TotalDPS": 10000,
+            "Life": 4000,
+            "Mana": 600,
+            "ManaUnreserved": 600,
+            "ManaCost": 20,
+            "Speed": 2,
+            "NetManaRegen": 50,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 14000,
+        },
+        state={
+            "buildDefiningComponent": {
+                "verified": True,
+                "kind": "skill",
+                "matchedName": "Whirling Assault",
+                "componentKey": "skill:WhirlingAssaultPlayer",
+                "evidenceRefs": [
+                    "skill:WhirlingAssaultPlayer",
+                    "dq-0123456789abcdef",
+                ],
+            }
+        },
+    )
+
+    assert result["pass"] is True
+    component = next(
+        row for row in result["checks"] if row["check"] == "build_defining_component_online"
+    )
+    assert component["status"] == "passed"
+    assert component["detail"]["componentKey"] == "skill:WhirlingAssaultPlayer"
+
+
+def test_lifecycle_stage_verification_state_requires_complete_build_defining_evidence():
+    from pydantic import ValidationError
+
+    from server.knowledge import lifecycle_verification
+
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            buildDefiningComponentKind="skill",
+            buildDefiningComponentName="Whirling Assault",
+            buildDefiningComponentKey="skill:WhirlingAssaultPlayer",
+        )
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            buildDefiningComponentKind="skill",
+            buildDefiningComponentName="Whirling Assault",
+            buildDefiningComponentKey="skill:WhirlingAssaultPlayer",
+            buildDefiningEvidenceRefs=["https://example.com/guide"],
+        )
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            buildDefiningComponentKind="skill",
+            buildDefiningComponentName="Whirling Assault",
+            buildDefiningComponentKey="unique:pob:wrong_type",
+            buildDefiningEvidenceRefs=["dq-0123456789abcdef"],
+        )
+    with pytest.raises(ValidationError):
+        lifecycle_verification.LifecycleStageVerificationState(
+            buildDefiningEvidenceRefs=["dq-0123456789abcdef"],
+        )
 
 
 def test_transition_gate_blocks_missing_requirements():
