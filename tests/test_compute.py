@@ -328,6 +328,29 @@ def test_optimize_item_on_empty_weapon_slot_for_attack_skill(engine):
     assert r["affixes"]  # crafted a real spear
 
 
+def test_optimize_item_low_ilvl_weapon_passes_shared_legality_audit(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Monk", "Martial Artist")
+    engine.set_level(18)
+    engine.paste_skill("Glacial Cascade")
+
+    r = itemopt.optimize_item(
+        engine,
+        "Weapon 1",
+        base="Crackling Quarterstaff",
+        ilvl=18,
+        goals={"TotalDPS": 0.75, "TotalEHP": 0.25},
+        keep_resists_capped=False,
+    )
+
+    assert r["ok"] is True
+    assert r["itemLevel"] == 18
+    assert r["legalityCheck"]["ok"] is True
+    assert all(affix["ilvl"] <= 18 for affix in r["attainability"])
+
+
 def test_optimize_item_warns_when_it_breaks_resist_cap(engine):
     # Regression: the break check uses resistMissing (gap below the real per-element cap), NOT the
     # floored *ResistOverCap. PoB floors over-cap at 0, so the old "over-cap goes negative" check was

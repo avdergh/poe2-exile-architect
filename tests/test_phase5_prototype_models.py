@@ -162,6 +162,13 @@ def test_agent_led_prototype_submission_builds_safe_human_review_packet():
     assert packet["noHiddenChainOfThought"] is True
 
 
+def test_lifecycle_evidence_level_band_keeps_level_80_in_maps_entry():
+    assert prototype._stage_for_level(81) == "maps_entry"
+    assert prototype._stage_for_level(82) == "endgame_budget"
+    assert prototype._stage_for_level(91) == "endgame_budget"
+    assert prototype._stage_for_level(92) == "endgame_final"
+
+
 def test_candidate_requires_agent_query_or_memory_evidence():
     payload = agent_submission_payload()
     payload["prototypeBuildCandidate"]["tool_references"] = []

@@ -60,6 +60,35 @@ def _values(text: str) -> list[float]:
     return out
 
 
+def _display_ranges(text: str) -> list[dict[str, float]]:
+    """Read the human-facing ranges from a corpus mod template.
+
+    Most RePoE ranges use the same units as the displayed item line, but a few weapon stats use
+    internal fixed-point units (for example 4.41-5% local critical chance is stored as 441-500).
+    The template itself remains the authoritative display range for matching clipboard text.
+    """
+    out: list[dict[str, float]] = []
+    for token in _NUM.findall(text):
+        raw = token.replace(",", "").strip()
+        outer_sign = -1.0 if raw.startswith("-(") else 1.0
+        if len(raw) > 1 and raw[0] in "+-" and raw[1] == "(":
+            raw = raw[1:]
+        raw = raw.strip("()")
+        match = re.fullmatch(
+            r"([+\-]?\d+(?:\.\d+)?)\s*-\s*([+\-]?\d+(?:\.\d+)?)",
+            raw,
+        )
+        try:
+            if match:
+                values = [outer_sign * float(match.group(1)), outer_sign * float(match.group(2))]
+            else:
+                values = [outer_sign * float(raw)]
+        except ValueError:
+            continue
+        out.append({"min": min(values), "max": max(values)})
+    return out
+
+
 def _roll_in(ranges: list[dict], nums: list[float]) -> bool:
     rs = [r for r in ranges if r.get("min") is not None and r.get("max") is not None]
     if not rs or len(nums) < len(rs):
@@ -84,8 +113,14 @@ def _range_str(ranges: list[dict]) -> str | None:
     return " / ".join(parts) if parts else None
 
 
-def classify_affix(line: str) -> dict[str, Any] | None:
-    """Match one affix line to its mod group + tier (T1 = best). None if not recognized."""
+def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any] | None:
+    """Match one affix line to its mod group + tier (T1 = best). None if not recognized.
+
+    When a base is known, restrict tier candidates to mods that can actually roll on that base.
+    Several weapon families share display text while using different, overlapping tier ranges; a
+    base-agnostic match can otherwise assign a legal low-level roll to a higher-level tier from a
+    different weapon family.
+    """
     norm = _normalize(line)
     words = [w for w in re.findall(r"[a-z]+", norm) if w not in _STOP] or re.findall(
         r"[a-z]+", norm
@@ -99,6 +134,18 @@ def classify_affix(line: str) -> dict[str, Any] | None:
         return None
     # craftable affixes only when present (ignore unique-only mods that share the stat text)
     matches = [c for c in matches if c["type"] in ("prefix", "suffix")] or matches
+    if base_name:
+        base_matches = [
+            c
+            for c in matches
+            if c.get("tags") and db.mod_tags_match_base(base_name, c.get("tags") or [])
+        ]
+        # Unknown/legacy bases retain the conservative generic classifier. For a recognized base,
+        # use only its real spawn-tag candidates so overlapping weapon-family tiers cannot leak in.
+        if db.get_item(base_name) is not None:
+            matches = base_matches
+        if not matches:
+            return None
     # collapse RePoE's per-item-class duplicate tiers: one entry per (group, req level, ranges)
     by_group: dict[str, dict[tuple, dict]] = defaultdict(dict)
     for c in matches:
@@ -111,12 +158,22 @@ def classify_affix(line: str) -> dict[str, Any] | None:
     for gkey, uniq in by_group.items():
         mods = sorted(uniq.values(), key=lambda m: -(m["required_level"] or 0))  # T1 = highest req
         for idx, m in enumerate(mods):
-            if _roll_in(m["ranges"], nums):
+            matched_ranges = m["ranges"]
+            matched = _roll_in(matched_ranges, nums)
+            display_ranges = _display_ranges(m["text"])
+            if (
+                not matched
+                and len(display_ranges) == len(matched_ranges)
+                and _roll_in(display_ranges, nums)
+            ):
+                matched_ranges = display_ranges
+                matched = True
+            if matched:
                 return {
                     "type": m["type"],
                     "tier": idx + 1,
                     "totalTiers": len(mods),
-                    "tierRange": _range_str(m["ranges"]),
+                    "tierRange": _range_str(matched_ranges),
                     "requiredLevel": m["required_level"],
                     "group": label or gkey,
                 }
@@ -207,7 +264,7 @@ def parse_item(text: str) -> dict[str, Any]:
             if any(kind != matched_kind for _text, kind in chunk):
                 continue
             combined = "\n".join(text for text, _kind in chunk)
-            classified = classify_affix(combined)
+            classified = classify_affix(combined, base_name=info.get("base"))
             # A numeric miss on a multi-line template can mean two independent adjacent affixes
             # merely share the same words as a hybrid mod.  Only merge multi-line text when the
             # rolls fit one real tier; retain the single-line fallback so true out-of-range rolls

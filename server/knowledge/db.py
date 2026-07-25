@@ -332,7 +332,7 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
     """Candidate affixes matching the readable words in `query`, with tier ranges.
 
     Used by the item parser to find a rolled affix's tier ladder. Returns each mod's text,
-    type (prefix/suffix), required_level, groups, and per-stat ranges.
+    type (prefix/suffix), required_level, groups, spawn tags, and per-stat ranges.
     """
     con = _conn()
     # `ranges` was added in schema v3; detect the column directly rather than catching
@@ -340,7 +340,7 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
     has_ranges = any(row[1] == "ranges" for row in con.execute("PRAGMA table_info(mods)"))
     cols = ", m.ranges" if has_ranges else ""
     rows = con.execute(
-        "SELECT m.text, m.type, m.required_level, m.groups" + cols + " "
+        "SELECT m.text, m.type, m.required_level, m.groups, m.tags" + cols + " "
         "FROM mods_fts f JOIN mods m ON m.id = f.mod_id WHERE mods_fts MATCH ? LIMIT ?",
         (_match_cols(query, ("text",)), limit),
     )
@@ -350,10 +350,31 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
             "type": r["type"],
             "required_level": r["required_level"],
             "groups": json.loads(r["groups"] or "[]"),
+            "tags": json.loads(r["tags"] or "[]"),
             "ranges": json.loads(r["ranges"] or "[]") if has_ranges else [],
         }
         for r in rows
     ]
+
+
+def mod_tags_match_base(base_name: str, mod_tags: list[str] | set[str]) -> bool:
+    """Whether a craftable mod's spawn tags permit it on ``base_name``.
+
+    Family-specific tags take precedence so an overlapping roll from another weapon family cannot
+    leak in through a shared ``weapon`` tag.  A mod whose *only* applicability tag is a broad weapon
+    shape (for example local critical chance tagged simply ``weapon``) may still match that shape.
+    ``default`` alone remains too broad to authorize an affix, and empty tags remain unknown.
+    """
+    base = get_item(base_name)
+    if not base:
+        return False
+    base_tags = set(base.get("tags") or [])
+    candidate_tags = set(mod_tags)
+    specific_tags = candidate_tags - _GENERIC_TAGS
+    if specific_tags:
+        return bool(specific_tags & base_tags)
+    broad_weapon_tags = {"weapon", "onehand", "twohand", "ranged"}
+    return bool(candidate_tags & base_tags & broad_weapon_tags)
 
 
 def reverse_lookup(stat: str, limit: int = 30) -> dict[str, list[dict]]:
