@@ -42,9 +42,10 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
 def test_manifest_advertises_phase8_tool_surface_and_release_version():
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     names = {item["name"] for item in manifest["tools"]}
-    assert manifest["version"] == "0.1.40"
+    assert manifest["version"] == "0.1.41"
     assert {
         "start_build_progression",
+        "bind_build_progression_target_anchor",
         "intake_starter_research_packet",
         "submit_build_progression_blueprint",
         "revise_future_build_progression_stages",

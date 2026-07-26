@@ -715,6 +715,10 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
             str(row["name"]) for row in con.execute("PRAGMA table_info(deep_research_records)")
         }
         assert {"build_family_key", "knowledge_key", "evidence_count"} <= columns
+        query_columns = {
+            str(row["name"]) for row in con.execute("PRAGMA table_info(research_dedupe_queries)")
+        }
+        assert {"request_contract", "result_contract"} <= query_columns
 
         service = research_memory.ResearchMemoryService(db_path=db_path)
         query_ref = service.query_research_memory(
@@ -732,6 +736,82 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
         assert rows
     finally:
         con.close()
+
+
+def test_query_receipt_preserves_typed_identity_and_safe_result_ids(tmp_path):
+    service = research_memory.ResearchMemoryService(db_path=tmp_path / "mature.sqlite")
+
+    result = service.query_research_memory(
+        "Plan a target Family.",
+        component_keys=["ascendancy:target-monk", "skill:target-attack"],
+        ascendancy_key="ascendancy:target-monk",
+        primary_skill_key="skill:target-attack",
+        include_transferable=True,
+        research_axes=["mechanic_engine"],
+    )
+    receipt = service.read_query_receipt(result["dedupeQueryRef"])
+
+    assert receipt is not None
+    assert receipt["request"]["ascendancyKey"] == "ascendancy:target-monk"
+    assert receipt["request"]["primarySkillKey"] == "skill:target-attack"
+    assert receipt["request"]["primarySkillKeys"] == ["skill:target-attack"]
+    assert receipt["request"]["includeTransferable"] is True
+    assert receipt["result"] == {
+        "buildFamilies": [],
+        "deepRecordIds": [],
+        "patternIds": [],
+        "semanticEdgeIds": [],
+        "memoryItemIds": [],
+    }
+    assert receipt["noRawQuery"] is True
+    assert "Plan a target Family." not in str(receipt)
+
+
+def test_query_receipt_records_graph_backed_primary_skill_equivalence(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+
+    result = service.query_research_memory(
+        "Plan a Lightning Arrow Family.",
+        component_keys=[
+            "ascendancy:monk:martial_artist",
+            "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+        ],
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="gem:Metadata/Items/Gems/SkillGemLightningArrow",
+    )
+    receipt = service.read_query_receipt(result["dedupeQueryRef"])
+
+    assert receipt is not None
+    assert receipt["request"]["primarySkillKey"] == (
+        "gem:Metadata/Items/Gems/SkillGemLightningArrow"
+    )
+    assert receipt["request"]["primarySkillKeys"] == [
+        "gem:Metadata/Items/Gems/SkillGemLightningArrow",
+        "skill:LightningArrowPlayer",
+    ]
+
+
+def test_query_receipt_is_immutable_when_later_research_changes_results(tmp_path):
+    service = research_memory.ResearchMemoryService(db_path=tmp_path / "mature.sqlite")
+    query_args = {
+        "query": "Projectile overlap principle",
+        "component_keys": ["skill:LightningArrowPlayer"],
+    }
+
+    before = service.query_research_memory(**query_args)
+    accepted = service.propose_research_fragments(
+        _fragment_payload(),
+        dedupe_query_ref=before["dedupeQueryRef"],
+    )
+    after = service.query_research_memory(**query_args)
+
+    assert accepted["status"] == "accepted"
+    assert after["dedupeQueryRef"] != before["dedupeQueryRef"]
+    assert service.read_query_receipt(before["dedupeQueryRef"])["result"]["memoryItemIds"] == []
+    assert service.read_query_receipt(after["dedupeQueryRef"])["result"]["memoryItemIds"]
 
 
 def test_core_support_package_is_not_rejected_by_component_count(tmp_path):

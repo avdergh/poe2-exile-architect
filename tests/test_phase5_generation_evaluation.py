@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import evaluation, run_store
+from server.compute.state import build_state_hash
+from server.generation import evaluation, evaluation_snapshots, run_store
 
 
 BUILD_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -194,6 +195,7 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert result["trustedEvaluation"] is True
     assert result["trustedEvaluationScope"] == "snapshot_and_judge_only"
     assert result["versionContextTrusted"] is False
+    assert result["transientBuildState"]["semanticStateHash"] == build_state_hash(BUILD_XML)
     assert result["transientBuildState"]["safeSummary"]["passivePointsUsed"] == "72"
     assert result["transientBuildState"]["testedSkillGroups"][0] == {
         "groupIndex": 1,
@@ -261,6 +263,15 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert "PathOfBuilding" not in receipt_text
     assert "Lightning Arrow" in receipt_text
     assert (run_dir / "trusted-evaluations" / "attempt-0.json").is_file()
+    remembered = evaluation_snapshots.read(
+        run_id=run_id,
+        attempt_index=0,
+        candidate_id="candidate:test:1",
+        source_hash=result["transientBuildState"]["sourceHash"],
+    )
+    assert remembered is not None
+    assert remembered.xml == BUILD_XML
+    assert not list(run_dir.rglob("*.xml"))
 
 
 def test_evaluate_generation_candidate_rejects_snapshot_without_main_skill(tmp_path, monkeypatch):

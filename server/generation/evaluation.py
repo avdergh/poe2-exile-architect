@@ -11,9 +11,10 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from server.compute.engine import PobEngine
+from server.compute.state import build_state_hash
 from server.judge import evaluator, runner, sample_audit
 
-from . import models, preflight, run_store
+from . import evaluation_snapshots, models, preflight, run_store
 
 
 def evaluate_generation_candidate(
@@ -66,6 +67,7 @@ def evaluate_generation_candidate(
             return _rejected(str(parsed["errorCode"]))
 
         source_hash = evaluator.compute_source_hash(xml)
+        semantic_state_hash = build_state_hash(xml)
         snapshot_id = f"generation:{bound_run.run_id}:{source_hash}"
         captured: dict[str, Any] = {}
 
@@ -97,6 +99,7 @@ def evaluate_generation_candidate(
             ],
             snapshot_id=snapshot_id,
             source_hash=source_hash,
+            semantic_state_hash=semantic_state_hash,
             version=version,
         )
         judge_report = _build_judge_report(
@@ -112,11 +115,37 @@ def evaluate_generation_candidate(
             "transientBuildState": state,
             "judgeAdvisoryReport": judge_report,
         }
+        expected_attempt_index = len(existing_receipts)
         try:
+            evaluation_snapshots.remember(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+                candidate_id=candidate_id,
+                source_hash=source_hash,
+                xml=xml,
+            )
             attempt_index = run_store.write_trusted_evaluation(bound_run, receipt)
-        except run_store.RunStoreError as exc:
-            return _rejected(exc.code)
+        except (run_store.RunStoreError, ValueError) as exc:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
+            if isinstance(exc, run_store.RunStoreError):
+                return _rejected(exc.code)
+            return _rejected("trusted_evaluation_snapshot_failed")
+        if attempt_index != expected_attempt_index:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
+            if attempt_index is None:
+                return _rejected("run_state_write_failed")
+            return _rejected("trusted_attempt_index_mismatch")
         if attempt_index is None:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
             return _rejected("run_state_write_failed")
         return {
             "status": judge_report["status"],
@@ -201,6 +230,7 @@ def _build_state_ref(
     completeness_advisories: list[str],
     snapshot_id: str,
     source_hash: str,
+    semantic_state_hash: str,
     version: models.VersionContext,
 ) -> dict[str, Any]:
     summary = {
@@ -218,6 +248,7 @@ def _build_state_ref(
         status="available",
         snapshot_id=snapshot_id,
         source_hash=source_hash,
+        semantic_state_hash=semantic_state_hash,
         safe_summary=summary,
         tested_skill_groups=parsed["testedSkillGroups"],
         completeness_advisories=list(dict.fromkeys(completeness_advisories)),

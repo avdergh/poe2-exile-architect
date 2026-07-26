@@ -78,9 +78,11 @@ Agent 在活动 PoB 中完成候选
 1. Agent 完成最后一次 `evaluate_generation_candidate`；
 2. Agent 根据 Judge 和自身核验决定接受该版本；
 3. Agent 调用最终保存工具，并指定本次运行、候选和可信 attempt；
-4. 程序重新读取活动 PoB XML并计算 source hash；
-5. 程序核对可信凭据中的 candidate、attempt、snapshot、source hash 和 `passed=true`；
-6. 核对成功后原子写入一个 `FinalBuildArtifact`；
+4. 程序重新读取活动 PoB XML，并用可信凭据中的 `semanticStateHash` 核对等级、技能、装备、
+   天赋和配置等真实输入没有变化；
+5. 程序核对 candidate、attempt、snapshot、原始 source hash 和 `passed=true`，并取回当前
+   MCP 进程内短暂保留的精确 Judge XML；
+6. 核对成功后把该精确 Judge 快照原子写入一个 `FinalBuildArtifact`；
 7. 同一运行已有 artifact 时拒绝覆盖。
 
 验收：
@@ -97,7 +99,8 @@ Agent 在活动 PoB 中完成候选
 - 新增本地私有 artifact store，默认位于 user-data 的 `final-build-artifacts`，测试可通过环境变量
   隔离。已完成
 - 新增 `save_final_build_artifact`：只接受当前运行最后一轮、可信 Judge `passed=true`、没有硬
-  阻断且活动 PoB source hash 未变化的候选。已完成
+  阻断且活动 PoB 语义输入未变化的候选；PoB 刷新派生输出不会造成误拒，精确 Judge XML 只在
+  进程内交接，未落盘到 run receipt。已完成
 - 同一运行只能保存一个最终 artifact，拒绝覆盖；失败轮次和旧 attempt 不保存完整 XML。已完成
 - 新增 `list_final_build_artifacts`，只返回安全 manifest，不返回 XML 或 PoB code。已完成
 - 新增 `load_final_build_artifact`，校验 XML 与 source hash 后直接恢复到活动 Headless PoB，响应

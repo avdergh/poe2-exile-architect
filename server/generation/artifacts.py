@@ -15,9 +15,10 @@ from pydantic import ValidationError
 
 from server import paths
 from server.compute import completeness
+from server.compute.state import build_state_hash
 from server.judge import evaluator
 
-from . import models, run_store
+from . import evaluation_snapshots, models, run_store
 
 
 ARTIFACT_SCHEMA_VERSION = 1
@@ -94,13 +95,32 @@ def save_final_build_artifact(
         return models.rejected("trusted_evaluation_mismatch")
 
     try:
-        xml = active_engine.get_xml()
+        active_xml = active_engine.get_xml()
     except Exception:  # noqa: BLE001 - never expose engine internals through MCP.
         return models.rejected("active_build_snapshot_failed")
-    if not _valid_pob_xml(xml):
+    if not _valid_pob_xml(active_xml):
         return models.rejected("active_build_snapshot_invalid")
-    if evaluator.compute_source_hash(xml) != state.source_hash:
+    snapshot = evaluation_snapshots.read(
+        run_id=bound_run.run_id,
+        attempt_index=attempt_index,
+        candidate_id=candidate_id,
+        source_hash=str(state.source_hash),
+    )
+    active_semantic_hash = build_state_hash(active_xml)
+    expected_semantic_hash = state.semantic_state_hash
+    if expected_semantic_hash and active_semantic_hash != expected_semantic_hash:
         return models.rejected("active_build_changed_after_evaluation")
+    if snapshot is not None:
+        if active_semantic_hash != snapshot.semantic_state_hash:
+            return models.rejected("active_build_changed_after_evaluation")
+        xml = snapshot.xml
+    else:
+        # Legacy receipts did not carry an in-memory Judge snapshot. Preserve their exact-raw
+        # behavior when the active serializer is still byte-identical, otherwise fail closed and
+        # require a fresh evaluation instead of inventing Judge provenance for new XML.
+        if evaluator.compute_source_hash(active_xml) != state.source_hash:
+            return models.rejected("trusted_evaluation_snapshot_unavailable")
+        xml = active_xml
     blockers = completeness.artifact_blockers(xml)
     if blockers:
         return models.rejected(blockers[0], caveats=blockers[1:])
@@ -139,6 +159,7 @@ def save_final_build_artifact(
     except OSError:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return models.rejected("final_artifact_write_failed")
+    evaluation_snapshots.forget(run_id=bound_run.run_id)
     return {
         "status": "saved",
         "finalBuildArtifact": _safe_manifest(manifest),

@@ -67,12 +67,14 @@ source probe
   -> 下一案例 Create 召回
 
 完整成长流程请求
+  -> 普通单阶段 Create 从空状态生成目标 BD
+  -> TargetAnchorIdentity + 十维 TargetDesignCoverage + immutable artifact/hash
   -> 外部 Agent 有界检索同职业当前版本开荒资料
   -> StarterResearchPacket 安全缓存；原文和完整 URL 不落盘
-  -> 独立开荒选择 + 独立目标流派 + TransitionBridge
-  -> 可恢复 Progression service 串行驱动各阶段 Phase 5 run
-  -> Judge / lifecycle hash / artifact 绑定
-  -> ProgressionRouteArtifact v2 + 多阶段交付包
+  -> 独立开荒选择 + TransitionBridge + typed Research query receipts
+  -> 可恢复 Progression service 串行驱动目标前阶段 Phase 5 run
+  -> 最后 target closure 复用同一 anchor，不再 Create
+  -> ProgressionRouteArtifact v3 + 多阶段交付包
 ```
 
 ## 核心 Runtime 模块
@@ -88,7 +90,7 @@ source probe
 | Copy-safety | `server/knowledge/copy_safety.py` | 防止 reconstructable build material 的 guardrails。 |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | 现有 route、verification、quality 和 evaluation helpers。 |
 | Comparative learning | `server/learning/*` | Phase 7 typed contracts、隔离案例、盲测 packet、比较报告、Learning Memory 和可恢复 campaign 状态。 |
-| Build progression | `server/generation/progression*.py` | Phase 8 开荒证据、路线蓝图、CAS 状态、可信 artifact 绑定、成本画像和多阶段导出。 |
+| Build progression | `server/generation/progression*.py` | Phase 8 target anchor、开荒证据、typed Research provenance、artifact-bound lifecycle 回执、CAS 状态、成本画像和多阶段导出。 |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context。 |
 | Scripts | `scripts/*` | Verification、smoke tests、packaging、source probes。 |
 
@@ -115,6 +117,8 @@ source probe
 - Research schema 对具体 build knowledge 负责；Learning Memory 只接收跨维 Create 行为经验及其 correction。
 - Phase 8 外部 Agent 负责联网研究和阶段设计；服务只校验安全摘要、编排状态和可信 artifact，不
   爬网、不调用模型，也不从终局 PoB 自动推导早期构筑。
+- Phase 8 必须保持普通 Create 行为隔离：目标先由普通单阶段 Create 生成；最后阶段复用同一
+  artifact/source hash。Judge 只作 advisory，Family 与实际采用知识由 typed query receipt 校验。
 - 开荒与目标阶段只锁基础职业。社区攻略是候选证据，不能直接进入 Research/Learning Memory；
   技能与机制前提仍由当前 graph/corpus/mechanic 复核。
 - Phase benchmark reports 对进度声明负责。
@@ -135,7 +139,8 @@ source probe
 - Durable generated reports 不存入仓库。
 - Mature raw payloads 只允许 quarantine-only transient 使用。
 - Phase 7 原始来源按 case 隔离保存；控制状态、报告和 Learning Memory 只能持久化 hash/ref 与安全摘要。
-- Phase 8 starter cache 和 progression manifest 只保存安全摘要、来源哈希、阶段 delta 和 artifact
-  引用；网页原文、完整 URL 与各阶段 XML 不进入这些状态。
+- Phase 8 starter cache 和 progression manifest 只保存安全摘要、来源哈希、typed query receipt
+  引用、阶段 delta、target coverage 和 artifact 引用；网页原文、完整 URL 与各阶段 XML 不进入
+  这些状态。
 - Long-term knowledge 必须 clean、versioned、evidence-backed 且 copy-safe。
 - User-data/runtime 目录可以保存本地状态；仓库文档应描述 contracts，而不是偶然的本地 artifacts。

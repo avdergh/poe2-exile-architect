@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 139
+    assert len(tools) == 140
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -748,6 +748,257 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
     assert result["stateSnapshot"]["level"] == 68
     assert "engine-computed" in result["evidenceTags"]
     assert result["evaluatedSourceHash"]
+
+
+def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_claim(
+    monkeypatch,
+):
+    from server import main
+
+    artifact_id = "final-build:artifact-lifecycle-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Flicker Strike" gemId="Metadata/Items/Gems/SkillGemFlickerStrike"
+      skillId="FlickerStrikePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_xml = '<PathOfBuilding><Build level="80"/></PathOfBuilding>'
+    recorded: dict[str, object] = {}
+
+    class _Stub:
+        def load_build_xml(self, xml, name=None):
+            assert xml == artifact_xml
+            assert name == artifact_id
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 3000,
+                    "Mana": 540,
+                    "ManaUnreserved": 540,
+                    "ManaCost": 221,
+                    "Speed": 6.454,
+                    "NetManaRegen": 28.1,
+                    "TotalDPS": 329791,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 16000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+
+    def save_receipt(**kwargs):
+        recorded.update(kwargs)
+        return {
+            "status": "recorded",
+            "verificationRef": "lifecycle-verification:0123456789abcdef",
+        }
+
+    monkeypatch.setattr(
+        main.generation_progression_lifecycle,
+        "save_artifact_lifecycle_receipt",
+        save_receipt,
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"manaFlaskEquipped": True},
+        artifact_id=artifact_id,
+    )
+
+    assert result["pass"] is False
+    assert "sustain_ok" in result["failedChecks"]
+    assert result["stateSnapshot"]["manaFlaskEquipped"] is False
+    assert result["evaluatedSourceHash"] == artifact_source_hash
+    assert result["restoredEngineSourceHash"] != artifact_source_hash
+    assert result["artifactBound"] is True
+    assert recorded["source_hash"] == artifact_source_hash
+    assert recorded["restored_engine_source_hash"] == result["restoredEngineSourceHash"]
+    assert recorded["result"]["evaluatedSourceHash"] == artifact_source_hash
+
+
+def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-derived-output-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_before = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1">
+    <PlayerStat stat="TotalDPS" value="100" />
+  </Build>
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_after = restored_before.replace('value="100"', 'value="999"')
+
+    class _Stub:
+        refreshed = False
+
+        def load_build_xml(self, xml, name=None):
+            assert xml == artifact_xml
+            assert name == artifact_id
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_after if self.refreshed else restored_before
+
+        def get_build(self):
+            self.refreshed = True
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 3000,
+                    "Mana": 540,
+                    "ManaUnreserved": 540,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 60,
+                    "TotalDPS": 100000,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 16000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        main.generation_progression_lifecycle,
+        "save_artifact_lifecycle_receipt",
+        lambda **kwargs: {
+            "status": "recorded",
+            "verificationRef": "lifecycle-verification:0123456789abcdef",
+        },
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"level": 80},
+        artifact_id=artifact_id,
+    )
+
+    assert result["ok"] is True
+    assert result["pass"] is True
+    assert result["artifactBound"] is True
+    assert result["evaluatedSourceHash"] == artifact_source_hash
+    assert result["restoredEngineSourceHash"].startswith("sha256:")
+
+
+def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-semantic-mutation-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_after = artifact_xml.replace('level="80"', 'level="79"')
+
+    class _Stub:
+        mutated = False
+
+        def load_build_xml(self, xml, name=None):
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_after if self.mutated else artifact_xml
+
+        def get_build(self):
+            self.mutated = True
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {"stats": {}}
+
+        def get_defenses(self):
+            return {}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"level": 80},
+        artifact_id=artifact_id,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "unknown"
+    assert result["errorCode"] == "lifecycle_snapshot_changed_during_verification"
 
 
 def test_verify_campaign_early_derives_main_skill_from_same_xml_snapshot(monkeypatch):

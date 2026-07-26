@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.4.5+codex.20260725153435",
+  "version": "0.4.5+codex.20260726024322",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -19,10 +19,14 @@
   "interface": {
     "displayName": "Exile Architect",
     "shortDescription": "Research and create PoE2 builds with verification gates.",
-    "longDescription": "Provides visible Desktop research and comparative-learning orchestration, copy-safe mature-build extraction, and Agent-led single-stage or recoverable multi-stage build creation backed by typed MCP tools.",
+    "longDescription": "Provides visible Desktop research and comparative-learning orchestration, copy-safe mature-build extraction, and Agent-led single-stage or recoverable multi-stage build creation with typed MCP verification gates.",
     "developerName": "avdergh",
     "category": "Developer Tools",
-    "capabilities": ["Research", "Automation", "Local"],
+    "capabilities": [
+      "Research",
+      "Automation",
+      "Local"
+    ],
     "websiteURL": "https://github.com/avdergh/poe2-exile-architect",
     "defaultPrompt": [
       "/poe-bd-create \u6211\u60f3\u8981\u4e00\u4e2a\u9002\u5408\u65b0\u624b\u5f00\u8352\u7684 Deadeye \u5f13\u7cfb BD",

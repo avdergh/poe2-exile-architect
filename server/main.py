@@ -35,6 +35,7 @@ from .compute import itemopt
 from .compute import passiveopt
 from .compute import skillgroups
 from .compute import solver
+from .compute import state as compute_state
 from .compute import supportopt
 from .compute.pob_code import PobCodeError, decode_code, encode_code, is_link, to_xml
 from .knowledge import advice
@@ -64,6 +65,7 @@ from .generation import preflight as generation_preflight
 from .generation import progression as generation_progression
 from .generation import progression_costs as generation_progression_costs
 from .generation import progression_delivery as generation_progression_delivery
+from .generation import progression_lifecycle as generation_progression_lifecycle
 from .generation import progression_models as generation_progression_models
 from .generation import progression_research as generation_progression_research
 from .generation import progression_service as generation_progression_service
@@ -792,10 +794,11 @@ def export_final_build_package(
 # --------------------------------------------------------------------------------------
 @mcp.tool()
 def save_build_progression_route(route: dict[str, Any]) -> dict[str, Any]:
-    """Save an ordered progression whose every milestone is a trusted FinalBuildArtifact.
+    """Save a compatibility Route v2 whose every milestone is a trusted FinalBuildArtifact.
 
     The route records typed deltas and transition requirements, but never derives early stages by
-    downgrading the final PoB and never exposes raw XML.
+    downgrading the final PoB and never exposes raw XML. Anchor-first Route v3 must be finalized
+    through `finalize_build_progression`; this compatibility entry cannot bypass that state service.
     """
     return generation_progression.save_progression_route(route)
 
@@ -865,6 +868,28 @@ def start_build_progression(
 
 
 @mcp.tool()
+def bind_build_progression_target_anchor(
+    progression_id: str,
+    artifact_id: str,
+    target_identity: generation_progression_models.TargetAnchorIdentity,
+    design_coverage: generation_progression_models.TargetDesignCoverage,
+    lifecycle_verification_ref: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Bind an accepted target only after artifact-bound lifecycle verification passes."""
+    return generation_progression_service.bind_build_progression_target_anchor(
+        progression_id=progression_id,
+        artifact_id=artifact_id,
+        target_identity=_typed_payload(target_identity),
+        design_coverage=_typed_payload(design_coverage),
+        lifecycle_verification_ref=lifecycle_verification_ref,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
 def intake_starter_research_packet(
     progression_id: str,
     expected_revision: int,
@@ -891,7 +916,7 @@ def submit_build_progression_blueprint(
     operation_id: str,
     blueprint: generation_progression_models.ProgressionBlueprint,
 ) -> dict[str, Any]:
-    """Submit two to five event-driven milestones with independent starter and target Families."""
+    """Submit two to five milestones whose target is the already-bound immutable anchor."""
     return generation_progression_service.submit_build_progression_blueprint(
         progression_id=progression_id,
         expected_revision=expected_revision,
@@ -922,7 +947,7 @@ def claim_build_progression_stage(
     expected_revision: int,
     operation_id: str,
 ) -> dict[str, Any]:
-    """Claim the next strictly serial stage and return its safe StageCreatePacket."""
+    """Claim the next stage; the target closure reuses its anchor without another Create run."""
     return generation_progression_service.claim_build_progression_stage(
         progression_id=progression_id,
         expected_revision=expected_revision,
@@ -962,7 +987,7 @@ def complete_build_progression_stage(
     expected_revision: int,
     operation_id: str,
 ) -> dict[str, Any]:
-    """Accept one stage only when run, artifact, class, level, version and XML hash all match."""
+    """Accept one stage after trusted artifact/lifecycle, provenance and transition checks."""
     return generation_progression_service.complete_build_progression_stage(
         progression_id=progression_id,
         stage_id=stage_id,
@@ -1069,7 +1094,7 @@ def finalize_build_progression(
     operation_id: str,
     route_summary: str,
 ) -> dict[str, Any]:
-    """Bind all completed stages into a Route v2 artifact after the final milestone."""
+    """Bind all completed stages into an anchored Route v3 after the final milestone."""
     return generation_progression_service.finalize_build_progression(
         progression_id=progression_id,
         expected_revision=expected_revision,
@@ -2325,12 +2350,15 @@ def verify_lifecycle_stage(
     stage: str,
     state: lifecycle.lifecycle_verification.LifecycleStageVerificationState | None = None,
     build_id: str = "",
+    artifact_id: str = "",
 ) -> dict[str, Any]:
-    """Execute a read-only lifecycle-stage verification against the active build.
+    """Execute lifecycle verification against the active build or one immutable artifact.
 
     This is the computed counterpart to `plan_lifecycle_stage_verification`: it pulls the active
     build's PoB stats/defenses, evaluates the stage target checks, and returns pass/fail/unknown
-    without mutating gear, passives, level, or config. Use it before claiming a stage is viable.
+    without mutating gear, passives, level, or config. When `artifact_id` is supplied, the tool
+    restores that private artifact itself and writes a trusted artifact-bound verification receipt.
+    The receipt keeps the original artifact hash even when PoB's import/save XML is byte-unstable.
     """
     state_payload = _typed_payload(state) if state is not None else {}
     plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state_payload)
@@ -2338,6 +2366,29 @@ def verify_lifecycle_stage(
         return plan
 
     eng = get_engine()
+    artifact_manifest = None
+    evidence_xml = None
+    if artifact_id:
+        verified_artifact = generation_artifacts.read_final_build_artifact_for_export(artifact_id)
+        if verified_artifact is None:
+            return {
+                "ok": False,
+                "stage": stage,
+                "status": "unknown",
+                "pass": False,
+                "errorCode": "lifecycle_artifact_not_trusted",
+            }
+        artifact_manifest, evidence_xml = verified_artifact
+        try:
+            eng.load_build_xml(evidence_xml, name=artifact_manifest.artifact_id)
+        except Exception:  # noqa: BLE001 - never expose engine internals through MCP.
+            return {
+                "ok": False,
+                "stage": stage,
+                "status": "unknown",
+                "pass": False,
+                "errorCode": "lifecycle_artifact_restore_failed",
+            }
     try:
         source_before = eng.get_xml()
     except Exception:  # noqa: BLE001 - return a stable safe error, never engine internals.
@@ -2348,15 +2399,21 @@ def verify_lifecycle_stage(
             "pass": False,
             "errorCode": "lifecycle_snapshot_unavailable",
         }
-    source_hash = judge_evaluator.compute_source_hash(source_before)
+    raw_source_hash = judge_evaluator.compute_source_hash(source_before)
+    # PoB refreshes derived output nodes such as PlayerStat and FullDPSSkill during otherwise
+    # read-only calls. Raw XML hashes therefore produce false mutation conflicts after importing an
+    # artifact. Use the shared semantic state projection for the no-mutation guard, while keeping
+    # the original raw artifact/Judge hash as evaluatedSourceHash.
+    restored_state_hash = compute_state.build_state_hash(source_before)
+    evidence_xml = evidence_xml or source_before
     effective_state = dict(state_payload)
-    main_skill_evidence = generation_preflight.inspect_main_skill_socketed(source_before)
+    main_skill_evidence = generation_preflight.inspect_main_skill_socketed(evidence_xml)
     # This evidence must come from the exact active XML snapshot. Never accept a caller-supplied
     # boolean as proof that the main skill is socketed.
     effective_state["mainSkillSocketed"] = bool(main_skill_evidence.get("socketed"))
     effective_state["mainSkillSocketEvidence"] = main_skill_evidence
     lifecycle_skill_evidence = generation_preflight.inspect_lifecycle_skill_evidence(
-        source_before,
+        evidence_xml,
         single_target_skill_name=effective_state.get("singleTargetSkillName"),
     )
     effective_state["ascendancyOrKeySupport"] = lifecycle_skill_evidence.get(
@@ -2370,7 +2427,7 @@ def verify_lifecycle_stage(
     )
     effective_state["singleTargetDuty"] = single_target_evidence
     build_defining_evidence = generation_preflight.inspect_lifecycle_component_evidence(
-        source_before,
+        evidence_xml,
         component_kind=effective_state.get("buildDefiningComponentKind"),
         component_name=effective_state.get("buildDefiningComponentName"),
     )
@@ -2383,11 +2440,11 @@ def verify_lifecycle_stage(
         and build_defining_refs
     )
     effective_state["buildDefiningComponent"] = build_defining_evidence
-    if "manaFlaskEquipped" not in effective_state:
-        read_build = getattr(eng, "get_build", None)
-        build = read_build() if callable(read_build) else {}
-        gear = build.get("gear") if isinstance(build, dict) else {}
-        effective_state["manaFlaskEquipped"] = _mana_flask_equipped(gear)
+    # Flask presence is evidence from the evaluated build, never a caller-authorized boolean.
+    read_build = getattr(eng, "get_build", None)
+    build = read_build() if callable(read_build) else {}
+    gear = build.get("gear") if isinstance(build, dict) else {}
+    effective_state["manaFlaskEquipped"] = _mana_flask_equipped(gear)
     stat_keys = lifecycle.lifecycle_verification.requested_metric_keys(stage)
     stats_result = eng.get_stats(stat_keys)
     stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
@@ -2414,7 +2471,7 @@ def verify_lifecycle_stage(
             "pass": False,
             "errorCode": "lifecycle_snapshot_unavailable",
         }
-    if judge_evaluator.compute_source_hash(source_after) != source_hash:
+    if compute_state.build_state_hash(source_after) != restored_state_hash:
         return {
             "ok": False,
             "stage": stage,
@@ -2422,9 +2479,37 @@ def verify_lifecycle_stage(
             "pass": False,
             "errorCode": "lifecycle_snapshot_changed_during_verification",
         }
-    result["evaluatedSourceHash"] = source_hash
+    result["evaluatedSourceHash"] = (
+        artifact_manifest.source_hash if artifact_manifest is not None else raw_source_hash
+    )
     if build_id:
         result["buildId"] = build_id
+    if artifact_manifest is not None:
+        receipt = generation_progression_lifecycle.save_artifact_lifecycle_receipt(
+            artifact_id=artifact_manifest.artifact_id,
+            source_hash=artifact_manifest.source_hash,
+            restored_engine_source_hash=restored_state_hash,
+            result=result,
+        )
+        if receipt.get("status") != "recorded":
+            return {
+                "ok": False,
+                "stage": stage,
+                "status": "unknown",
+                "pass": False,
+                "errorCode": receipt.get(
+                    "errorCode",
+                    "artifact_lifecycle_receipt_write_failed",
+                ),
+            }
+        result.update(
+            {
+                "verificationRef": receipt["verificationRef"],
+                "artifactId": artifact_manifest.artifact_id,
+                "restoredEngineSourceHash": restored_state_hash,
+                "artifactBound": True,
+            }
+        )
     return result
 
 

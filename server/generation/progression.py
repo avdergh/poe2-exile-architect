@@ -18,7 +18,8 @@ from server.knowledge import copy_safety
 from . import artifacts, models, progression_costs, progression_models
 
 
-PROGRESSION_SCHEMA_VERSION = 2
+PROGRESSION_SCHEMA_VERSION = 3
+ROUTE_V2_SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 STAGE_ORDER = {
     "campaign_early": 0,
@@ -76,7 +77,9 @@ class ProgressionStageV2(models.StrictModel):
     purpose: str = Field(min_length=1, max_length=320)
     play_pattern: str = Field(min_length=1, max_length=500)
     evidence_status: progression_models.EvidenceStatus
-    source_refs: list[str] = Field(default_factory=list, max_length=12)
+    # Finalization combines one starter packet, up to eight blueprint queries, up to eight
+    # consumed Research queries, and up to twelve stage evidence references.
+    source_refs: list[str] = Field(default_factory=list, max_length=32)
     changes_from_previous: list[ProgressionChange] = Field(default_factory=list, max_length=24)
     transition_bridge: progression_models.TransitionBridge | None = None
     acquisition_priorities: list[str] = Field(default_factory=list, max_length=12)
@@ -123,6 +126,11 @@ class ProgressionRouteProposalV2(models.VersionedSafeModel):
         default=None,
         pattern=r"^starter-research:[A-Za-z0-9\-]{3,100}$",
     )
+    target_anchor_artifact_id: str | None = Field(
+        default=None,
+        pattern=r"^final-build:[A-Za-z0-9\-]{3,100}$",
+    )
+    target_design_coverage: progression_models.TargetDesignCoverage | None = None
 
     @model_validator(mode="after")
     def _ordered_route(self) -> "ProgressionRouteProposalV2":
@@ -140,6 +148,13 @@ class ProgressionRouteProposalV2(models.VersionedSafeModel):
             raise ValueError("each progression stage requires a distinct artifact")
         if self.stages[-1].artifact_id != self.target_artifact_id:
             raise ValueError("target_artifact_id must identify the last stage")
+        if (self.target_anchor_artifact_id is None) != (self.target_design_coverage is None):
+            raise ValueError("target anchor id and design coverage must appear together")
+        if (
+            self.target_anchor_artifact_id is not None
+            and self.target_anchor_artifact_id != self.target_artifact_id
+        ):
+            raise ValueError("target anchor must be the final route artifact")
         if self.stages[0].changes_from_previous or self.stages[0].transition_bridge:
             raise ValueError("first progression stage cannot carry transition details")
         role_order = {
@@ -261,13 +276,36 @@ def save_progression_route(
     *,
     route_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write a Route v2 manifest bound to separately trusted milestone artifacts."""
+    """Write a compatibility Route v2 bound to trusted milestone artifacts."""
+
+    return _save_progression_route(payload, route_id=route_id, allow_anchored_v3=False)
+
+
+def save_anchored_progression_route(
+    payload: dict[str, Any],
+    *,
+    route_id: str,
+) -> dict[str, Any]:
+    """Write Route v3 only after the progression state service validates its anchor."""
+
+    return _save_progression_route(payload, route_id=route_id, allow_anchored_v3=True)
+
+
+def _save_progression_route(
+    payload: dict[str, Any],
+    *,
+    route_id: str | None,
+    allow_anchored_v3: bool,
+) -> dict[str, Any]:
+    """Shared writer; anchored Route v3 is reserved for the verified state service."""
 
     normalized = _normalize_submission(payload)
     try:
         proposal = ProgressionRouteProposalV2.model_validate(normalized)
     except ValidationError as exc:
         return _validation_rejected(exc)
+    if proposal.target_anchor_artifact_id is not None and not allow_anchored_v3:
+        return models.rejected("progression_anchor_route_requires_service")
     for stage in proposal.stages:
         if stage.cost_profile is None:
             continue
@@ -314,6 +352,14 @@ def save_progression_route(
         if canonical_route_id != route_id:
             return models.rejected("invalid_progression_route_id")
     now = datetime.now(timezone.utc).isoformat()
+    anchored = proposal.target_anchor_artifact_id is not None
+    anchor_has_limited_coverage = bool(
+        proposal.target_design_coverage
+        and any(
+            item.status == "unavailable_with_caveat"
+            for item in proposal.target_design_coverage.dimensions
+        )
+    )
     quality_status: QualityStatus = (
         "limited"
         if (
@@ -321,11 +367,12 @@ def save_progression_route(
             or any(stage.evidence_status != "supported" for stage in proposal.stages)
             or any(stage.cost_profile is None for stage in proposal.stages)
             or proposal.stages[-1].route_role != "target"
+            or anchor_has_limited_coverage
         )
         else "verified"
     )
     manifest = {
-        "schemaVersion": PROGRESSION_SCHEMA_VERSION,
+        "schemaVersion": (PROGRESSION_SCHEMA_VERSION if anchored else ROUTE_V2_SCHEMA_VERSION),
         "routeId": route_id,
         "proposal": proposal.model_dump(mode="json", by_alias=True),
         "artifactFacts": facts,
@@ -516,6 +563,8 @@ def _read_manifest(route_id: str) -> dict[str, Any] | None:
         return None
     schema = payload.get("schemaVersion")
     if schema == PROGRESSION_SCHEMA_VERSION:
+        return _read_v3_manifest(payload, canonical)
+    if schema == ROUTE_V2_SCHEMA_VERSION:
         return _read_v2_manifest(payload, canonical)
     if schema == LEGACY_SCHEMA_VERSION:
         return _read_legacy_manifest(payload, canonical)
@@ -526,6 +575,30 @@ def _read_v2_manifest(payload: dict[str, Any], route_id: str) -> dict[str, Any] 
     try:
         proposal = ProgressionRouteProposalV2.model_validate(payload.get("proposal"))
     except ValidationError:
+        return None
+    if proposal.target_anchor_artifact_id is not None:
+        return None
+    if (
+        payload.get("routeId") != route_id
+        or not isinstance(payload.get("artifactFacts"), list)
+        or len(payload["artifactFacts"]) != len(proposal.stages)
+    ):
+        return None
+    for stage, stored_fact in zip(proposal.stages, payload["artifactFacts"], strict=True):
+        current_fact = _trusted_artifact_fact(stage.artifact_id)
+        if current_fact is None or stored_fact != current_fact:
+            return None
+    normalized = dict(payload)
+    normalized["proposal"] = proposal.model_dump(mode="json", by_alias=True)
+    return normalized
+
+
+def _read_v3_manifest(payload: dict[str, Any], route_id: str) -> dict[str, Any] | None:
+    try:
+        proposal = ProgressionRouteProposalV2.model_validate(payload.get("proposal"))
+    except ValidationError:
+        return None
+    if proposal.target_anchor_artifact_id is None:
         return None
     if (
         payload.get("routeId") != route_id
@@ -571,6 +644,8 @@ def _safe_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "stages": proposal["stages"],
         "routeSummary": proposal["routeSummary"],
         "starterResearchPacketId": proposal.get("starterResearchPacketId"),
+        "targetAnchorArtifactId": proposal.get("targetAnchorArtifactId"),
+        "targetDesignCoverage": proposal.get("targetDesignCoverage"),
         "versionContext": proposal["versionContext"],
         "artifactFacts": manifest["artifactFacts"],
         "qualityStatus": manifest.get("qualityStatus", "limited"),
@@ -580,7 +655,7 @@ def _safe_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_submission(payload: dict[str, Any]) -> dict[str, Any]:
-    """Accept the old proposal spelling at the boundary, but always write Route v2."""
+    """Accept the old proposal spelling; the anchor fields select Route v2 or v3."""
 
     if "targetArtifactId" in payload:
         return payload

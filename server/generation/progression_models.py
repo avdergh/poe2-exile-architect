@@ -1,4 +1,4 @@
-"""Typed contracts shared by the Phase 8 progression orchestrator and Route v2."""
+"""Typed contracts shared by the Phase 8 progression orchestrator and Route v3."""
 
 from __future__ import annotations
 
@@ -22,6 +22,24 @@ RouteRole = Literal[
 ]
 EvidenceStatus = Literal["supported", "limited", "limited_offline_inference"]
 RequirementStatus = Literal["satisfied", "required", "unverified"]
+TargetCoverageStatus = Literal[
+    "research_adopted",
+    "independently_verified",
+    "unavailable_with_caveat",
+    "rejected",
+]
+TargetCoverageDimension = Literal[
+    "skill_package",
+    "clear_duty",
+    "boss_duty",
+    "damage_delivery",
+    "ascendancy_and_passives",
+    "gear_synergy",
+    "defense_and_recovery",
+    "resource_and_spirit",
+    "combat_configuration",
+    "modelability",
+]
 RequirementKind = Literal[
     "level",
     "quest",
@@ -162,6 +180,9 @@ class StageFamilyIdentity(models.StrictModel):
     ascendancy_key: str = Field(min_length=3, max_length=240)
     primary_skill_key: str = Field(min_length=3, max_length=240)
     secondary_skill_keys: list[str] = Field(default_factory=list, max_length=8)
+    ascendancy_name: str | None = Field(default=None, min_length=1, max_length=120)
+    primary_skill_name: str | None = Field(default=None, min_length=1, max_length=160)
+    secondary_skill_names: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def _resolved_keys(self) -> "StageFamilyIdentity":
@@ -177,7 +198,113 @@ class StageFamilyIdentity(models.StrictModel):
         if not self.primary_skill_key.startswith("skill:") or any(
             not key.startswith("skill:") for key in self.secondary_skill_keys
         ):
-            raise ValueError("stage Family skill keys must be resolved skill keys")
+            raise ValueError(
+                "stage Family skill keys must use resolved skill keys for active-skill nodes; "
+                "gem keys are query aliases, not Family identity keys"
+            )
+        _ensure_authored_text(
+            {
+                "ascendancyName": self.ascendancy_name,
+                "primarySkillName": self.primary_skill_name,
+                "secondarySkillNames": self.secondary_skill_names,
+            }
+        )
+        return self
+
+
+class TargetAnchorIdentity(StageFamilyIdentity):
+    ascendancy_name: str = Field(min_length=1, max_length=120)
+    primary_skill_name: str = Field(min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def _safe_names(self) -> "TargetAnchorIdentity":
+        if len(self.secondary_skill_names) != len(self.secondary_skill_keys):
+            raise ValueError("target core secondary skill keys and names must align")
+        _ensure_authored_text(
+            {
+                "ascendancyName": self.ascendancy_name,
+                "primarySkillName": self.primary_skill_name,
+                "secondarySkillNames": self.secondary_skill_names,
+            }
+        )
+        return self
+
+
+class TargetDesignDimensionEvidence(models.StrictModel):
+    dimension: TargetCoverageDimension
+    status: TargetCoverageStatus
+    summary: str = Field(min_length=1, max_length=320)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    caveat: str | None = Field(default=None, min_length=1, max_length=320)
+
+    @model_validator(mode="after")
+    def _traceable(self) -> "TargetDesignDimensionEvidence":
+        _safe_refs(self.evidence_refs)
+        if self.status in {"research_adopted", "independently_verified"} and not self.evidence_refs:
+            raise ValueError("verified target design coverage requires evidence")
+        if self.status == "unavailable_with_caveat" and not self.caveat:
+            raise ValueError("unavailable target design coverage requires a caveat")
+        if self.status != "unavailable_with_caveat" and self.caveat is not None:
+            raise ValueError("only unavailable target design coverage may carry a caveat")
+        _ensure_authored_text({"summary": self.summary, "caveat": self.caveat})
+        return self
+
+
+class TargetDesignCoverage(models.StrictModel):
+    coverage_id: str = Field(pattern=r"^target-coverage:[A-Za-z0-9\-]{3,100}$")
+    dimensions: list[TargetDesignDimensionEvidence] = Field(min_length=10, max_length=10)
+    acceptance_summary: str = Field(min_length=1, max_length=600)
+    unresolved_caveats: list[str] = Field(default_factory=list, max_length=12)
+    agent_acceptance: Literal["accepted"]
+
+    @model_validator(mode="after")
+    def _complete(self) -> "TargetDesignCoverage":
+        expected = {
+            "skill_package",
+            "clear_duty",
+            "boss_duty",
+            "damage_delivery",
+            "ascendancy_and_passives",
+            "gear_synergy",
+            "defense_and_recovery",
+            "resource_and_spirit",
+            "combat_configuration",
+            "modelability",
+        }
+        actual = {item.dimension for item in self.dimensions}
+        if actual != expected or len(actual) != len(self.dimensions):
+            raise ValueError("target design coverage must contain every dimension exactly once")
+        if any(item.status == "rejected" for item in self.dimensions):
+            raise ValueError("a rejected target design dimension cannot anchor a progression")
+        _ensure_authored_text(
+            {
+                "acceptanceSummary": self.acceptance_summary,
+                "unresolvedCaveats": self.unresolved_caveats,
+            }
+        )
+        _ensure_safe(self.model_dump(mode="json", by_alias=True))
+        return self
+
+
+class TargetAnchorCreatePacket(models.VersionedSafeModel):
+    progression_id: str = Field(pattern=r"^[0-9a-f\-]{36}$")
+    base_class: str = Field(min_length=1, max_length=80)
+    target_level: int = Field(ge=2, le=100)
+    goal: str = Field(min_length=1, max_length=600)
+    create_mode: Literal["standard_single_stage"] = "standard_single_stage"
+    build_from_blank: Literal[True] = True
+    research_memory_policy: Literal["progressive_actual_queries"] = "progressive_actual_queries"
+    judge_policy: Literal["advisory_only"] = "advisory_only"
+
+    @model_validator(mode="after")
+    def _safe_packet(self) -> "TargetAnchorCreatePacket":
+        _ensure_authored_text(
+            {
+                "baseClass": self.base_class,
+                "goal": self.goal,
+            }
+        )
+        _ensure_safe(self.model_dump(mode="json", by_alias=True))
         return self
 
 
@@ -234,6 +361,10 @@ class ProgressionBlueprint(models.VersionedSafeModel):
     starter_evidence_use: StarterEvidenceUse
     starter_choice_summary: str = Field(min_length=1, max_length=600)
     target_intent: TargetBuildIntent
+    target_anchor_artifact_id: str | None = Field(
+        default=None,
+        pattern=r"^final-build:[A-Za-z0-9\-]{3,100}$",
+    )
     stages: list[StageBlueprint] = Field(min_length=2, max_length=5)
     merge_rationale: list[str] = Field(default_factory=list, max_length=4)
 
@@ -317,9 +448,15 @@ class StageCreatePacket(models.VersionedSafeModel):
         default=None,
         pattern=r"^final-build:[A-Za-z0-9\-]{3,100}$",
     )
+    target_anchor_artifact_id: str | None = Field(
+        default=None,
+        pattern=r"^final-build:[A-Za-z0-9\-]{3,100}$",
+    )
     starter_research_packet_id: str = Field(pattern=r"^starter-research:[A-Za-z0-9\-]{3,100}$")
     starter_evidence_use: StarterEvidenceUse
     progression_bound: bool = True
+    requires_phase5_run: bool = True
+    research_memory_policy: Literal["progressive_actual_queries"] = "progressive_actual_queries"
 
     @model_validator(mode="after")
     def _bound(self) -> "StageCreatePacket":
@@ -329,6 +466,12 @@ class StageCreatePacket(models.VersionedSafeModel):
             raise ValueError("stage packet target level mismatch")
         if self.target_level > self.route_target_level:
             raise ValueError("stage target cannot exceed route target")
+        if self.requires_phase5_run and self.target_anchor_artifact_id is not None:
+            raise ValueError("ordinary progression stages cannot carry a target anchor")
+        if not self.requires_phase5_run and (
+            self.stage.route_role != "target" or self.target_anchor_artifact_id is None
+        ):
+            raise ValueError("anchor closure packets require the target stage and artifact")
         return self
 
 

@@ -61,8 +61,9 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 
 当用户明确要求从开荒到目标等级的完整可执行流程时，进入 progression 模式。开始任何构筑操作
 前，必须完整读取并遵循 [progression-mode.md](references/progression-mode.md)。该模式把
-“同职业开荒流派”“目标高上限流派”和“转型桥梁”作为三个独立设计问题；开荒升华和技能可以与
-目标完全不同。普通单阶段 Create 仍按下方工作流执行，不要擅自扩大成多阶段任务。
+“普通 Create 生成不可变目标锚点”“同职业开荒流派”和“转型桥梁”作为三个独立设计问题；开荒
+升华和技能可以与目标完全不同。普通单阶段 Create 仍按下方工作流执行，progression 的阶段等级
+门槛不能修改它的等级语义、Research recall 或质量流程。
 
 ## 工作流程
 
@@ -83,6 +84,8 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
    - 精确 Family 首次查询同时传 `ascendancy_key`、`primary_skill_key`，并让 `component_keys`
      只包含这两个稳定身份。普通辅助、utility 和副技能不能作为必需 AND 条件；它们由命中的
      Family/记录返回后再按需解析。自然语言 `query` 只表达构筑目标和排序偏好，不能代替精确身份。
+     Family identity 使用玩家 `active_skill` 的 `skill:` key；物理图已关联的 `gem:` key 可以
+     作为查询别名，但不能直接写入 FamilyTarget、TargetAnchorIdentity 或 StageFamilyIdentity。
      检查 `buildFamilies` 的 `secondarySkillKeys`、`recordKindCounts`，以及
      `deepResearchRecords`、`buildPatterns`、`semanticEdges` 和旧 `results`，不要只看第一条摘要。
    - 选定 Family 后，若其 `recordKindCounts` 显示存在尚未读取的相关知识，使用
@@ -191,7 +194,11 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 16. 如果最后一轮 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效，必须在
     调用 `review-packet` 前调用
     `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`。这个工具只保存当前
-    最后一轮且仍与可信 Judge 快照完全一致的活动 PoB；失败轮次和旧 attempt 不保存完整 PoB。
+    最后一轮且语义输入仍与可信 Judge 快照一致的活动 PoB，并写入 Judge 时在当前 MCP 进程内
+    短暂保留的精确 XML；`PlayerStat` / `FullDPSSkill` 等派生输出刷新不算真实变化。失败轮次和旧
+    attempt 不保存完整 PoB。若 MCP 进程重启后精确快照已丢失且 raw hash 也不一致，工具会返回
+    `trusted_evaluation_snapshot_unavailable`；此时只能在仍有 retry 额度时重新评估，不能伪造
+    snapshot 或手工改 hash。
     当前临时交付策略下，`playabilityFailures`、`qualityBand="barely_playable"`、目标维度为 0、
     `scoreApplicability="unavailable"` 和其他非硬性 Judge 警告不阻止保存与导出。它们仍必须原样
     出现在用户可见 Judge 结论中，并将结果称为弱原型/待验证候选，不能称为推荐方案或已验证成品。
@@ -334,12 +341,20 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `get_build_planner_converter_status()`：检查固定版本的官方 `.build` 转换 provider 是否可用。
 - `export_final_build_artifact(artifact_id, name, author, description, link)`：把最终可信 PoB 导出为
   官方单阶段 `.build` 文件，返回本地路径、provider 信息、转换统计和注意事项。
-- `start_build_progression`、`intake_starter_research_packet`、
-  `submit_build_progression_blueprint`：启动 progression 模式，提交外部 Agent 整理的安全开荒证据和
-  2–5 阶段蓝图。来源 URL 会在入口哈希；网页正文、整角色材料和完整 URL 不落盘。
+- `start_build_progression`：启动 anchor-first progression，先返回
+  `TargetAnchorCreatePacket`。目标必须按普通单阶段 Create 从空状态生成。
+- `bind_build_progression_target_anchor`：在普通 Create 的 artifact 和 review 完成后，绑定不可变
+  target artifact/Family/hash、artifact-bound lifecycle `verificationRef` 与十维
+  `TargetDesignCoverage`。目标 lifecycle failed/unknown，或 Agent 认定为真实/mixed build
+  failure 的候选不能成为 anchor；Judge 只作 advisory。
+- `intake_starter_research_packet`、`submit_build_progression_blueprint`：anchor 绑定后提交安全开荒
+  证据和 2–5 阶段蓝图。蓝图最后 target stage 必须引用同一 anchor。来源 URL 会在入口哈希；
+  网页正文、整角色材料和完整 URL 不落盘。
 - `claim_build_progression_stage`、`bind_build_progression_stage_run`、
-  `complete_build_progression_stage`：严格串行领取阶段、绑定本阶段新建的 Create run，并用同一
-  source hash 的 lifecycle verification、可信 artifact 和成本画像完成阶段。
+  `complete_build_progression_stage`：目标前阶段严格串行创建和绑定新的 Create run，并用同一
+  source hash 的 artifact-bound lifecycle receipt、可信 artifact、Research receipt、转型
+  readiness 和成本画像完成。最终 target claim 明确不需要新 Create run，只重新校验并复用同一
+  anchor 与原始 `verificationRef`。
 - `fail_build_progression_stage` / `retry_build_progression_stage`：阶段失败后暂停；每个阶段最多一次
   显式外部重试，不自动重启整条路线。
 - `pause_build_progression` / `resume_build_progression` / `get_build_progression_status`：用 CAS
@@ -350,17 +365,26 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `classify_build_progression_costs`：暗金按当前联盟 Divine 换算给粗粒度档位，黄装只按 craft
   effort 分类；不返回虚假的整套总价，无法定价的必需依赖单独计数，价格也不能作为自动转型
   门槛。
-- `finalize_build_progression` / `export_build_progression_package`：全部阶段完成后保存 Route v2，
+- `finalize_build_progression` / `export_build_progression_package`：全部阶段完成后保存 anchored
+  Route v3，
   再统一导出每阶段 XML/导入码、路线说明，以及仅目标阶段的官方 `.build`。
 - `save_build_progression_route` / `list_build_progression_routes` /
   `load_build_progression_stage(route_id, stage_id=..., lifecycle_stage=...)`：底层兼容接口。新路线按
-  稳定 `stageId` 加载；lifecycle selector 只有唯一命中时可用，重复命中会明确返回歧义。
+  稳定 `stageId` 加载；`save` 只写 Route v2，不能绕过状态服务写 anchor 字段。lifecycle
+  selector 只有唯一命中时可用，重复命中会明确返回歧义。
 - `export_build()` 只能用于本地临时状态，不要把导入码写进用户输出或持久报告。
 
 当用户只要一个目标阶段时，继续使用现有单阶段 Create，不要擅自把运行时间扩大为多阶段。当用户
 明确要求“从开荒到目标等级的完整流程”时，默认规划 4 个真正发生机制/技能/装备/资源变化的
-里程碑；没有实质变化时可合并，最多 5 个。每个里程碑分别完成 Create、Judge、生命周期验证和
-artifact 保存，再组装 progression route；不能机械填满 lifecycle enum。
+artifact：一个普通 Create 目标 anchor，加三个目标前里程碑；没有实质变化时可合并，最多 5 个。
+目标前里程碑分别完成 Create、Judge、生命周期验证和 artifact 保存；最后 target closure 复用
+anchor，不再 Create。不能机械填满 lifecycle enum。
+
+progression 中每个候选都先在保存前运行活动快照 lifecycle gate，真实 sustain/机制失败必须在
+Create 既有 retry 内修复；保存后再用
+`verify_lifecycle_stage(..., artifact_id=...)` 生成内容寻址的 `verificationRef`。PoB
+import/save 的 XML 字节顺序可能变化，原始 artifact hash 与恢复后的 engine hash 由回执分别记录；
+不要放宽 gate 或用调用者布尔值、手工 hash 冒充通过。
 
 `evaluate_generation_candidate` 的 `version_context` 必须一次提供完整对象，字段使用下面这些名称；
 值来自本次 freshness、图和记忆查询，不要临时猜测，也不要通过搜索源码补字段：

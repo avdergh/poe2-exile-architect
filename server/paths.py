@@ -102,6 +102,11 @@ def build_progression_cost_cache_dir() -> Path:
     return build_progression_dir() / "cost-cache"
 
 
+def build_progression_lifecycle_receipts_dir() -> Path:
+    """Artifact-bound lifecycle receipts used by Phase 8 provenance checks."""
+    return build_progression_dir() / "lifecycle-receipts"
+
+
 def mature_learning_seed_fixtures_path() -> Path:
     """Bundled sanitized seed fixtures for the mature-learning store."""
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"

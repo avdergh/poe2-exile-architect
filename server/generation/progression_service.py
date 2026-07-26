@@ -1,8 +1,8 @@
 """Recoverable local state service for Agent-led Phase 8 progression creation.
 
 The service owns safe control state only. It does not create Desktop tasks, browse the web,
-call a model, or construct a build. Every milestone is produced through an independently bound
-Phase 5 run and verified FinalBuildArtifact.
+call a model, or construct a build. The target is first produced by an ordinary Phase 5 run;
+each pre-target milestone has its own run, and the final route stage reuses the immutable target.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, ValidationError, model_validator
 
 from server import paths
-from server.knowledge import copy_safety
+from server.knowledge import copy_safety, research_memory
 from server.learning.file_lock import interprocess_file_lock
 
 from . import (
@@ -27,13 +27,16 @@ from . import (
     models,
     progression,
     progression_costs,
+    progression_lifecycle,
     progression_models,
+    progression_provenance,
     progression_research,
     run_store,
 )
 
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
+LEGACY_STATE_SCHEMA_VERSION = 1
 _LOCK = threading.RLock()
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9_.:\-]{3,160}$")
 _FAILURE_CODE = re.compile(r"^[a-z0-9_]{3,100}$")
@@ -57,6 +60,10 @@ class StageCompletionReport(models.StrictModel):
     acquisition_priorities: list[str] = Field(default_factory=list, max_length=12)
     caveats: list[str] = Field(default_factory=list, max_length=12)
     source_refs: list[str] = Field(default_factory=list, max_length=12)
+    transition_readiness: list[progression_models.TransitionRequirement] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
     @model_validator(mode="after")
     def _safe(self) -> "StageCompletionReport":
@@ -91,7 +98,7 @@ def start_build_progression(
     goal: str,
     version_context: dict[str, Any],
 ) -> dict[str, Any]:
-    """Start a progression and reuse only a fresh exact-version starter packet."""
+    """Start an anchor-first progression and prepare a normal single-stage target Create."""
 
     if not _valid_operation_id(operation_id):
         return models.rejected("invalid_operation_id")
@@ -129,11 +136,19 @@ def start_build_progression(
         candidate = cached.get("starterResearchPacket") if cached.get("status") == "stale" else None
         now = _utc_now()
         progression_id = str(uuid4())
+        anchor_packet = progression_models.TargetAnchorCreatePacket(
+            progression_id=progression_id,
+            base_class=base_class.strip(),
+            target_level=target_level,
+            goal=goal.strip(),
+            version_context=version,
+            no_raw_material=True,
+        ).model_dump(mode="json", by_alias=True)
         state: dict[str, Any] = {
             "schemaVersion": STATE_SCHEMA_VERSION,
             "progressionId": progression_id,
             "revision": 0,
-            "status": "blueprint_pending" if packet else "research_pending",
+            "status": "target_anchor_pending",
             "request": {
                 "baseClass": base_class.strip(),
                 "targetLevel": target_level,
@@ -144,6 +159,19 @@ def start_build_progression(
             },
             "starterResearchPacket": packet,
             "starterResearchCandidate": candidate,
+            "starterEvidenceWithheldUntilAnchor": bool(packet or candidate),
+            "targetAnchor": {
+                "status": "pending",
+                "targetAnchorCreatePacket": anchor_packet,
+                "artifactId": None,
+                "artifactFact": None,
+                "identity": None,
+                "designCoverage": None,
+                "lifecycleVerification": None,
+                "researchProvenance": None,
+                "finalFailureAudit": None,
+                "boundAt": None,
+            },
             "blueprint": None,
             "stages": [],
             "activeStageId": None,
@@ -161,22 +189,143 @@ def start_build_progression(
             "progressionId": progression_id,
             "revision": 0,
             "currentState": state["status"],
+            "targetAnchorCreatePacket": anchor_packet,
             "starterCache": {
-                "status": cached.get("status"),
-                "cacheStatus": cached.get("cacheStatus"),
-                "packetId": (
-                    packet.get("packetId")
-                    if isinstance(packet, dict)
-                    else (candidate.get("packetId") if isinstance(candidate, dict) else None)
-                ),
+                "evidenceAvailable": bool(packet or candidate),
+                "withheldUntilAnchor": bool(packet or candidate),
             },
-            "starterResearchPacket": packet,
-            "starterResearchCandidate": candidate,
+            "starterResearchPacket": None,
+            "starterResearchCandidate": None,
+            "starterEvidenceWithheldUntilAnchor": bool(packet or candidate),
             "nextAction": _next_action(state),
             "strictlySerial": True,
+            "targetAnchorFirst": True,
+            "targetAnchorReusedAsFinalMilestone": True,
             "defaultMilestoneCount": 4,
             "maxMilestoneCount": 5,
         }
+
+
+def bind_build_progression_target_anchor(
+    *,
+    progression_id: str,
+    artifact_id: str,
+    target_identity: dict[str, Any],
+    design_coverage: dict[str, Any],
+    lifecycle_verification_ref: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Bind one accepted ordinary Create artifact as the immutable target milestone."""
+
+    with _locked_state():
+        loaded = _load_for_mutation(progression_id, expected_revision, operation_id)
+        if _is_terminal_load(loaded):
+            return loaded
+        state = loaded
+        if not _is_anchor_first_state(state) or state["status"] != "target_anchor_pending":
+            return models.rejected("progression_target_anchor_not_pending")
+        try:
+            identity = progression_models.TargetAnchorIdentity.model_validate(target_identity)
+            coverage = progression_models.TargetDesignCoverage.model_validate(design_coverage)
+        except ValidationError as exc:
+            return _validation_rejected("invalid_progression_target_anchor", exc)
+        verified = artifacts.read_final_build_artifact_for_export(artifact_id)
+        if verified is None:
+            return models.rejected("progression_target_anchor_not_trusted")
+        manifest, _xml = verified
+        mismatch = _target_anchor_artifact_mismatch(state, manifest, identity)
+        if mismatch:
+            return models.rejected(mismatch)
+        expected_lifecycle_stage = _progression_lifecycle_stage_for_level(
+            state["request"]["targetLevel"]
+        )
+        lifecycle_receipt = progression_lifecycle.read_trusted_artifact_lifecycle_receipt(
+            lifecycle_verification_ref,
+            artifact_id=manifest.artifact_id,
+            stage=expected_lifecycle_stage,
+        )
+        if lifecycle_receipt is None:
+            return models.rejected("progression_target_anchor_lifecycle_not_trusted")
+        if (
+            lifecycle_receipt.get("status") != "passed"
+            or lifecycle_receipt.get("pass") is not True
+            or lifecycle_receipt.get("sourceHash") != manifest.source_hash
+        ):
+            return models.rejected("progression_target_anchor_lifecycle_not_verified")
+        if not _valid_phase5_run(manifest.run_id, not_before=state["createdAt"]):
+            return models.rejected("progression_target_anchor_run_not_new")
+        if _artifact_bound_to_other_progression(progression_id, artifact_id, manifest.source_hash):
+            return models.rejected("progression_target_anchor_already_bound")
+        phase5 = _read_phase5_provenance(manifest.run_id)
+        if (
+            phase5 is None
+            or phase5.get("candidateId") != manifest.candidate_id
+            or phase5.get("sourceHash") != manifest.source_hash
+        ):
+            return models.rejected("progression_target_anchor_review_not_trusted")
+        audit = phase5["finalFailureAudit"]
+        if audit.get("retryDecision") != "accept" or audit.get("classification") in {
+            "true_build_failure",
+            "mixed",
+        }:
+            return models.rejected("progression_target_anchor_agent_rejected")
+        reader = _research_receipt_reader()
+        provenance_error, provenance = progression_provenance.validate_research_provenance(
+            identity=identity,
+            research_memory_use=phase5["researchMemoryUse"],
+            artifact_research_ref=manifest.version_context.research_memory_ref,
+            receipt_reader=reader,
+            not_before=state["createdAt"],
+        )
+        if provenance_error:
+            return models.rejected(provenance_error)
+        coverage_error = _validate_target_coverage_provenance(
+            coverage,
+            provenance,
+            trusted_independent_refs={
+                manifest.artifact_id,
+                f"generation:{manifest.run_id}:{manifest.source_hash}",
+                lifecycle_verification_ref,
+            },
+        )
+        if coverage_error:
+            return models.rejected(coverage_error)
+        artifact_fact = _artifact_fact(manifest)
+        state["request"]["versionContext"]["researchMemoryRef"] = (
+            manifest.version_context.research_memory_ref
+        )
+        state["targetAnchor"] = {
+            "status": "bound",
+            "targetAnchorCreatePacket": state["targetAnchor"]["targetAnchorCreatePacket"],
+            "artifactId": manifest.artifact_id,
+            "artifactFact": artifact_fact,
+            "identity": identity.model_dump(mode="json", by_alias=True),
+            "designCoverage": coverage.model_dump(mode="json", by_alias=True),
+            "lifecycleVerification": lifecycle_receipt,
+            "researchProvenance": provenance,
+            "finalFailureAudit": audit,
+            "boundAt": _utc_now(),
+        }
+        state["status"] = (
+            "blueprint_pending" if state.get("starterResearchPacket") else "research_pending"
+        )
+        return _commit(
+            state,
+            operation_id,
+            {
+                "status": "target_anchor_bound",
+                "progressionId": progression_id,
+                "targetArtifactId": manifest.artifact_id,
+                "targetSourceHash": manifest.source_hash,
+                "targetIdentity": identity.model_dump(mode="json", by_alias=True),
+                "targetLifecycleVerificationRef": lifecycle_verification_ref,
+                "researchProvenance": provenance,
+                "judgeAdvisoryOnly": True,
+                "nextAction": _next_action(state),
+                "containsRawPob": False,
+            },
+        )
 
 
 def intake_starter_research_packet(
@@ -261,6 +410,10 @@ def submit_build_progression_blueprint(
             for stage in parsed.stages
         ):
             return models.rejected("starter_stage_evidence_status_mismatch")
+        if _is_anchor_first_state(state):
+            provenance_error = _validate_blueprint_research_provenance(state, parsed)
+            if provenance_error:
+                return models.rejected(provenance_error)
         state["blueprint"] = parsed.model_dump(mode="json", by_alias=True)
         state["stages"] = [
             {
@@ -272,6 +425,8 @@ def submit_build_progression_blueprint(
                 "artifactId": None,
                 "artifactFact": None,
                 "lifecycleVerification": None,
+                "researchProvenance": None,
+                "resolvedTransitionBridge": None,
                 "costProfile": None,
                 "completionReport": None,
                 "retryCount": 0,
@@ -340,21 +495,25 @@ def revise_future_build_progression_stages(
             for stage in parsed.stages
         ):
             return models.rejected("starter_stage_evidence_status_mismatch")
+        if _is_anchor_first_state(state):
+            provenance_error = _validate_blueprint_research_provenance(state, parsed)
+            if provenance_error:
+                return models.rejected(provenance_error)
         old_blueprint = state["blueprint"]
         old_stages = state["stages"]
         if parsed.blueprint_id == old_blueprint["blueprintId"]:
             return models.rejected("progression_blueprint_version_id_required")
         parsed_payload = parsed.model_dump(mode="json", by_alias=True)
-        if any(
-            parsed_payload[key] != old_blueprint[key]
-            for key in (
-                "routeName",
-                "starterResearchPacketId",
-                "starterEvidenceUse",
-                "starterChoiceSummary",
-                "targetIntent",
-            )
-        ):
+        immutable_design_keys = [
+            "routeName",
+            "starterResearchPacketId",
+            "starterEvidenceUse",
+            "starterChoiceSummary",
+            "targetIntent",
+        ]
+        if _is_anchor_first_state(state):
+            immutable_design_keys.append("targetAnchorArtifactId")
+        if any(parsed_payload.get(key) != old_blueprint.get(key) for key in immutable_design_keys):
             return models.rejected("progression_blueprint_design_immutable")
         locked_records = [
             item
@@ -389,6 +548,8 @@ def revise_future_build_progression_stages(
                     "artifactId": None,
                     "artifactFact": None,
                     "lifecycleVerification": None,
+                    "researchProvenance": None,
+                    "resolvedTransitionBridge": None,
                     "costProfile": None,
                     "completionReport": None,
                     "retryCount": 0,
@@ -439,13 +600,26 @@ def claim_build_progression_stage(
         if any(item["status"] != "completed" for item in state["stages"][:stage_index]):
             return models.rejected("progression_strict_serial_violation")
         stage_blueprint = state["blueprint"]["stages"][stage_index]
+        uses_target_anchor = bool(
+            _is_anchor_first_state(state) and stage_blueprint["routeRole"] == "target"
+        )
         previous_artifact = (
             state["stages"][stage_index - 1]["artifactId"]
             if stage_index > 0 and not stage_blueprint["rebuildFromScratch"]
             else None
         )
         stage_version_context = dict(state["request"]["versionContext"])
-        stage_version_context["researchMemoryRef"] = stage_blueprint["researchQueryRefs"][-1]
+        if uses_target_anchor:
+            stage_version_context["researchMemoryRef"] = state["targetAnchor"]["artifactFact"][
+                "researchMemoryRef"
+            ]
+        elif _is_anchor_first_state(state):
+            exact_ref = _select_stage_identity_query_ref(stage_blueprint)
+            if exact_ref is None:
+                return models.rejected("progression_exact_family_query_missing")
+            stage_version_context["researchMemoryRef"] = exact_ref
+        else:
+            stage_version_context["researchMemoryRef"] = stage_blueprint["researchQueryRefs"][-1]
         packet = progression_models.StageCreatePacket(
             progression_id=state["progressionId"],
             blueprint_id=state["blueprint"]["blueprintId"],
@@ -455,16 +629,21 @@ def claim_build_progression_stage(
             target_intent=state["blueprint"]["targetIntent"],
             stage=stage_blueprint,
             previous_artifact_id=previous_artifact,
+            target_anchor_artifact_id=(
+                state["targetAnchor"]["artifactId"] if uses_target_anchor else None
+            ),
             starter_research_packet_id=state["starterResearchPacket"]["packetId"],
             starter_evidence_use=state["blueprint"]["starterEvidenceUse"],
             version_context=stage_version_context,
             no_raw_material=True,
             progression_bound=True,
+            requires_phase5_run=not uses_target_anchor,
         )
         claim_id = f"stage-claim:{uuid4()}"
         stage_state["status"] = "running"
         stage_state["claimId"] = claim_id
         stage_state["stageCreatePacket"] = packet.model_dump(mode="json", by_alias=True)
+        stage_state["usesTargetAnchor"] = uses_target_anchor
         stage_state["startedAt"] = _utc_now()
         stage_state["failureCode"] = None
         state["activeStageId"] = stage_state["stageId"]
@@ -478,7 +657,12 @@ def claim_build_progression_stage(
                 "stageId": stage_state["stageId"],
                 "claimId": claim_id,
                 "stageCreatePacket": packet.model_dump(mode="json", by_alias=True),
-                "nextAction": "start_phase5_run_then_bind",
+                "nextAction": (
+                    "verify_target_anchor_then_complete"
+                    if uses_target_anchor
+                    else "start_phase5_run_then_bind"
+                ),
+                "requiresPhase5Run": not uses_target_anchor,
                 "containsRawPob": False,
             },
         )
@@ -501,6 +685,8 @@ def bind_build_progression_stage_run(
         stage = _active_stage(state, stage_id, claim_id)
         if stage is None:
             return models.rejected("progression_stage_claim_mismatch")
+        if stage.get("usesTargetAnchor"):
+            return models.rejected("progression_target_anchor_does_not_require_run")
         if stage["boundRunId"] is not None:
             return models.rejected("progression_stage_run_already_bound")
         if any(item["boundRunId"] == run_id for item in state["stages"]):
@@ -543,8 +729,11 @@ def complete_build_progression_stage(
         stage = _active_stage(state, stage_id, claim_id)
         if stage is None:
             return models.rejected("progression_stage_claim_mismatch")
-        if not stage.get("boundRunId"):
+        uses_target_anchor = bool(stage.get("usesTargetAnchor"))
+        if not uses_target_anchor and not stage.get("boundRunId"):
             return models.rejected("progression_stage_run_not_bound")
+        if uses_target_anchor and artifact_id != state["targetAnchor"]["artifactId"]:
+            return models.rejected("progression_target_anchor_artifact_mismatch")
         try:
             report = StageCompletionReport.model_validate(completion_report)
         except ValidationError as exc:
@@ -559,10 +748,84 @@ def complete_build_progression_stage(
             return models.rejected("progression_stage_artifact_not_trusted")
         manifest, _xml = verified
         stage_blueprint = state["blueprint"]["stages"][stage_index]
+        bridge_error, resolved_bridge = _resolved_transition_bridge(
+            state,
+            stage_index=stage_index,
+            stage_blueprint=stage_blueprint,
+            readiness=report.transition_readiness,
+        )
+        if bridge_error:
+            return models.rejected(bridge_error)
         artifact_error = _artifact_mismatch(state, stage, stage_blueprint, manifest)
         if artifact_error:
             return models.rejected(artifact_error)
-        safe_lifecycle = _safe_lifecycle_verification(lifecycle_verification)
+        research_provenance = None
+        if _is_anchor_first_state(state):
+            if uses_target_anchor:
+                research_provenance = state["targetAnchor"]["researchProvenance"]
+            else:
+                phase5 = _read_phase5_provenance(manifest.run_id)
+                if (
+                    phase5 is None
+                    or phase5.get("candidateId") != manifest.candidate_id
+                    or phase5.get("sourceHash") != manifest.source_hash
+                ):
+                    return models.rejected("progression_stage_review_not_trusted")
+                audit = phase5["finalFailureAudit"]
+                if audit.get("retryDecision") != "accept" or audit.get("classification") in {
+                    "true_build_failure",
+                    "mixed",
+                }:
+                    return models.rejected("progression_stage_agent_rejected")
+                identity = progression_models.StageFamilyIdentity.model_validate(
+                    stage_blueprint["familyIdentity"]
+                )
+                provenance_error, research_provenance = (
+                    progression_provenance.validate_research_provenance(
+                        identity=identity,
+                        research_memory_use=phase5["researchMemoryUse"],
+                        artifact_research_ref=manifest.version_context.research_memory_ref,
+                        receipt_reader=_research_receipt_reader(),
+                        not_before=state["createdAt"],
+                    )
+                )
+                if provenance_error:
+                    return models.rejected(provenance_error)
+        if _is_anchor_first_state(state):
+            verification_ref = str(lifecycle_verification.get("verificationRef") or "")
+            trusted_lifecycle = (
+                progression_lifecycle.read_trusted_artifact_lifecycle_receipt(
+                    verification_ref,
+                    artifact_id=manifest.artifact_id,
+                    stage=stage_blueprint["lifecycleStage"],
+                )
+                if verification_ref
+                else None
+            )
+            if trusted_lifecycle is None:
+                return models.rejected("progression_lifecycle_receipt_not_trusted")
+            if uses_target_anchor:
+                anchor_lifecycle = state["targetAnchor"].get("lifecycleVerification")
+                if not isinstance(anchor_lifecycle, dict):
+                    return models.rejected("progression_target_anchor_lifecycle_not_trusted")
+                if verification_ref != anchor_lifecycle.get("verificationRef"):
+                    return models.rejected("progression_target_anchor_lifecycle_receipt_mismatch")
+            safe_lifecycle = _safe_lifecycle_verification(
+                {
+                    "stage": trusted_lifecycle["stage"],
+                    "status": trusted_lifecycle["status"],
+                    "pass": trusted_lifecycle["pass"],
+                    "failedChecks": trusted_lifecycle["failedChecks"],
+                    "unknownChecks": trusted_lifecycle["unknownChecks"],
+                    "caveats": trusted_lifecycle["caveats"],
+                    "evidenceTags": trusted_lifecycle["evidenceTags"],
+                    "evaluatedSourceHash": trusted_lifecycle["sourceHash"],
+                    "verificationRef": verification_ref,
+                    "artifactBound": True,
+                }
+            )
+        else:
+            safe_lifecycle = _safe_lifecycle_verification(lifecycle_verification)
         if safe_lifecycle is None:
             return models.rejected("invalid_progression_lifecycle_verification")
         if (
@@ -591,21 +854,10 @@ def complete_build_progression_stage(
             return models.rejected("progression_total_price_forbidden")
         stage["status"] = "completed"
         stage["artifactId"] = artifact_id
-        stage["artifactFact"] = {
-            "artifactId": manifest.artifact_id,
-            "runId": manifest.run_id,
-            "sourceHash": manifest.source_hash,
-            "class": str(manifest.safe_summary.get("class") or ""),
-            "ascendancy": str(manifest.safe_summary.get("ascendancy") or ""),
-            "level": int(manifest.safe_summary.get("level") or 0),
-            "mainSkill": str(manifest.safe_summary.get("mainSkill") or ""),
-            "judgePlayabilityFailures": list(manifest.judge_report.playability_failures),
-            "judgeQualityWarnings": list(manifest.judge_report.quality_warnings),
-            "judgeCaveats": list(manifest.judge_report.caveats),
-            "judgeScoreApplicability": manifest.judge_report.score_applicability,
-            "judgeModelabilityStatus": manifest.judge_report.modelability_status,
-        }
+        stage["artifactFact"] = _artifact_fact(manifest)
         stage["lifecycleVerification"] = safe_lifecycle
+        stage["researchProvenance"] = research_provenance
+        stage["resolvedTransitionBridge"] = resolved_bridge
         stage["costProfile"] = trusted_cost
         stage["completionReport"] = report.model_dump(mode="json", by_alias=True)
         stage["completedAt"] = _utc_now()
@@ -759,6 +1011,7 @@ def resume_build_progression(
             return models.rejected("progression_not_paused")
         restored = state["pause"].get("previousState")
         if restored not in {
+            "target_anchor_pending",
             "research_pending",
             "blueprint_pending",
             "stage_pending",
@@ -833,12 +1086,21 @@ def finalize_build_progression(
                             [
                                 packet["packetId"],
                                 *blueprint["researchQueryRefs"],
+                                *(
+                                    (stage_state.get("researchProvenance") or {}).get(
+                                        "dedupeQueryRefs", []
+                                    )
+                                ),
                                 *report["sourceRefs"],
                             ]
                         )
                     ),
                     "changesFromPrevious": report["changesFromPrevious"],
-                    "transitionBridge": blueprint["entryBridge"],
+                    "transitionBridge": (
+                        stage_state.get("resolvedTransitionBridge")
+                        if _is_anchor_first_state(state)
+                        else blueprint["entryBridge"]
+                    ),
                     "acquisitionPriorities": report["acquisitionPriorities"],
                     "caveats": report["caveats"],
                     "costProfileRef": stage_state["costProfile"]["costProfileRef"],
@@ -863,7 +1125,7 @@ def finalize_build_progression(
                 }
             )
         target_artifact = state["stages"][-1]["artifactId"]
-        route = progression.save_progression_route(
+        route = progression.save_anchored_progression_route(
             {
                 "routeName": state["blueprint"]["routeName"],
                 "classShell": state["request"]["baseClass"],
@@ -871,6 +1133,14 @@ def finalize_build_progression(
                 "stages": route_stages,
                 "routeSummary": route_summary.strip(),
                 "starterResearchPacketId": packet["packetId"],
+                "targetAnchorArtifactId": (
+                    state["targetAnchor"]["artifactId"] if _is_anchor_first_state(state) else None
+                ),
+                "targetDesignCoverage": (
+                    state["targetAnchor"]["designCoverage"]
+                    if _is_anchor_first_state(state)
+                    else None
+                ),
                 "versionContext": state["request"]["versionContext"],
                 "noRawMaterial": True,
             },
@@ -907,8 +1177,40 @@ def _blueprint_mismatch(
         return "progression_target_level_mismatch"
     if blueprint.starter_research_packet_id != packet.get("packetId"):
         return "progression_starter_packet_mismatch"
-    if (
-        blueprint.version_context.model_dump(mode="json", by_alias=True)
+    if _is_anchor_first_state(state):
+        anchor = state.get("targetAnchor") or {}
+        if blueprint.target_anchor_artifact_id != anchor.get("artifactId"):
+            return "progression_target_anchor_artifact_mismatch"
+        target = blueprint.stages[-1]
+        if target.lifecycle_stage != _progression_lifecycle_stage_for_level(request["targetLevel"]):
+            return "progression_target_anchor_lifecycle_stage_mismatch"
+        anchor_identity = anchor.get("identity") or {}
+        if (
+            target.route_role != "target"
+            or target.family_identity.ascendancy_key != anchor_identity.get("ascendancyKey")
+            or target.family_identity.primary_skill_key != anchor_identity.get("primarySkillKey")
+            or target.family_identity.secondary_skill_keys
+            != anchor_identity.get("secondarySkillKeys", [])
+            or target.family_identity.secondary_skill_names
+            != anchor_identity.get("secondarySkillNames", [])
+            or target.family_identity.ascendancy_name != anchor_identity.get("ascendancyName")
+            or target.family_identity.primary_skill_name != anchor_identity.get("primarySkillName")
+        ):
+            return "progression_target_anchor_family_mismatch"
+    if any(
+        blueprint.version_context.model_dump(mode="json", by_alias=True).get(key)
+        != request["versionContext"].get(key)
+        for key in (
+            "league",
+            "ruleset",
+            "gamePatch",
+            "passiveTreeVersion",
+            "pobVersionOrCommit",
+            "graphSnapshotId",
+        )
+    ) or (
+        not _is_anchor_first_state(state)
+        and blueprint.version_context.model_dump(mode="json", by_alias=True)
         != request["versionContext"]
     ):
         return "progression_version_context_mismatch"
@@ -921,8 +1223,16 @@ def _artifact_mismatch(
     stage_blueprint: dict[str, Any],
     manifest: artifacts.FinalBuildArtifactManifest,
 ) -> str | None:
-    if manifest.run_id != stage_state["boundRunId"]:
+    uses_target_anchor = bool(stage_state.get("usesTargetAnchor"))
+    expected_run_id = (
+        state["targetAnchor"]["artifactFact"]["runId"]
+        if uses_target_anchor
+        else stage_state["boundRunId"]
+    )
+    if manifest.run_id != expected_run_id:
         return "progression_stage_run_artifact_mismatch"
+    if uses_target_anchor and manifest.artifact_id != state["targetAnchor"]["artifactId"]:
+        return "progression_target_anchor_artifact_mismatch"
     try:
         level = int(manifest.safe_summary.get("level") or 0)
     except (TypeError, ValueError):
@@ -946,14 +1256,29 @@ def _artifact_mismatch(
         artifact_version.get(key) != requested_version.get(key) for key in immutable_version_keys
     ):
         return "progression_version_context_mismatch"
-    stage_packet = stage_state.get("stageCreatePacket")
-    packet_version = (
-        stage_packet.get("versionContext")
-        if isinstance(stage_packet, dict) and isinstance(stage_packet.get("versionContext"), dict)
-        else {}
-    )
-    if artifact_version.get("researchMemoryRef") != packet_version.get("researchMemoryRef"):
-        return "progression_stage_research_query_mismatch"
+    if _is_anchor_first_state(state):
+        expected_ascendancy = str(stage_blueprint["familyIdentity"].get("ascendancyName") or "")
+        expected_skill = str(stage_blueprint["familyIdentity"].get("primarySkillName") or "")
+        if (
+            str(manifest.safe_summary.get("ascendancy") or "").casefold()
+            != expected_ascendancy.casefold()
+            or str(manifest.safe_summary.get("mainSkill") or "").casefold()
+            != expected_skill.casefold()
+        ):
+            return "progression_stage_family_artifact_mismatch"
+        expected_secondary = stage_blueprint["familyIdentity"].get("secondarySkillNames", [])
+        if not _artifact_has_enabled_core_skills(manifest, expected_secondary):
+            return "progression_stage_family_artifact_mismatch"
+    if not uses_target_anchor:
+        stage_packet = stage_state.get("stageCreatePacket")
+        packet_version = (
+            stage_packet.get("versionContext")
+            if isinstance(stage_packet, dict)
+            and isinstance(stage_packet.get("versionContext"), dict)
+            else {}
+        )
+        if artifact_version.get("researchMemoryRef") != packet_version.get("researchMemoryRef"):
+            return "progression_stage_research_query_mismatch"
     if any(
         item.get("artifactId") == manifest.artifact_id
         or (
@@ -967,6 +1292,227 @@ def _artifact_mismatch(
     return None
 
 
+def _target_anchor_artifact_mismatch(
+    state: dict[str, Any],
+    manifest: artifacts.FinalBuildArtifactManifest,
+    identity: progression_models.TargetAnchorIdentity,
+) -> str | None:
+    try:
+        level = int(manifest.safe_summary.get("level") or 0)
+        created = datetime.fromisoformat(manifest.created_at)
+        progression_created = datetime.fromisoformat(state["createdAt"])
+    except (TypeError, ValueError):
+        return "progression_target_anchor_invalid"
+    if (
+        created.tzinfo is None
+        or progression_created.tzinfo is None
+        or created < progression_created
+    ):
+        return "progression_target_anchor_predates_progression"
+    if level != state["request"]["targetLevel"]:
+        return "progression_target_anchor_level_mismatch"
+    if (
+        str(manifest.safe_summary.get("class") or "").casefold()
+        != state["request"]["baseClass"].casefold()
+    ):
+        return "progression_base_class_mismatch"
+    if (
+        str(manifest.safe_summary.get("ascendancy") or "").casefold()
+        != identity.ascendancy_name.casefold()
+        or str(manifest.safe_summary.get("mainSkill") or "").casefold()
+        != identity.primary_skill_name.casefold()
+    ):
+        return "progression_target_anchor_family_mismatch"
+    if not _artifact_has_enabled_core_skills(manifest, identity.secondary_skill_names):
+        return "progression_target_anchor_family_mismatch"
+    artifact_version = manifest.version_context.model_dump(mode="json", by_alias=True)
+    requested = state["request"]["versionContext"]
+    if any(
+        artifact_version.get(key) != requested.get(key)
+        for key in (
+            "league",
+            "ruleset",
+            "gamePatch",
+            "passiveTreeVersion",
+            "pobVersionOrCommit",
+            "graphSnapshotId",
+        )
+    ):
+        return "progression_version_context_mismatch"
+    return None
+
+
+def _artifact_fact(manifest: artifacts.FinalBuildArtifactManifest) -> dict[str, Any]:
+    return {
+        "artifactId": manifest.artifact_id,
+        "runId": manifest.run_id,
+        "sourceHash": manifest.source_hash,
+        "class": str(manifest.safe_summary.get("class") or ""),
+        "ascendancy": str(manifest.safe_summary.get("ascendancy") or ""),
+        "level": int(manifest.safe_summary.get("level") or 0),
+        "mainSkill": str(manifest.safe_summary.get("mainSkill") or ""),
+        "researchMemoryRef": manifest.version_context.research_memory_ref,
+        "judgePlayabilityFailures": list(manifest.judge_report.playability_failures),
+        "judgeQualityWarnings": list(manifest.judge_report.quality_warnings),
+        "judgeCaveats": list(manifest.judge_report.caveats),
+        "judgeScoreApplicability": manifest.judge_report.score_applicability,
+        "judgeModelabilityStatus": manifest.judge_report.modelability_status,
+        "judgeAdvisoryOnly": True,
+    }
+
+
+def _read_phase5_provenance(run_id: str) -> dict[str, Any] | None:
+    return progression_provenance.read_consumed_phase5_provenance(run_id)
+
+
+def _research_receipt_reader():
+    service = research_memory.ResearchMemoryService()
+    return service.read_query_receipt
+
+
+def _validate_blueprint_research_provenance(
+    state: dict[str, Any],
+    blueprint: progression_models.ProgressionBlueprint,
+) -> str | None:
+    reader = _research_receipt_reader()
+    exact_refs_by_stage: dict[str, list[str]] = {}
+    for stage in blueprint.stages:
+        if (
+            not stage.family_identity.ascendancy_name
+            or not stage.family_identity.primary_skill_name
+            or len(stage.family_identity.secondary_skill_names)
+            != len(stage.family_identity.secondary_skill_keys)
+        ):
+            return "progression_stage_family_names_required"
+        exact_refs: list[str] = []
+        for ref in stage.research_query_refs:
+            receipt = reader(ref)
+            if receipt is None:
+                return "progression_research_receipt_missing"
+            if not progression_provenance.receipt_was_seen_at_or_after(
+                receipt,
+                state["createdAt"],
+            ):
+                return "progression_research_receipt_not_current_run"
+            if progression_provenance.receipt_matches_identity_query(
+                receipt,
+                stage.family_identity,
+            ):
+                exact_refs.append(ref)
+        if not exact_refs:
+            return "progression_exact_family_query_missing"
+        exact_refs_by_stage[stage.stage_id] = exact_refs
+    anchor_exact_refs = set(
+        (state["targetAnchor"].get("researchProvenance") or {}).get("exactIdentityQueryRefs", [])
+    )
+    if not anchor_exact_refs.intersection(exact_refs_by_stage[blueprint.stages[-1].stage_id]):
+        return "progression_target_anchor_research_mismatch"
+    return None
+
+
+def _validate_target_coverage_provenance(
+    coverage: progression_models.TargetDesignCoverage,
+    provenance: dict[str, Any] | None,
+    *,
+    trusted_independent_refs: set[str],
+) -> str | None:
+    traceable_research_refs = {
+        ref
+        for key in (
+            "buildFamilyKeys",
+            "deepRecordIds",
+            "patternIds",
+            "semanticEdgeIds",
+            "memoryItemIds",
+        )
+        for ref in (provenance or {}).get(key, [])
+    }
+    for item in coverage.dimensions:
+        if item.status == "research_adopted" and not traceable_research_refs.intersection(
+            item.evidence_refs
+        ):
+            return "progression_target_coverage_research_ref_not_used"
+        if item.status == "independently_verified" and not trusted_independent_refs.intersection(
+            item.evidence_refs
+        ):
+            return "progression_target_coverage_independent_ref_not_trusted"
+    return None
+
+
+def _select_stage_identity_query_ref(stage_blueprint: dict[str, Any]) -> str | None:
+    reader = _research_receipt_reader()
+    identity = progression_models.StageFamilyIdentity.model_validate(
+        stage_blueprint["familyIdentity"]
+    )
+    for ref in stage_blueprint["researchQueryRefs"]:
+        receipt = reader(ref)
+        if isinstance(receipt, dict) and progression_provenance.receipt_matches_identity_query(
+            receipt,
+            identity,
+        ):
+            return ref
+    return None
+
+
+def _artifact_has_enabled_core_skills(
+    manifest: artifacts.FinalBuildArtifactManifest,
+    expected_names: list[str],
+) -> bool:
+    if not expected_names:
+        return True
+    enabled_names: set[str] = set()
+    for group in manifest.tested_skill_groups:
+        if not group.enabled:
+            continue
+        enabled_names.update(
+            name.strip().casefold() for name in group.active_skills if name.strip()
+        )
+    return all(name.strip().casefold() in enabled_names for name in expected_names)
+
+
+def _resolved_transition_bridge(
+    state: dict[str, Any],
+    *,
+    stage_index: int,
+    stage_blueprint: dict[str, Any],
+    readiness: list[progression_models.TransitionRequirement],
+) -> tuple[str | None, dict[str, Any] | None]:
+    blueprint_bridge = stage_blueprint.get("entryBridge")
+    if not _is_anchor_first_state(state):
+        return None, blueprint_bridge
+    if stage_index == 0:
+        return (
+            ("first_progression_stage_cannot_have_transition_readiness", None)
+            if readiness
+            else (None, None)
+        )
+    if not isinstance(blueprint_bridge, dict):
+        return "progression_transition_bridge_missing", None
+    expected = {item["requirementId"]: item for item in blueprint_bridge.get("requirements", [])}
+    actual = {item.requirement_id: item for item in readiness}
+    if set(actual) != set(expected):
+        return "progression_transition_readiness_incomplete", None
+    resolved_requirements: list[dict[str, Any]] = []
+    for requirement_id, planned in expected.items():
+        resolved = actual[requirement_id]
+        if (
+            resolved.kind != planned["kind"]
+            or resolved.blocking is not planned["blocking"]
+            or resolved.description != planned["description"]
+        ):
+            return "progression_transition_requirement_mismatch", None
+        if resolved.blocking and resolved.status != "satisfied":
+            return "progression_transition_mechanism_not_ready", None
+        resolved_requirements.append(resolved.model_dump(mode="json", by_alias=True))
+    return (
+        None,
+        {
+            **blueprint_bridge,
+            "requirements": resolved_requirements,
+        },
+    )
+
+
 def _safe_lifecycle_verification(value: dict[str, Any]) -> dict[str, Any] | None:
     """Select and bound the lifecycle fields allowed into durable progression state."""
 
@@ -976,12 +1522,25 @@ def _safe_lifecycle_verification(value: dict[str, Any]) -> dict[str, Any] | None
     status = value.get("status")
     passed = value.get("pass")
     source_hash = value.get("evaluatedSourceHash")
+    verification_ref = value.get("verificationRef")
+    artifact_bound = value.get("artifactBound")
     if (
         stage not in _LIFECYCLE_STAGES
         or status not in {"passed", "failed", "unknown"}
         or not isinstance(passed, bool)
         or not isinstance(source_hash, str)
         or not _LIFECYCLE_TOKEN.fullmatch(source_hash)
+        or (
+            verification_ref is not None
+            and (
+                not isinstance(verification_ref, str)
+                or not re.fullmatch(
+                    r"lifecycle-verification:[a-f0-9]{16}",
+                    verification_ref,
+                )
+            )
+        )
+        or (artifact_bound is not None and artifact_bound is not True)
     ):
         return None
 
@@ -1019,6 +1578,14 @@ def _safe_lifecycle_verification(value: dict[str, Any]) -> dict[str, Any] | None
         "caveats": list(caveats),
         "evidenceTags": evidence_tags,
         "evaluatedSourceHash": value.get("evaluatedSourceHash"),
+        **(
+            {
+                "verificationRef": verification_ref,
+                "artifactBound": True,
+            }
+            if verification_ref is not None
+            else {}
+        ),
     }
     try:
         _ensure_safe(selected)
@@ -1068,6 +1635,7 @@ def _find_stage(state: dict[str, Any], stage_id: str) -> dict[str, Any] | None:
 
 def _next_action(state: dict[str, Any]) -> str:
     return {
+        "target_anchor_pending": "create_and_bind_target_anchor",
         "research_pending": "intake_starter_research",
         "blueprint_pending": "submit_blueprint",
         "stage_pending": "claim_stage",
@@ -1079,8 +1647,29 @@ def _next_action(state: dict[str, Any]) -> str:
     }.get(state["status"], "inspect_progression")
 
 
+def _progression_lifecycle_stage_for_level(level: int) -> str:
+    """Map a target level to Phase 8 verification scope without changing ordinary Create."""
+
+    if level <= 25:
+        return "campaign_early"
+    if level <= 45:
+        return "campaign_mid"
+    if level < 65:
+        return "campaign_late"
+    if level < 82:
+        return "maps_entry"
+    if level < 92:
+        return "endgame_budget"
+    return "endgame_final"
+
+
 def _public_state(state: dict[str, Any]) -> dict[str, Any]:
     packet = state.get("starterResearchPacket")
+    expose_starter = not _is_anchor_first_state(state) or (
+        (state.get("targetAnchor") or {}).get("status") == "bound"
+    )
+    public_packet = packet if expose_starter else None
+    public_candidate = state.get("starterResearchCandidate") if expose_starter else None
     active_stage = (
         _find_stage(state, state["activeStageId"]) if state.get("activeStageId") else None
     )
@@ -1095,24 +1684,28 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
             None,
         )
     return {
+        "schemaVersion": state["schemaVersion"],
         "progressionId": state["progressionId"],
         "revision": state["revision"],
         "currentState": state["status"],
         "request": state["request"],
+        "targetAnchor": state.get("targetAnchor"),
         "starterResearch": (
             {
-                "packetId": packet["packetId"],
-                "evidenceStatus": packet["evidenceStatus"],
-                "packetStatus": packet["packetStatus"],
-                "sourceCount": len(packet["sources"]),
-                "claimCount": len(packet["claims"]),
-                "expiresAt": packet["expiresAt"],
+                "packetId": public_packet["packetId"],
+                "evidenceStatus": public_packet["evidenceStatus"],
+                "packetStatus": public_packet["packetStatus"],
+                "sourceCount": len(public_packet["sources"]),
+                "claimCount": len(public_packet["claims"]),
+                "expiresAt": public_packet["expiresAt"],
             }
-            if isinstance(packet, dict)
+            if isinstance(public_packet, dict)
             else None
         ),
-        "starterResearchPacket": packet,
-        "starterResearchCandidate": state.get("starterResearchCandidate"),
+        "starterResearchPacket": public_packet,
+        "starterResearchCandidate": public_candidate,
+        "starterEvidenceWithheldUntilAnchor": not expose_starter
+        and bool(packet or state.get("starterResearchCandidate")),
         "blueprintId": (
             state["blueprint"].get("blueprintId")
             if isinstance(state.get("blueprint"), dict)
@@ -1129,6 +1722,8 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
                 "retryCount": item["retryCount"],
                 "failureCode": item["failureCode"],
                 "lifecycleVerification": item["lifecycleVerification"],
+                "researchProvenance": item.get("researchProvenance"),
+                "resolvedTransitionBridge": item.get("resolvedTransitionBridge"),
                 "costProfileRef": (
                     item["costProfile"].get("costProfileRef")
                     if isinstance(item.get("costProfile"), dict)
@@ -1151,7 +1746,9 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
                 "starterEvidenceUse": state["blueprint"]["starterEvidenceUse"],
                 "versionContext": {
                     **state["request"]["versionContext"],
-                    "researchMemoryRef": active_stage_blueprint["researchQueryRefs"][-1],
+                    "researchMemoryRef": active_stage["stageCreatePacket"]["versionContext"][
+                        "researchMemoryRef"
+                    ],
                 },
             }
             if active_stage is not None and active_stage_blueprint is not None
@@ -1184,7 +1781,7 @@ def _read_state(progression_id: str) -> dict[str, Any] | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if (
-        payload.get("schemaVersion") != STATE_SCHEMA_VERSION
+        payload.get("schemaVersion") not in {LEGACY_STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION}
         or payload.get("progressionId") != progression_id
         or not isinstance(payload.get("revision"), int)
         or not isinstance(payload.get("operations"), list)
@@ -1195,6 +1792,12 @@ def _read_state(progression_id: str) -> dict[str, Any] | None:
     except ValueError:
         return None
     return payload
+
+
+def _is_anchor_first_state(state: dict[str, Any]) -> bool:
+    return state.get("schemaVersion") == STATE_SCHEMA_VERSION and isinstance(
+        state.get("targetAnchor"), dict
+    )
 
 
 def _write_state(state: dict[str, Any]) -> bool:
@@ -1235,8 +1838,37 @@ def _run_bound_to_other_progression(progression_id: str, run_id: str) -> bool:
         if child.name == progression_id:
             continue
         state = _read_state(child.name)
-        if state is not None and any(
-            stage.get("boundRunId") == run_id for stage in state.get("stages", [])
+        if state is not None:
+            anchor_run = ((state.get("targetAnchor") or {}).get("artifactFact") or {}).get("runId")
+            if anchor_run == run_id or any(
+                stage.get("boundRunId") == run_id for stage in state.get("stages", [])
+            ):
+                return True
+    return False
+
+
+def _artifact_bound_to_other_progression(
+    progression_id: str,
+    artifact_id: str,
+    source_hash: str,
+) -> bool:
+    root = paths.build_progression_runs_dir()
+    if not root.is_dir():
+        return False
+    for child in root.iterdir():
+        if child.name == progression_id:
+            continue
+        state = _read_state(child.name)
+        if state is None:
+            continue
+        anchor = state.get("targetAnchor") or {}
+        anchor_fact = anchor.get("artifactFact") or {}
+        if anchor.get("artifactId") == artifact_id or anchor_fact.get("sourceHash") == source_hash:
+            return True
+        if any(
+            item.get("artifactId") == artifact_id
+            or ((item.get("artifactFact") or {}).get("sourceHash") == source_hash)
+            for item in state.get("stages", [])
         ):
             return True
     return False

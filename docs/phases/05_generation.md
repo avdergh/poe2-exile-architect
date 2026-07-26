@@ -54,9 +54,16 @@ Phase 5 仍遵守项目硬边界：
 - Agent 只能通过结构化工具查询数据库和图，不暴露原生 SQL、Cypher 或 Gremlin 查询语句；
 - 跨阶段唯一硬锁是职业；开荒、攻坚、终局之间可以洗升华、换技能、换天赋、换装备和辅助技能。
 
-完整成长请求由 Phase 8 progression 编排，但每个真实里程碑仍是一个完整 Phase 5 run。开荒阶段
-可以使用与目标阶段完全不同的 Family；当前 run 只能按当前阶段实际升华和主技能查询 Research，
-不能拿目标 Family 的记忆冒充开荒知识。
+完整成长请求由 Phase 8 progression 编排，但它不能改写普通 Phase 5。目标 BD 首先按本章普通
+单阶段 Create 从空状态生成；在既有 retry 内解决目标 lifecycle 的真实资源/机制失败，review
+并保存为 immutable anchor，再对私有 artifact 生成可信 lifecycle receipt。之后每个目标前真实
+里程碑各有一个完整 Phase 5 run，最后 target closure 复用同一个 anchor/receipt，不再重复
+Create。开荒阶段可以使用与目标完全不同的 Family；当前 run 只能按当前实际升华和主技能查询
+Research，不能拿目标 Family 记忆冒充开荒知识。
+
+Phase 8 的生命周期验证预算（例如 `endgame_budget >= 82`）不得用于修改普通 Create 的生命周期
+摘要等级映射。普通 80 级目标的 Research recall、技能组、升华、优化、Judge、保存和导出行为
+必须保持 Phase 5 基线。
 
 Phase 8 可以让外部 Agent 在 run 外先做有界联网开荒研究。网页结论只是 patch-scoped 候选：
 
@@ -96,9 +103,9 @@ Agent 负责：
 - 在没有 PoB/Judge 证据时替 Agent 声称候选已验证；
 - 判断候选是否“像不像别人”。Phase 5 只关心是否安全、可解释、可验证和有设计价值。
 
-Progression-bound run 保存 artifact 后不立即导出单阶段完整包。控制流程先把 artifact 绑定到当前
-stage、完成全部阶段并保存 route，最后统一导出每阶段 PoB 文件和目标阶段 `.build`。普通单阶段
-Create 的保存与导出行为保持不变。
+目标 anchor 的普通 Create 在 progression 中只保存 artifact，不立即单独交付；目标前
+progression-bound run 同样只保存 artifact。控制流程完成路线后统一导出每阶段 PoB 文件和 anchor
+目标 `.build`。非 progression 的普通单阶段 Create 保存与导出行为保持不变。
 
 ## 原型阶段拆分
 
@@ -129,8 +136,10 @@ Create 的保存与导出行为保持不变。
    attempt。主动宝石检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
 7. Agent 调用 `evaluate_generation_candidate`。程序只捕获一次当前 PoB XML；预检与独立 Judge
    共享这份不可变快照，在独立 Judge
-   引擎中运行 Phase 1 Judge，只持久化清洗后的状态引用和评估报告，并将可信凭据绑定到本次
-   `runId` 与候选编号。该凭据的可信范围是快照和 Judge 结果；版本上下文仍来自 Agent 本次
+   引擎中运行 Phase 1 Judge，只持久化清洗后的状态引用和评估报告；同一份原始 XML 仅在当前
+   MCP 进程内短暂保留，供最终 artifact 保存，既不进入 run 目录，也不进入报告。可信凭据绑定到
+   本次 `runId` 与候选编号，同时记录不含原始材料的 `semanticStateHash`。该凭据的可信范围是
+   快照和 Judge 结果；版本上下文仍来自 Agent 本次
    freshness/图/记忆查询，不因写入该凭据而自动变成程序签名事实。
 8. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
    `validate-output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
@@ -155,7 +164,7 @@ P5.1 最小产物：
 - `AgentRefinedBuildPrompt`：Agent 产出的更具体生成提示词或最小 `BuildBrief` 摘要；
 - `PrototypeBuildCandidate`：Agent 产出的安全候选 BD 摘要；
 - `TransientBuildStateRef`：程序从真实 PoB 快照生成的安全状态引用，包含实际测试技能组、每组全部
-  主动技能和数量；
+  主动技能和数量，以及忽略派生输出/展示噪声的 `semanticStateHash`；
 - `JudgeAdvisoryReport`：Phase 1 Judge 的可信安全摘要，包括硬阻断、注意事项、总分、分项分数、
   可建模性、Judge 实际选择技能、插槽诊断、属性缺口与复现版本；
 - `HumanReviewPacket`：供人工验收使用的安全报告，至少包含用户需求摘要、Agent 改写后的

@@ -356,6 +356,7 @@ class TransientBuildStateRef(VersionedSafeModel):
     status: Literal["available", "missing", "error"]
     snapshot_id: str | None = None
     source_hash: str | None = None
+    semantic_state_hash: str | None = None
     safe_summary: dict[str, str] = Field(default_factory=dict)
     tested_skill_groups: list[TestedSkillGroup] = Field(default_factory=list)
     completeness_advisories: list[str] = Field(default_factory=list)
@@ -368,9 +369,14 @@ class TransientBuildStateRef(VersionedSafeModel):
                 raise ValueError("available transient state requires snapshot_id and source_hash")
             if not self.tested_skill_groups:
                 raise ValueError("available transient state requires tested_skill_groups")
-        elif self.snapshot_id or self.source_hash or self.tested_skill_groups:
+        elif (
+            self.snapshot_id
+            or self.source_hash
+            or self.semantic_state_hash
+            or self.tested_skill_groups
+        ):
             raise ValueError(
-                "missing or error transient state cannot carry snapshot, source hash, or tested skills"
+                "missing or error transient state cannot carry snapshot hashes or tested skills"
             )
         return self
 

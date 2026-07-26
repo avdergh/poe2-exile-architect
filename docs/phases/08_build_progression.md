@@ -1,172 +1,201 @@
-# Phase 8 - 联网开荒研究与可验证的完整 BD 成长流程
+# Phase 8 - 目标锚点优先的联网开荒与完整成长流程
 
 ## 阶段状态
 
-功能实现完成候选，处于最终验收阶段。开荒证据、路线蓝图、可恢复阶段编排、Route v2、
-粗粒度成本画像和完整成长包导出已经落地；focused 与 quick 门禁已通过。完成真实四阶段成长
-路线验收、插件新进程复验和最终 full 门禁后，才把本阶段标记为已完成。
+功能实现完成候选，处于最终验收阶段。当前实现保留开荒证据、成本画像、多阶段 artifact、
+恢复/重试和完整成长包导出，并把编排修正为：
 
-## 核心问题
+```text
+普通单阶段 Create 先生成目标 BD
+  -> 绑定不可变 Target Anchor
+  -> 有界联网研究同职业开荒
+  -> 设计开荒/桥接/目标路线
+  -> 分别创建目标之前的真实里程碑
+  -> 用同一个 Target Anchor artifact 闭合目标阶段
+  -> Route v3 + 完整成长包
+```
 
-公开成熟 BD 大多来自 80 级以后，不能证明早期怎样开荒。实际游戏中的高上限终局流派常有前期
-硬伤，因此开荒升华、技能、天赋和资源系统可能与目标流派完全不同。完整成长流程不能把终局 PoB
-机械删点、降级装备后冒充早期 BD，也不能要求开荒阶段必须沿用终局 Family。
+普通单阶段 Create 的等级语义、Research 查询、有限内部 retry、artifact 保存和导出保持 Phase 5
+既有行为。Phase 8 的 `82/92` 生命周期验证门槛只属于 progression 蓝图与
+`verify_lifecycle_stage`，不能反向修改普通 Create。
 
-Phase 8 将问题拆成三个独立设计任务：
+## 核心问题与原则
 
-1. 同一基础职业下，选择成型快、低依赖、前期清图和单体职责完整的开荒流派；
-2. 使用成熟 Research、图、语料和 PoB 工具设计目标高上限流派；
-3. 找到终局技能、升华、天赋、Spirit、资源和必需物品同时就绪的安全转型桥梁。
+成熟公开 BD 多来自 80 级以后，不能证明早期怎样开荒。高上限流派又常有技能、资源、Spirit、
+触发或装备成型门槛，因此开荒升华、技能、天赋和资源系统可以与目标完全不同。
 
-基础职业是唯一跨阶段硬锁。开荒与目标阶段允许使用完全不同的升华、技能、辅助、天赋、装备、
-防御层和资源方案。
+基础职业是唯一跨阶段硬锁。完整成长路线拆成三个设计对象：
 
-## 目标
+1. 同基础职业下成型快、前期职责完整的开荒 Family；
+2. 由正常 Create 独立生成并接受的目标高上限 Family；
+3. 用技能、升华、天赋、Spirit、资源、防御和必需物品门槛连接两者的 TransitionBridge。
 
-- 默认 4 个真实里程碑；无实质变化时合并，最多 5 个；
-- 每个重要里程碑都有独立 Phase 5 run、Judge 结果和可加载的 `FinalBuildArtifact`；
-- 相邻阶段记录 typed 技能、升华、天赋、装备、配置和资源变化；
-- 转型由机制闭环和合法性决定，价格只提供风险与获取难度说明；
-- 联网开荒资料只形成 patch-scoped 候选证据，不能自动写入 Research 或 Learning Memory；
-- 用户可以加载和导出任一真实阶段，而不是只阅读目标 BD 加一段文字过程。
+不能从目标 PoB 自动删点或降级装备伪造早期阶段，也不能先生成较弱的桥接 BD，再把它当作目标
+毕业 BD。目标 anchor 一旦绑定，artifact id、source hash、Family、等级和版本都不可替换。
+
+## 目标 Anchor
+
+`start_build_progression` 创建 schema v2 状态并首先进入 `target_anchor_pending`，返回
+`TargetAnchorCreatePacket`。Agent 必须按普通单阶段 `$poe-bd-create` 从空状态生成目标：
+
+在 anchor 绑定前，start/status 不返回 `StarterResearchPacket` 或 stale candidate 正文，只暴露
+是否存在缓存的布尔提示；因此目标 Create 不会提前看到开荒路线。
+
+- 使用普通 Create 的渐进 Research recall 和真实 `researchMemoryUse`；
+- 使用普通 Create 的最多两次内部修正；
+- 在保存前按目标等级运行一次活动快照 lifecycle gate；失败或 unknown 时先在普通 Create 的既有
+  retry 内修复，不能把资源断裂等真实问题留给 progression；
+- 完成正式 Judge、保存 `FinalBuildArtifact` 和 `review-packet`；
+- 保存后再用 `verify_lifecycle_stage(..., artifact_id=...)` 直接验证私有 immutable artifact，
+  取得 `verificationRef`；
+- 不读取 starter web packet，也不从尚未存在的早期阶段倒推一个低配目标。
+
+随后调用 `bind_build_progression_target_anchor`。绑定必须同时验证：
+
+- artifact 在当前 progression 启动后产生，职业、等级和六项版本事实一致；
+- `verificationRef` 是该 artifact、目标 lifecycle stage 和原始 source hash 的可信回执，且结果为
+  `passed`；失败、unknown、缺失、篡改或属于其他 artifact/stage 的回执一律拒绝；
+- artifact 摘要中的升华/主技能名称与已解析 stable key 身份一致；
+- 最终 Agent failure audit 为 `accept`，且不是 `true_build_failure` 或含混的 `mixed`；
+- `TargetDesignCoverage` 恰好覆盖技能包、清图、Boss、伤害兑现、升华/天赋、装备协同、
+  防御/恢复、资源/Spirit、战斗配置和 modelability 十个维度；
+- Judge 只作 `advisoryOnly` 附件，不以分数或 warning 自动阻断/选优；
+- artifact 使用的每个 Research Family/record/pattern/edge/fragment 都能由 typed query receipt
+  追溯。
+
+任一设计维度为 `rejected` 时不能绑定。`unavailable_with_caveat` 可以绑定，但最终路线质量为
+`limited`。标记为 `research_adopted` 的维度必须引用实际采用的 Family、record、pattern、edge
+或 fragment ID；单独引用查询回执 `dq-*` 只能证明查过，不能证明采用过。
+标记为 `independently_verified` 的维度必须引用当前 anchor 的真实 artifact，或该 Phase 5
+run/source-hash 证据；任意格式安全的字符串不能冒充验证来源。
+
+PoB import/save 不保证 XML 字节序列稳定。生命周期回执因此同时记录两种 hash：artifact
+manifest 中的原始 `sourceHash` 是 immutable 身份；PoB 恢复后的
+`restoredEngineSourceHash` 是共享 `build_state_hash` 产生的语义状态投影，只用于证明验证过程中
+等级、技能、装备、天赋、配置等计算输入没有变化。它忽略 `PlayerStat`、`FullDPSSkill` 等只读
+计算会刷新的派生输出和 XML 展示噪声。系统不会通过重新序列化去伪造原始 hash，也不会因字段
+顺序或派生输出刷新把真实同一 artifact 误判成另一个构筑；真实语义变化仍会 fail closed。回执
+不保存 XML，并使用内容寻址检测本地篡改。
+
+## Typed Research provenance
+
+`query_research_memory` 在原有 dedupe 表中追加 copy-safe `request_contract` 与
+`result_contract`：
+
+- request 保存精确升华、主技能、graph-backed gem/active-skill 等价 key、Family、record kind、
+  axes 和查询模式，不保存原始 PoB/来源；
+- result 只保存返回的 Family identity 与 record/pattern/edge/fragment ID；
+- ref 同时绑定安全 request/result；后续知识库变化形成新 ref，不覆盖旧 provenance；
+- 历史无 typed contract 的 dedupe ref 仍可用于旧 Research 去重，但不能授权新 progression。
+
+蓝图的每个阶段必须至少有一个使用该阶段精确
+`ascendancyKey + primarySkillKey` 的 receipt。Phase 5 可以继续渐进查询；artifact 的
+普通 target anchor 没有 stage packet，其 `researchMemoryRef` 只需属于候选实际
+`researchMemoryUse.dedupeQueryRefs`。目标前阶段必须把 claim 返回的
+`StageCreatePacket.versionContext` 原样用于 Phase 5/Judge/artifact；后续渐进查询可以继续进入
+`researchMemoryUse`，但不能替换 stage-bound ref。阶段完成时服务会验证所有实际采用的知识 ID
+都真实出现在这些 receipt 中，并要求 receipt 在当前 progression 启动后实际查询过，不能只复用
+历史 ref。时间门槛在蓝图提交时即检查；恢复运行不需要重建已被安全 receipt 隐去的原始 query
+文本。
+
+在 claim 前，Agent 必须把准备采用的 `buildFamilyKey` 的 ascendancy、primary skill 和完整
+`secondarySkillKeys` 与 `StageFamilyIdentity` 逐项核对。若核心副技能不同，只能先修订尚未
+开始的蓝图；不能完成 artifact 后再换成另一个 Family。阶段完成时服务会再次按 immutable
+receipt 检查并失败关闭。
+
+Family identity 统一使用玩家 `active_skill` 的 `skill:` stable key。`gem:` stable key 可以作为
+`query_research_memory` 的查询入口；receipt 会记录由物理图确认的等价 key 集合，使该真实查询
+可追溯到对应 active-skill Family。没有图关系的两个 key 不能互相授权。
+
+Family identity 还必须保存升华/主技能的规范名称。声明已确认核心 secondary key 时，也必须保存
+一一对应的规范名称并在同一 artifact 的启用 tested skill groups 中匹配。阶段 artifact 的 PoB
+readback 摘要必须同时匹配 stable key 对应的名称，避免“查询 A Family、实际做 B 技能”的
+provenance 漂移。
 
 ## 联网开荒研究
 
-联网搜索由外部 Agent 使用宿主 Web/Browser 执行，仓库不新增自主模型、隐藏 agent loop 或内部
-全网爬虫。一次路线最多采纳六个来源。Agent 优先查找当前 patch、明确分级、说明零资金或
-league-start 假设的职业开荒攻略。
+联网由外部 Agent 使用宿主 Web/Browser 完成，仓库不新增自主模型、隐藏 loop 或内部全网爬虫。
+一次路线最多采纳六个来源：
 
-来源使用规则：
+开荒安全摘要使用 `StarterResearchPacket`，并按以下来源规则形成：
 
-- 当前 patch 的结构化分级攻略或官方论坛完整攻略可以作为直接候选证据；
-- 聚合帖、评论和视频索引只用于发现来源，不能单独授权开荒结论；
-- 至少两个独立来源收敛，或一个当前 patch 且明确给出等级分段的完整来源，才能标记为
-  `supported`；否则为 `limited`；
-- 旧 patch 资料只能作为待复核候选；跨赛季资料不能用于当前路线；
-- 所有技能、升华、天赋和机制前提仍需当前 corpus/graph/mechanic 工具复核；
-- 数值、资源和合法性仍由对应等级的真实 PoB/Judge 验证。
+- 两个独立当前资料收敛，或一个当前精确 patch、明确等级分段的完整攻略，才可标记
+  `supported`；
+- 聚合帖和评论只能发现来源；旧 patch 只能成为待复核候选；跨赛季禁止采用；
+- 组件存在性、机制前提、数值和合法性仍分别由 corpus/graph、mechanic、PoB/Judge 验证；
+- 断网时允许 `limited_offline_inference`，但必须披露低证据。
 
-原始网页、攻略全文和完整 URL 不进入持久化状态。入口把 URL 立即转换为
-`copy_safety.safe_url_ref`，只保存短摘要、patch、来源类型、更新时间、有限 claims 和哈希引用。
-安全缓存以基础职业、精确 game patch 和天赋树版本为键，七天内可复用；过期或同赛季版本不一致
-时只返回待复核证据。验证失败的 packet 可标记为 `deprecated`。
-fresh cache 命中和后续状态恢复都会返回完整的安全 packet（claims、矛盾和待验证项），但仍不含
-原始 URL；因此 Agent 可以重建 evidence-use 决策而不依赖先前聊天内容。
-过期或同赛季版本不一致时只返回 `starterResearchCandidate`，必须重新联网/静态复核并提交新的
-packet，不能直接绑定旧候选。
+URL 在 intake 时立即转换为 `safe_url_ref`。网页正文、完整 URL、PoB code/XML 和整角色镜像不
+落盘。安全缓存按基础职业、精确 patch 和天赋树版本保存七天；过期或同赛季 patch 不一致只作为
+待复核 candidate。
 
-联网不可用或资料不足时，流程降级为 `limited_offline_inference`：Agent 使用当前知识库和成熟
-机制职责反推开荒候选，仍完成阶段 PoB/Judge，但必须向用户披露开荒证据不足。
+## Blueprint 与转型
 
-## 路线设计
+默认四个 artifact：一个已绑定目标 anchor，加三个目标之前的开荒/桥接里程碑；无实质变化时可
+合并，最多五个。`ProgressionBlueprint.targetAnchorArtifactId` 必须等于已绑定 anchor，最后一个
+`StageBlueprint` 必须使用相同 Family、等级和 `routeRole=target`。
 
-开荒候选优先考虑：
+开荒候选优先前期伤害、成型速度、清图/Boss 职责、资源稳定、低装备依赖和操作复杂度。与目标
+相似度和洗点量只是次要因素。
 
-- 技能可用等级和前期基础伤害；
-- 清图、Boss 和资源恢复是否都有明确职责；
-- 第一轮升华点是否立即产生收益；
-- 是否依赖暗金、特殊阈值或复杂触发循环；
-- 武器升级、属性和 Spirit 压力；
-- 操作复杂度和失败状态。
+每个非首阶段必须提交 TransitionBridge。完成阶段时，`StageCompletionReport.transitionReadiness`
+逐项回报相同 requirement；不能改写 kind、blocking 或描述。所有 blocking 机制门槛必须为
+`satisfied` 且带安全证据引用。`budget/price` 永远非 blocking。
 
-与终局流派相似度和洗点量只是次要因素。每个实际阶段按自己的升华与主技能 Family 查询 Research；
-开荒 Family 和目标 Family 不共享身份查询。转型前后的 Family 改变时必须产生新的记忆查询引用。
-
-转型门槛可以包含：
-
-- 核心技能和辅助可用；
-- 升华点与洗点条件满足；
-- 关键天赋阈值可一次性连接；
-- Spirit、属性和武器要求满足；
-- 主输出循环在实际使用频率下可持续；
-- 清图、Boss 和基础防御在新形态中都成立；
-- 机制必需物品已经拥有；
-- 阶段验证和正式 Judge 通过。
-
-价格本身不能自动触发转型。若玩家到目标等级时终局循环仍未闭环，目标阶段可以继续使用开荒或
-桥接形态；未来终局只能作为未验证说明，不得强行切换。
-
-阶段标签必须服从实际验证预算，不能用更高阶段名称包装较低等级结果：
-`endgame_budget` 的目标等级不得低于 82，`endgame_final` 不得低于 92。80 级路线的目标
-artifact 通常仍属于 `maps_entry`；它可以已经采用目标 Family，但必须按 80 级实际闭环程度描述。
+生命周期标签服从 progression 验证预算：`endgame_budget >= 82`，
+`endgame_final >= 92`。这同时保留普通 Create 的既有摘要等级映射：65–81 级为
+`maps_entry`，82–91 级为 `endgame_budget`，92 级起为 `endgame_final`。
 
 ## 可恢复编排
 
-Progression 状态服务只保存安全 typed state，不创建 Desktop task、不调用模型。状态机为：
+新状态机为：
 
 ```text
-research_pending
-  -> blueprint_pending
+target_anchor_pending
+  -> research_pending / blueprint_pending
   -> stage_pending -> stage_running -> stage_completed
-  -> ...下一阶段...
-  -> finalize_pending
-  -> completed
+  -> ...目标之前的阶段...
+  -> target stage claim（requiresPhase5Run=false）
+  -> 重新校验并复用同一个 Target Anchor 的 artifact/lifecycle receipt
+  -> finalize_pending -> completed
 ```
 
-并支持 `paused`、`failed` 和一次显式阶段重试。所有 mutation 使用
-`operationId + expectedRevision` 做幂等和 CAS。
+每个 mutation 使用 `operationId + expectedRevision` 做幂等与 CAS，并支持 pause/resume、阶段
+失败和一次显式外部 retry。
 
-每个阶段固定执行：
+目标之前的阶段仍各自执行独立 Phase 5 run、Judge、artifact、review、artifact-bound lifecycle
+回执和成本画像。每个阶段先在保存前修复活动快照 gate，保存后再以 artifact id 生成可信
+`verificationRef`；`complete_build_progression_stage` 不信任调用者复制的 lifecycle 字段。
+领取最后 target stage 时，`StageCreatePacket.requiresPhase5Run=false` 且
+`targetAnchorArtifactId` 指向最初 anchor；此时重新校验绑定时的 artifact/receipt、验证转型门槛
+并完成阶段。不要因 PoB reserialize 可能改变字节顺序而生成另一份 target 身份，绝不再运行第五次
+Create。
 
-1. claim 当前 `StageCreatePacket`；
-2. 创建独立 Phase 5 run，并把 `runId` 绑定到阶段；
-3. 第一阶段从空 PoB 构建；后续阶段优先加载上一 artifact 后正向修改；
-4. 大规模换升华/技能时允许从空状态重建，但仍需记录相邻 delta；
-5. 完整性检查、生命周期阶段验证、正式 Judge、artifact 保存和 review；
-6. 校验 runId、职业、等级、版本、source hash 和阶段验证 hash；
-7. 当前阶段完成后才开放下一阶段。
+schema v1 的旧 progression 状态按旧语义恢复，不自动迁移；已保存 Route v1/v2 继续可读。
 
-战役中期/后期的单体门槛由同一活动 XML 的启用技能组、非空 graph/mechanic/Research 证据引用
-和正的 PoB offense 联合验证；这只证明职责闭环，不把数值门槛冒充为“实战手感良好”。首升华或
-关键辅助同样从该 XML 读回，不能用调用者提供的布尔值伪造。
+## Route v3、质量与成本
 
-`endgame_budget` 的成型组件门槛同样绑定这份 XML：Agent 必须声明一个真实启用技能、升华或
-当前 ItemSet 已装备物品，并同时提供已解析 stable component key 与安全外部证据引用。运行时
-负责匹配，调用者自报“组件已上线”不能通过。
+新锚点路线写 Route v3：
 
-已经开始、进入显式 retry 或完成的阶段都不可修改。第一阶段开始后，只允许版本化调整尚未开始
-的未来阶段，职业、目标等级、版本上下文和顶层路线意图不得改变。Phase 5 内部仍最多两次修正；
-整个阶段失败后暂停，不自动重启路线。
+- `targetArtifactId == targetAnchorArtifactId`；
+- 最后阶段的 artifact/source hash 与最初 anchor 完全相同；
+- 保存 `TargetDesignCoverage`、稳定 `stageId`、阶段证据、resolved transition bridge 和成本画像；
+- Judge 诊断完整保留，但不自动决定 v3 quality；
+- v3 quality 由 Starter/Research evidence、成本 evidence、目标设计 coverage 和 target role 决定。
 
-## 数据合同
+非锚点兼容入口仍可写 Route v2；Route v1/v2 不重写。兼容入口
+`save_build_progression_route` 不能直接提交 anchor 字段；Route v3 只能由通过 CAS 状态机全部
+验证的 `finalize_build_progression` 写入，不能绕过 target anchor、Research provenance、阶段
+hash 和 transition readiness 合同。
 
-### StarterResearchPacket
-
-- base class、game patch、passive tree version 和 captured at；
-- `supported / limited / limited_offline_inference` evidence status；
-- 最多六个安全 source descriptors；
-- 等级区间、技能/辅助候选、开荒升华、武器方向、切换信号、装备假设；
-- contradictions、unresolved premises 和 verification tasks；
-- active/stale/deprecated cache status；
-- 无原文、无完整 URL、无完整角色镜像。
-
-### ProgressionBlueprint
-
-- base class、目标等级和目标内容；
-- starter selection 与独立 target intent；
-- 2~5 个事件驱动 `StageBlueprint`；
-- 每阶段有独立 evidence status；starter 阶段必须与 starter packet 一致，target/transition
-  阶段使用自己的 Research、mechanic 和 PoB 证据；
-- 阶段 Family 的升华和技能必须分别使用已解析的 `ascendancy:` / `skill:` stable key；
-- `StarterEvidenceUse` 必须覆盖全部 claim，且至少选择一条 `adopted` 或 `caveated` 证据；全量
-  rejected 不能形成开荒选择；
-- `TransitionBridge`；
-- 阶段 Research/Starter evidence 使用审计；
-- 价格只作 advisory 的明确标志。
-
-### ProgressionRouteArtifact v2
-
-- `stageId` 是稳定阶段身份；
-- lifecycle stage 只要求非递减，允许同一 lifecycle 内多个阶段；
-- 每阶段有 route role、artifact、用途、play pattern、证据状态、成本画像和 caveats；
-- 后续阶段有 typed changes 和 transition bridge；
-- `targetArtifactId` 指向用户目标阶段，不暗示一定是毕业形态；
-- route 记录 artifact coverage 与 `verified / limited` quality status；
-- v1 route 继续可读，不原地重写；新 route 只写 v2。
+价格只作风险说明。暗金按 Divine 等价分为
+`cheap <= 0.1D`、`moderate <= 0.5D`、`expensive <= 2D`、`chase > 2D`、`unknown`；黄装只按
+craft effort 分类。不得计算虚假整套总价，也不得按价格自动触发转型。
 
 ## 公开工具
 
 - `start_build_progression`
+- `bind_build_progression_target_anchor`
 - `intake_starter_research_packet`
 - `submit_build_progression_blueprint`
 - `revise_future_build_progression_stages`
@@ -182,57 +211,26 @@ research_pending
 - `finalize_build_progression`
 - `export_build_progression_package`
 
-兼容保留 `save_build_progression_route`、`list_build_progression_routes` 和
-`load_build_progression_stage`。新工具只读写安全控制状态，不接收或返回 PoB XML、网页正文、
-完整 URL 或隐藏推理。
-
-## 成本画像
-
-现有 live price 只负责当前联盟通货和暗金事实：
-
-- `cheap`：不高于 0.1 Divine；
-- `moderate`：高于 0.1、不高于 0.5 Divine；
-- `expensive`：高于 0.5、不高于 2 Divine；
-- `chase`：高于 2 Divine；
-- 无法取得 Divine 锚点或报价时为 `unknown`。
-
-黄装不伪造市场价，只把现有 craft effort 映射为
-`routine / moderate / expensive / chase`。路线不输出虚假总造价，只报告最高必需档位、付费依赖
-数量、未知必需依赖数量、平替覆盖、价格风险和 live coverage。付费依赖统计已有可换算报价的
-必需暗金，以及高于 routine 的必需黄装制作；价格快照六小时内复用，失败只降低证据状态。
+兼容保留 `save/list/load_build_progression_*`。所有工具只接收和返回安全控制状态。
 
 ## 导出
 
-完整成长包固定包含：
-
-- 路线说明文档；
-- 每个阶段的 PoB XML 文件；
-- 每个阶段的 PoB import-code 文本文件；
-- 目标阶段的官方单阶段 `.build`。
-
-除非 provider 能忠实表达多阶段，否则不得伪造官方 `level_interval`。MCP 响应只返回固定 inventory、
-本地路径或 errorCode，不返回 XML、导入码正文或完整来源 URL。
-
-## 实施顺序
-
-1. 文档、schema 和 runtime 指南先行。
-2. Starter evidence intake/cache、蓝图、Route v2 和成本合同。
-3. 可恢复 progression state service 与 MCP facade。
-4. 阶段级 Create skill 编排和 source-hash 绑定。
-5. 完整成长包导出、manifest 和插件更新。
-6. focused、quick、noncompute、代码审查、真实四阶段验收和 full。
+完整成长包包含路线说明、每阶段 PoB XML、每阶段 import-code 文件，以及仅目标 anchor 的官方
+单阶段 `.build`。MCP 只返回完整 inventory、路径或 errorCode，不回显内容。
 
 ## 验收
 
-- 开荒和目标升华/技能可以完全不同，基础职业不同则失败；
-- 原始网页、完整 URL 和整角色材料不会进入 cache、route、Review、Memory 或 Git；
-- exact-patch cache 可复用，过期降级，跨赛季拒绝；
-- 联网失败能有限证据继续，且用户可见；
-- 每阶段都有独立、run-bound、hash-bound 的真实 artifact；
-- 低于阶段验证预算的蓝图会失败关闭，80 级目标不能伪装成 `endgame_budget`；
-- 成型组件必须由同一 XML 匹配、stable key 和安全外部证据联合证明；
-- 转型不能仅由价格触发；
-- 重复 lifecycle stage 可按 `stageId` 加载，v1 route 仍兼容；
-- hard-valid 但有 playability/modelability 缺口的路线只能标记为 `limited`；
-- 每阶段导出清单完整，目标 `.build` 失败时保留明确错误；
-- 单阶段 Create、Phase 6 导出、Phase 7 blind isolation 和 Research DB 无回归。
+- 普通 80 级 Create 与 Phase 8 前基线等价，Research recall、技能包、升华点和 Judge 流程无回归；
+- progression 首先创建目标 anchor，之后只有目标前阶段运行新的 Create；
+- anchor 绑定前必须通过目标等级对应的 artifact-bound lifecycle gate；资源断裂等真实构筑失败
+  不能靠 caller boolean、药剂名称或放宽门槛变成通过；
+- target closure 复用相同 artifact id/source hash 和可信 lifecycle receipt，机制门槛不满足时
+  失败关闭；
+- PoB XML 恢复后字节序变化不会破坏 artifact 身份；回执篡改、跨 artifact/stage 复用会失败关闭；
+- Agent 认定存在真实 build failure 的候选不能成为 anchor；
+- 每个阶段 Family/采用知识都有 typed receipt，伪造或跨 Family 引用失败关闭；
+- 开荒与目标技能/升华可以完全不同，基础职业不同则拒绝；
+- URL/网页/整角色原料不进入状态、route、Research 或 Memory；
+- price 不阻断或触发转型；
+- Route v1/v2 继续可读，新锚点路线为 v3；
+- focused、quick、noncompute、独立 CR、真实四阶段任务和 full 全部通过。

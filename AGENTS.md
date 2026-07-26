@@ -49,6 +49,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   agent。
 - 模糊组件查询只用于候选发现：先 `search_graph_components`，再用
   `resolve_graph_component` 确认 stable key；模糊或向量相似度不能直接授权 semantic edge。
+- Family identity 统一使用玩家 `active_skill` 的 `skill:` stable key。物理图已确认关联的
+  `gem:` key 可以作为 Research 查询别名，但不能直接替代 FamilyTarget、TargetAnchorIdentity
+  或 StageFamilyIdentity；typed receipt 必须保存两者的等价 key 集合。
 - 没有 patch/version/status，就不能进入 durable memory。
 - 没有 copy-safety pass，就不能持久化成熟 BD 知识。
 - 没有后 3 例相对前 3 例的四项联合趋势，就不能声称 Phase 7 出现初步进步信号；十案例趋势
@@ -59,6 +62,18 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   机制摘要或 Judge 结果。
 - Phase 7 Blind Create 不得读取或调用 Phase 8 `StarterResearchPacket`、starter cache 或
   progression 状态；联网开荒证据只属于显式 progression 模式。
+- Phase 8 不能修改普通单阶段 Create 的等级语义、Research recall、生成/Judge 或导出合同。
+  progression 必须先通过普通 Create 生成并绑定 immutable target anchor；最后目标阶段复用同一
+  artifact/source hash，不得重新生成一个较弱目标或用桥接形态替换。
+- target anchor 和 progression stage 必须在保存前修复活动快照 lifecycle gate，并在保存后使用
+  `verify_lifecycle_stage(..., artifact_id=...)` 生成可信回执。failed/unknown、篡改或跨
+  artifact/stage 的回执不能绑定；调用者布尔值不能授权药剂或资源续航。
+- 新 progression 的 Family/Research 使用必须由 typed query receipt 验证。普通 Create 目标
+  anchor 没有 stage packet，其 `researchMemoryRef` 必须属于本次实际 progressive queries；
+  目标前阶段则必须原样使用 claim 返回的 `StageCreatePacket.versionContext`，不能换成后续临时
+  ref。实际采用的 Family/record/pattern/edge/fragment 必须真实出现在 receipt 结果中，且 receipt
+  必须在当前 progression 启动后查询过。已确认核心 secondary skill 的 key/name 还必须匹配
+  同一 artifact 的启用 tested skill group。
 - 能归入 Research schema 的知识不能写 Learning Memory；Memory correction 必须追加事件并保留
   do-not-repeat 历史。
 - 不要持久化或暴露第三方成熟 BD 的原始整角色材料：PoB code、raw XML、raw account/character
@@ -157,6 +172,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - Judge 核心仍是内部基线；Phase 5 只在 `server/main.py` 公开受限的
   `evaluate_generation_candidate` 入口，用于评价 Agent 已搭建的活动构筑。不要公开可接受任意
   原始输入的通用 Judge 工具。
+- `server/generation/evaluation_snapshots.py` 只在当前 MCP 进程内短暂保留 Judge 的精确 XML，
+  供 `save_final_build_artifact` 保存；run receipt 仍然 raw-free。保存前用共享
+  `build_state_hash` 比较语义输入，不能用会受 `PlayerStat` / `FullDPSSkill` 刷新影响的 raw XML
+  hash 判断是否修改过构筑；精确快照丢失时必须失败关闭，不能替换 Judge XML。
 - Phase 1 对使用 weapon set passives 的 dual-state build 只给 limited reward；没有 State_A /
   State_B 分别评分证据时，不能把单状态最高 DPS 写成强学习信号。
 - Phase 1 对 `FullDPS` rollup、召唤物 PoB output、投射物下界、关键 metric 缺失等 evidence
@@ -201,16 +220,22 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 ### Build Progression 层
 
-- `server/generation/progression.py`：Phase 8 Route v2、本地 manifest、可信
-  `FinalBuildArtifact` 绑定和按 stage id 加载。
+- `server/generation/progression.py`：Phase 8 锚点 Route v3（兼容读取 v1/v2）、本地 manifest、
+  可信 `FinalBuildArtifact` 绑定和按 stage id 加载。
 - `server/generation/progression_research.py`：StarterResearchPacket intake、URL 哈希、安全
   patch-scoped cache；它不联网、不写 Research/Memory。
 - `server/generation/progression_service.py`：Phase 8 CAS、幂等、暂停、恢复、阶段 run 绑定和
-  严格串行 gate；它不创建 Desktop task、不调用模型。
+  严格串行 gate；新状态先绑定普通 Create target anchor，目标前阶段各自运行 Phase 5，最后
+  target closure 不再启动 Create。它不创建 Desktop task、不调用模型。
+- `server/generation/progression_provenance.py`：读取已消费 Phase 5 安全 review，验证精确 Family
+  query receipt 以及候选实际采用的 Research ID；不读取或返回 PoB XML。
+- `server/generation/progression_lifecycle.py`：保存并重新校验 artifact-bound lifecycle
+  内容寻址回执；原始 artifact hash 与 PoB 恢复态 hash 分开记录，回执不保存 XML。
 - `server/generation/progression_costs.py`、`progression_delivery.py`：粗粒度 unique/craft effort
   成本画像和完整成长包导出。
-- 完整成长流程的每个重要里程碑必须分别运行 Phase 5 Create/Judge 并保存 artifact；不能从终局
-  PoB 自动删点、降级装备来伪造早期阶段。
+- 完整成长流程的目标 anchor 和每个目标前重要里程碑必须分别拥有可信 Phase 5 artifact；目标
+  anchor 先由普通 Create 从空状态生成，最后目标阶段直接复用它。不能从终局 PoB 自动删点、
+  降级装备来伪造早期阶段。
 - 开荒与目标阶段只锁基础职业，允许不同升华、技能、天赋、装备和资源。外部 Agent 有界搜索
   开荒资料；程序只验证安全摘要，社区攻略不能直接进入 Research 或 Learning Memory。
 - progression manifest 只保存有界 typed delta、transition bridge、安全 evidence/artifact facts

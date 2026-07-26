@@ -181,6 +181,31 @@ def test_progression_route_rejects_unordered_levels_and_missing_transition_detai
     )
 
 
+def test_route_stage_can_preserve_all_bounded_progression_provenance_refs():
+    refs = [
+        "starter-research:packet",
+        *[f"dq-{index:016x}" for index in range(16)],
+        *[f"artifact:evidence-{index}" for index in range(12)],
+    ]
+
+    stage = progression.ProgressionStageV2(
+        stage_id="stage:provenance-bounds",
+        lifecycle_stage="campaign_early",
+        route_role="starter_bootstrap",
+        target_level=20,
+        artifact_id="final-build:early",
+        purpose="Preserve the bounded evidence set.",
+        play_pattern="Use the verified starter loop.",
+        evidence_status="supported",
+        source_refs=refs,
+        changes_from_previous=[],
+        transition_bridge=None,
+    )
+
+    assert stage.source_refs == refs
+    assert len(stage.source_refs) == 29
+
+
 def test_progression_route_revalidates_artifact_facts_on_read(isolated_progression):
     saved = progression.save_progression_route(_route())
     route_id = saved["progressionRoute"]["routeId"]
@@ -285,6 +310,78 @@ def test_route_v2_allows_repeated_lifecycle_stages_but_requires_stage_id_selecto
     )
     assert loaded["status"] == "loaded"
     assert loaded["stage"]["artifactId"] == "final-build:bridge"
+
+
+def test_compatibility_route_writer_cannot_bypass_the_anchor_state_service(
+    isolated_progression,
+):
+    route = _route()
+    final_stage = route["stages"][1]  # type: ignore[index]
+    first_stage = {
+        **route["stages"][0],  # type: ignore[index]
+        "stageId": "stage:starter-20",
+        "routeRole": "starter_bootstrap",
+        "evidenceStatus": "supported",
+        "sourceRefs": ["starter-research:packet"],
+    }
+    first_stage.pop("transitionRequirements", None)
+    target_stage = {
+        **final_stage,
+        "stageId": "stage:target-80",
+        "routeRole": "target",
+        "evidenceStatus": "supported",
+        "sourceRefs": ["starter-research:packet"],
+        "transitionBridge": {
+            "bridgeId": "bridge:target-anchor",
+            "summary": "Close the target only after the verified mechanism gate.",
+            "requirements": [
+                {
+                    "requirementId": "gate:target-anchor",
+                    "kind": "judge_gate",
+                    "description": "The immutable target artifact is verified.",
+                    "status": "satisfied",
+                    "blocking": True,
+                    "evidenceRefs": ["artifact:final-build-final"],
+                }
+            ],
+            "fallbackPlan": "Keep the previous verified milestone.",
+        },
+    }
+    target_stage.pop("transitionRequirements", None)
+    route.pop("targetFinalArtifactId")
+    route["targetArtifactId"] = "final-build:final"
+    route["targetAnchorArtifactId"] = "final-build:final"
+    route["targetDesignCoverage"] = {
+        "coverageId": "target-coverage:compatibility-bypass",
+        "dimensions": [
+            {
+                "dimension": dimension,
+                "status": "independently_verified",
+                "summary": f"Verified {dimension}.",
+                "evidenceRefs": [f"artifact:{dimension}"],
+            }
+            for dimension in (
+                "skill_package",
+                "clear_duty",
+                "boss_duty",
+                "damage_delivery",
+                "ascendancy_and_passives",
+                "gear_synergy",
+                "defense_and_recovery",
+                "resource_and_spirit",
+                "combat_configuration",
+                "modelability",
+            )
+        ],
+        "acceptanceSummary": "Attempt to bypass the anchor state service.",
+        "unresolvedCaveats": [],
+        "agentAcceptance": "accepted",
+    }
+    route["stages"] = [first_stage, target_stage]
+
+    result = progression.save_progression_route(route)
+
+    assert result["errorCode"] == "progression_anchor_route_requires_service"
 
 
 def test_legacy_route_is_read_without_rewriting(isolated_progression):

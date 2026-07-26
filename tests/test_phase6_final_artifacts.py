@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import artifacts, evaluation
+from server.generation import artifacts, evaluation, evaluation_snapshots
 
 from tests.test_phase5_generation_evaluation import (
     BUILD_XML,
@@ -116,6 +116,54 @@ def test_save_rejects_changed_active_build(tmp_path, monkeypatch):
     assert saved["status"] == "rejected"
     assert saved["errorCode"] == "active_build_changed_after_evaluation"
     assert saved["caveats"] == []
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_uses_exact_judge_snapshot_when_pob_refreshes_derived_output(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    derived_refresh = BUILD_XML.replace(
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" mainSocketGroup="1" />',
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" '
+        'mainSocketGroup="1"><PlayerStat stat="TotalDPS" value="999" /></Build>',
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(derived_refresh),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "saved"
+    assert (tmp_path / "artifacts" / run_id / "build.xml").read_text(encoding="utf-8") == BUILD_XML
+
+
+def test_save_fails_closed_when_exact_snapshot_is_gone_and_raw_xml_changed(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    evaluation_snapshots.forget(run_id=run_id)
+    derived_refresh = BUILD_XML.replace(
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" mainSocketGroup="1" />',
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" '
+        'mainSocketGroup="1"><PlayerStat stat="TotalDPS" value="999" /></Build>',
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(derived_refresh),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "trusted_evaluation_snapshot_unavailable"
     assert not (tmp_path / "artifacts").exists()
 
 

@@ -162,7 +162,8 @@ def test_agent_led_prototype_submission_builds_safe_human_review_packet():
     assert packet["noHiddenChainOfThought"] is True
 
 
-def test_lifecycle_evidence_level_band_keeps_level_80_in_maps_entry():
+def test_lifecycle_evidence_level_band_preserves_single_stage_create_baseline():
+    assert prototype._stage_for_level(80) == "maps_entry"
     assert prototype._stage_for_level(81) == "maps_entry"
     assert prototype._stage_for_level(82) == "endgame_budget"
     assert prototype._stage_for_level(91) == "endgame_budget"

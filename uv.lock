@@ -524,7 +524,7 @@ wheels = [
 
 [[package]]
 name = "poe2-build-mcp"
-version = "0.1.40"
+version = "0.1.41"
 source = { virtual = "." }
 dependencies = [
     { name = "mcp" },

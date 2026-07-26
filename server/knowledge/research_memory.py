@@ -486,33 +486,9 @@ class ResearchMemoryService:
             else []
         )
         record_ids = sorted({str(item) for item in record_ids or [] if str(item).strip()})
-        dedupe_ref = (
-            "dq-"
-            + _stable_hash(
-                {
-                    "query": _normalize_text(query),
-                    "component_keys": component_keys,
-                    "detail_level": detail_level,
-                    "record_ids": record_ids,
-                    "include_transferable": include_transferable,
-                    "research_axes": research_axes,
-                    "ascendancy_key": ascendancy_key,
-                    "primary_skill_key": primary_skill_key,
-                    "build_family_keys": build_family_keys,
-                    "record_kinds": record_kinds,
-                }
-            )[:16]
-        )
         con = mature_learning.connect(self.db_path)
         try:
             now = _now()
-            self._record_dedupe_query(
-                con,
-                dedupe_ref=dedupe_ref,
-                query=query,
-                component_keys=component_keys,
-                now=now,
-            )
             rows = (
                 []
                 if record_ids and not query.strip() and not component_keys
@@ -597,6 +573,58 @@ class ResearchMemoryService:
                 if include_transferable
                 else []
             )
+            request_contract = {
+                "componentKeys": component_keys,
+                "limit": limit,
+                "detailLevel": detail_level,
+                "recordIds": record_ids,
+                "includeTransferable": include_transferable,
+                "researchAxes": research_axes,
+                "ascendancyKey": ascendancy_key,
+                "primarySkillKey": primary_skill_key,
+                **({"primarySkillKeys": primary_skill_keys} if primary_skill_key else {}),
+                "buildFamilyKeys": build_family_keys,
+                "recordKinds": record_kinds,
+            }
+            result_contract = {
+                "buildFamilies": sorted(
+                    [
+                        {
+                            "buildFamilyKey": item["buildFamilyKey"],
+                            "ascendancyKey": item["ascendancyKey"],
+                            "primarySkillKey": item["primarySkillKey"],
+                            "secondarySkillKeys": sorted(item["secondarySkillKeys"]),
+                        }
+                        for item in build_families
+                    ],
+                    key=lambda item: item["buildFamilyKey"],
+                ),
+                "deepRecordIds": sorted(item["recordId"] for item in deep_records),
+                "patternIds": sorted(
+                    {str(item["patternId"]) for item in [*build_patterns, *transferable_patterns]}
+                ),
+                "semanticEdgeIds": sorted(item["edgeId"] for item in semantic_edges),
+                "memoryItemIds": sorted(item["memoryItemId"] for item in results),
+            }
+            dedupe_ref = (
+                "dq-"
+                + _stable_hash(
+                    {
+                        "query": _normalize_text(query),
+                        "request": request_contract,
+                        "result": result_contract,
+                    }
+                )[:16]
+            )
+            self._record_dedupe_query(
+                con,
+                dedupe_ref=dedupe_ref,
+                query=query,
+                component_keys=component_keys,
+                request_contract=request_contract,
+                result_contract=result_contract,
+                now=now,
+            )
             con.commit()
         finally:
             con.close()
@@ -630,6 +658,56 @@ class ResearchMemoryService:
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def read_query_receipt(self, dedupe_query_ref: str) -> dict[str, Any] | None:
+        """Read one copy-safe typed query/result receipt for progression provenance checks."""
+
+        if not re.fullmatch(r"dq-[A-Fa-f0-9]{16}", str(dedupe_query_ref or "")):
+            return None
+        con = mature_learning.connect(self.db_path)
+        try:
+            row = con.execute(
+                """
+                SELECT dedupe_query_ref, query_hash, component_keys, request_contract,
+                       result_contract, created_at, last_seen_at
+                FROM research_dedupe_queries
+                WHERE dedupe_query_ref = ?
+                  AND visibility = 'creator_visible'
+                  AND split = 'train_context'
+                LIMIT 1
+                """,
+                (dedupe_query_ref,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            con.close()
+        if row is None:
+            return None
+        request = _loads(row["request_contract"], {})
+        result = _loads(row["result_contract"], {})
+        if not isinstance(request, dict) or not isinstance(result, dict) or not request:
+            # Historical receipts remain valid for query-before-propose dedupe, but they cannot
+            # authorize a new progression stage or target anchor.
+            return None
+        receipt = {
+            "dedupeQueryRef": row["dedupe_query_ref"],
+            "queryHash": row["query_hash"],
+            "componentKeys": _loads(row["component_keys"], []),
+            "request": request,
+            "result": result,
+            "createdAt": row["created_at"],
+            "lastSeenAt": row["last_seen_at"],
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+        if (
+            copy_safety.find_forbidden_paths(receipt)
+            or copy_safety.durable_knowledge_flags(receipt)
+            or copy_safety.contains_raw_url(receipt)
+        ):
+            return None
+        return receipt
 
     def _component_key_groups(self, component_keys: list[str]) -> list[list[str]]:
         """Expand graph-backed gem/active-skill identities without fuzzy matching."""
@@ -2653,17 +2731,22 @@ class ResearchMemoryService:
         dedupe_ref: str,
         query: str,
         component_keys: list[str],
+        request_contract: dict[str, Any],
+        result_contract: dict[str, Any],
         now: str,
     ) -> None:
         con.execute(
             """
             INSERT INTO research_dedupe_queries(
                 dedupe_query_ref, query_hash, query_text_preview, component_keys,
-                visibility, split, knowledge_scope, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, 'creator_visible', 'train_context', 'global_seed', ?, ?)
+                request_contract, result_contract, visibility, split, knowledge_scope,
+                created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'creator_visible', 'train_context', 'global_seed', ?, ?)
             ON CONFLICT(dedupe_query_ref) DO UPDATE SET
                 query_text_preview = excluded.query_text_preview,
                 component_keys = excluded.component_keys,
+                request_contract = excluded.request_contract,
+                result_contract = excluded.result_contract,
                 last_seen_at = excluded.last_seen_at
             """,
             (
@@ -2671,6 +2754,8 @@ class ResearchMemoryService:
                 _stable_hash({"query": _normalize_text(query), "component_keys": component_keys}),
                 _normalize_text(query)[:240],
                 _json(component_keys),
+                _json(request_contract),
+                _json(result_contract),
                 now,
                 now,
             ),

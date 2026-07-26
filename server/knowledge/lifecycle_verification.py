@@ -33,7 +33,14 @@ class LifecycleStageVerificationState(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
 
     level: int | None = Field(default=None, ge=1, le=100)
-    mana_flask_equipped: bool | None = Field(default=None, alias="manaFlaskEquipped")
+    mana_flask_equipped: bool | None = Field(
+        default=None,
+        alias="manaFlaskEquipped",
+        description=(
+            "Legacy compatibility hint. The public verifier replaces it with flask presence "
+            "derived from the evaluated build, so callers cannot authorize sustain."
+        ),
+    )
     single_target_skill_name: str | None = Field(
         default=None,
         alias="singleTargetSkillName",
