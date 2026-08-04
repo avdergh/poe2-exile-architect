@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from server import paths
 from server.compute import completeness
 from server.compute.state import build_state_hash
+from server.knowledge import copy_safety
 from server.judge import evaluator
 
 from . import evaluation_snapshots, models, run_store
@@ -37,6 +38,8 @@ class FinalBuildArtifactManifest(models.StrictModel):
     tested_skill_groups: list[models.TestedSkillGroup]
     judge_report: models.JudgeAdvisoryReport
     version_context: models.VersionContext
+    artifact_selection_ref: str | None = None
+    selection_outcome: str = "latest_passing_attempt_selected"
     created_at: str
     local_only: bool = True
     no_chat_output: bool = True
@@ -59,20 +62,49 @@ def save_final_build_artifact(
     run_token: str,
     candidate_id: str,
     attempt_index: int,
+    selection_reason: str | None = None,
+    later_findings_scope: str = "not_applicable",
 ) -> dict[str, Any]:
     """Persist exactly one hard-valid, unchanged PoB snapshot for a generation run."""
     try:
-        bound_run = run_store.load_bound_run(run_id, run_token)
+        # Review consumption is an audit/workflow boundary, not build evidence.  A long
+        # progression may accidentally consume its review packet before saving the immutable
+        # artifact.  Keep every trusted-evaluation, exact-snapshot and semantic-state check below,
+        # but allow that ordering mistake to recover instead of turning a verified build into a
+        # zero-file delivery.
+        bound_run = run_store.load_bound_run(
+            run_id,
+            run_token,
+            require_unconsumed=False,
+        )
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
+    review_already_consumed = (bound_run.run_dir / "review-consumed").exists()
     try:
         receipts = run_store.read_trusted_evaluations_strict(bound_run)
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
     if attempt_index < 0 or attempt_index >= len(receipts):
         return models.rejected("trusted_evaluation_not_found")
-    if attempt_index != len(receipts) - 1:
-        return models.rejected("final_attempt_required")
+    root = artifacts_dir()
+    final_dir = root / bound_run.run_id
+    if final_dir.exists():
+        return models.rejected("final_artifact_already_exists")
+    historical_attempt = attempt_index != len(receipts) - 1
+    selection_reason_valid = bool(
+        selection_reason
+        and selection_reason.strip()
+        and len(selection_reason) <= 500
+        and not copy_safety.copyability_flags(selection_reason)
+        and not copy_safety.contains_raw_url(selection_reason)
+    )
+    if historical_attempt:
+        if not selection_reason_valid:
+            return models.rejected("baseline_selection_reason_required")
+        if later_findings_scope != "candidate_delta_only":
+            return models.rejected("passing_baseline_implicated_by_later_findings")
+    elif later_findings_scope not in {"not_applicable", "candidate_delta_only"}:
+        return models.rejected("invalid_later_findings_scope")
     receipt = receipts[attempt_index]
     if receipt.get("candidateId") != candidate_id:
         return models.rejected("trusted_evaluation_mismatch")
@@ -94,42 +126,89 @@ def save_final_build_artifact(
     ):
         return models.rejected("trusted_evaluation_mismatch")
 
-    try:
-        active_xml = active_engine.get_xml()
-    except Exception:  # noqa: BLE001 - never expose engine internals through MCP.
-        return models.rejected("active_build_snapshot_failed")
-    if not _valid_pob_xml(active_xml):
-        return models.rejected("active_build_snapshot_invalid")
     snapshot = evaluation_snapshots.read(
         run_id=bound_run.run_id,
         attempt_index=attempt_index,
         candidate_id=candidate_id,
         source_hash=str(state.source_hash),
     )
-    active_semantic_hash = build_state_hash(active_xml)
     expected_semantic_hash = state.semantic_state_hash
-    if expected_semantic_hash and active_semantic_hash != expected_semantic_hash:
-        return models.rejected("active_build_changed_after_evaluation")
-    if snapshot is not None:
-        if active_semantic_hash != snapshot.semantic_state_hash:
-            return models.rejected("active_build_changed_after_evaluation")
+    if receipt.get("schemaVersion") == 2:
+        legality = receipt.get("hardLegalityAudit") or {}
+        if (
+            legality.get("status") != "passed"
+            or legality.get("hardLegalityReady") is not True
+            or legality.get("hardFailures")
+            or legality.get("stateHash") != expected_semantic_hash
+        ):
+            return models.rejected("final_candidate_hard_legality_not_verified")
+        if snapshot is None:
+            return models.rejected("trusted_evaluation_snapshot_unavailable")
+        if expected_semantic_hash != snapshot.semantic_state_hash:
+            return models.rejected("trusted_evaluation_snapshot_mismatch")
+        active_state_regressed = False
+        if not historical_attempt:
+            try:
+                active_xml = active_engine.get_xml()
+            except Exception:  # noqa: BLE001 - never expose engine internals through MCP.
+                if not selection_reason_valid:
+                    return models.rejected("active_build_snapshot_failed")
+                active_state_regressed = True
+            else:
+                active_state_regressed = (
+                    not _valid_pob_xml(active_xml)
+                    or build_state_hash(active_xml) != snapshot.semantic_state_hash
+                )
+                if active_state_regressed and not selection_reason_valid:
+                    return models.rejected("active_build_changed_after_evaluation")
+            if active_state_regressed and later_findings_scope != "candidate_delta_only":
+                return models.rejected("passing_baseline_implicated_by_later_findings")
         xml = snapshot.xml
     else:
-        # Legacy receipts did not carry an in-memory Judge snapshot. Preserve their exact-raw
-        # behavior when the active serializer is still byte-identical, otherwise fail closed and
-        # require a fresh evaluation instead of inventing Judge provenance for new XML.
-        if evaluator.compute_source_hash(active_xml) != state.source_hash:
-            return models.rejected("trusted_evaluation_snapshot_unavailable")
-        xml = active_xml
+        active_state_regressed = False
+        if historical_attempt:
+            return models.rejected("legacy_baseline_restore_unsupported")
+        try:
+            active_xml = active_engine.get_xml()
+        except Exception:  # noqa: BLE001 - never expose engine internals through MCP.
+            return models.rejected("active_build_snapshot_failed")
+        if not _valid_pob_xml(active_xml):
+            return models.rejected("active_build_snapshot_invalid")
+        active_semantic_hash = build_state_hash(active_xml)
+        if expected_semantic_hash and active_semantic_hash != expected_semantic_hash:
+            return models.rejected("active_build_changed_after_evaluation")
+        if snapshot is not None:
+            if active_semantic_hash != snapshot.semantic_state_hash:
+                return models.rejected("active_build_changed_after_evaluation")
+            xml = snapshot.xml
+        else:
+            # Legacy receipts did not carry an in-memory Judge snapshot. Preserve their exact-raw
+            # behavior when the active serializer is still byte-identical, otherwise fail closed and
+            # require a fresh evaluation instead of inventing Judge provenance for new XML.
+            if evaluator.compute_source_hash(active_xml) != state.source_hash:
+                return models.rejected("trusted_evaluation_snapshot_unavailable")
+            xml = active_xml
     blockers = completeness.artifact_blockers(xml)
     if blockers:
         return models.rejected(blockers[0], caveats=blockers[1:])
 
-    root = artifacts_dir()
-    final_dir = root / bound_run.run_id
-    if final_dir.exists():
-        return models.rejected("final_artifact_already_exists")
     artifact_id = f"final-build:{uuid4()}"
+    later_receipts = receipts[attempt_index + 1 :]
+    later_regressed = any(
+        item.get("judgeAdvisoryReport", {}).get("pass") is not True
+        or bool(item.get("judgeAdvisoryReport", {}).get("hardFailures"))
+        or item.get("hardLegalityAudit", {}).get("hardLegalityReady") is False
+        for item in later_receipts
+    )
+    restoring_baseline = historical_attempt or active_state_regressed
+    selection_outcome = (
+        "baseline_restored_after_regression"
+        if restoring_baseline and (later_regressed or active_state_regressed)
+        else "earlier_passing_baseline_selected"
+        if historical_attempt
+        else "latest_passing_attempt_selected"
+    )
+    selection_ref = f"artifact-selection:{bound_run.run_id}:{attempt_index}"
     manifest = FinalBuildArtifactManifest(
         artifact_id=artifact_id,
         run_id=bound_run.run_id,
@@ -142,6 +221,8 @@ def save_final_build_artifact(
         tested_skill_groups=state.tested_skill_groups,
         judge_report=judge,
         version_context=judge.version_context,
+        artifact_selection_ref=selection_ref,
+        selection_outcome=selection_outcome,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     temp_dir = root / f".{bound_run.run_id}.{uuid4().hex}.tmp"
@@ -159,11 +240,43 @@ def save_final_build_artifact(
     except OSError:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return models.rejected("final_artifact_write_failed")
+    selection_written = run_store.write_artifact_selection(
+        bound_run,
+        {
+            "artifactId": artifact_id,
+            "candidateId": candidate_id,
+            "selectedAttemptIndex": attempt_index,
+            "selectedEvaluationRef": manifest.trusted_evaluation_ref,
+            "selectionOutcome": selection_outcome,
+            "selectionReason": (
+                copy_safety.safe_text(selection_reason, limit=500) if selection_reason else None
+            ),
+            "laterFindingsScope": later_findings_scope,
+        },
+    )
+    if not selection_written:
+        shutil.rmtree(final_dir, ignore_errors=True)
+        return models.rejected("artifact_selection_receipt_write_failed")
     evaluation_snapshots.forget(run_id=bound_run.run_id)
     return {
         "status": "saved",
         "finalBuildArtifact": _safe_manifest(manifest),
+        "artifactSelection": {
+            "selectionRef": selection_ref,
+            "selectedAttemptIndex": attempt_index,
+            "selectionOutcome": selection_outcome,
+            "restoredEarlierBaseline": historical_attempt,
+            "restoredPassingBaseline": restoring_baseline,
+        },
         "containsRawPob": False,
+        "orderingRecovery": (
+            {
+                "reviewAlreadyConsumed": True,
+                "normalOrder": "save_artifact_before_review",
+            }
+            if review_already_consumed
+            else None
+        ),
     }
 
 
@@ -264,28 +377,40 @@ def _read_manifest(path: Path) -> FinalBuildArtifactManifest | None:
 
 
 def _safe_manifest(manifest: FinalBuildArtifactManifest) -> dict[str, Any]:
-    return {
+    judge = manifest.judge_report
+    output = {
         "artifactId": manifest.artifact_id,
         "runId": manifest.run_id,
         "candidateId": manifest.candidate_id,
         "attemptIndex": manifest.attempt_index,
         "snapshotId": manifest.snapshot_id,
         "sourceHash": manifest.source_hash,
+        "artifactSelectionRef": manifest.artifact_selection_ref,
+        "selectionOutcome": manifest.selection_outcome,
         "safeSummary": manifest.safe_summary,
         "testedSkillGroups": [
             group.model_dump(mode="json", by_alias=True) for group in manifest.tested_skill_groups
         ],
-        "judgeStatus": manifest.judge_report.status,
-        "judgePassed": manifest.judge_report.passed,
-        "judgeQualityBand": manifest.judge_report.quality_band,
-        "judgeScoreApplicability": manifest.judge_report.score_applicability,
-        "judgePlayabilityFailures": manifest.judge_report.playability_failures,
-        "judgeQualityWarnings": manifest.judge_report.quality_warnings,
-        "judgeCaveats": manifest.judge_report.caveats,
+        "judgeStatus": judge.status,
+        "judgePassed": judge.passed,
+        "judgeHardFailures": judge.hard_failures,
+        "judgeFeedbackMode": judge.feedback_mode,
+        "judgeSubjectiveFeedbackSuppressed": judge.subjective_feedback_suppressed,
         "versionContext": manifest.version_context.model_dump(mode="json", by_alias=True),
         "createdAt": manifest.created_at,
         "localOnly": manifest.local_only,
     }
+    if judge.feedback_mode == "strict":
+        output.update(
+            {
+                "judgeQualityBand": judge.quality_band,
+                "judgeScoreApplicability": judge.score_applicability,
+                "judgePlayabilityFailures": judge.playability_failures,
+                "judgeQualityWarnings": judge.quality_warnings,
+                "judgeCaveats": judge.caveats,
+            }
+        )
+    return output
 
 
 def _safe_loaded_summary(payload: Any) -> dict[str, Any]:

@@ -59,6 +59,18 @@
 
 Judge 不是一个新的数值引擎，而是一个 **evidence-aware evaluator（证据感知评估器）**。
 
+Create 对这套评估提供两种反馈投影，底层 PoB/Judge 计算本身不变：
+
+- 默认 `strict_mode=false` / `feedbackMode=hard_only`：只向 Create 暴露确定性硬失败、是否合法、
+  快照/版本绑定和安全事实诊断；aggregate、score vector、quality band、playability/quality
+  warning、reward、modelability/score caveat 不写入可信 attempt，也不能进入 retry、Review、
+  artifact 或 progression 结论。
+- 手动 `strict_mode=true` / `feedbackMode=strict`：返回本文档下面描述的完整四层评价，供明确要求
+  诊断 Judge 本身或查看旧版评分的用户使用。同一 Phase 5 run 的全部 attempt 必须使用同一模式。
+
+这不是停算 PoB 数值。checkpoint 的原始 stats/defenses、共享硬合法性审计以及正式 Judge 的硬
+门槛照常执行；开关只决定主观评价是否可以影响调用者。
+
 评估输出严格拆成四层，不能互相冒充：
 
 1. **Legality（合法性）**：`hardFailures`，只包含职业、插槽、武器、属性、预算和装备等
@@ -529,18 +541,27 @@ Judge 不会因为单个 `phys max hit` 低就直接判死。
 
 - `catastrophic_defense_shortboard`
 
-### 8.8 抗性分层
+### 8.8 抗性终局门槛
 
-75% 是默认元素抗性上限和推荐质量目标，不是合法性条件。当前使用三层结构：
+对 `sourceContext=generated_candidate` 且等级不低于 80 的候选，Judge 使用一组不参与评分的
+确定性 readiness gate：火/冰/电抗性分别不得低于 60%，非 CI 构筑的混沌抗性不得低于 30%。
+CI 只豁免混沌抗性。低于门槛分别返回
+`endgame_elemental_resistance_below_60` / `endgame_chaos_resistance_below_30`，并令候选不通过。
+共享 preflight 在创建正式 Judge receipt 前执行同一规则，因此确定性抗性不足不会消耗 attempt。
 
-- `campaign`：任一元素抗性 `< 30%` 才进入
-  `severe_elemental_resistance_shortfall`；
-- `maps_entry` / `endgame`：任一元素抗性 `< 60%` 才进入该严重可玩性失败；
-- 任一元素抗性 `< 75%` 时进入 `elemental_resistance_below_cap` 质量警示。
+79 级及以下和 `trusted_reference` 仍为 `diagnostic_only`：PoB/Judge 回读并展示百分比，但不产生
+这组 hard failure。旧 `severe_elemental_resistance_shortfall`、
+`elemental_resistance_below_cap` code 只保留用于读取历史 artifact，不在新评估中发出，也不再
+参与 aggregate score cap。
 
-非 CI 构筑混沌抗性为负时使用 `negative_chaos_resistance` 质量警示，不再把它与确定性非法混合。
-剧情阶段混沌抗达到 `0%` 后，混沌 Max Hit 保留诊断，但不参与防御 shortboard，避免诱导 Agent
-牺牲输出、恢复、移动和属性去强追剧情混沌满抗。
+这不等于元素防御被删除。Fire/Cold/Lightning Max Hit 仍进入 defense shortboard 和质量目标，
+所以抗性过低若确实导致最大承伤差，仍会通过结果防御能力反映，而不是用固定 75% 配装答案重复
+处罚。
+
+严格模式下，79 级及以下非 CI 构筑混沌抗性为负时仍可使用
+`negative_chaos_resistance` 质量警示；默认 hard-only 不向 Agent 暴露该主观反馈。剧情阶段混沌抗
+达到 `0%` 后，混沌 Max Hit 保留诊断，但不参与防御 shortboard，避免诱导 Agent 牺牲输出、
+恢复、移动和属性去强追剧情混沌满抗。
 
 ---
 

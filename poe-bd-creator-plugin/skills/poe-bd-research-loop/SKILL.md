@@ -45,7 +45,7 @@ E:\poe-research-orchestrator\scripts\invoke_mcp.py
 ```text
 model: gpt-5.6-sol
 thinking: medium
-prompt: [$poe-bd-creator:poe-bd-research](E:\poe-bd-creator\poe-bd-creator-plugin\skills\poe-bd-research\SKILL.md) 抓 ${num} 个 ${class} 的 ${level} 级模板进行研究
+prompt: /poe-bd-research 抓 ${num} 个 ${class} 的 ${level} 级模板进行研究
 
 最终回答最后一行必须是 `POE_RESEARCH_SUCCEEDED: yes` 或 `POE_RESEARCH_SUCCEEDED: no`。只有请求数量的案例全部正式 accept、最终 remaining 为 0，且报告计数与实际持久化结果一致时才能输出 yes；任何运行失败、案例未完成或证据缺失都输出 no。
 ```
@@ -99,7 +99,8 @@ prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数�
 
 提示词正文必须逐字使用上面的固定文本，只替换 `${num}`、`${class}`、`${level}`。不要要求 JSON
 输出，不要附加结构化 schema。Research 与 Fix 末行的单值标记只用于条件分支，不是结果 schema。
-研究首条消息中的 skill mention 不得省略。
+研究首条消息中的 skill mention 不得省略。只使用已安装插件的 `/poe-bd-research` 入口，不附加
+仓库内 `SKILL.md` 的本地文件链接；否则同一 skill 会以安装版和源码版重复出现在任务中。
 
 ## 取得并校验任务文档
 

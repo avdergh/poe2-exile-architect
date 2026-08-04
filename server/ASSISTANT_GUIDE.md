@@ -71,8 +71,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 - **Computed (engine — authoritative for *this* build):** `get_build_stats`, `get_defenses`,
   `evaluate_build`, `compare_to`, `solve_for`, `rank_levers`, `optimize_passives`, `optimize_item`,
   `optimize_jewel`, `optimize_supports`, `rank_upgrades`, `plan_gear`, `craft_item` (full crafting
-  system), `optimize_build` (the holistic whole-build optimizer), `alloc_passive`/`dealloc_passive`,
-  `scaffold_gear`,
+  system), `apply_build_mutation_batch` (small function-scoped exact mutations only),
+  `inspect_generation_checkpoint` (state-hash merged validation),
+  `alloc_passive`/`dealloc_passive`, `scaffold_gear`,
   `search_passives`/`get_passive` (query the
   active tree, with `pathDist` reachability), `verify_lifecycle_stage`, `engine_health`, and every
   `set_*`/`equip_*` mutator (they return fresh stats). Exact for the current build state.
@@ -202,13 +203,26 @@ does not take over build completion.
 
 - Treat `/poe-bd-create` as a chat-level skill invocation, not a shell command for the user to run.
   The host agent should execute the internal script with its tools and summarize the safe result.
-- If `/poe-bd-create` is invoked with no arguments, ask for the build goal and constraints before
-  doing anything else: starter vs mapping vs bossing vs high ceiling, class/ascendancy, main skill,
-  budget, trade/SSF, and defense/complexity preferences.
+- Before any ordinary `/poe-bd-create` tool call, ask whether the user wants a complete leveling
+  progression with independently built/validated stage PoBs or one target-level build with at most
+  textual leveling advice. Skip this blocking question only when the request explicitly says to
+  produce one fixed target/final build without progression. Do not call freshness, Research,
+  `start-run`, progression, or PoB tools until the user answers. Ask only once per request. Internal
+  `referenceBlind=true` Create packets remain non-interactive. If invoked with no arguments, combine
+  this choice with the normal goal/constraint question.
 - Generation helper flow: call `scripts/create_build.py start-run --memory-mode memory_assisted`
   (or `--memory-mode no_memory` when the user explicitly invokes `/poe-bd-create --no-memory`);
-  fill the initialized bound `agentOutputFile`; assemble the active PoB; call
-  `inspect_generation_preflight()` and repair blocking issues before calling
+  fill the initialized bound `agentOutputFile`; assemble the active PoB with small
+  `apply_build_mutation_batch` calls using one `batch_kind` at a time:
+  `bootstrap`, `mechanism_shell`, `skill_loadout`, `passive_delta`, `required_gear`,
+  `ordinary_gear`, then `config` as needed. Do not mix the whole build into one transaction.
+  Only a bootstrap starting with `new_build` may omit `expected_state_hash`; carry every
+  `outputStateHash` into the next batch. A rejection preserves earlier committed scopes and rolls
+  back only the current one; continue only when `rolledBack=true`. If
+  `recoveryRequired=true`, later functional batches are blocked until an explicit bootstrap from
+  `new_build` recovers the session.
+  Then call
+  `inspect_generation_checkpoint()` and repair completeness/preflight blocking issues before calling
   `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`. Perform at
   most two Agent-led retries in the same conversation and same run. Each compact attempt needs only
   its index, candidate, and failure audit; trusted state and Judge fields are hydrated from the
@@ -216,11 +230,30 @@ does not take over build completion.
   --run-token "<runToken>"` until the safe contract passes, then call
   `scripts/create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"`.
   The full review result is persisted even though stdout is compact.
+- `optimize_build` is temporarily disabled by default and is not part of Create. Do not use global
+  passive-tree resets/replans either. Use targeted support/item tools and exact passive decisions
+  for identified gaps and deliberate high-impact quality exploration; a Judge warning is not
+  required first. Generated candidates at level 80+ must reach at least 60% fire/cold/lightning
+  resistance and 30% chaos resistance; Chaos Inoculation only waives the chaos minimum. The shared
+  preflight blocks this before Judge without consuming an attempt. Lower-level stages and trusted
+  reference builds remain `judgeElementalResistancePolicy=diagnostic_only`; level 80+ generated
+  candidates use `judgeElementalResistancePolicy=endgame_minimums_60_30`. Elemental Max Hit and
+  other defense evidence remain evaluated.
+- Progression lifecycle verification has a separate level-aware elemental resistance floor, using
+  the evaluated PoB level rather than the lifecycle label or caller hint: 30% at levels 45-64, 50%
+  at 65-79, and 60% at 80-89. It adds no percentage floor below 45 or at 90+, and never requires
+  75% capped resistances as a lifecycle hard gate. Chaos resistance remains governed by the Judge
+  and gear-planning contracts above rather than this lifecycle check.
 - `trustedEvaluation` covers only the immutable snapshot and Judge result. The tool intentionally
   returns `trustedEvaluationScope=snapshot_and_judge_only` and `versionContextTrusted=false`;
   cross-check the supplied version context against this run's freshness result before making a
   current-season verified claim.
-- Normal create mode uses progressive research recall. Resolve the intended ascendancy and primary
+- Normal create mode uses progressive research recall. Normally pass
+  `response_profile="create_compact"` on Create queries so the response lifts conditions, failure
+  conditions and verification tasks into `criticalPremiseDigest` without repeating retrieval
+  plumbing; durable typed receipts are unchanged and compact mode does not truncate result lists.
+  Use `response_profile="full"` when a concrete ambiguity depends on an omitted field. Resolve the
+  intended ascendancy and primary
   skill to stable graph keys. The first exact-Family query sets `ascendancy_key` and
   `primary_skill_key`, while `component_keys` contains only those two identities; ordinary supports,
   utility skills, and secondary skills must not become mandatory AND filters. Natural-language
@@ -228,8 +261,9 @@ does not take over build completion.
   `query_research_memory` treats graph-backed gem/active-skill keys as the same physical component.
   Inspect `buildFamilies`, including `secondarySkillKeys` and `recordKindCounts`, plus
   `deepResearchRecords`, `buildPatterns`, and `semanticEdges`. After selecting a Family, use
-  `build_family_keys` and `record_kinds` to fetch a bounded dimension-specific summary, then
-  `detail_level=record` with only the most relevant `record_ids`. Apply `supportPackages` as verified
+  `build_family_keys` and `record_kinds` to fetch dimension-specific summaries, then
+  `detail_level=record` with every `record_id` needed to close the design. Apply `supportPackages`
+  as verified
   support candidates, `gearResponsibilities` as gear roles rather than copied items,
   `ascendancyResponsibilities` as node-selection evidence, and `resourceMechanisms` plus rotation
   records as resource/failure-state checks. Record the real `dedupeQueryRef` values, recalled item IDs,
@@ -285,6 +319,13 @@ does not take over build completion.
   process-local only until final artifact save; the receipt's semantic state hash lets the saver
   reject real build changes without mistaking refreshed PoB output nodes for mutations. Never invent
   or edit its snapshot id, source hash, semantic state hash, hard failures, caveats, or score.
+- Create validation defaults to `strict_mode=false`. The Judge still computes internally, but the
+  trusted report and every downstream artifact expose only deterministic hard failures, pass state,
+  snapshot binding, selected-skill/socket diagnostics, and attribute shortfalls. Aggregate score,
+  quality band, playability/quality warnings, reward, modelability scoring and subjective caveats
+  are suppressed. Only an explicit user request for strict mode authorizes
+  `strict_mode=true`; use it consistently for preflight/checkpoint, lifecycle and every Judge
+  attempt. A run rejects mode changes after its first attempt without consuming a retry.
 - Preflight and Judge use the same captured XML. A deterministic preflight blocker returns
   `generation_preflight_failed` without creating a Judge engine, receipt, or retry attempt.
 - Treat `rewardLimitReasons` and the sanitized `offenseEvidence` separately from legality. Positive
@@ -328,28 +369,33 @@ does not take over build completion.
   infallible power oracle.
 - A Judge `error` means the Judge invocation failed; it must not carry build hard failures. If the
   snapshot tool rejects an incomplete active build, continue assembling it before review.
-- Judge has four separate layers: `hardFailures` for deterministic illegality,
+- In explicit strict mode, Judge has four separate layers: `hardFailures` for deterministic illegality,
   `playabilityFailures` for severe but legal weaknesses, `qualityWarnings` for missed quality
   targets, and `modelability` for what PoB can support. `passed=true` means legality passed only. A
   `barely_playable` candidate, any playability failure, a goal-critical zero score (for example
   offense or recovery in a starter request), or an unresolved support conflict should be repaired
   when retries remain. If
   retries are exhausted, present it only as a weak prototype with explicit gaps, not a recommended
-  smooth starter. Starter review must cover clear speed, boss/single-target duty, and sustain.
+  smooth starter. In default hard-only mode these fields do not exist and must not be reconstructed
+  from hidden Judge output. Starter review still covers clear speed, boss/single-target duty and
+  sustain using Research, mechanism evidence and raw PoB facts.
 - Under the current temporary delivery policy, non-hard Judge findings do not block final artifact
   save or export after retries are exhausted. A candidate may be exported when Judge evaluated it,
   `passed=true`, there are no `hardFailures`, and the trusted active snapshot is still valid. Preserve
   every playability failure, quality warning, zero-score caveat, quality band, and score-applicability
-  limitation in the user-facing result; exportability is not a quality endorsement.
-- `scoreApplicability="unavailable"` means the core mechanic cannot be scored reliably. Do not quote
+  limitation in the user-facing result when strict mode was explicitly requested; exportability is
+  not a quality endorsement. In hard-only mode report that subjective Judge feedback was suppressed,
+  not an invented quality grade.
+- In explicit strict mode, `scoreApplicability="unavailable"` means the core mechanic cannot be scored reliably. Do not quote
   aggregate/DPS strength, call the build illegal, or silently replace the requested archetype merely
   to make it modelable; preserve it as a legal candidate requiring reference or in-game validation.
-- If legality fails or playability failures have a concrete repair, modify the active build without starting
+- If legality fails, modify the active build without starting
   a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
   `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
   Each row carries a short failure-audit conclusion and planned changes, never hidden reasoning.
   Stop after the safe human review packet. A normal `/poe-bd-create` run does not start comparative
-  learning by itself.
+  learning by itself. Only in explicit strict mode may a concrete playability finding inform this
+  retry decision; it still cannot replace Agent judgment.
 - If the final attempt passes legality, has no playability failures, has applicable scoring, and the
   Agent accepts it, call `save_final_build_artifact` before the review helper consumes the run token.
   Only the latest trusted attempt can be saved. Failed and
@@ -404,14 +450,64 @@ does not take over build completion.
 - Enter progression mode only for an explicit complete campaign-to-target request. A normal
   single-stage Create keeps the Phase 5 save/export flow and level-band semantics. Progression
   verification floors such as 82/92 must never change ordinary Create behavior.
+- Long progression conversations must use the bounded semantic working set. After selecting
+  important Research, changing the mechanism plan, before Judge, and before stage completion call
+  `checkpoint_build_progression_context`. Save only adopted/caveated/rejected evidence, critical
+  conditions, failure conditions, verification tasks, concise mechanism/configuration conclusions,
+  unresolved items and next actions — never hidden reasoning or raw material. Normal status polling
+  uses `get_build_progression_status(detail="compact")`; after context compaction, restart or
+  uncertainty, call it once with `detail="resume"` before another PoB mutation. Use `detail="full"`
+  only for a specifically required complete safe state.
+- For one unchanged target/stage Family, do not impose a fixed summary, dimension-query, record-read,
+  or candidate-count ceiling. Continue targeted retrieval until design duties, critical conditions,
+  failure modes and verification tasks are adequately covered. Component/passive/mod/item searches
+  use precise queries and read exact detail after choosing candidates; their default result count is
+  not a maximum. A resume packet prevents replay of an identical query receipt, not new evidence-
+  seeking queries.
+- For an exact selected Family, inspect `familyRecordCoverage`, `familyRecordIndex`, and
+  `familyPremiseCatalog`. The query `limit` controls only the first expanded page. Build explicit
+  decisions for every failure premise: `resolved`, `caveated`, or `not_applicable`. A resolved
+  premise must cite a solution record actually returned by a `detail_level="record"` receipt;
+  seeing its ID in a summary is insufficient. Ordinary single-stage Create and progression targets
+  use the same receipt audit through `ResearchMemoryUse.premiseDecisions`. Continue targeted
+  Family/component/kind/record/failure-text queries
+  until each design responsibility is handled; alternative solutions are valid and no named
+  mechanic is hard-coded.
 - Call `start_build_progression` with the base class, target level, safe goal and current
   `VersionContext`. Preserve every returned revision and use a unique operation id for each
-  mutation. New runs start in `target_anchor_pending` and return a `TargetAnchorCreatePacket`.
+  mutation. Unless the user supplied a complete unique locked Family, new runs start in
+  `selection_pending` and return a `TargetCandidateSelectionPacket` plus an exact Family-discovery
+  request.
+- Run `query_research_memory(detail_level="family")` with the packet's class key, exact game patch,
+  passive-tree version and optional hard Family filters. It requests ten mature Families and returns
+  every eligible Family when fewer exist. Only exact-version, valid, creator-visible, train-context,
+  copy-safe deep Research qualifies; never backfill the comparison with stale/old-patch or invented
+  Families. Five to ten candidates are sufficient coverage, two to four are limited coverage, and
+  fewer than two pauses the progression as a Research gap.
+- Compare and completely rank every Family returned by the trusted discovery receipt (2-10), not a
+  hand-picked subset. Compare mechanism closure, Research support, goal fit and strength evidence,
+  playability risk, and modelability. The first rank is selected and the second is reserve.
+  Modelability alone must not select a Family that has no advantage in the first three dimensions.
+  Do not assemble full gear/tree, run formal Judge, or call a global optimizer for these candidates.
+  A complete user-locked identity skips discovery and cannot switch Family. Call
+  `submit_build_progression_target_selection`; only then use the returned
+  `TargetAnchorCreatePacket`.
 - Before starter research or blueprint work, follow the ordinary single-stage Create workflow from
   a blank build for the requested target level. Use normal progressive Research recall, Phase 5
-  retries and Judge. Run the target-level lifecycle gate on the active snapshot before saving;
+  retries and Judge. Bind the fresh run with `bind_build_progression_target_run`. Run the target-level
+  lifecycle gate on the active snapshot before saving;
   repair a failed/unknown resource or mechanism check within the existing Phase 5 retries. After
-  saving, call `verify_lifecycle_stage(..., artifact_id=...)` to create a trusted
+  `inspect_generation_checkpoint` separates hard legality, mechanism readiness, and quality
+  advisories. Deterministic attribute/item/gem/weapon/Spirit/passive/affix failures return
+  `attemptConsumed=false` and must be fixed before Judge. Once the first legal attempt passes,
+  protect it as a baseline and still perform the required active quality pass. Select a better legal
+  attempt when found; if the quality delta regresses, save the earlier exact passing snapshot with an
+  explicit candidate-delta-only reason. This also applies when the quality delta is rejected by
+  deterministic preflight before it can create another Judge receipt: active-state divergence must
+  still be proven, and the earlier in-process Judge snapshot remains the only savable source. After
+  saving, call
+  `verify_lifecycle_stage(..., artifact_id=..., detail="compact")` exactly once to
+  create a trusted
   `verificationRef`, then consume review. Do not export the anchor individually or read starter
   evidence while building this target.
 - Resolve the target ascendancy and primary skill to stable keys. Build
@@ -423,16 +519,34 @@ does not take over build completion.
   the current target artifact or its Phase 5 run/source-hash evidence. Call
   `bind_build_progression_target_anchor` with the artifact-bound `verificationRef`. A
   failed/unknown lifecycle result or a final failure audit classified as a true/mixed build
-  failure cannot become an anchor. Judge scores and warnings are advisory only.
-- Progression Family identity uses the player `active_skill` `skill:` key. A graph-backed `gem:`
+  failure cannot become an anchor. Judge scores and warnings are advisory only. If any premise is
+  `caveated`, use `limited_accepted`, cite its premise id in TargetDesignCoverage, and preserve the
+  risk in the route report; do not silently use `accepted`.
+- If the first-ranked Family cannot close its mechanism, remains qualitatively unacceptable after
+  the complete quality pass, or lacks evidence, call `fail_build_progression_target_anchor`. Only an
+  explicit Agent decision with evidence may call `reselect_build_progression_target_candidate`, and
+  only once to the recorded reserve; Judge never switches automatically. Tool/approval/control
+  interruptions use the one same-Family `retry_build_progression_target_anchor`, not a Family switch.
+  Bind the final artifact with `acceptance_decision=accepted` or `limited_accepted`; preserve all
+  limited caveats in the route.
+- Mature progression Family identity uses the player `active_skill` `skill:` key. A graph-backed `gem:`
   key may be used for Research discovery/querying because typed receipts preserve the verified
   gem/active-skill equivalence set, but do not put the gem key into `TargetAnchorIdentity` or
-  `StageFamilyIdentity`.
+  `StageFamilyIdentity`. A pre-ascendancy or otherwise not-yet-mature starter is not a Family:
+  use `knowledgeMode=starter_common`, `StarterStageIdentity`, and public starter/corpus/mechanics
+  refs instead of inventing an ascendancy or forcing an empty mature-Family lookup.
+- Research and PoB may use different display names for the same component. Keep the stable key as
+  the Family authority and put the artifact's actual display name in `TargetAnchorIdentity`. The
+  typed Family discovery receipt must first validate the candidate key. When the names differ, the
+  artifact's exact graph snapshot must uniquely resolve the artifact name to that same key; the
+  Research Family title need not itself be a graph alias. Missing, ambiguous, cross-snapshot, or
+  different-key artifact resolutions fail closed.
 - If the target Family has confirmed core secondary skills, include aligned stable keys and
   canonical names in `TargetAnchorIdentity`; every name must exist in an enabled tested skill
   group of the same artifact.
 - `StarterResearchPacket` and stale candidates are deliberately withheld from the start/status
-  response while `target_anchor_pending`; only a cache-presence flag may be visible. After the
+  response while target selection or anchor creation is pending; only a cache-presence flag may be
+  visible. After the
   anchor is bound, read the safe exact-patch packet from status. Otherwise the host Agent may
   perform bounded web research:
   at most six sources, preferably current-patch level-banded guides.
@@ -447,13 +561,40 @@ does not take over build completion.
 - Pass source URLs only through transient `intake_starter_research_packet` input. It hashes them
   immediately. Never put page prose, full URLs, PoB material, whole gear/passive/skill mirrors or
   account/character data in starter claims, blueprint state or chat.
+- For skill-package claims, structure each resolved skill's clear/boss/setup/payoff duties plus
+  what it provides and requires. Preserve applicability and exclusion conditions. Do not harden an
+  ambiguous "skills share clear and boss duty" summary into one primary skill before checking the
+  actual setup/payoff loop.
 - `ProgressionBlueprint` normally has four real milestones, may merge unchanged milestones, and is
   capped at five. The default four artifacts are the bound target anchor plus three pre-target
   starter/bridge milestones. Every milestone has a stable `stageId`; the final target stage must
   reference `targetAnchorArtifactId`, the same target Family and target level. The base class is the
   only cross-stage lock.
-- Resolve and query Research separately for every actual stage Family. Each stage needs a typed
-  query receipt for its exact ascendancy and primary skill. Progressive queries are allowed. The
+- Before locking the starter blueprint, compare at least two plausible skill packages cheaply:
+  duties, setup/payoff premises, availability, weapon compatibility, resource method and explicit
+  exclusions. This is candidate selection, not another Judge gate. Do not run the endgame-oriented
+  `optimize_build` while choosing the direction; compare the route first, then build the selected
+  stage completely.
+- Obey each `StageCreatePacket.optimizationPolicy`. Every stage, including `campaign_early`, uses
+  `loadoutScope=stage_complete_loadout` and `qualityGoal=complete_stage_build`: deliver a complete,
+  strong and playable build for that level, with full skill duties, suitable gear, a coherent
+  passive plan, resource closure and practical operation. Do not excuse missing work as a temporary
+  stage, and do not invent fixed DPS/EHP, gear-slot or passive-point thresholds. Whole-build and
+  global passive-tree optimization remain disabled; use deliberate, targeted local exploration.
+- Freeze the route design before PoB construction. The packet's
+  `mutationStrategy=single_initialization_then_function_scoped_deltas` permits one initialization,
+  then function-scoped changes only. Later stages inherit the prior artifact unless the blueprint
+  declares a genuine skill/ascendancy/resource-system transition with `rebuildFromScratch=true` and
+  a non-empty `rebuildReason`; the first stage cannot declare rebuild. After claim, ordinary
+  legality, sustain, gear, passive or support failures require local repair. A whole direction may
+  change only through the existing one-time versioned stage replan after deterministic failure;
+  this is `designChangePolicy=blueprint_declared_or_versioned_replan_only`.
+- Route knowledge by maturity. `starter_common` stages use `StarterStageIdentity`, no mature Family
+  query refs, `generationMemoryMode=standard`, and Starter/Web plus corpus/graph/mechanics evidence.
+  A legitimately unascended campaign snapshot must read back as None/Unascended. Starting with the
+  transition where ascendancy and core primary skill are stable, use `family_exact`; each such stage
+  needs a typed query receipt for its exact ascendancy and primary skill. Progressive queries are
+  allowed. The
   ordinary target anchor has no stage packet, so its artifact `researchMemoryRef` may be any ref
   actually present in the final `researchMemoryUse.dedupeQueryRefs`. For each pre-target stage,
   copy the claimed `StageCreatePacket.versionContext` verbatim into Phase 5/Judge/artifact; later
@@ -463,7 +604,12 @@ does not take over build completion.
   instead of rewriting earlier progression provenance. Every cited query must be run after the
   progression starts; blueprint submission checks this timing, so a resumed stage does not need
   the original natural-language query that the safe receipt intentionally omits.
-- Before claiming a stage, compare the intended `buildFamilyKey`'s ascendancy, primary skill and
+- Treat `StageCreatePacket.generationMemoryMode` as the only authority for that stage; it overrides
+  the ordinary Create default. Start Phase 5 with that exact mode. If
+  `bind_build_progression_stage_run` reports expected/actual mismatch, do not retry the stage or
+  alter the claim: create a new Phase 5 run with the expected mode and bind it to the same claim.
+  Completion rechecks the manifest and fails closed if it was replaced.
+- Before claiming a `family_exact` stage, compare the intended `buildFamilyKey`'s ascendancy, primary skill and
   complete `secondarySkillKeys` with `StageFamilyIdentity`. If a core secondary differs, revise the
   not-yet-started blueprint first; do not discover or substitute a different Family only after the
   artifact has been built.
@@ -474,15 +620,28 @@ does not take over build completion.
   `StageCompletionReport.transitionReadiness`; all blocking gates must be satisfied with evidence.
 - For each pre-target stage: `claim_build_progression_stage` → start a new Phase 5 run →
   `bind_build_progression_stage_run` → assemble the real active build →
-  `inspect_build_completeness`/preflight → active-snapshot `verify_lifecycle_stage` → formal
-  Judge/repair → save artifact → artifact-bound `verify_lifecycle_stage` → review →
+  `inspect_generation_checkpoint` (same-hash completeness/preflight/stats/defenses) →
+  active-snapshot `verify_lifecycle_stage(detail="compact")` → formal
+  Judge/repair → save artifact → one artifact-bound
+  `verify_lifecycle_stage(detail="compact")` → review →
   `classify_build_progression_costs` →
   `complete_build_progression_stage`. First stage starts blank; later stages normally load the
   previous artifact, while large Family transitions may rebuild from blank. Completion trusts the
   receipt referenced by `verificationRef`, not caller-copied lifecycle fields.
+- The active lifecycle gate is a formal-attempt boundary, not an iterative tuning probe: call it at
+  most once before each Judge attempt and only repeat after a real state-hash change. Use
+  `inspect_generation_checkpoint` while tuning. Normal order is save artifact, then review. If a
+  legacy run consumed review first, use the artifact saver’s exact-snapshot recovery; never delete
+  review/receipt/lock files.
 - Keep the six immutable version fields from `StageCreatePacket` in the Phase 5/Judge evaluation.
-  `ruleset` is the freshness game ruleset, not trade/SSF mode. The candidate's
-  `researchMemoryRef` must be one of its actual progressive query refs.
+  `ruleset` is the freshness game ruleset, not trade/SSF mode. For `family_exact`,
+  `researchMemoryRef` must be one of its actual progressive query refs. For
+  `starter_common`, copy the packet-provided starter research ref verbatim and start Phase 5 in the
+  packet's `standard` generation memory mode; do not fabricate `researchMemoryUse`.
+- The exact start placeholder `graphSnapshotId=unavailable:pending_discovery` may be resolved once,
+  during target-anchor binding, from the trusted target artifact. The final value may be a concrete
+  snapshot or a non-pending `unavailable:<reason>`. Keep the same progression id; do not spend a
+  target retry or start a replacement route. Any already concrete graph snapshot is immutable.
 - When the final target stage is claimed, require `requiresPhase5Run=false`. Reuse the exact target
   `verificationRef` accepted during anchor binding; completion revalidates its immutable artifact
   and source hash. You may load the anchor read-only for inspection/cost work, but do not mutate it,
@@ -507,9 +666,11 @@ does not take over build completion.
   `endgame_final`. A level-80 target normally remains `maps_entry`; if the high-ceiling mechanism
   is not closed, preserve the verified starter/bridge form and disclose the future switch.
 - Stage failure pauses the route. Phase 5 keeps its two internal repairs; after stage failure only
-  one explicit `retry_build_progression_stage` is allowed. Started, retried and completed stages
-  are immutable; only not-yet-started future stages may be revised. Status recovery returns the
-  active safe `StageCreatePacket`.
+  one explicit `retry_build_progression_stage` is allowed. If the current failed non-target stage
+  has no artifact, that retry may carry a versioned `revisedStage`, `revisedBlueprintId` and
+  `replanSummary`. It must add fresh public evidence (`starter_common`) or a fresh Research ref
+  (`family_exact`) and cannot change stage id/level/lifecycle/role, base class, target or version.
+  Completed, artifact-bound, target and already-retried stages remain immutable.
 - Cost output is risk-only. Uniques use live Divine-equivalent bands; rares use craft effort.
   Never fabricate a full-set total or trigger a switch from a price band. Disclose unknown required
   dependencies separately. Live-price failure lowers evidence but does not block the route.
@@ -517,6 +678,14 @@ does not take over build completion.
   call `finalize_build_progression` and then `export_build_progression_package` once. Report its
   complete inventory: each stage's XML/import-code files, route guide, and only the target
   single-stage official `.build`.
+- If a pre-target stage ultimately fails after the target anchor was bound, or a control-plane,
+  approval, pause, or failure-registration interruption leaves the route unfinished, call
+  `export_build_progression_package` with the progression id. Return every inventory row from the
+  `routeIncomplete=true` recovery package and label it as target-only/incomplete; do not finish
+  with prose alone or imply that it is a complete route. This applies to
+  `stage_pending`, `stage_running`, `paused`, `failed`, and `finalize_pending`, and to both legacy
+  `bound` and current `anchor_bound` target states. Include completed-stage XML/codes, target
+  XML/code/`.build`, the recovery guide, active/failed stage, and failure code.
 - `save_build_progression_route` remains a Route v2 compatibility writer. It cannot write anchor
   fields or replace `finalize_build_progression` for Route v3.
 - If the target transition gates are not closed, keep the last verified starter/bridge milestone
@@ -614,12 +783,17 @@ stage as ready.
    and draw affixes from that ilvl pool. Equip stage-appropriate life/mana flasks, check the belt's
    charm capacity and fill useful charms, and make an explicit rune/soul-core decision for socketable
    gear. Re-check `get_defenses` after.
-5. Call `inspect_build_completeness` before the final gate. Fix hard level-requirement failures and
-   either fill or explicitly justify each advisory for scaffold gear, item levels, runes/soul cores,
-   passive jewels, flasks, and charms. Rare/magic items must also pass affix-count, mod-group and
-   affix item-level checks. Active gem levels are base-gem legality: item/passive `+levels` do not
-   make a legal base gem fail, but a socketed base level above the character requirement is a hard
-   failure. It diagnoses omissions; it does not choose the build for you.
+5. Call `inspect_generation_checkpoint(strict_mode=<run mode>)` before the final gate. It merges completeness, preflight,
+   bounded stats and defenses for one semantic build-state hash. Fix hard level-requirement and
+   preflight failures. In explicit strict mode, either fill or explicitly justify each returned
+   advisory for scaffold gear, item levels, runes/soul cores, passive jewels, flasks, and charms;
+   default hard-only returns no subjective advisories, so complete the deliberate quality pass from
+   the build responsibilities and Research evidence instead. A mutation changes the hash and
+   requires a fresh checkpoint; an unchanged state reuses the prior safe result.
+   After the mechanism-complete baseline is legal, perform one deliberate quality pass over the
+   highest-impact weapon, support package, passive routes, jewels, runes/soul cores and combat
+   configuration. This pass may proactively compare materially stronger options even when Judge has
+   not reported a failure; skip an inapplicable area only with a build-specific reason.
 6. `apply_combat_profile` to switch on the realistic fight (boss tier + shock/curse/charges the
    build maintains), **plus any build-specific enemy condition its ascendancy/keystones rely on**
    (scan `list_config_options`, e.g. Open Weakness, Critical Weakness; a conditional "more" stays
@@ -646,14 +820,12 @@ realize it, then re-check defenses.
   Craft a jewel → `optimize_jewel` (then `equip_jewel`). Gear a whole set at once (damage-max with
   elemental resists capped and a stage-aware chaos target) → `plan_gear(stage=...)`, then refine top
   slots with `rank_upgrades` + `optimize_item`.
-- Assemble a WHOLE build at once (the synthesis the per-slot tools can't do) → `optimize_build`.
-  Set class+ascendancy+main-skill (+a weapon base for attacks; set an endgame level) first; it then
-  SEEDS the archetype's dominant levers from the reference set and, for each, commits that lever
-  across tree + gear + jewels + supports and keeps the best resist-capped, `min_ehp`-meeting build —
-  leaving it LOADED. Heavy (~1–3 min). `try_uniques` adds a unique-item pass; `archetypes=[…]` also
-  evaluates alternative class/skill/weapon configs (you propose them, it picks). It reaches the
-  GEAR-QUALITY ceiling, not the crafting-system/trigger-meta top — afterward run `apply_combat_profile`
-  (the build's real conditions) and gate with `pinnacle_readiness`.
+- Whole-build/global-tree optimization is temporarily disabled for Create. Use the Family evidence
+  to choose the mechanism, submit exact mutations in atomic batches, and use targeted
+  support/item/passive tools for a named gap or a deliberate high-impact quality pass. The retained
+  `optimize_build` MCP entry returns
+  `global_optimizer_temporarily_disabled` unless a maintainer explicitly enables its environment
+  switch; do not enable it during normal Create experiments.
 - Which stat to chase next → `rank_levers`. How much of it to hit a target → `solve_for`
   (`list_levers` shows named levers). A/B two builds → `compare_to`.
 - "Is this build good?" → `evaluate_build` (numbers) + `build_advice("red flags")` (judgment).
@@ -707,12 +879,14 @@ realize it, then re-check defenses.
   " / ", "," or "|"; bare names are fine. It REPLACES the main group (auras from `add_skill_group`
   survive) and, on unparseable input, leaves the build unchanged with `ok:false` rather than
   dropping supports — so trust its result, and don't hand-build piles of groups.
-- **Hand-crafted gear is checked for legality.** `equip_item` flags affixes that can't roll on the
-  base (`illegalAffixes` + `legalityWarning`) — e.g. body armour can't roll flat/`%` maximum Mana,
-  so a "mana chest" is a fantasy whose DPS isn't real. It's a *type* check (magnitudes aren't
-  verified), so don't invent oversized rolls either. **Prefer `optimize_item`** (it only uses real
-  craftable mods); for an EB mana-stacker, `%`-increased Energy Shield on ES (int) bases *is* your
-  mana — body armour gets mana from ES via Eldritch Battery, not from mana affixes.
+- **Generated gear uses one source-aware legality audit.** Ordinary affixes are checked against the
+  base, tier, item level, group and prefix/suffix limits. `craft_item` additionally proves
+  Perfect-Essence, rune and corrupted effects from the current PoB `crafting_options`, verifies the
+  PoB round-trip item, persists no raw item text, and returns `craftReceiptRef`. Pass that ref
+  unchanged to `equip_item` or a batched `equip_item`; changing the item, slot or runtime version
+  invalidates it. Missing provenance on imported special gear remains diagnostic, but it cannot
+  authorize a new generated artifact. Prefer `optimize_item` for ordinary rares and never invent
+  oversized rolls.
 - **Some supports zero a skill's *base* crit** — then "increased crit" does nothing on top; a non-crit
   build can't be made crit without a base crit source. Check a support's actual effect, don't assume.
 - **Passive points are level-driven.** `optimize_passives(points<=0)` fills the remaining budget;

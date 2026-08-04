@@ -107,6 +107,11 @@ def build_progression_lifecycle_receipts_dir() -> Path:
     return build_progression_dir() / "lifecycle-receipts"
 
 
+def craft_legality_receipts_dir() -> Path:
+    """Content-addressed, raw-free receipts for PoB-generated special crafting sources."""
+    return user_data_dir() / "runtime" / "craft-legality-receipts"
+
+
 def mature_learning_seed_fixtures_path() -> Path:
     """Bundled sanitized seed fixtures for the mature-learning store."""
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"

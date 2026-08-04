@@ -25,7 +25,7 @@ from server.knowledge import copy_safety
 from . import models
 
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 CACHE_TTL = timedelta(days=7)
 SourceKind = Literal[
     "structured_guide",
@@ -50,6 +50,16 @@ ClaimKind = Literal[
 EvidenceStatus = Literal["supported", "limited", "limited_offline_inference"]
 PacketStatus = Literal["active", "deprecated"]
 Decision = Literal["adopted", "caveated", "rejected"]
+StarterSkillDuty = Literal[
+    "clear",
+    "boss",
+    "setup",
+    "payoff",
+    "mobility",
+    "defense",
+    "recovery",
+    "resource",
+]
 _SAFE_REF = re.compile(r"^[A-Za-z0-9_.:/\-]{3,240}$")
 
 
@@ -94,6 +104,24 @@ class StarterSource(models.StrictModel):
         return self
 
 
+class StarterSkillRole(models.StrictModel):
+    component_key: str = Field(min_length=3, max_length=240)
+    skill_name: str = Field(min_length=1, max_length=160)
+    duties: list[StarterSkillDuty] = Field(min_length=1, max_length=8)
+    provides: list[str] = Field(default_factory=list, max_length=8)
+    requires: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "StarterSkillRole":
+        _safe_ref(self.component_key)
+        if not self.component_key.startswith("skill:"):
+            raise ValueError("starter skill roles require resolved active-skill keys")
+        if len(self.duties) != len(set(self.duties)):
+            raise ValueError("starter skill duties must be unique")
+        _ensure_safe(self.model_dump(mode="json", by_alias=True))
+        return self
+
+
 class StarterClaim(models.StrictModel):
     claim_id: str = Field(pattern=r"^starter-claim:[A-Za-z0-9\-]{3,100}$")
     claim_kind: ClaimKind
@@ -101,6 +129,9 @@ class StarterClaim(models.StrictModel):
     level_max: int = Field(ge=1, le=100)
     summary: str = Field(min_length=1, max_length=360)
     component_keys: list[str] = Field(default_factory=list, max_length=12)
+    skill_roles: list[StarterSkillRole] = Field(default_factory=list, max_length=8)
+    applicability_conditions: list[str] = Field(default_factory=list, max_length=8)
+    exclusion_conditions: list[str] = Field(default_factory=list, max_length=8)
     source_refs: list[str] = Field(default_factory=list, max_length=6)
     verification_tasks: list[str] = Field(default_factory=list, max_length=8)
     evidence_status: EvidenceStatus = "limited"
@@ -111,6 +142,11 @@ class StarterClaim(models.StrictModel):
             raise ValueError("starter claim level range must be increasing")
         _unique_safe_refs(self.component_keys)
         _unique_safe_refs(self.source_refs)
+        role_keys = [item.component_key for item in self.skill_roles]
+        if len(role_keys) != len(set(role_keys)):
+            raise ValueError("starter skill roles must be unique per skill")
+        if self.skill_roles and not set(role_keys).issubset(set(self.component_keys)):
+            raise ValueError("starter skill roles must reference claim component keys")
         _ensure_safe(self.model_dump(mode="json", by_alias=True))
         return self
 
@@ -146,6 +182,10 @@ class StarterResearchSubmission(models.StrictModel):
             for claim in self.claims
         ):
             raise ValueError("starter claims must stay within the packet level range")
+        if any(
+            claim.claim_kind == "skill_package" and not claim.skill_roles for claim in self.claims
+        ):
+            raise ValueError("starter skill-package claims require structured skill roles")
         _ensure_safe(
             {
                 "baseClass": self.base_class,
@@ -185,6 +225,7 @@ class StarterEvidenceUse(models.StrictModel):
 
 
 class StarterResearchPacket(models.VersionedSafeModel):
+    packet_schema_version: int = Field(default=1, ge=1, le=CACHE_SCHEMA_VERSION)
     packet_id: str = Field(pattern=r"^starter-research:[A-Za-z0-9\-]{3,100}$")
     base_class: str = Field(min_length=1, max_length=80)
     game_patch: str = Field(min_length=1, max_length=40)
@@ -216,6 +257,10 @@ class StarterResearchPacket(models.VersionedSafeModel):
             for claim in self.claims
         ):
             raise ValueError("starter packet claims must stay within the packet level range")
+        if self.packet_schema_version >= 2 and any(
+            claim.claim_kind == "skill_package" and not claim.skill_roles for claim in self.claims
+        ):
+            raise ValueError("v2 starter skill-package claims require structured skill roles")
         refs = {source.source_ref for source in self.sources}
         if len(refs) != len(self.sources):
             raise ValueError("starter packet sources must be unique")
@@ -340,6 +385,7 @@ def intake_starter_research_packet(
     now = datetime.now(timezone.utc)
     try:
         packet = StarterResearchPacket(
+            packet_schema_version=CACHE_SCHEMA_VERSION,
             packet_id=f"starter-research:{uuid4()}",
             base_class=submission.base_class,
             game_patch=submission.game_patch,
@@ -392,10 +438,19 @@ def lookup_starter_research_cache(
     exact.sort(key=lambda item: item.created_at, reverse=True)
     if exact:
         packet = exact[0]
-        fresh = _parse_time(packet.expires_at) > current
+        schema_current = packet.packet_schema_version == CACHE_SCHEMA_VERSION
+        fresh = _parse_time(packet.expires_at) > current and schema_current
         return {
             "status": "hit" if fresh else "stale",
-            "cacheStatus": "fresh" if fresh else "expired_revalidation_required",
+            "cacheStatus": (
+                "fresh"
+                if fresh
+                else (
+                    "starter_role_schema_revalidation_required"
+                    if not schema_current
+                    else "expired_revalidation_required"
+                )
+            ),
             "starterResearchPacket": packet.model_dump(mode="json", by_alias=True),
             "mayAdoptWithoutRevalidation": fresh,
             "containsRawWebMaterial": False,

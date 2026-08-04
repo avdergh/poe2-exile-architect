@@ -355,9 +355,12 @@ def _save_progression_route(
     anchored = proposal.target_anchor_artifact_id is not None
     anchor_has_limited_coverage = bool(
         proposal.target_design_coverage
-        and any(
-            item.status == "unavailable_with_caveat"
-            for item in proposal.target_design_coverage.dimensions
+        and (
+            proposal.target_design_coverage.unresolved_caveats
+            or any(
+                item.status == "unavailable_with_caveat"
+                for item in proposal.target_design_coverage.dimensions
+            )
         )
     )
     quality_status: QualityStatus = (
@@ -486,13 +489,18 @@ def _trusted_artifact_fact(artifact_id: str) -> dict[str, Any] | None:
     if not 1 <= level <= 100 or not class_shell or not run_id:
         return None
     judge = getattr(manifest, "judge_report", None)
+    feedback_mode = str(getattr(judge, "feedback_mode", "strict") or "strict")
+    subjective_feedback_suppressed = bool(getattr(judge, "subjective_feedback_suppressed", False))
     playability = list(getattr(judge, "playability_failures", []) or [])
     quality_warnings = list(getattr(judge, "quality_warnings", []) or [])
     caveats = list(getattr(judge, "caveats", []) or [])
     score_applicability = str(getattr(judge, "score_applicability", "unknown") or "unknown")
     modelability = str(getattr(judge, "modelability_status", "") or "")
     quality_limited = bool(
-        playability or score_applicability != "applicable" or modelability.casefold() != "full"
+        feedback_mode == "strict"
+        and (
+            playability or score_applicability != "applicable" or modelability.casefold() != "full"
+        )
     )
     return {
         "artifactId": manifest.artifact_id,
@@ -510,6 +518,8 @@ def _trusted_artifact_fact(artifact_id: str) -> dict[str, Any] | None:
         "graphSnapshotId": manifest.version_context.graph_snapshot_id,
         "researchMemoryRef": manifest.version_context.research_memory_ref,
         "judgePassed": True,
+        "judgeFeedbackMode": feedback_mode,
+        "judgeSubjectiveFeedbackSuppressed": subjective_feedback_suppressed,
         "judgePlayabilityFailures": playability,
         "judgeQualityWarnings": quality_warnings,
         "judgeCaveats": caveats,

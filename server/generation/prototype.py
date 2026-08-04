@@ -43,9 +43,21 @@ def validate_and_build_human_review_packet(
         generation_attempts = [
             models.GenerationAttemptRecord.model_validate(item) for item in attempts_payload
         ]
+        selected_attempt_index = _optional_int(
+            payload,
+            "selectedAttemptIndex",
+            "selected_attempt_index",
+        )
+        artifact_selection_outcome = _optional_string(
+            payload,
+            "artifactSelectionOutcome",
+            "artifact_selection_outcome",
+        )
     except ValidationError as exc:
         return models.schema_error(exc)
     except KeyError as exc:
+        return models.rejected("invalid_schema", caveats=[str(exc)])
+    except ValueError as exc:
         return models.rejected("invalid_schema", caveats=[str(exc)])
 
     domain_error = _domain_acceptance_error(candidate, state, judge)
@@ -65,8 +77,10 @@ def validate_and_build_human_review_packet(
             tool_feedback_events=feedback,
             failure_audit=failure_audit,
             generation_attempts=generation_attempts,
+            selected_attempt_index=selected_attempt_index,
+            artifact_selection_outcome=artifact_selection_outcome,
             lifecycle_evidence_coverage=_lifecycle_evidence_coverage(candidate, state),
-            human_review_fields=_human_review_fields(),
+            human_review_fields=_human_review_fields(judge.feedback_mode),
             recommended_next_action=action,
             version_context=prompt.version_context,
             no_raw_material=True,
@@ -173,7 +187,16 @@ def _recommended_action(
     return "human_review_required"
 
 
-def _human_review_fields() -> dict[str, str]:
+def _human_review_fields(feedback_mode: str) -> dict[str, str]:
+    if feedback_mode == "hard_only":
+        return {
+            "briefFit": "pending",
+            "designValue": "pending",
+            "stageFit": "pending",
+            "evidenceQuality": "pending",
+            "hardLegalityEvidenceReasonable": "pending",
+            "continueToNextPrototypeStep": "pending",
+        }
     return {
         "briefFit": "pending",
         "designValue": "pending",
@@ -254,6 +277,24 @@ def _string(payload: Any, key: str) -> str | None:
     if isinstance(payload, dict) and isinstance(payload.get(key), str):
         return payload[key]
     return None
+
+
+def _optional_int(payload: Any, camel: str, snake: str) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    if camel in payload and snake in payload and payload[camel] != payload[snake]:
+        raise ValueError(f"{camel} alias conflict")
+    value = payload[camel] if camel in payload else payload.get(snake)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_string(payload: Any, camel: str, snake: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    if camel in payload and snake in payload and payload[camel] != payload[snake]:
+        raise ValueError(f"{camel} alias conflict")
+    value = payload[camel] if camel in payload else payload.get(snake)
+    return value if isinstance(value, str) else None
 
 
 def _camelize_public_dict(value: Any, *, preserve_keys: bool = False) -> Any:

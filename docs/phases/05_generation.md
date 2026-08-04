@@ -54,12 +54,22 @@ Phase 5 仍遵守项目硬边界：
 - Agent 只能通过结构化工具查询数据库和图，不暴露原生 SQL、Cypher 或 Gremlin 查询语句；
 - 跨阶段唯一硬锁是职业；开荒、攻坚、终局之间可以洗升华、换技能、换天赋、换装备和辅助技能。
 
+Judge 反馈采用显式开关：普通 Create 默认 `strict_mode=false`，底层正式 Judge 仍完整计算，但仅把
+确定性硬失败、`passed`、快照绑定和安全事实诊断交给 Agent；评分、质量档位、可玩性/质量警告、
+reward 和主观 caveat 不进入 attempt、retry、Review、artifact 或 progression。用户明确要求
+“严格模式”时，调用方才在 checkpoint、Judge 和 lifecycle 调用中一致传
+`strict_mode=true`；同一 run 首轮 Judge 后不能改模式。默认模式不替代主动质量收尾：Agent 仍须
+基于 Research、机制、PoB 原始数值和构筑职责主动比较高影响方案，而不能把“没有质量警告”等同于
+质量已经验证。
+
 完整成长请求由 Phase 8 progression 编排，但它不能改写普通 Phase 5。目标 BD 首先按本章普通
 单阶段 Create 从空状态生成；在既有 retry 内解决目标 lifecycle 的真实资源/机制失败，review
 并保存为 immutable anchor，再对私有 artifact 生成可信 lifecycle receipt。之后每个目标前真实
 里程碑各有一个完整 Phase 5 run，最后 target closure 复用同一个 anchor/receipt，不再重复
-Create。开荒阶段可以使用与目标完全不同的 Family；当前 run 只能按当前实际升华和主技能查询
-Research，不能拿目标 Family 记忆冒充开荒知识。
+Create。开荒阶段可以使用与目标完全不同的技能包；首个升华前或尚未形成成熟流派时，它不是
+Research Family，Phase 8 应使用 `starter_common` 的 Starter/Web + corpus/mechanics 公共知识，
+不能伪造升华来查询成品数据。只有转型后升华和主技能稳定的 `family_exact` run 才按当前实际
+Family 查询 Research，且不能拿目标 Family 记忆冒充开荒知识。
 
 Phase 8 的生命周期验证预算（例如 `endgame_budget >= 82`）不得用于修改普通 Create 的生命周期
 摘要等级映射。普通 80 级目标的 Research recall、技能组、升华、优化、Judge、保存和导出行为
@@ -78,7 +88,9 @@ Phase 8 可以让外部 Agent 在 run 外先做有界联网开荒研究。网页
 Agent 负责：
 
 - 理解模糊用户需求；
-- 判断是否需要向用户追问；
+- 每次普通 Create 先确认是否产出完整开荒过程；只有用户明确要求单个固定目标 BD 时跳过，确认前
+  不调用 freshness、Research、run helper 或 PoB 工具；
+- 完成入口确认后判断是否还需要向用户追问其他约束；
 - 将用户需求改写成更具体的生成提示词或最小 `BuildBrief`；
 - 选择要查询的数据库、Phase 4 记忆、图工具、机制资料和 PoB/计算工具；
 - 设计候选职业壳、阶段路线、主技能、机制轴、防御层、资源/Spirit 思路、转型门槛；
@@ -124,31 +136,79 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
 流程：
 
 1. 用户输入自然语言需求。
-2. Agent 判断是否需要追问；如果信息足够，生成更具体的设计提示词或最小 `BuildBrief`。
+2. Agent 先执行阻塞式开荒过程确认：用户选择“需要”进入 progression，选择“不需要”进入普通
+   单阶段 Create；只有请求已明确写明只产出单个目标/最终 BD 时跳过。确认前不启动任何工具。
+   随后再判断是否需要追问其他字段；如果信息足够，生成更具体的设计提示词或最小 `BuildBrief`。
 3. Agent 调用 `scripts/create_build.py start-run` 建立本次运行凭据和唯一产物路径；helper 同时
    初始化已绑定 run、packet 和 prompt 的最小 `agent-output.json` 骨架。
 4. Agent 按需查询研究记忆、图工具、语料库、机制说明、构筑原则和 PoB/计算工具，生成候选概要。
-5. Agent 串行使用现有 PoB/计算工具，把概要落实成真实活动构筑。该状态至少包含职业、升华、
+   精确 Family 查询的首轮 `limit` 只是展开量；Agent 必须阅读
+   `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog`，为 Boss、资源、轮转等
+   职责建立处理表。存在未解决失败 premise 时，继续按 Family、组件、record kind、record ID
+   或失败文本定向查询，直到采用原方案、采用替代方案、判定不适用或明确保留 caveat；不设固定
+   查询或深读额度。
+5. Agent 使用 `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout /
+   passive_delta / required_gear / ordinary_gear / config` 提交已经决定的小型职能事务，再用局部
+   查询/优化工具补足明确缺口。不得把整个 BD 混进一个批次；批次不接受搜索或 optimizer。
+   只有从 `new_build` 开始的 bootstrap 可省略输入 hash，后续事务必须使用上一批输出 hash 做
+   CAS。失败只回滚当前职能事务，只有 `rolledBack=true` 才能确认恢复；否则停止并恢复 session。
+   用这些小事务把候选落实为真实活动构筑。Create 默认禁止 `optimize_build` 与全局被动树重排。
+   该状态至少包含职业、升华、
    等级、主技能与辅助技能、其他技能组、装备、天赋和战斗配置，并能读出属性、抗性、Spirit 与
-   资源状态。程序不替 Agent 自动补全这些内容。
-6. Agent 先调用 `inspect_generation_preflight`。该工具检查 main group、单主动技能、重复 support、
-   完全重复的 enabled skill group、主动宝石等级和 completeness；blocking issue 不应消耗 Judge
-   attempt。主动宝石检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
-7. Agent 调用 `evaluate_generation_candidate`。程序只捕获一次当前 PoB XML；预检与独立 Judge
+   资源状态。程序不替 Agent 自动补全这些内容。`craft_item` 返回 Perfect Essence、符文或
+   腐化效果时，Agent 必须在后续直接或批量 `equip_item` 中原样传入 `craftReceiptRef`；该
+   raw-free receipt 同时绑定 PoB 写回后的语义指纹，不能用于证明被改写的物品。
+6. Agent 先调用 `inspect_generation_checkpoint` v2。该工具按语义 build-state hash 合并
+   completeness、preflight、有界 stats 和 defenses，并分别返回
+   `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
+   `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/
+   武器组天赋预算和来源感知黄装合法性；制作、写入、checkpoint、Judge 和 artifact 保存共用
+   同一物品审计，普通前后缀、Perfect Essence、符文和腐化不会再由两套检查器分别判断。同一状态
+   不重复执行，状态修改后自动形成新检查。主动宝石
+   检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
+7. `evaluate_generation_candidate` 在写可信 Judge receipt 前对同一快照再次运行共享审计。
+   确定性非法或机制结构未闭环时返回 blocker、`attemptConsumed=false` 和当前 attempt count，
+   不启动独立 Judge，也不消耗初始一次加两次 retry。Agent 修正状态后重新 checkpoint。
+8. 预检通过后，程序只捕获一次当前 PoB XML；预检与独立 Judge
    共享这份不可变快照，在独立 Judge
    引擎中运行 Phase 1 Judge，只持久化清洗后的状态引用和评估报告；同一份原始 XML 仅在当前
    MCP 进程内短暂保留，供最终 artifact 保存，既不进入 run 目录，也不进入报告。可信凭据绑定到
    本次 `runId` 与候选编号，同时记录不含原始材料的 `semanticStateHash`。该凭据的可信范围是
    快照和 Judge 结果；版本上下文仍来自 Agent 本次
    freshness/图/记忆查询，不因写入该凭据而自动变成程序签名事实。
-8. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
+9. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
    `validate-output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
    candidate/audit 可以从末轮推导，`memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
-9. `review-packet --compact` 核对 Agent 文件与可信凭据，原子写入完整 `HumanReviewPacket`，仅把
+10. 首个通过 Judge 且通过共享合法性审计的 attempt 成为受保护 passing baseline。Agent 随后仍
+    必须执行一次完整主动质量收尾；新版本更好且合法时选择新 attempt，后续探索回归时可以选择
+    旧 baseline。Judge 分数只作 advisory，Agent 还要结合机制闭环、配置真实性、多技能职责和
+    用户目标决定实际保存轮次。
+11. 对实际选择的 passing attempt 调用
+    `save_final_build_artifact(..., attempt_index=...)`，再进入 review。选择 baseline 不要求当前
+    活动 PoB 仍等于它；即使后续质量状态在 preflight 就失败、没有新增 Judge receipt，也能按活动
+    state hash 已偏离来恢复。但必须仍有当前 MCP 进程内的精确 Judge XML、同 state hash 的合法性回执，并
+    明确声明后续发现只影响 `candidate_delta_only`。若后续发现也影响 baseline、快照在重启后
+    丢失或引用不一致，保存失败关闭。正常顺序不可颠倒；若历史运行误先消费 review，artifact
+    saver 仍必须逐项核对 run token、实际选择的 candidate/attempt、精确 Judge snapshot 和
+    state hash 才允许顺序恢复。Agent 不得删除 review marker、receipt 或运行锁。
+12. `review-packet --compact` 核对 Agent 文件、artifact-selection receipt 与可信凭据，原子写入
+    完整 `HumanReviewPacket`，仅把
    stdout 缩短为最终 Judge、重试差值、生命周期证据覆盖和 `requiredUserDisclosures`。可信快照中
    每个未消失的完整度 advisory 都必须在候选中记录 `deferred` 或 `intentionally_unused` 及理由；
    缺项、候选不一致或评估结果被改写时拒绝验收。
-10. 人工判断候选是否值得继续推进。
+   普通单阶段 Create 与 progression target 共用 Research 使用审计：每个关键失败 premise 都要在
+   `ResearchMemoryUse.premiseDecisions` 中标为 `resolved / caveated / not_applicable`；resolved
+   必须引用本轮 `detail_level="record"` 回执实际深读的解决记录。只在摘要中看到记录 ID、伪造
+   receipt 或遗漏 premise decision 都会拒绝 review。该校验只检查引用和处理记录完整，不替
+   Agent 判断机制结论是否正确。
+   多 attempt 时 `selectedAttemptIndex / artifactSelectionOutcome` 必须来自可信
+   artifact-selection receipt，并同时进入 Human Review 与 retry report；不得用空值回退到
+   最后一轮。单 attempt 与旧版包保持兼容。
+13. 人工判断候选是否值得继续推进。
+
+新生成的 80 级及以上候选必须达到火/冰/电各 60%、非 CI 混沌抗 30%；CI 只豁免混沌抗。
+共享 `inspect_generation_checkpoint` 在正式 Judge 前执行该确定性门槛，失败不消耗 attempt。
+79 级及以下和可信第三方参考仍为 `diagnostic_only`；元素 Max Hit 和其他防御层继续评估。
 
 P5.1 不追求：
 
@@ -378,6 +438,10 @@ P5.3 不做：
   主技能命中。Family 摘要返回 `recordKindCounts`；Agent 可用 `build_family_keys` 和
   `record_kinds` 按支持包、轮转、装备、升华、资源或防御缺口渐进深读，避免固定六条摘要静默
   遗漏新结构。已完成
+- Create 查询使用 `response_profile="create_compact"`：保留全部命中结果，只删除每项中的重复
+  检索字段并提升 `criticalPremiseDigest`；不得按固定数量截断 fragment、record、pattern 或 edge。
+  durable typed receipt 不变，Research 维护流程默认 full 响应不变。这样减少重复字段，同时避免
+  条件、失败场景和验证任务在正向组件列表中失去显著性。已完成
 - Create 将 `supportPackages`、`gearResponsibilities`、`ascendancyResponsibilities` 和
   `resourceMechanisms` 分别转成待验证的辅助候选、装备职责、升华取舍与资源/失效状态，不由程序
   自动拼装 BD。涉及暗金、天赋、触发、转换或资源交互的记忆结论在采用前仍需核对当前静态事实；
@@ -517,6 +581,10 @@ Judge 是参考评估和硬阻断来源的组合。
 - 辅助技能明确不兼容；
 - Spirit 明确超预算；
 - 天赋预算明确超出；
+- 属性需求明确不足；
+- 已装备物品或主动宝石超过角色可用等级；
+- PoB 回读确认主技能与当前武器不兼容；
+- 黄装/魔法装词缀数量或组别明确非法；
 - PoB 导入完全失败；
 - 原始材料安全检查失败；
 - 程序能确定的结构、版本或节点错误。
@@ -557,8 +625,9 @@ Agent 不能用解释覆盖硬阻断；只能给出复核证据、修正候选�
 - `scaffold_gear` 仍可用于中途计算，但所有 `Scaffold ...` 物品必须在最终验收前替换。已完成
 - 药剂、护符、珠宝和符文由 Agent 根据阶段、预算和构筑机制选择；程序只诊断遗漏，不机械塞入
   固定方案。已完成
-- `optimize_item` 和 `plan_gear` 返回候选前复用完整度层的黄装合法性审计；非法候选直接丢弃并
-  返回结构化错误，不再把工具自己生成的装备交给后续 Preflight 否决。已完成
+- `optimize_item` 和 `rank_upgrades` 返回候选前复用同一个全角色 `HardLegalityAudit`；换装造成
+  属性不足、其他装备失效或已装备槽位从 10 个退化为 9 个时，该候选不进入推荐排行，并保留
+  结构化拒绝原因。黄装自身词缀审计仍先执行。已完成
 - 资源续航使用 `ManaCost × Speed` 与回复、偷取、击回比较。存在确定缺口且装备魔力瓶时标为
   `flask_assisted_required`，同时给出每秒缺口、满蓝维持时间和长 Boss 断蓝风险。已完成
 

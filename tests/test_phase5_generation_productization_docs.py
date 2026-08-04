@@ -34,6 +34,8 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "query_research_memory" in skill
     assert 'detail_level="summary"' in skill
     assert 'detail_level="record"' in skill
+    assert 'response_profile="create_compact"' in skill
+    assert "criticalPremiseDigest" in skill
     assert "ascendancy_key" in skill
     assert "primary_skill_key" in skill
     assert "build_family_keys" in skill
@@ -65,8 +67,17 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "optimize_supports" in skill
     assert "plan_gear" in skill
     assert "evaluate_build" in skill
-    assert "inspect_generation_preflight" in skill
+    assert "apply_build_mutation_batch" in skill
+    assert "mechanism_shell" in skill
+    assert "passive_delta" in skill
+    assert "recoveryRequired=true" in skill
+    assert "inspect_generation_checkpoint" in skill
+    assert "diagnostic_only" in skill
     assert "evaluate_generation_candidate" in skill
+    assert "strict_mode=false" in skill
+    assert "strict_mode=true" in skill
+    assert "feedbackMode" in skill
+    assert "hard_only" in skill
     assert "不要用" in skill
     assert "冒充正式 Judge" in skill
     assert "人工验收包" in skill
@@ -89,7 +100,13 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "lifecycleEvidenceCoverage" in skill
     assert "HumanReviewPacket" in skill
     assert "无参数" in skill
-    assert "先询问" in skill
+    assert "否则必须先问" in skill
+    assert "是否产出开荒过程 BD" in skill
+    assert "只产出一个固定目标 BD" in skill
+    assert "在用户回答前" in skill
+    assert "不得调用 freshness" in skill
+    assert "用户已经在当前对话中回答过" in skill
+    assert "referenceBlind=true" in skill
     assert "普通用户不需要手动运行脚本" in skill
     assert "scripts\\create_build.py review-packet" in skill
     assert "--run-id" in skill
@@ -103,7 +120,7 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "设计判断" in skill
     assert "工具验证结论" in skill
     assert "完整技能连接" not in skill
-    assert "Phase" not in skill
+    assert "bind_build_progression_target_run" in skill
     assert "P5" not in skill
     assert "程序化解释器" not in skill
     assert "旧的" not in skill
@@ -128,11 +145,23 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "可信凭据" in phase5
     assert "独立 Judge" in phase5
     assert "evaluate_generation_candidate" in phase5
-    assert "inspect_generation_preflight" in phase5
+    assert "strict_mode=false" in phase5
+    assert "apply_build_mutation_batch" in phase5
+    assert "required_gear" in phase5
+    assert "rolledBack=true" in phase5
+    assert "inspect_generation_checkpoint" in phase5
+    assert "保存 artifact" in phase5
+    assert "review marker" in phase5
+    assert "diagnostic_only" in phase5
     assert "validate-output" in phase5
     assert "LifecycleEvidenceCoverage" in phase5
     assert "设计判断和工具验证结论" in phase5
     assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
+    assert "familyRecordCoverage" in phase5
+    assert "familyRecordIndex" in phase5
+    assert "familyPremiseCatalog" in phase5
+    assert "premiseDecisions" in phase5
+    assert 'detail_level="record"' in phase5
     assert "no_matching_memory" in phase5
     assert "/poe-bd-create" in guide
     assert "Agent-led prototype" in guide
@@ -142,19 +171,31 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "every PoB/compute tool sequentially" in guide
     assert "testedSkillGroups" in guide
     assert "evaluate_generation_candidate" in guide
-    assert "inspect_generation_preflight" in guide
+    assert "strict_mode=false" in guide
+    assert "hard-only" in guide
+    assert "apply_build_mutation_batch" in guide
+    assert "Do not mix the whole build into one transaction" in guide
+    assert "recoveryRequired=true" in guide
+    assert "`rolledBack=true`" in guide
+    assert "inspect_generation_checkpoint" in guide
+    assert "diagnostic_only" in guide
     assert "validate-output" in guide
     assert "lifecycleEvidenceCoverage" in guide
     assert "trusted receipt" in guide
     assert "progressive research recall" in guide
+    assert "Before any ordinary `/poe-bd-create` tool call" in guide
+    assert "one fixed target/final build without progression" in guide
+    assert "Do not call freshness, Research" in guide
     assert "recordKindCounts" in guide
     assert "successful component resolution proves existence" in guide
+    assert 'response_profile="create_compact"' in guide
     assert "researchMemoryUse" in guide
     assert "physical graph, and corpus override patch-sensitive prose" in guide
     assert "/poe-bd-create" in readme
     assert "Phase 5 Agent 主导生成原型" in readme
     assert "review-packet" in readme
     assert "start-run" in readme
+    assert "strict_mode=false" in readme
     assert "evaluate_generation_candidate" in readme
 
     for manifest in (
@@ -219,6 +260,8 @@ def test_phase5_distribution_includes_generation_runtime_contracts():
         "query_research_memory",
         "graph_tool_query",
         "suggest_build_lifecycle",
+        "apply_build_mutation_batch",
         "inspect_generation_preflight",
+        "inspect_generation_checkpoint",
         "evaluate_generation_candidate",
     }.issubset(tool_names)

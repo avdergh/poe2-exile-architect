@@ -363,7 +363,7 @@ def test_verify_stage_metrics_does_not_infer_sustain_from_mana_pool_multiple():
         "maps_entry",
         stats={"TotalDPS": 20000, "Life": 1200, "Mana": 40, "ManaCost": 80},
         defenses={
-            "resistances": {"fire": 55, "cold": 76, "lightning": 70},
+            "resistances": {"fire": 45, "cold": 76, "lightning": 70},
             "totalEHP": 2400,
         },
     )
@@ -533,7 +533,7 @@ def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():
         "maps_entry",
         stats={"Life": 1200, "Mana": 40, "ManaCost": 80},
         defenses={
-            "resistances": {"fire": 55, "cold": 76, "lightning": 70},
+            "resistances": {"fire": 45, "cold": 76, "lightning": 70},
             "totalEHP": 2400,
         },
     )
@@ -542,6 +542,67 @@ def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():
     assert "resist" in joined
     assert "sustain" in joined or "mana" in joined
     assert "transition" in joined
+
+
+@pytest.mark.parametrize(
+    ("level", "minimum"),
+    [
+        (44, None),
+        (45, 30.0),
+        (64, 30.0),
+        (65, 50.0),
+        (79, 50.0),
+        (80, 60.0),
+        (89, 60.0),
+        (90, None),
+    ],
+)
+def test_lifecycle_elemental_resistance_floor_uses_actual_level_boundaries(level, minimum):
+    from server.knowledge import lifecycle_verification
+
+    resistance = minimum if minimum is not None else 0
+    result = lifecycle_verification.verify_stage_metrics(
+        # Deliberately keep the same stage label: the evaluated level, not the label, owns the band.
+        "maps_entry",
+        stats={"Life": 2600},
+        defenses={
+            "resistances": {
+                "fire": resistance,
+                "cold": resistance,
+                "lightning": resistance,
+            },
+            "totalEHP": 12000,
+        },
+        state={"level": level},
+    )
+
+    check = next(row for row in result["checks"] if row["check"] == "resists_capped")
+    assert check["target"] == minimum
+    assert check["status"] == ("not_applicable" if minimum is None else "passed")
+
+
+@pytest.mark.parametrize(("level", "minimum"), [(45, 30), (65, 50), (80, 60)])
+def test_lifecycle_elemental_resistance_floor_blocks_one_point_below(level, minimum):
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={"Life": 2600},
+        defenses={
+            "resistances": {
+                "fire": minimum - 1,
+                "cold": minimum,
+                "lightning": minimum,
+            },
+            "totalEHP": 12000,
+        },
+        state={"level": level},
+    )
+
+    check = next(row for row in result["checks"] if row["check"] == "resists_capped")
+    assert check["status"] == "failed"
+    assert check["target"] == minimum
+    assert "resists_capped" in result["failedChecks"]
 
 
 def test_verify_stage_metrics_returns_actions_for_unknown_endgame_checks():

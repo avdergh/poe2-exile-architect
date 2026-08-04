@@ -242,6 +242,29 @@ accept gate 负责解析稳定 ID。`skill_package`、`mechanic_chain`、`rotati
 `data/compatibility/pob.json` 和发布 runtime；来源案例没有声明版本或 worker 提交 `unknown` 时按应用
 当前值处理，只有显式提交不在兼容清单中的版本才拒绝。
 
+## Create 精确 Family 召回合同
+
+Family discovery 仍只返回适合比较的轻量摘要。`supportingRecordIds` 不是简单取 evidence 排名前几
+条，而是优先覆盖 `mechanic_chain / rotation / resource_engine / failure_mode` 等不同机制职责，
+避免高证据的装备记录把关键轮转或失败场景完全挤出候选摘要。
+
+选中 Family 后，`query_research_memory` 的 `limit` 只表示首轮展开多少条记录。服务端不能再把
+调用方请求暗中缩小为六条记录或六条关联上下文。精确 Family 响应还必须返回：
+
+- `familyRecordCoverage`：当前精确版本下合格记录总数、已展开数量、各 record kind 数量和是否完整；
+- `familyRecordIndex`：本轮未展开记录的安全索引，包含 ID、类型、标题、摘要和稳定组件 key；
+- `familyPremiseCatalog`：`mechanic_chain / rotation / resource_engine / failure_mode` 中的条件与
+  失败条件，每项使用稳定 `premiseId`；
+- `premiseAuditVersion`：当前前提审计合同版本。
+
+调用方可以先用 coverage/index 发现缺口，再按同一 Family、组件 key、record kind、record ID 或
+失败文本继续定向查询；不设置总查询次数或深读条数上限。作为解决方案采用的深度记录必须通过
+`detail_level="record"` 真正读过，摘要中只看到 ID 不算采用。
+
+typed query receipt 的 `result_contract` 保存本轮 `familyRecordCoverage`、
+`familyPremiseCatalog`、`premiseAuditVersion` 和实际 `deepReadRecordIds`。这样后续 Create 审计
+依据的是查询当时的安全快照，不会因数据库后来新增、修订或失效记录而改变已经完成的运行。
+
 ## Legacy 兼容
 
 旧脚本 `scripts/run_phase45_researcher_batch.py` 和

@@ -469,6 +469,51 @@ def test_agent_reported_judge_result_still_requires_human_review():
     assert packet["judgeAdvisoryReport"]["evaluatedSourceHash"] == "sha256:abc123"
 
 
+def test_hard_only_judge_review_asks_about_legality_not_subjective_caveats():
+    payload = agent_submission_payload()
+    payload["transientBuildState"] = {
+        "status": "available",
+        "snapshot_id": "snapshot:runtime:hard-only",
+        "source_hash": "sha256:hard-only",
+        "safe_summary": {"class": "Ranger", "level": "80"},
+        "tested_skill_groups": [
+            {
+                "role": "pob_main_group",
+                "active_skill": "Lightning Arrow",
+                "supports": ["Martial Tempo"],
+                "enabled": True,
+            }
+        ],
+        "missing_reasons": [],
+        "version_context": version_context(),
+        "no_raw_material": True,
+    }
+    payload["judgeAdvisoryReport"] = {
+        "report_id": "judge:evaluated:hard-only",
+        "status": "evaluated",
+        "feedback_mode": "hard_only",
+        "subjective_feedback_suppressed": True,
+        "hard_failures": [],
+        "evaluated_snapshot_id": "snapshot:runtime:hard-only",
+        "evaluated_source_hash": "sha256:hard-only",
+        "passed": True,
+        "version_context": version_context(),
+        "no_raw_material": True,
+    }
+
+    result = prototype.validate_and_build_human_review_packet(
+        payload,
+        trusted_evaluation=True,
+    )
+
+    assert result["status"] == "accepted"
+    packet = result["humanReviewPacket"]
+    assert packet["judgeAdvisoryReport"]["feedbackMode"] == "hard_only"
+    assert packet["judgeAdvisoryReport"]["aggregateScore"] is None
+    assert "hardLegalityEvidenceReasonable" in packet["humanReviewFields"]
+    assert "judgeCaveatReasonable" not in packet["humanReviewFields"]
+
+
 def test_trusted_completeness_advisories_require_explicit_candidate_disclosures():
     payload = agent_submission_payload()
     payload["transientBuildState"] = {

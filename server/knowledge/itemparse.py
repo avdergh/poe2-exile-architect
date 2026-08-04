@@ -8,8 +8,10 @@ ranges are looked-up corpus facts — to see how an item affects a build, equip 
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
 
 from . import db
@@ -26,6 +28,10 @@ _STOP = {"to", "of", "the", "a", "an", "and", "per", "with", "you", "your", "is"
 # Affix-kind markers the game appends, e.g. "... (implicit)".
 _MARKER = re.compile(
     r"\((implicit|crafted|fractured|enchant|rune|scourge|veiled|desecrated)\)\s*$", re.I
+)
+_PREFIX_MARKER = re.compile(
+    r"^\{(implicit|crafted|fractured|enchant|rune|scourge|veiled|desecrated)\}",
+    re.I,
 )
 
 # Max prefixes/suffixes by rarity (PoE2). Uniques have fixed mods (no craftable slots).
@@ -225,6 +231,123 @@ def _header(lines: list[str]) -> dict[str, Any]:
     return info
 
 
+def line_fingerprint(text: str) -> str:
+    """Return an exact-roll, whitespace-stable fingerprint for one item effect line."""
+
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def semantic_item_structure(text: str) -> dict[str, Any]:
+    """Parse the structural sources in PoB item text without persisting the raw text."""
+
+    lines = [line.rstrip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
+    stripped = [line.strip() for line in lines]
+    info = _header(stripped)
+    effects = _structured_effect_lines(lines, info)
+    rune_names = [
+        value for line in stripped if (value := _property_value(line, r"^Rune:\s*(.+)")) is not None
+    ]
+    socket_line = next(
+        (
+            value
+            for line in stripped
+            if (value := _property_value(line, r"^Sockets:\s*(.*)")) is not None
+        ),
+        "",
+    )
+    corrupted = any(line.casefold() == "corrupted" for line in stripped)
+    canonical = {
+        "schemaVersion": 1,
+        "rarity": str(info.get("rarity") or "").strip().casefold(),
+        "base": str(info.get("base") or "").strip().casefold(),
+        "itemLevel": info.get("itemLevel"),
+        "corrupted": corrupted,
+        "runeSockets": sum(1 for token in socket_line.split() if token == "S"),
+        "runeNames": sorted(re.sub(r"\s+", " ", name).strip().casefold() for name in rune_names),
+        "effects": sorted(
+            [
+                {
+                    "kind": str(entry["kind"]),
+                    "lineFingerprint": line_fingerprint(str(entry["text"])),
+                }
+                for entry in effects
+            ],
+            key=lambda entry: (entry["kind"], entry["lineFingerprint"]),
+        ),
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "rarity": info.get("rarity"),
+        "base": info.get("base"),
+        "itemLevel": info.get("itemLevel"),
+        "corrupted": corrupted,
+        "runeSockets": canonical["runeSockets"],
+        "runeNames": rune_names,
+        "effects": [
+            {
+                **entry,
+                "lineFingerprint": line_fingerprint(str(entry["text"])),
+            }
+            for entry in effects
+        ],
+        "itemFingerprint": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _structured_effect_lines(
+    lines: list[str],
+    info: dict[str, Any],
+) -> list[dict[str, str]]:
+    stripped = [line.strip() for line in lines]
+    implicit_indices: set[int] = set()
+    remaining = 0
+    for index, value in enumerate(stripped):
+        match = re.match(r"^Implicits:\s*(\d+)\s*$", value, re.IGNORECASE)
+        if match:
+            remaining = int(match.group(1))
+            continue
+        if remaining and value and set(value) != {"-"}:
+            implicit_indices.add(index)
+            remaining -= 1
+
+    skip = {str(info.get("name") or ""), str(info.get("base") or "")}
+    output: list[dict[str, str]] = []
+    for index, raw_line in enumerate(lines):
+        value = raw_line.strip()
+        if not value or set(value) == {"-"} or value in skip:
+            continue
+        if value.casefold() == "corrupted":
+            continue
+
+        kind = "implicit" if index in implicit_indices else "explicit"
+        prefix = _PREFIX_MARKER.match(value)
+        if prefix:
+            kind = prefix.group(1).lower()
+            value = _PREFIX_MARKER.sub("", value).strip()
+        suffix = _MARKER.search(value)
+        if suffix:
+            kind = suffix.group(1).lower()
+            value = _MARKER.sub("", value).strip()
+
+        if index not in implicit_indices and ":" in value and prefix is None and suffix is None:
+            continue
+        if not value:
+            continue
+        output.append({"text": value, "kind": kind})
+    return output
+
+
+def _property_value(line: str, pattern: str) -> str | None:
+    match = re.match(pattern, line, re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
 def parse_item(text: str) -> dict[str, Any]:
     """Parse + enrich an item's clipboard/PoB text. Returns affix tiers and open slots."""
     if not (text or "").strip():
@@ -233,18 +356,9 @@ def parse_item(text: str) -> dict[str, Any]:
     info = _header([ln.strip() for ln in lines])
     rarity = (info.get("rarity") or "").lower()
 
-    skip = {info.get("name"), info.get("base")}
-    affix_lines: list[tuple[str, str]] = []
-    for ln in lines:
-        s = ln.strip()
-        if not s or set(s) == {"-"} or ":" in s or s in skip:
-            continue  # separators, properties/requirements, and the name/base lines
-        kind = "explicit"
-        mk = _MARKER.search(s)
-        if mk:
-            kind = mk.group(1).lower()
-            s = _MARKER.sub("", s).strip()
-        affix_lines.append((s, kind))
+    affix_lines = [
+        (str(entry["text"]), str(entry["kind"])) for entry in _structured_effect_lines(lines, info)
+    ]
 
     # Some real PoE2 affixes are two or three display lines backed by one mod group.  Parsing each
     # line independently can turn one legal hybrid prefix into two prefixes (or assign a sub-line
@@ -278,7 +392,12 @@ def parse_item(text: str) -> dict[str, Any]:
             unrecognized.append(matched_text)
             index += 1
             continue
-        entry = {"text": matched_text, "kind": matched_kind, **info_affix}
+        entry = {
+            "text": matched_text,
+            "kind": matched_kind,
+            "lineFingerprint": line_fingerprint(matched_text),
+            **info_affix,
+        }
         affixes.append(entry)
         if matched_kind not in _NON_AFFIX:
             if info_affix["type"] == "prefix":
@@ -313,8 +432,14 @@ def parse_item(text: str) -> dict[str, Any]:
     return out
 
 
-def audit_item_legality(text: str) -> dict[str, Any]:
-    """Audit deterministic rare/magic affix constraints without exposing raw item text."""
+def audit_item_legality(
+    text: str,
+    *,
+    trusted_provenance: dict[str, Any] | None = None,
+    require_special_provenance: bool = False,
+) -> dict[str, Any]:
+    """Audit rare/magic item legality with optional PoB-issued special-source evidence."""
+
     parsed = parse_item(text)
     if not parsed.get("ok"):
         return {"ok": False, "issues": ["item_parse_failed"]}
@@ -322,10 +447,109 @@ def audit_item_legality(text: str) -> dict[str, Any]:
     if rarity not in {"rare", "magic"}:
         return {"ok": True, "issues": []}
 
-    issues: list[str] = []
+    structure = semantic_item_structure(text)
+    provenance = trusted_provenance if isinstance(trusted_provenance, dict) else None
+    source_issues: list[str] = []
+    sources = provenance.get("sources") if provenance is not None else None
+    if not isinstance(sources, dict):
+        sources = {}
+    accepted_fingerprints = (
+        {str(value) for value in (provenance.get("acceptedItemFingerprints") or []) if value}
+        if provenance is not None
+        else set()
+    )
+    if provenance is not None and not accepted_fingerprints:
+        accepted_fingerprints = {str(provenance.get("itemFingerprint") or "")}
+    if provenance is not None and structure["itemFingerprint"] not in accepted_fingerprints:
+        source_issues.append("craft_receipt_item_mismatch")
+
+    essence_entries = [
+        entry for entry in (sources.get("perfectEssences") or []) if isinstance(entry, dict)
+    ]
+    essence_hashes = {
+        str(entry.get("lineFingerprint") or "")
+        for entry in essence_entries
+        if entry.get("lineFingerprint")
+    }
+    effects = [entry for entry in structure.get("effects") or [] if isinstance(entry, dict)]
+    all_effect_hashes = [str(entry.get("lineFingerprint") or "") for entry in effects]
+    rune_hashes = sorted(
+        str(entry.get("lineFingerprint") or "") for entry in effects if entry.get("kind") == "rune"
+    )
+    if essence_hashes - set(all_effect_hashes):
+        source_issues.append("craft_receipt_essence_effect_missing")
+
+    receipt_runes = [entry for entry in (sources.get("runes") or []) if isinstance(entry, dict)]
+    receipt_rune_hashes = sorted(
+        str(fingerprint)
+        for entry in receipt_runes
+        for fingerprint in (entry.get("lineFingerprints") or [])
+    )
+    canonical_receipt_rune_hashes = sorted(
+        str(fingerprint) for fingerprint in (sources.get("canonicalRuneLineFingerprints") or [])
+    )
+    receipt_rune_names = sorted(
+        str(entry.get("name") or "").strip().casefold() for entry in receipt_runes
+    )
+    actual_rune_names = sorted(
+        str(name).strip().casefold() for name in structure.get("runeNames") or []
+    )
+    original_runes_match = all(
+        count <= Counter(all_effect_hashes)[fingerprint]
+        for fingerprint, count in Counter(receipt_rune_hashes).items()
+    )
+    canonical_runes_match = bool(canonical_receipt_rune_hashes) and all(
+        count <= Counter(all_effect_hashes)[fingerprint]
+        for fingerprint, count in Counter(canonical_receipt_rune_hashes).items()
+    )
+    if provenance is not None and (
+        (receipt_runes and not (original_runes_match or canonical_runes_match))
+        or (actual_rune_names and actual_rune_names != receipt_rune_names)
+    ):
+        source_issues.append("craft_receipt_rune_mismatch")
+
+    corruption = sources.get("corruption")
+    if corruption is not None and not isinstance(corruption, dict):
+        source_issues.append("craft_receipt_corruption_invalid")
+        corruption = None
+    if isinstance(corruption, dict):
+        corruption_hash = str(corruption.get("lineFingerprint") or "")
+        if (
+            not corruption_hash
+            or corruption_hash not in set(all_effect_hashes)
+            or structure.get("corrupted") is not True
+        ):
+            source_issues.append("craft_receipt_corruption_mismatch")
+    elif provenance is not None and structure.get("corrupted"):
+        source_issues.append("craft_receipt_corruption_missing")
+
+    has_structural_special = bool(rune_hashes or structure.get("corrupted"))
+    if provenance is None and require_special_provenance and has_structural_special:
+        source_issues.append("special_source_provenance_required")
+
+    receipt_corruption_hash = (
+        str(corruption.get("lineFingerprint") or "") if isinstance(corruption, dict) else ""
+    )
+    special_non_affix_hashes = {
+        *receipt_rune_hashes,
+        *canonical_receipt_rune_hashes,
+        *([receipt_corruption_hash] if receipt_corruption_hash else []),
+    }
+    all_source_hashes = essence_hashes | special_non_affix_hashes
+
+    issues: list[str] = list(source_issues)
     limits = _AFFIX_LIMITS[rarity]
-    prefixes = int(parsed.get("prefixes") or 0)
-    suffixes = int(parsed.get("suffixes") or 0)
+    parsed_affixes = [
+        affix
+        for affix in (parsed.get("affixes") or [])
+        if isinstance(affix, dict)
+        and affix.get("kind") not in _NON_AFFIX
+        and str(affix.get("lineFingerprint") or "") not in all_source_hashes
+    ]
+    prefixes = sum(1 for affix in parsed_affixes if affix.get("type") == "prefix")
+    suffixes = sum(1 for affix in parsed_affixes if affix.get("type") == "suffix")
+    prefixes += sum(1 for entry in essence_entries if entry.get("affixType") == "prefix")
+    suffixes += sum(1 for entry in essence_entries if entry.get("affixType") == "suffix")
     if prefixes > limits[0]:
         issues.append("prefix_limit_exceeded")
     if suffixes > limits[1]:
@@ -334,13 +558,18 @@ def audit_item_legality(text: str) -> dict[str, Any]:
     groups: dict[str, int] = defaultdict(int)
     item_level = parsed.get("itemLevel")
     over_item_level: list[dict[str, Any]] = []
-    for affix in parsed.get("affixes") or []:
-        if affix.get("kind") in _NON_AFFIX:
-            continue
+    for affix in parsed_affixes:
         group = str(affix.get("group") or "").strip()
         if group:
             groups[group] += 1
         required = affix.get("requiredLevel")
+        if isinstance(item_level, int) and isinstance(required, int) and required > item_level:
+            over_item_level.append({"group": group or "unknown", "requiredLevel": required})
+    for entry in essence_entries:
+        group = str(entry.get("group") or "").strip()
+        if group:
+            groups[group] += 1
+        required = entry.get("requiredLevel")
         if isinstance(item_level, int) and isinstance(required, int) and required > item_level:
             over_item_level.append({"group": group or "unknown", "requiredLevel": required})
     duplicate_groups = sorted(group for group, count in groups.items() if count > 1)
@@ -350,27 +579,33 @@ def audit_item_legality(text: str) -> dict[str, Any]:
         issues.append("affix_item_level_requirement_unmet")
     out_of_range = [
         str(affix.get("group") or "unknown")
-        for affix in parsed.get("affixes") or []
-        if affix.get("kind") not in _NON_AFFIX and affix.get("tier") is None
+        for affix in parsed_affixes
+        if affix.get("tier") is None
     ]
     if out_of_range:
         issues.append("affix_roll_outside_known_tiers")
 
     base = str(parsed.get("base") or "").strip()
-    explicit_affix_lines = [
-        line
-        for affix in parsed.get("affixes") or []
-        if affix.get("kind") not in _NON_AFFIX
-        for line in str(affix.get("text") or "").splitlines()
-        if line
+    natural_explicit_lines = [
+        str(entry.get("text") or "")
+        for entry in effects
+        if entry.get("kind") == "explicit"
+        and str(entry.get("lineFingerprint") or "") not in all_source_hashes
+        and str(entry.get("text") or "")
     ]
     base_illegal = (
-        db.illegal_affixes(base, explicit_affix_lines) if base and explicit_affix_lines else []
+        db.illegal_affixes(base, natural_explicit_lines) if base and natural_explicit_lines else []
     )
     if base_illegal:
         issues.append("affix_not_allowed_on_base")
 
-    return {
+    unrecognized = [
+        value
+        for value in (parsed.get("unrecognized") or [])
+        if line_fingerprint(str(value)) not in all_source_hashes
+    ]
+    issues = list(dict.fromkeys(issues))
+    result = {
         "ok": not issues,
         "issues": issues,
         "prefixes": prefixes,
@@ -379,5 +614,20 @@ def audit_item_legality(text: str) -> dict[str, Any]:
         "overItemLevelAffixes": over_item_level,
         "outOfRangeGroups": out_of_range,
         "baseIllegalAffixCount": len(base_illegal),
-        "unrecognizedAffixCount": len(parsed.get("unrecognized") or []),
+        "unrecognizedAffixCount": len(unrecognized),
     }
+    if provenance is not None:
+        result["craftReceiptRef"] = provenance.get("receiptRef")
+        result["provenanceStatus"] = "verified" if not source_issues else "rejected"
+        result["specialSources"] = {
+            "perfectEssenceCount": len(essence_entries),
+            "runeCount": len(receipt_runes),
+            "corruptionVerified": isinstance(corruption, dict),
+        }
+    elif has_structural_special:
+        result["provenanceStatus"] = "unverified"
+        result["unverifiedSpecialSources"] = [
+            *([] if not rune_hashes else ["rune"]),
+            *([] if not structure.get("corrupted") else ["corruption"]),
+        ]
+    return result

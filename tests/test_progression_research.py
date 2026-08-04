@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from server import paths
 from server.generation import progression_research
 
@@ -26,6 +29,17 @@ def _claim(source_refs: list[str]) -> dict[str, object]:
         "levelMax": 30,
         "summary": "Use the resolved early lightning package.",
         "componentKeys": ["skill:early-lightning"],
+        "skillRoles": [
+            {
+                "componentKey": "skill:early-lightning",
+                "skillName": "Early Lightning",
+                "duties": ["clear", "boss"],
+                "provides": ["reliable campaign damage"],
+                "requires": ["a compatible weapon"],
+            }
+        ],
+        "applicabilityConditions": ["The skill is available in this level band."],
+        "exclusionConditions": [],
         "sourceRefs": source_refs,
         "verificationTasks": ["Resolve the gem and verify the stage in PoB."],
     }
@@ -139,6 +153,43 @@ def test_aggregator_alone_is_limited_and_cross_season_is_rejected(tmp_path, monk
     assert "starterResearchPacket" not in cross_season
 
 
+def test_pre_role_schema_cache_requires_revalidation(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    accepted = progression_research.intake_starter_research_packet(
+        _packet([_source("source:legacy-cache", "https://guides.example/legacy")]),
+        version_context=VERSION,
+    )
+    assert accepted["starterResearchPacket"]["packetSchemaVersion"] == 2
+    cache_path = next(paths.starter_research_cache_dir().glob("*.json"))
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    payload["packetSchemaVersion"] = 1
+    payload["claims"][0]["skillRoles"] = []
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    stale = progression_research.lookup_starter_research_cache(
+        base_class="Monk",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert stale["status"] == "stale"
+    assert stale["cacheStatus"] == "starter_role_schema_revalidation_required"
+    assert stale["mayAdoptWithoutRevalidation"] is False
+
+
+def test_v2_cache_rejects_skill_package_without_structured_roles(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    accepted = progression_research.intake_starter_research_packet(
+        _packet([_source("source:v2-cache", "https://guides.example/v2")]),
+        version_context=VERSION,
+    )
+    payload = accepted["starterResearchPacket"]
+    payload["claims"][0]["skillRoles"] = []
+
+    with pytest.raises(ValidationError, match="structured skill roles"):
+        progression_research.StarterResearchPacket.model_validate(payload)
+
+
 def test_current_patch_creator_guide_can_support_but_claim_ids_and_ranges_are_bounded(
     tmp_path, monkeypatch
 ):
@@ -173,6 +224,39 @@ def test_current_patch_creator_guide_can_support_but_claim_ids_and_ranges_are_bo
         version_context=VERSION,
     )
     assert rejected_range["errorCode"] == "invalid_starter_research_packet"
+
+
+def test_starter_skill_claim_preserves_bounded_roles_and_payoff_premises(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    payload = _packet([_source("source:role-guide", "https://guides.example/roles")])
+    payload["claims"][0]["skillRoles"] = [
+        {
+            "componentKey": "skill:early-lightning",
+            "skillName": "Early Lightning",
+            "duties": ["clear", "payoff"],
+            "provides": ["area damage"],
+            "requires": ["a separate reliable setup skill"],
+        }
+    ]
+    payload["claims"][0]["applicabilityConditions"] = [
+        "The setup skill is available in the claimed level band."
+    ]
+    payload["claims"][0]["exclusionConditions"] = [
+        "Do not use the payoff skill as the only setup source."
+    ]
+
+    accepted = progression_research.intake_starter_research_packet(
+        payload,
+        version_context=VERSION,
+    )
+
+    claim = accepted["starterResearchPacket"]["claims"][0]
+    assert claim["skillRoles"][0]["duties"] == ["clear", "payoff"]
+    assert claim["skillRoles"][0]["requires"] == ["a separate reliable setup skill"]
+    assert claim["exclusionConditions"]
 
 
 def test_offline_inference_is_safe_and_raw_web_fields_fail_closed(tmp_path, monkeypatch):

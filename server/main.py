@@ -10,13 +10,17 @@ assistant-facing operating guide via the MCP `instructions` channel.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
+import time
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from . import paths
 from . import scaffold
@@ -32,6 +36,7 @@ from .compute import buildopt
 from .compute import craftopt
 from .compute import completeness
 from .compute import itemopt
+from .compute import mutation_batch
 from .compute import passiveopt
 from .compute import skillgroups
 from .compute import solver
@@ -40,6 +45,7 @@ from .compute import supportopt
 from .compute.pob_code import PobCodeError, decode_code, encode_code, is_link, to_xml
 from .knowledge import advice
 from .knowledge import db as corpus
+from .knowledge import item_legality
 from .knowledge import itemparse
 from .knowledge import lifecycle
 from .knowledge import lifecycle_eval
@@ -63,21 +69,24 @@ from .generation import delivery as generation_delivery
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
 from .generation import progression as generation_progression
+from .generation import progression_context as generation_progression_context
 from .generation import progression_costs as generation_progression_costs
-from .generation import progression_delivery as generation_progression_delivery
 from .generation import progression_lifecycle as generation_progression_lifecycle
 from .generation import progression_models as generation_progression_models
 from .generation import progression_research as generation_progression_research
 from .generation import progression_service as generation_progression_service
+from .generation import validation_checkpoint as generation_validation_checkpoint
 from .judge import evaluator as judge_evaluator
 from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
+from .runtime import tool_telemetry
 
-# Operating guide handed to the LLM client (surfaced as "MCP Server Instructions").
-# Sourced from a bundled markdown file so it's both human-editable and actually delivered;
-# falls back to a one-liner if the file is ever missing so the server never fails to boot.
-_GUIDE = Path(__file__).with_name("ASSISTANT_GUIDE.md")
+# Keep MCP bootstrap instructions intentionally small.  The complete runtime guide remains the
+# human-maintained source of truth, while skills load only the workflow references they need.
+# Deferred tool discovery may repeat MCP instructions, so sending the full guide here causes severe
+# context amplification during multi-stage Create.
+_GUIDE = Path(__file__).with_name("MCP_BOOTSTRAP.md")
 try:
     _INSTRUCTIONS: str | None = _GUIDE.read_text(encoding="utf-8")
 except OSError:
@@ -93,6 +102,9 @@ _session_call_gate = SessionCallGate()
 
 class _SessionIsolatedFastMCP(FastMCP):
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        started = time.perf_counter()
+        result: Any = None
+        failed = False
         try:
             session = self.get_context().session
         except ValueError:
@@ -100,10 +112,22 @@ class _SessionIsolatedFastMCP(FastMCP):
         token = set_current_session(session)
         try:
             if name == "apply_updates":
-                return await super().call_tool(name, arguments)
-            async with _session_call_gate.hold(session):
-                return await super().call_tool(name, arguments)
+                result = await super().call_tool(name, arguments)
+            else:
+                async with _session_call_gate.hold(session):
+                    result = await super().call_tool(name, arguments)
+            return result
+        except Exception:
+            failed = True
+            raise
         finally:
+            tool_telemetry.record_tool_call(
+                tool_name=name,
+                arguments=arguments,
+                result=result,
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+                failed=failed,
+            )
             reset_current_session(token)
 
 
@@ -544,59 +568,133 @@ def list_config_options(query: str = "", limit: int = 60) -> dict[str, Any]:
     return get_engine().list_config_options(query=query, limit=limit)
 
 
-def _base_and_affixes(raw: str) -> tuple[str | None, list[str], bool]:
-    """From raw PoB item text, return (recognized base name, candidate affix lines, is_unique).
-
-    Base = the first header line (before the first dashed divider) that resolves to a real corpus
-    base. Affixes = the body lines after it. Permissive: non-mod lines are harmless because the
-    legality check only flags lines that match a real craftable mod.
-    """
-    lines = raw.splitlines()
-    div = next((i for i, ln in enumerate(lines) if ln.strip() and set(ln.strip()) == {"-"}), None)
-    header = lines[:div] if div is not None else lines[:3]
-    body = lines[div + 1 :] if div is not None else lines[3:]
-    is_unique = any(ln.strip().lower().startswith("rarity: unique") for ln in header)
-    base = None
-    for ln in header:
-        s = ln.strip()
-        if not s or s.lower().startswith("rarity:"):
-            continue
-        if corpus.get_item(s):
-            base = s
-            break
-    affixes = [ln.strip() for ln in body if ln.strip() and set(ln.strip()) != {"-"}]
-    return base, affixes, is_unique
-
-
 @mcp.tool()
-def equip_item(raw: str, slot: str | None = None) -> dict[str, Any]:
+def equip_item(
+    raw: str,
+    slot: str | None = None,
+    craft_receipt_ref: str | None = None,
+) -> dict[str, Any]:
     """Equip an item on the active build from raw Path of Building item text.
 
     Replaces whatever is currently in the target slot. `slot` optionally forces the slot; otherwise
     the item's primary slot is used — which for a PAIRED slot is the first one, so pass an explicit
     `slot` for "Ring 2"/"Weapon 2" or it silently overwrites Ring 1/Weapon 1. Returns updated stats.
 
+    Items returned by `craft_item` can contain Perfect-Essence, rune, or corrupted effects outside
+    the ordinary affix pool. Pass that result's `craftReceiptRef` unchanged so the same source-aware
+    legality receipt can be verified after PoB normalizes the item text.
+
     Hand-written items are checked against the real mod pool: if an affix can't roll on the base
     type (e.g. flat/`%` maximum Mana on a body armour), the result carries `illegalAffixes` + a
     `legalityWarning` — the computed stats then include invented mods and aren't achievable. Ground
     gear in real mods (`optimize_item`, `parse_item`, `search_mods`) to avoid this.
     """
+    legality = item_legality.audit_item(
+        raw,
+        craft_receipt_ref=craft_receipt_ref,
+        slot=slot,
+        require_special_provenance=True,
+    )
+    if craft_receipt_ref is not None and not legality.get("ok"):
+        return {
+            "ok": False,
+            "errorCode": "item_legality_check_failed",
+            "legalityCheck": legality,
+        }
+    if "special_source_provenance_required" in (legality.get("issues") or []):
+        return {
+            "ok": False,
+            "errorCode": "special_source_provenance_required",
+            "legalityCheck": legality,
+        }
     res = get_engine().add_item(raw, slot=slot)
+    return _annotate_item_legality(
+        res,
+        raw,
+        craft_receipt_ref=craft_receipt_ref,
+        slot=slot,
+        legality=legality,
+    )
+
+
+def _annotate_item_legality(
+    result: dict[str, Any],
+    raw: str,
+    *,
+    craft_receipt_ref: str | None = None,
+    slot: str | None = None,
+    legality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    res = result
     try:
-        base, affixes, is_unique = _base_and_affixes(raw)
-        if base and not is_unique:
-            bad = corpus.illegal_affixes(base, affixes)
-            if bad:
-                res["illegalAffixes"] = bad
-                res["legalityWarning"] = (
-                    f"{len(bad)} affix(es) on this item do not roll on a {base} in PoE2, so the "
-                    "computed stats include invented mods and are NOT achievable on this base. "
-                    "Re-craft with real mods (optimize_item / parse_item / search_mods). "
-                    "Type-level check only — roll magnitudes aren't verified."
-                )
+        audit = legality or item_legality.audit_item(
+            raw,
+            craft_receipt_ref=craft_receipt_ref,
+            slot=slot,
+            require_special_provenance=True,
+        )
+        res["itemLegality"] = audit
+        if not audit.get("ok"):
+            issues = [str(value) for value in audit.get("issues") or []]
+            res["illegalAffixes"] = [{"issue": issue} for issue in issues]
+            base = str(itemparse.semantic_item_structure(raw).get("base") or "item")
+            res["legalityWarning"] = (
+                f"{len(issues)} deterministic legality issue(s) were found on {base}; "
+                "the computed stats cannot be accepted for a generated artifact until the "
+                "shared source-aware audit passes."
+            )
     except Exception:
         pass  # legality is advisory; never let it break an equip
     return res
+
+
+def _decorate_batch_mutation_result(
+    operation: mutation_batch.BuildMutationOperation,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if operation.operation in {"set_main_skill", "add_skill_group"} and operation.skill:
+        return _flag_meta_trigger(result, _gem_names_in(operation.skill))
+    if operation.operation == "equip_item" and operation.raw:
+        decorated = _annotate_item_legality(
+            result,
+            operation.raw,
+            craft_receipt_ref=operation.craft_receipt_ref,
+            slot=operation.slot,
+        )
+        legality = decorated.get("itemLegality")
+        if not isinstance(legality, dict) or legality.get("ok") is not True:
+            decorated["ok"] = False
+            decorated["errorCode"] = "item_legality_check_failed"
+        return decorated
+    return result
+
+
+@mcp.tool()
+def apply_build_mutation_batch(
+    batch_kind: mutation_batch.FunctionalBatchKind,
+    operations: Annotated[
+        list[mutation_batch.BuildMutationOperation],
+        Field(min_length=1, max_length=mutation_batch.MAX_FUNCTIONAL_BATCH_OPERATIONS),
+    ],
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Apply one small, function-scoped atomic mutation batch chosen by the Agent.
+
+    `batch_kind` is one of bootstrap, mechanism_shell, skill_loadout, passive_delta,
+    required_gear, ordinary_gear or config. Each scope has its own operation whitelist, small limit
+    and lightweight postconditions; mixed-function mega-batches are rejected. Only a bootstrap
+    beginning with `new_build` may omit `expected_state_hash`. Later scopes must chain the previous
+    `outputStateHash`. Search and optimizers are unsupported. A failure rolls back the current
+    functional batch when possible; trust restoration only when `rolledBack=true`, otherwise stop
+    and recover the session because `recoveryRequired=true`.
+    """
+    return mutation_batch.apply_build_mutation_batch(
+        get_engine(),
+        batch_kind=batch_kind,
+        operations=operations,
+        expected_state_hash=expected_state_hash,
+        result_decorator=_decorate_batch_mutation_result,
+    )
 
 
 @mcp.tool()
@@ -631,15 +729,34 @@ def inspect_build_completeness() -> dict[str, Any]:
 
 
 @mcp.tool()
-def inspect_generation_preflight() -> dict[str, Any]:
+def inspect_generation_preflight(strict_mode: bool = False) -> dict[str, Any]:
     """Run cheap deterministic checks before consuming a generation Judge attempt.
 
     Reads one active PoB snapshot and reports missing/invalid main groups, multi-active groups,
     duplicate supports, completely duplicated enabled groups, and completeness findings. Blocking
-    issues should be repaired before `evaluate_generation_candidate`; advisories remain Agent
-    design decisions. The response never contains XML or raw item text.
+    issues should be repaired before `evaluate_generation_candidate`. Subjective completeness
+    advisories are hidden by default; pass ``strict_mode=true`` to request them explicitly. The
+    response never contains XML or raw item text.
     """
-    return generation_preflight.inspect_generation_preflight(get_engine())
+    return generation_preflight.inspect_generation_preflight(
+        get_engine(),
+        strict_mode=strict_mode,
+    )
+
+
+@mcp.tool()
+def inspect_generation_checkpoint(strict_mode: bool = False) -> dict[str, Any]:
+    """Merge repeated read-only generation checks by semantic build-state hash.
+
+    Completeness, preflight, bounded stats and defenses are computed once for an unchanged state.
+    A later call with the same semantic hash reuses the safe process-local result. Formal Judge and
+    artifact-bound lifecycle verification remain separate trust steps. Subjective advisories are
+    omitted unless ``strict_mode=true`` is supplied.
+    """
+    return generation_validation_checkpoint.inspect_generation_checkpoint(
+        get_engine(),
+        strict_mode=strict_mode,
+    )
 
 
 @mcp.tool()
@@ -689,6 +806,7 @@ def evaluate_generation_candidate(
     run_token: str,
     candidate_id: str,
     version_context: dict[str, Any],
+    strict_mode: bool = False,
 ) -> dict[str, Any]:
     """Run the Phase 1 Judge against the Agent-built active PoB state.
 
@@ -698,7 +816,9 @@ def evaluate_generation_candidate(
     run, and returns `attemptIndex` plus the exact `transientBuildState` and
     `judgeAdvisoryReport` objects required by the generation review helper. The same run accepts an
     initial attempt and at most two Agent-led retries; it never fills gear, passives, skills, or
-    configuration for the Agent.
+    configuration for the Agent. The default ``strict_mode=false`` returns only hard failures and
+    deterministic diagnostics. Set ``strict_mode=true`` manually to expose the legacy score,
+    quality bands, playability warnings, caveats and reward fields for the whole run.
     """
     return generation_evaluation.evaluate_generation_candidate(
         get_engine(),
@@ -706,6 +826,7 @@ def evaluate_generation_candidate(
         run_token=run_token,
         candidate_id=candidate_id,
         version_context=version_context,
+        strict_mode=strict_mode,
     )
 
 
@@ -715,12 +836,19 @@ def save_final_build_artifact(
     run_token: str,
     candidate_id: str,
     attempt_index: int,
+    selection_reason: str | None = None,
+    later_findings_scope: Literal[
+        "not_applicable",
+        "candidate_delta_only",
+        "baseline_implicated",
+        "unknown",
+    ] = "not_applicable",
 ) -> dict[str, Any]:
     """Save the final Agent-accepted, passing PoB candidate in local private storage.
 
-    The active build must still exactly match the trusted Judge snapshot for the supplied attempt.
-    Failed or changed attempts are rejected, and each generation run can save only one artifact.
-    The response never includes PoB XML or an import code.
+    Any passing attempt with a still-live exact Judge snapshot may be selected. Selecting an older
+    baseline requires an explicit reason and evidence that later findings affect only the explored
+    delta. Each generation run can save only one artifact; raw PoB is never returned.
     """
     return generation_artifacts.save_final_build_artifact(
         get_engine(),
@@ -728,6 +856,8 @@ def save_final_build_artifact(
         run_token=run_token,
         candidate_id=candidate_id,
         attempt_index=attempt_index,
+        selection_reason=selection_reason,
+        later_findings_scope=later_findings_scope,
     )
 
 
@@ -856,6 +986,8 @@ def start_build_progression(
     target_level: int,
     goal: str,
     version_context: generation_models.VersionContext,
+    class_key: str | None = None,
+    target_family_constraint: generation_progression_models.TargetFamilyConstraint | None = None,
 ) -> dict[str, Any]:
     """Start a recoverable progression; a fresh exact-version starter packet may be reused."""
     return generation_progression_service.start_build_progression(
@@ -864,6 +996,92 @@ def start_build_progression(
         target_level=target_level,
         goal=goal,
         version_context=_typed_payload(version_context),
+        class_key=class_key,
+        target_family_constraint=(
+            _typed_payload(target_family_constraint)
+            if target_family_constraint is not None
+            else None
+        ),
+    )
+
+
+@mcp.tool()
+def submit_build_progression_target_selection(
+    progression_id: str,
+    selection: generation_progression_models.TargetCandidateSelection,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Rank every Family in one exact-version discovery receipt before target Create."""
+    return generation_progression_service.submit_build_progression_target_selection(
+        progression_id=progression_id,
+        selection=_typed_payload(selection),
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def bind_build_progression_target_run(
+    progression_id: str,
+    run_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Bind the selected target Family to one fresh ordinary Phase 5 run."""
+    return generation_progression_service.bind_build_progression_target_run(
+        progression_id=progression_id,
+        run_id=run_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def fail_build_progression_target_anchor(
+    progression_id: str,
+    failure_code: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Record a target-anchor failure without automatically switching Family."""
+    return generation_progression_service.fail_build_progression_target_anchor(
+        progression_id=progression_id,
+        failure_code=failure_code,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def retry_build_progression_target_anchor(
+    progression_id: str,
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Open the one same-Family retry reserved for tool or control interruption."""
+    return generation_progression_service.retry_build_progression_target_anchor(
+        progression_id=progression_id,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+    )
+
+
+@mcp.tool()
+def reselect_build_progression_target_candidate(
+    progression_id: str,
+    decision_summary: str,
+    evidence_refs: list[str],
+    expected_revision: int,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Explicitly switch once to the recorded reserve Family after an audited failure."""
+    return generation_progression_service.reselect_build_progression_target_candidate(
+        progression_id=progression_id,
+        decision_summary=decision_summary,
+        evidence_refs=evidence_refs,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
     )
 
 
@@ -876,6 +1094,7 @@ def bind_build_progression_target_anchor(
     lifecycle_verification_ref: str,
     expected_revision: int,
     operation_id: str,
+    acceptance_decision: Literal["accepted", "limited_accepted"] = "accepted",
 ) -> dict[str, Any]:
     """Bind an accepted target only after artifact-bound lifecycle verification passes."""
     return generation_progression_service.bind_build_progression_target_anchor(
@@ -886,6 +1105,7 @@ def bind_build_progression_target_anchor(
         lifecycle_verification_ref=lifecycle_verification_ref,
         expected_revision=expected_revision,
         operation_id=operation_id,
+        acceptance_decision=acceptance_decision,
     )
 
 
@@ -1027,13 +1247,19 @@ def retry_build_progression_stage(
     stage_id: str,
     expected_revision: int,
     operation_id: str,
+    revised_stage: generation_progression_models.StageBlueprint | None = None,
+    revised_blueprint_id: str | None = None,
+    replan_summary: str | None = None,
 ) -> dict[str, Any]:
-    """Open the one allowed explicit external retry for a failed progression stage."""
+    """Retry once, optionally replacing an unsaved failed stage with a versioned new direction."""
     return generation_progression_service.retry_build_progression_stage(
         progression_id=progression_id,
         stage_id=stage_id,
         expected_revision=expected_revision,
         operation_id=operation_id,
+        revised_stage=_typed_payload(revised_stage) if revised_stage is not None else None,
+        revised_blueprint_id=revised_blueprint_id,
+        replan_summary=replan_summary,
     )
 
 
@@ -1068,9 +1294,31 @@ def resume_build_progression(
 
 
 @mcp.tool()
-def get_build_progression_status(progression_id: str) -> dict[str, Any]:
-    """Inspect safe progression state without PoB XML, import codes or web URLs."""
-    return generation_progression_service.get_build_progression_status(progression_id)
+def checkpoint_build_progression_context(
+    progression_id: str,
+    expected_context_revision: int,
+    operation_id: str,
+    checkpoint: generation_progression_context.ProgressionWorkingCheckpoint,
+) -> dict[str, Any]:
+    """Persist selected recall premises and concise build decisions for context recovery."""
+    return generation_progression_service.checkpoint_build_progression_context(
+        progression_id=progression_id,
+        expected_context_revision=expected_context_revision,
+        operation_id=operation_id,
+        checkpoint=_typed_payload(checkpoint),
+    )
+
+
+@mcp.tool()
+def get_build_progression_status(
+    progression_id: str,
+    detail: Literal["compact", "resume", "full"] = "compact",
+) -> dict[str, Any]:
+    """Inspect compact state, a bounded resume packet, or the legacy full safe state."""
+    return generation_progression_service.get_build_progression_status(
+        progression_id,
+        detail=detail,
+    )
 
 
 @mcp.tool()
@@ -1110,8 +1358,8 @@ def export_build_progression_package(
     author: str = "",
     description: str = "",
 ) -> dict[str, Any]:
-    """Export each stage's PoB files, a route guide and only the target official `.build`."""
-    return generation_progression_delivery.export_build_progression_package(
+    """Export a complete route, or a target recovery package for an unfinished anchored run."""
+    return generation_progression_service.export_build_progression_package(
         route_id,
         name=name,
         author=author,
@@ -1683,7 +1931,9 @@ def list_levers() -> dict[str, Any]:
 
 @mcp.tool()
 def search_passives(
-    query: str = "", node_type: str | None = None, limit: int = 30
+    query: str = "",
+    node_type: str | None = None,
+    limit: int = 30,
 ) -> dict[str, Any]:
     """Search the active build's passive tree by node name or stat text.
 
@@ -1732,6 +1982,11 @@ def optimize_passives(
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
     """Reproducibly optimize passive points from an immutable snapshot.
+
+    Normal Create/progression may use bounded non-reset requests both for an identified local gap
+    and for a deliberate high-impact quality pass. The `reset=True, points=0` whole-tree replan is
+    outside the current Create policy; use explicit passive nodes or a bounded non-reset request
+    instead.
 
     Three goal modes:
     - single `metric` (e.g. "TotalDPS", "Life", "TotalEHP") — maximizes that stat;
@@ -1954,7 +2209,8 @@ def craft_item(
     single `metric` or a weighted `goals` blend; `rune_sockets` is how many the base is assumed to
     support (Artificer's Orb — martial weapons/armour typically allow up to 2). Returns the item + the
     `craftSteps` to make it (the corruption is a Vaal gamble — do it last). A theoretical best-in-slot
-    target with idealized rolls; price the steps. Read-only.
+    target with idealized rolls; price the steps. The active build is restored, while a raw-free
+    `craftReceiptRef` is persisted so later equip/checkpoint/Judge calls can verify special sources.
     """
     return craftopt.craft_item(
         get_engine(),
@@ -1984,27 +2240,26 @@ def optimize_build(
     archetypes: list[dict[str, Any]] | None = None,
     parallel: bool = False,
 ) -> dict[str, Any]:
-    """Assemble a complete, engine-verified, high-DPS build for the ACTIVE archetype — the holistic
-    optimizer that does the synthesis the greedy per-slot tools can't (STATE tool: leaves the best
-    build LOADED in the session).
+    """Maintenance-only holistic optimizer, temporarily disabled by default.
 
-    Set up the archetype first (class + ascendancy + main skill, plus a weapon base for attack
-    skills — it's archetype-defining), then call this. It SEEDS the dominant levers from the reference
-    set for the build's delivery, and for each runs "commit-and-max": REQUIRE the lever's tree clusters
-    + nearest jewel sockets (the over-commitment greedy won't make), then maximize `metric` across
-    gear (plan_gear), jewels, supports and the weapon as a whole — iterating `passes` times — and keeps
-    the best build that caps resistances and meets `min_ehp`. Reports what it committed + the
-    reference-set placement so it's transparent.
-
-    `levers` forces explicit reference lever names (omit to auto-seed). `try_uniques` adds a unique-item
-    pass. `crafting` applies the FULL crafting system (runes + Perfect essences + corruption) to every
-    gear slot of the winner — the "awesome gear" boost (heavier; adds ~1-2 min). `archetypes` (list of
-    {class, ascendancy, skill, weapon}) also evaluates alternative configs and keeps the best — you
-    propose archetypes, the optimizer picks. `parallel` spreads the search across engine subprocesses
-    (faster, more memory). A heavy call (~1-3 min, more with crafting). The one thing it can't model is
-    energy-meta triggers (upstream PoB); run apply_combat_profile with the build's real conditions and
-    validate_build before presenting.
+    Normal Create and progression runs must use Agent-selected exact mutations and focused component
+    tools.  This retained entry only supports explicit optimizer maintenance experiments when the
+    process owner opts in with ``POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER=1``; otherwise it returns a typed
+    disabled result without reading or changing the active build.
     """
+    if os.environ.get("POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER", "").strip() != "1":
+        return {
+            "status": "disabled",
+            "ok": False,
+            "errorCode": "global_optimizer_temporarily_disabled",
+            "reason": (
+                "The whole-build optimizer is disabled by default while Create quality is "
+                "evaluated without global tree/gear search. Use exact mutations and targeted "
+                "component tools instead."
+            ),
+            "enableEnvironmentVariable": "POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER=1",
+            "stateChanged": False,
+        }
     return buildopt.optimize_build(
         get_engine(),
         metric=metric,
@@ -2057,7 +2312,9 @@ def engine_health() -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 @mcp.tool()
 def search_items(
-    query: str = "", item_class: str | None = None, limit: int = 20
+    query: str = "",
+    item_class: str | None = None,
+    limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Search Path of Exile 2 item bases by name/tags, optionally filtered by item class.
 
@@ -2351,6 +2608,8 @@ def verify_lifecycle_stage(
     state: lifecycle.lifecycle_verification.LifecycleStageVerificationState | None = None,
     build_id: str = "",
     artifact_id: str = "",
+    detail: Literal["compact", "full"] = "compact",
+    strict_mode: bool = False,
 ) -> dict[str, Any]:
     """Execute lifecycle verification against the active build or one immutable artifact.
 
@@ -2359,11 +2618,16 @@ def verify_lifecycle_stage(
     without mutating gear, passives, level, or config. When `artifact_id` is supplied, the tool
     restores that private artifact itself and writes a trusted artifact-bound verification receipt.
     The receipt keeps the original artifact hash even when PoB's import/save XML is byte-unstable.
+    ``detail="compact"`` is the Create default: it returns all blocking checks and the bounded
+    numeric evidence needed for the next decision. Artifact-bound trust fields are still derived
+    from the unprojected verification result and persisted in the existing safe bounded receipt.
+    Use ``detail="full"`` only for focused diagnosis. Recommendations and advisory caveats are
+    hidden unless ``strict_mode=true`` is supplied; computed checks and metrics still run.
     """
     state_payload = _typed_payload(state) if state is not None else {}
     plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state_payload)
     if not plan.get("ok"):
-        return plan
+        return _project_lifecycle_verification_feedback(plan, strict_mode=strict_mode)
 
     eng = get_engine()
     artifact_manifest = None
@@ -2444,6 +2708,15 @@ def verify_lifecycle_stage(
     read_build = getattr(eng, "get_build", None)
     build = read_build() if callable(read_build) else {}
     gear = build.get("gear") if isinstance(build, dict) else {}
+    if isinstance(build, dict):
+        try:
+            actual_level = int(build.get("level") or 0)
+        except (TypeError, ValueError):
+            actual_level = 0
+        if 1 <= actual_level <= 100:
+            # Lifecycle resistance bands are keyed to the evaluated PoB level. A caller-provided
+            # stage label or stale state hint must not move the build into a different band.
+            effective_state["level"] = actual_level
     effective_state["manaFlaskEquipped"] = _mana_flask_equipped(gear)
     stat_keys = lifecycle.lifecycle_verification.requested_metric_keys(stage)
     stats_result = eng.get_stats(stat_keys)
@@ -2484,6 +2757,7 @@ def verify_lifecycle_stage(
     )
     if build_id:
         result["buildId"] = build_id
+    result = _project_lifecycle_verification_feedback(result, strict_mode=strict_mode)
     if artifact_manifest is not None:
         receipt = generation_progression_lifecycle.save_artifact_lifecycle_receipt(
             artifact_id=artifact_manifest.artifact_id,
@@ -2510,7 +2784,97 @@ def verify_lifecycle_stage(
                 "artifactBound": True,
             }
         )
-    return result
+    return (
+        _compact_lifecycle_verification_response(result)
+        if detail == "compact"
+        else {**result, "responseProfile": "full"}
+    )
+
+
+def _project_lifecycle_verification_feedback(
+    result: dict[str, Any],
+    *,
+    strict_mode: bool,
+) -> dict[str, Any]:
+    projected = deepcopy(result)
+    projected["feedbackMode"] = "strict" if strict_mode else "hard_only"
+    projected["subjectiveFeedbackSuppressed"] = not strict_mode
+    if not strict_mode:
+        projected["recommendedActions"] = []
+        projected["caveats"] = []
+    return projected
+
+
+def _compact_lifecycle_verification_response(result: dict[str, Any]) -> dict[str, Any]:
+    """Project a full computed verification into a bounded Create decision packet."""
+
+    observations = result.get("observations")
+    observations = observations if isinstance(observations, dict) else {}
+    checks = result.get("checks")
+    checks = [row for row in checks if isinstance(row, dict)] if isinstance(checks, list) else []
+    state_snapshot = result.get("stateSnapshot")
+    state_snapshot = state_snapshot if isinstance(state_snapshot, dict) else {}
+    identity_keys = (
+        "level",
+        "mainSkillSocketed",
+        "manaFlaskEquipped",
+        "singleTargetSkillName",
+        "buildDefiningComponentKind",
+        "buildDefiningComponentName",
+        "buildDefiningComponentKey",
+    )
+    metric_keys = (
+        "resistances",
+        "life",
+        "energyShield",
+        "totalPool",
+        "totalEHP",
+        "mana",
+        "manaUnreserved",
+        "manaCost",
+        "netManaRegen",
+        "manaRegenRecovery",
+        "manaLeechGainRate",
+        "manaOnHitRate",
+        "skillUseRate",
+        "manaSustain",
+        "spirit",
+        "offense",
+    )
+    compact: dict[str, Any] = {
+        "ok": result.get("ok"),
+        "stage": result.get("stage"),
+        "status": result.get("status"),
+        "pass": result.get("pass"),
+        "failedChecks": list(result.get("failedChecks") or []),
+        "unknownChecks": list(result.get("unknownChecks") or []),
+        "checkStatuses": {
+            str(row.get("check")): row.get("status") for row in checks if row.get("check")
+        },
+        "blockingChecks": [row for row in checks if row.get("status") in {"failed", "unknown"}],
+        "stateSummary": {
+            key: state_snapshot[key] for key in identity_keys if key in state_snapshot
+        },
+        "metrics": {key: observations[key] for key in metric_keys if key in observations},
+        "recommendedActions": list(result.get("recommendedActions") or []),
+        "caveats": list(result.get("caveats") or []),
+        "evidenceTags": list(result.get("evidenceTags") or []),
+        "feedbackMode": result.get("feedbackMode", "hard_only"),
+        "subjectiveFeedbackSuppressed": bool(result.get("subjectiveFeedbackSuppressed", True)),
+        "responseProfile": "compact",
+    }
+    for key in (
+        "evaluatedSourceHash",
+        "buildId",
+        "verificationRef",
+        "artifactId",
+        "restoredEngineSourceHash",
+        "artifactBound",
+        "errorCode",
+    ):
+        if key in result:
+            compact[key] = result[key]
+    return compact
 
 
 def _mana_flask_equipped(gear: Any) -> bool:
@@ -2632,7 +2996,10 @@ def list_ascendancies(character: str | None = None) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def search_mods(
-    query: str = "", item_tag: str | None = None, mod_type: str | None = None, limit: int = 30
+    query: str = "",
+    item_tag: str | None = None,
+    mod_type: str | None = None,
+    limit: int = 30,
 ) -> list[dict[str, Any]]:
     """Search Path of Exile 2 affixes/modifiers by readable text.
 
@@ -2821,9 +3188,13 @@ def query_research_memory(
     primary_skill_key: str | None = None,
     build_family_keys: list[str] | None = None,
     record_kinds: list[str] | None = None,
+    class_key: str | None = None,
+    game_patch: str | None = None,
+    passive_tree_version: str | None = None,
+    response_profile: Literal["full", "create_compact"] = "full",
 ) -> dict[str, Any]:
     """Query safe Family memory with optional exact identity and record-kind filters."""
-    return _research_memory_service_with_graph().query_research_memory(
+    result = _research_memory_service_with_graph().query_research_memory(
         query,
         component_keys=component_keys or [],
         limit=limit,
@@ -2835,7 +3206,215 @@ def query_research_memory(
         primary_skill_key=primary_skill_key,
         build_family_keys=build_family_keys or [],
         record_kinds=record_kinds or [],
+        class_key=class_key,
+        game_patch=game_patch,
+        passive_tree_version=passive_tree_version,
     )
+    return (
+        _compact_create_research_response(result)
+        if response_profile == "create_compact"
+        else result
+    )
+
+
+def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep Create-critical semantics while dropping repeated retrieval plumbing."""
+
+    detail_level = payload.get("detailLevel")
+    record_keys = (
+        "recordId",
+        "buildFamilyKey",
+        "recordKind",
+        "title",
+        "summary",
+        "componentKeys",
+        "gamePatch",
+        "passiveTreeVersion",
+        "status",
+    )
+    if detail_level == "record":
+        record_keys = (
+            *record_keys,
+            "conditions",
+            "failureConditions",
+            "content",
+            "typedPayload",
+        )
+    pattern_keys = (
+        "patternId",
+        "patternType",
+        "title",
+        "summary",
+        "componentKeys",
+        "confidenceTier",
+        "sampleCount",
+        "familyCount",
+        "transferScope",
+        "matchScope",
+        "plannerHint",
+        "gamePatch",
+        "passiveTreeVersion",
+        "status",
+    )
+    fragment_keys = (
+        "memoryItemId",
+        "fragmentId",
+        "fragmentType",
+        "title",
+        "summary",
+        "reusablePrinciple",
+        "componentKeys",
+        "confidence",
+        "modelability",
+        "gamePatch",
+        "passiveTreeVersion",
+        "status",
+        "contextCaveats",
+    )
+    edge_keys = (
+        "edgeId",
+        "sourceKey",
+        "targetKey",
+        "edgeType",
+        "rationale",
+        "confidence",
+        "modelability",
+        "affectedComponentKeys",
+        "gamePatch",
+        "passiveTreeVersion",
+        "status",
+    )
+    family_keys = (
+        "buildFamilyKey",
+        "ascendancyKey",
+        "primarySkillKey",
+        "secondarySkillKeys",
+        "evidenceCount",
+        "deepRecordCount",
+        "recordKindCounts",
+        "availableRecordKinds",
+        "classKey",
+        "gamePatch",
+        "passiveTreeVersion",
+        "keyPremises",
+        "failureConditions",
+        "supportingRecordIds",
+        "eligibility",
+    )
+    raw_records = [
+        item for item in payload.get("deepResearchRecords", []) if isinstance(item, dict)
+    ]
+    raw_fragments = [item for item in payload.get("results", []) if isinstance(item, dict)]
+    raw_edges = [item for item in payload.get("semanticEdges", []) if isinstance(item, dict)]
+    raw_patterns = [item for item in payload.get("buildPatterns", []) if isinstance(item, dict)]
+    raw_transferable = [
+        item for item in payload.get("transferablePatterns", []) if isinstance(item, dict)
+    ]
+    records = [_select_mapping_fields(item, record_keys) for item in raw_records]
+    fragments = [_select_mapping_fields(item, fragment_keys) for item in raw_fragments]
+    semantic_edges = [_select_mapping_fields(item, edge_keys) for item in raw_edges]
+    patterns = [_select_mapping_fields(item, pattern_keys) for item in raw_patterns]
+    transferable = [_select_mapping_fields(item, pattern_keys) for item in raw_transferable]
+    # Compact mode removes repeated per-result fields, not results.  Candidate/evidence count is
+    # controlled only by the caller's query; the response profile must not silently narrow it.
+    premise_digest: list[dict[str, Any]] = []
+    for item in raw_records:
+        conditions = list(item.get("conditions") or [])
+        failures = list(item.get("failureConditions") or [])
+        if conditions or failures:
+            premise_digest.append(
+                {
+                    "evidenceRef": item.get("recordId"),
+                    "title": item.get("title"),
+                    "criticalConditions": conditions,
+                    "failureConditions": failures,
+                    "verificationTasks": [],
+                }
+            )
+    for item in raw_fragments:
+        conditions = list(item.get("conditions") or [])
+        failures = list(item.get("risks") or [])
+        tasks = list(item.get("verificationTasks") or [])
+        if conditions or failures or tasks:
+            premise_digest.append(
+                {
+                    "evidenceRef": item.get("memoryItemId") or item.get("fragmentId"),
+                    "title": item.get("title"),
+                    "criticalConditions": conditions,
+                    "failureConditions": failures,
+                    "verificationTasks": tasks,
+                }
+            )
+    for item in raw_edges:
+        requirements = list(item.get("contextRequirements") or [])
+        if requirements:
+            premise_digest.append(
+                {
+                    "evidenceRef": item.get("edgeId"),
+                    "title": item.get("edgeType"),
+                    "criticalConditions": requirements,
+                    "failureConditions": [],
+                    "verificationTasks": [],
+                }
+            )
+    for item in [*raw_patterns, *raw_transferable]:
+        requirements = list(item.get("applicabilityRequirements") or [])
+        exclusions = list(item.get("exclusionConditions") or [])
+        tasks = list(item.get("verificationTasks") or [])
+        if requirements or exclusions or tasks:
+            premise_digest.append(
+                {
+                    "evidenceRef": item.get("patternId"),
+                    "title": item.get("title"),
+                    "criticalConditions": requirements,
+                    "failureConditions": exclusions,
+                    "verificationTasks": tasks,
+                }
+            )
+    compact = {
+        "status": payload.get("status"),
+        "dedupeQueryRef": payload.get("dedupeQueryRef"),
+        "results": fragments,
+        "deepResearchRecords": records,
+        "buildFamilies": [
+            _select_mapping_fields(item, family_keys)
+            for item in payload.get("buildFamilies", [])
+            if isinstance(item, dict)
+        ],
+        "semanticEdges": semantic_edges,
+        "buildPatterns": patterns,
+        "transferablePatterns": transferable,
+        "familyRecordCoverage": payload.get("familyRecordCoverage") or [],
+        "familyRecordIndex": payload.get("familyRecordIndex") or [],
+        "familyPremiseCatalog": payload.get("familyPremiseCatalog") or [],
+        "premiseAuditVersion": payload.get("premiseAuditVersion"),
+        "criticalPremiseDigest": premise_digest,
+        "requestedComponentKeys": payload.get("requestedComponentKeys") or [],
+        "requestedResearchAxes": payload.get("requestedResearchAxes") or [],
+        "requestedAscendancyKey": payload.get("requestedAscendancyKey"),
+        "requestedPrimarySkillKey": payload.get("requestedPrimarySkillKey"),
+        "requestedBuildFamilyKeys": payload.get("requestedBuildFamilyKeys") or [],
+        "requestedRecordKinds": payload.get("requestedRecordKinds") or [],
+        "requestedClassKey": payload.get("requestedClassKey"),
+        "requestedGamePatch": payload.get("requestedGamePatch"),
+        "requestedPassiveTreeVersion": payload.get("requestedPassiveTreeVersion"),
+        "familyDiscovery": payload.get("familyDiscovery"),
+        "includeTransferable": bool(payload.get("includeTransferable")),
+        "componentKeyGroups": payload.get("componentKeyGroups") or [],
+        "detailLevel": payload.get("detailLevel"),
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+        "responseProfile": "create_compact",
+        "responseProfileTruncatesResults": False,
+    }
+    return compact
+
+
+def _select_mapping_fields(
+    value: dict[str, Any],
+    keys: tuple[str, ...],
+) -> dict[str, Any]:
+    return {key: value[key] for key in keys if key in value}
 
 
 @mcp.tool()

@@ -3,21 +3,56 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from typing import Any
 import xml.etree.ElementTree as ET
 
 from server.compute import completeness
+from server.judge import hard_legality, rules
 
 
-def inspect_generation_preflight(engine: Any) -> dict[str, Any]:
+def inspect_generation_preflight(
+    engine: Any,
+    *,
+    strict_mode: bool = False,
+) -> dict[str, Any]:
     try:
         xml = engine.get_xml()
     except Exception:  # noqa: BLE001 - public diagnostics must not expose engine internals.
         return _error("active_build_snapshot_failed")
-    return inspect_generation_snapshot(engine, xml)
+    return project_feedback(
+        inspect_generation_snapshot(engine, xml),
+        strict_mode=strict_mode,
+    )
 
 
-def inspect_generation_snapshot(engine: Any, xml: str) -> dict[str, Any]:
+def project_feedback(result: dict[str, Any], *, strict_mode: bool) -> dict[str, Any]:
+    """Return one public preflight view without changing the internal hard audit."""
+
+    projected = deepcopy(result)
+    projected["feedbackMode"] = "strict" if strict_mode else "hard_only"
+    projected["subjectiveFeedbackSuppressed"] = not strict_mode
+    if strict_mode:
+        return projected
+    projected["qualityAdvisories"] = []
+    projected["advisories"] = []
+    if projected.get("readyForJudge"):
+        projected["status"] = "ready"
+    completeness_result = projected.get("completeness")
+    if isinstance(completeness_result, dict):
+        completeness_result["advisories"] = []
+        completeness_result["status"] = (
+            "complete" if not completeness_result.get("hardFailures") else "needs_attention"
+        )
+    return projected
+
+
+def inspect_generation_snapshot(
+    engine: Any,
+    xml: str,
+    *,
+    completeness_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Inspect the exact XML that will be sent to the dedicated Judge engine."""
     parsed = _parse_skill_groups(xml)
     if parsed.get("errorCode"):
@@ -56,14 +91,45 @@ def inspect_generation_snapshot(engine: Any, xml: str) -> dict[str, Any]:
     if duplicate_indices:
         blocking.append("duplicate_enabled_skill_group")
 
-    complete = completeness.inspect_build_completeness(engine, snapshot_xml=xml)
-    blocking.extend(str(value) for value in complete.get("hardFailures") or [])
+    complete = (
+        completeness_result
+        if completeness_result is not None
+        else completeness.inspect_build_completeness(engine, snapshot_xml=xml)
+    )
+    completeness_failures = [str(value) for value in complete.get("hardFailures") or []]
+    try:
+        build = hard_legality.augment_build_with_snapshot_gear(engine.get_build(), xml)
+        legality = hard_legality.audit_build(build)
+        get_defenses = getattr(engine, "get_defenses", None)
+        defenses = get_defenses() if callable(get_defenses) else {}
+    except Exception:  # noqa: BLE001 - preflight fails closed without exposing engine details.
+        return _error("hard_legality_audit_failed")
+    legality_failures = [str(value) for value in legality.get("hardFailures") or []]
+    resistance_gate = rules.check_endgame_resistance_gate(
+        level=build.get("level"),
+        resistances=(defenses.get("resistances") or {}) if isinstance(defenses, dict) else {},
+        keystones=build.get("keystones"),
+    )
+    readiness_failures = [str(value) for value in resistance_gate["hardFailures"]]
+    mechanism_blockers = _dedupe(
+        [
+            *blocking,
+            *[value for value in completeness_failures if value not in legality_failures],
+        ]
+    )
+    blocking = _dedupe([*mechanism_blockers, *legality_failures, *readiness_failures])
     advisories = [str(value) for value in complete.get("advisories") or []]
-    blocking = _dedupe(blocking)
     return {
         "status": "blocked" if blocking else ("needs_attention" if advisories else "ready"),
         "readyForJudge": not blocking,
         "blockingIssues": blocking,
+        "hardLegality": legality,
+        "hardLegalityReady": bool(legality.get("hardLegalityReady")),
+        "mechanismReady": not mechanism_blockers,
+        "mechanismBlockers": mechanism_blockers,
+        "readinessReady": not readiness_failures,
+        "readinessGates": {"endgameResistances": resistance_gate},
+        "qualityAdvisories": advisories,
         "advisories": advisories,
         "duplicateGroupIndices": duplicate_indices,
         "skillGroups": group_diagnostics,
@@ -334,7 +400,11 @@ def _error(error_code: str) -> dict[str, Any]:
     return {
         "status": "error",
         "readyForJudge": False,
+        "hardLegalityReady": False,
+        "mechanismReady": False,
         "blockingIssues": [error_code],
+        "mechanismBlockers": [error_code],
+        "qualityAdvisories": [],
         "advisories": [],
         "skillGroups": [],
         "noRawMaterial": True,

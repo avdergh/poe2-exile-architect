@@ -398,24 +398,36 @@ def test_missing_max_hit_uses_ehp_fallback_with_caveat():
     assert result["scoreVector"]["defense"]["value"] > 0
 
 
-def test_uncapped_resistance_caps_aggregate_score():
+@pytest.mark.parametrize("level", [18, 38, 58, 75, 90])
+def test_elemental_resistance_percentages_are_diagnostic_only_for_every_stage(level):
+    metrics = {
+        "TotalDPS": 20_000_000,
+        "PhysicalMaximumHitTaken": 50_000,
+        "FireMaximumHitTaken": 50_000,
+        "ColdMaximumHitTaken": 50_000,
+        "LightningMaximumHitTaken": 50_000,
+        "ChaosMaximumHitTaken": 50_000,
+        "LifeUnreserved": 4_000,
+    }
     result = scoring.score_metrics(
-        {
-            "TotalDPS": 20_000_000,
-            "PhysicalMaximumHitTaken": 50_000,
-            "FireMaximumHitTaken": 50_000,
-            "ColdMaximumHitTaken": 50_000,
-            "LightningMaximumHitTaken": 50_000,
-            "ChaosMaximumHitTaken": 50_000,
-            "LifeUnreserved": 4_000,
-        },
-        level=90,
+        metrics,
+        level=level,
         resistances={"fire": -60, "cold": -60, "lightning": -60, "chaos": -60},
     )
+    capped = scoring.score_metrics(
+        metrics,
+        level=level,
+        resistances={"fire": 75, "cold": 75, "lightning": 75, "chaos": -60},
+    )
 
-    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
-    assert result["aggregateScore"]["value"] == pytest.approx(
-        scoring.CRITICAL_FAILURE_PENALTIES_V1["SEVERE_RESISTANCE_SCORE_CAP"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert result["aggregateScore"]["value"] > 0.45
+    assert result["aggregateScore"] == capped["aggregateScore"]
+    assert result["scoreVector"]["defense"] == capped["scoreVector"]["defense"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
     )
 
 
@@ -471,7 +483,11 @@ def test_trusted_reference_limited_offense_and_strong_defense_can_downgrade_unca
     )
 
     assert "uncapped_resistance" not in result["failures"]
-    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
 
 
 def test_trusted_reference_tiny_limited_offense_can_downgrade_uncapped_resistance_with_mature_defense():
@@ -500,7 +516,11 @@ def test_trusted_reference_tiny_limited_offense_can_downgrade_uncapped_resistanc
     )
 
     assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
-    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
 
 
 def test_trusted_reference_strong_low_floor_can_downgrade_to_floor_unverified():
@@ -966,7 +986,7 @@ def test_low_pool_recovery_uses_gentler_reference_ratios():
     assert recovery["target"] == pytest.approx(136.96)
 
 
-def test_ci_does_not_bypass_elemental_resistance_failures():
+def test_ci_elemental_resistance_percentages_are_also_diagnostic_only():
     result = scoring.score_metrics(
         {
             "JudgeDPS": 53_621.124821625,
@@ -991,7 +1011,12 @@ def test_ci_does_not_bypass_elemental_resistance_failures():
         source_context="generated_candidate",
     )
 
-    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
 
 
@@ -1061,7 +1086,7 @@ def test_high_evasion_build_is_fragile_but_not_catastrophic_by_phys_max_hit_alon
     assert result["scoreVector"]["defense"]["value"] < 0.25
 
 
-def test_reference_uncapped_resistance_still_fails_when_state_is_not_otherwise_suspicious():
+def test_reference_uncapped_resistance_remains_diagnostic_only():
     result = scoring.score_metrics(
         {
             "JudgeDPS": 80_000,
@@ -1081,7 +1106,11 @@ def test_reference_uncapped_resistance_still_fails_when_state_is_not_otherwise_s
     )
 
     assert "uncapped_resistance" not in result["failures"]
-    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
 
 
 def test_reference_context_does_not_soften_single_physical_shortboard_score():

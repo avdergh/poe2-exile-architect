@@ -29,6 +29,18 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
         assert "TransitionBridge" in text
         assert "stageId" in text
         assert "价格" in text or "Price" in text or "price" in text
+        assert "stage_complete_loadout" in text
+        assert "complete_stage_build" in text
+        assert "single_initialization_then_function_scoped_deltas" in text
+        assert "blueprint_declared_or_versioned_replan_only" in text
+        assert "rebuildReason" in text
+        assert "diagnostic_only" in text
+        assert "endgame_minimums_60_30" in text
+        assert "minimal_mechanism_shell" not in text
+    for text in (phase, schemas, guide, progression_reference, skill):
+        assert "mechanism_shell" in text
+        assert "passive_delta" in text
+        assert "outputStateHash" in text
     assert "progression-mode.md" in skill
     assert "默认 4" in phase or "默认四" in progression_reference
     assert "最多 5" in progression_reference or "最多五" in progression_reference
@@ -37,14 +49,48 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
     assert "v1 route" in schemas
     assert "Blind Create" in guide
     assert "starter cache" in guide
+    assert "checkpoint_build_progression_context" in guide
+    assert 'detail="resume"' in guide
+    assert 'response_profile="create_compact"' in guide
+    assert "criticalPremiseDigest" in progression_reference
+    for text in (phase, schemas, guide, progression_reference, skill):
+        assert 'detail="compact"' in text or "detail=compact" in text
+    assert "不设固定摘要、维度查询或 record 深读额度" in phase
+    assert "不设固定 Family 摘要、维度查询或 record 深读额度" in progression_reference
+    assert "不设固定 Family 摘要、维度查询或 record 深读额度" in skill
+    assert "do not impose a fixed summary" in guide
+    assert "默认返回量不是候选上限" in phase
+    assert "默认返回量不是候选上限" in progression_reference
+    assert "不得设置固定候选条数" in skill
+    assert "default result count is" in guide
+    assert "主动质量收尾" in phase
+    assert "主动质量收尾" in skill
+    assert "deliberate quality pass" in guide
+    assert "orderingRecovery.reviewAlreadyConsumed" in schemas
+    assert "stage_running" in schemas
+    assert "routeIncomplete=true" in progression_reference
+    for text in (phase, schemas, guide, progression_reference, skill):
+        assert "familyRecordCoverage" in text
+        assert "familyPremiseCatalog" in text
+        assert "premiseDecisions" in text or "premise decision" in text
+        assert "generationMemoryMode" in text
+        assert "unavailable:pending_discovery" in text
+        assert "anchor_bound" in text
+    assert "familyRecordIndex" in phase
+    assert 'detail_level="record"' in progression_reference
+    assert "recoveryExportAvailable" in phase
+    assert "阻塞式入口确认" in progression_reference
+    assert "附带开荒策略" in progression_reference
+    assert "调用任何工具前必须先确认" in phase
 
 
 def test_manifest_advertises_phase8_tool_surface_and_release_version():
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     names = {item["name"] for item in manifest["tools"]}
-    assert manifest["version"] == "0.1.41"
+    assert manifest["version"] == "0.1.53"
     assert {
         "start_build_progression",
+        "submit_build_progression_target_selection",
         "bind_build_progression_target_anchor",
         "intake_starter_research_packet",
         "submit_build_progression_blueprint",
@@ -56,6 +102,7 @@ def test_manifest_advertises_phase8_tool_surface_and_release_version():
         "retry_build_progression_stage",
         "pause_build_progression",
         "resume_build_progression",
+        "checkpoint_build_progression_context",
         "get_build_progression_status",
         "classify_build_progression_costs",
         "finalize_build_progression",

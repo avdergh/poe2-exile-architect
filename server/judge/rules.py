@@ -6,6 +6,9 @@ from collections import Counter
 from typing import Any
 
 MAX_SUPPORTS_PER_SKILL_V1 = 5
+ENDGAME_RESISTANCE_MIN_LEVEL = 80
+ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM = 60.0
+ENDGAME_CHAOS_RESISTANCE_MINIMUM = 30.0
 
 CLASS_ASCENDANCY_PAIRS_V1: dict[str, set[str]] = {
     "Ranger": {"Deadeye", "Pathfinder"},
@@ -57,6 +60,57 @@ PHYSICAL_INVALID_FAILURES = {
     "weapon_set_budget_exceeded",
     "spirit_budget_exceeded",
 }
+
+
+def check_endgame_resistance_gate(
+    *,
+    level: int | float | None,
+    resistances: dict[str, Any] | None,
+    keystones: list[str] | None = None,
+    source_context: str = "generated_candidate",
+) -> dict[str, Any]:
+    """Return the deterministic generated-candidate resistance gate for level 80+ builds."""
+
+    numeric_level = int(level or 0)
+    applicable = source_context == "generated_candidate" and numeric_level >= (
+        ENDGAME_RESISTANCE_MIN_LEVEL
+    )
+    values = {
+        key: _resistance_value((resistances or {}).get(key))
+        for key in ("fire", "cold", "lightning", "chaos")
+    }
+    ci_active = "chaos inoculation" in {
+        str(keystone).strip().casefold() for keystone in (keystones or [])
+    }
+    below_elemental = [
+        key
+        for key in ("fire", "cold", "lightning")
+        if values[key] is None or values[key] < ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM
+    ]
+    chaos_below = not ci_active and (
+        values["chaos"] is None or values["chaos"] < ENDGAME_CHAOS_RESISTANCE_MINIMUM
+    )
+    failures: list[str] = []
+    if applicable and below_elemental:
+        failures.append("endgame_elemental_resistance_below_60")
+    if applicable and chaos_below:
+        failures.append("endgame_chaos_resistance_below_30")
+    return {
+        "status": "not_applicable" if not applicable else ("blocked" if failures else "passed"),
+        "applicable": applicable,
+        "minimumLevel": ENDGAME_RESISTANCE_MIN_LEVEL,
+        "thresholds": {
+            "fire": ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM,
+            "cold": ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM,
+            "lightning": ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM,
+            "chaos": ENDGAME_CHAOS_RESISTANCE_MINIMUM,
+        },
+        "observed": values,
+        "belowElemental": below_elemental if applicable else [],
+        "chaosInoculation": ci_active,
+        "chaosBelowMinimum": bool(applicable and chaos_below),
+        "hardFailures": failures,
+    }
 
 
 def check_equipped_item_requirements(build: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +286,13 @@ def _dedupe(values: list[str]) -> list[str]:
         if value not in out:
             out.append(value)
     return out
+
+
+def _resistance_value(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _string_list(value: Any) -> list[str]:

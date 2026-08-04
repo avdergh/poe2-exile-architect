@@ -17,7 +17,7 @@ from server.main import mcp
 
 def test_instructions_are_delivered():
     instr = mcp.instructions or ""
-    # Sourced from server/ASSISTANT_GUIDE.md; must actually reach the client, not be empty.
+    # Sourced from the bounded MCP bootstrap; must actually reach the client, not be empty.
     assert len(instr) > 500
     assert "Path of Exile 2" in instr
     # The cardinal rule has to survive — it's why answers stay grounded in the engine.
@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 140
+    assert len(tools) == 148
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -88,6 +88,8 @@ def test_tool_surface_intact():
         "set_skill_group_state",
         "inspect_build_completeness",
         "inspect_generation_preflight",
+        "inspect_generation_checkpoint",
+        "apply_build_mutation_batch",
         "equip_jewel",
         "apply_combat_profile",
         "pinnacle_readiness",
@@ -101,6 +103,7 @@ def test_tool_surface_intact():
         "list_build_progression_routes",
         "load_build_progression_stage",
         "start_build_progression",
+        "submit_build_progression_target_selection",
         "intake_starter_research_packet",
         "submit_build_progression_blueprint",
         "revise_future_build_progression_stages",
@@ -111,6 +114,7 @@ def test_tool_surface_intact():
         "retry_build_progression_stage",
         "pause_build_progression",
         "resume_build_progression",
+        "checkpoint_build_progression_context",
         "get_build_progression_status",
         "classify_build_progression_costs",
         "finalize_build_progression",
@@ -172,6 +176,21 @@ def test_tool_surface_intact():
     } <= names
 
 
+def test_global_optimizer_is_temporarily_disabled_by_default(monkeypatch):
+    from server import main
+
+    monkeypatch.delenv("POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER", raising=False)
+    monkeypatch.setattr(
+        main,
+        "get_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("disabled optimizer touched the engine")),
+    )
+    result = main.optimize_build()
+
+    assert result["errorCode"] == "global_optimizer_temporarily_disabled"
+    assert result["stateChanged"] is False
+
+
 def test_progression_tools_publish_nested_typed_input_schemas():
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
@@ -191,6 +210,28 @@ def test_progression_tools_publish_nested_typed_input_schemas():
     blueprint_schema = tools["submit_build_progression_blueprint"].inputSchema
     assert blueprint_schema["properties"]["blueprint"] == {"$ref": "#/$defs/ProgressionBlueprint"}
     assert "targetIntent" in blueprint_schema["$defs"]["ProgressionBlueprint"]["properties"]
+    selection_schema = tools["submit_build_progression_target_selection"].inputSchema
+    assert selection_schema["properties"]["selection"] == {
+        "$ref": "#/$defs/TargetCandidateSelection"
+    }
+    assert (
+        selection_schema["$defs"]["TargetCandidateSelection"]["properties"]["candidates"][
+            "minItems"
+        ]
+        == 2
+    )
+    batch_schema = tools["apply_build_mutation_batch"].inputSchema
+    assert batch_schema["properties"]["operations"]["maxItems"] == 16
+    assert batch_schema["properties"]["batch_kind"]["enum"] == [
+        "bootstrap",
+        "mechanism_shell",
+        "skill_loadout",
+        "passive_delta",
+        "required_gear",
+        "ordinary_gear",
+        "config",
+    ]
+    assert set(batch_schema["required"]) == {"batch_kind", "operations"}
     cost_schema = tools["classify_build_progression_costs"].inputSchema
     assert cost_schema["properties"]["cost_request"] == {"$ref": "#/$defs/CostRequest"}
     completion_schema = tools["complete_build_progression_stage"].inputSchema
@@ -212,6 +253,29 @@ def test_progression_tools_publish_nested_typed_input_schemas():
     assert "buildDefiningComponentName" in lifecycle_state["properties"]
     assert "buildDefiningComponentKey" in lifecycle_state["properties"]
     assert "buildDefiningEvidenceRefs" in lifecycle_state["properties"]
+    lifecycle_detail = lifecycle_schema["properties"]["detail"]
+    assert lifecycle_detail["default"] == "compact"
+    assert lifecycle_detail["enum"] == ["compact", "full"]
+    assert lifecycle_detail["type"] == "string"
+    for tool_name in (
+        "inspect_generation_preflight",
+        "inspect_generation_checkpoint",
+        "evaluate_generation_candidate",
+        "verify_lifecycle_stage",
+    ):
+        strict_mode_schema = tools[tool_name].inputSchema["properties"]["strict_mode"]
+        assert strict_mode_schema["default"] is False
+        assert strict_mode_schema["type"] == "boolean"
+    expected_search_defaults = {
+        "search_passives": 30,
+        "search_items": 20,
+        "search_mods": 30,
+    }
+    for tool_name, expected_default in expected_search_defaults.items():
+        limit_schema = tools[tool_name].inputSchema["properties"]["limit"]
+        assert limit_schema["default"] == expected_default
+        assert "minimum" not in limit_schema
+        assert "maximum" not in limit_schema
 
 
 def test_graph_tool_query_exposes_typed_payload_schema():
@@ -330,6 +394,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             primary_skill_key=None,
             build_family_keys=None,
             record_kinds=None,
+            class_key=None,
+            game_patch=None,
+            passive_tree_version=None,
         ):
             calls.append(
                 (
@@ -346,6 +413,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
                         primary_skill_key,
                         build_family_keys,
                         record_kinds,
+                        class_key,
+                        game_patch,
+                        passive_tree_version,
                     ),
                 )
             )
@@ -387,6 +457,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             primary_skill_key="skill:LightningArrowPlayer",
             build_family_keys=["bf-1234567890abcdef"],
             record_kinds=["skill_package"],
+            class_key="class:monk",
+            game_patch="0.5.4",
+            passive_tree_version="0_5",
         )["status"]
         == "known"
     )
@@ -429,11 +502,14 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
         "patterns",
         "revalidate",
     ]
-    assert calls[0][1][-4:] == (
+    assert calls[0][1][-7:] == (
         "ascendancy:monk:martial_artist",
         "skill:LightningArrowPlayer",
         ["bf-1234567890abcdef"],
         ["skill_package"],
+        "class:monk",
+        "0.5.4",
+        "0_5",
     )
 
 
@@ -719,6 +795,9 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
         def get_xml(self):
             return "<PathOfBuilding><Build/></PathOfBuilding>"
 
+        def get_build(self):
+            return {"level": 68, "gear": {}}
+
         def get_stats(self, keys=None):
             return {
                 "stats": {
@@ -740,14 +819,48 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
 
     monkeypatch.setattr(main, "get_engine", lambda: _Stub())
 
-    result = main.verify_lifecycle_stage("maps_entry", state={"level": 68})
+    # A stale caller hint cannot move the evaluated build into the 80-89 resistance band.
+    result = main.verify_lifecycle_stage("maps_entry", state={"level": 80})
 
     assert result["ok"] is True
     assert result["stage"] == "maps_entry"
     assert result["pass"] is True
-    assert result["stateSnapshot"]["level"] == 68
+    assert result["responseProfile"] == "compact"
+    assert result["feedbackMode"] == "hard_only"
+    assert result["subjectiveFeedbackSuppressed"] is True
+    assert result["recommendedActions"] == []
+    assert result["caveats"] == []
+    assert result["stateSummary"]["level"] == 68
+    assert result["metrics"]["totalEHP"] == 12000
+    assert "stateSnapshot" not in result
+    assert "observations" not in result
+    assert "checks" not in result
     assert "engine-computed" in result["evidenceTags"]
     assert result["evaluatedSourceHash"]
+
+
+def test_lifecycle_feedback_projection_requires_explicit_strict_mode():
+    from server import main
+
+    payload = {
+        "recommendedActions": ["redesign the damage loop"],
+        "caveats": ["subjective_quality_caveat"],
+        "failedChecks": ["sustain_ok"],
+    }
+    hard_only = main._project_lifecycle_verification_feedback(
+        payload,
+        strict_mode=False,
+    )
+    strict = main._project_lifecycle_verification_feedback(
+        payload,
+        strict_mode=True,
+    )
+
+    assert hard_only["recommendedActions"] == []
+    assert hard_only["caveats"] == []
+    assert hard_only["failedChecks"] == ["sustain_ok"]
+    assert strict["recommendedActions"] == ["redesign the damage loop"]
+    assert strict["caveats"] == ["subjective_quality_caveat"]
 
 
 def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_claim(
@@ -832,6 +945,7 @@ def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_
         "maps_entry",
         state={"manaFlaskEquipped": True},
         artifact_id=artifact_id,
+        detail="full",
     )
 
     assert result["pass"] is False
@@ -1039,6 +1153,7 @@ def test_verify_campaign_early_derives_main_skill_from_same_xml_snapshot(monkeyp
     result = main.verify_lifecycle_stage(
         "campaign_early",
         state={"mainSkillSocketed": False},
+        detail="full",
     )
 
     assert result["pass"] is True
@@ -1101,6 +1216,7 @@ def test_verify_campaign_mid_matches_named_single_target_skill_to_same_xml(monke
                 "mechanic:bell_single_target",
             ],
         },
+        detail="full",
     )
 
     assert result["pass"] is True
@@ -1166,6 +1282,7 @@ def test_verify_endgame_budget_matches_build_defining_skill_to_same_xml(monkeypa
                 "dq-0123456789abcdef",
             ],
         },
+        detail="full",
     )
 
     assert result["pass"] is True

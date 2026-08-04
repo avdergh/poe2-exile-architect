@@ -37,18 +37,16 @@ def read_consumed_phase5_provenance(run_id: str) -> dict[str, Any] | None:
         return None
     candidate = packet.prototype_build_candidate
     usage = candidate.research_memory_use
-    final_audit = (
-        packet.generation_attempts[-1].failure_audit
-        if packet.generation_attempts
-        else packet.failure_audit
-    )
-    if usage is None or final_audit is None:
+    final_audit = packet.failure_audit
+    if final_audit is None:
         return None
     safe = {
         "runId": canonical,
         "candidateId": candidate.candidate_id,
         "sourceHash": packet.transient_build_state.source_hash,
-        "researchMemoryUse": usage.model_dump(mode="json", by_alias=True),
+        "researchMemoryUse": (
+            usage.model_dump(mode="json", by_alias=True) if usage is not None else None
+        ),
         "finalFailureAudit": final_audit.model_dump(mode="json", by_alias=True),
         "versionContext": packet.version_context.model_dump(mode="json", by_alias=True),
         "noRawMaterial": True,
@@ -68,22 +66,18 @@ def validate_research_provenance(
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Validate exact Family intent and every recalled item against durable query receipts."""
 
-    try:
-        usage = models.ResearchMemoryUse.model_validate(research_memory_use)
-    except ValidationError:
-        return "progression_research_use_invalid", None
+    error, validated = _validate_research_use_receipts(
+        research_memory_use=research_memory_use,
+        receipt_reader=receipt_reader,
+        not_before=not_before,
+    )
+    if error or validated is None:
+        return error, None
+    usage = validated["usage"]
+    receipts = validated["receipts"]
+    used_sets = validated["usedSets"]
     if artifact_research_ref not in usage.dedupe_query_refs:
         return "progression_artifact_research_ref_not_used", None
-
-    receipts: list[dict[str, Any]] = []
-    for ref in usage.dedupe_query_refs:
-        receipt = receipt_reader(ref)
-        if receipt is None:
-            return "progression_research_receipt_missing", None
-        receipts.append(receipt)
-    if not_before is not None:
-        if any(not receipt_was_seen_at_or_after(receipt, not_before) for receipt in receipts):
-            return "progression_research_receipt_not_current_run", None
 
     exact_refs = [
         str(receipt["dedupeQueryRef"])
@@ -92,6 +86,92 @@ def validate_research_provenance(
     ]
     if not exact_refs:
         return "progression_exact_family_query_missing", None
+
+    matching_families = [
+        family
+        for receipt in receipts
+        for family in (receipt.get("result") or {}).get("buildFamilies", [])
+        if isinstance(family, dict)
+        and family.get("ascendancyKey") == identity.ascendancy_key
+        and family.get("primarySkillKey") == identity.primary_skill_key
+        and sorted(family.get("secondarySkillKeys") or []) == sorted(identity.secondary_skill_keys)
+    ]
+    if usage.build_family_keys and not any(
+        str(item.get("buildFamilyKey")) in used_sets["buildFamilyKeys"]
+        for item in matching_families
+    ):
+        return "progression_research_family_identity_mismatch", None
+
+    summary = {
+        "dedupeQueryRefs": list(usage.dedupe_query_refs),
+        "exactIdentityQueryRefs": exact_refs,
+        **{key: sorted(value) for key, value in used_sets.items()},
+        "retrievalOutcome": usage.retrieval_outcome,
+        "premiseAuditVersion": usage.premise_audit_version,
+        "premiseDecisions": validated["premiseDecisions"],
+        "premiseDecisionIds": validated["premiseDecisionIds"],
+        "caveatedPremiseIds": validated["caveatedPremiseIds"],
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
+    if _unsafe(summary):
+        return "progression_research_provenance_unsafe", None
+    return None, summary
+
+
+def validate_research_use_receipts(
+    *,
+    research_memory_use: dict[str, Any],
+    receipt_reader: Callable[[str], dict[str, Any] | None],
+    not_before: str | None = None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Validate ordinary Create Research use and any premise catalog in its receipts."""
+
+    error, validated = _validate_research_use_receipts(
+        research_memory_use=research_memory_use,
+        receipt_reader=receipt_reader,
+        not_before=not_before,
+    )
+    if error or validated is None:
+        return error, None
+    usage = validated["usage"]
+    summary = {
+        "dedupeQueryRefs": list(usage.dedupe_query_refs),
+        **{key: sorted(value) for key, value in validated["usedSets"].items()},
+        "retrievalOutcome": usage.retrieval_outcome,
+        "premiseAuditVersion": usage.premise_audit_version,
+        "premiseDecisions": validated["premiseDecisions"],
+        "premiseDecisionIds": validated["premiseDecisionIds"],
+        "caveatedPremiseIds": validated["caveatedPremiseIds"],
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
+    if _unsafe(summary):
+        return "progression_research_provenance_unsafe", None
+    return None, summary
+
+
+def _validate_research_use_receipts(
+    *,
+    research_memory_use: dict[str, Any],
+    receipt_reader: Callable[[str], dict[str, Any] | None],
+    not_before: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    try:
+        usage = models.ResearchMemoryUse.model_validate(research_memory_use)
+    except ValidationError:
+        return "progression_research_use_invalid", None
+
+    receipts: list[dict[str, Any]] = []
+    for ref in usage.dedupe_query_refs:
+        receipt = receipt_reader(ref)
+        if receipt is None:
+            return "progression_research_receipt_missing", None
+        receipts.append(receipt)
+    if not_before is not None and any(
+        not receipt_was_seen_at_or_after(receipt, not_before) for receipt in receipts
+    ):
+        return "progression_research_receipt_not_current_run", None
 
     result_sets = {
         "buildFamilyKeys": {
@@ -116,32 +196,87 @@ def validate_research_provenance(
         if not used.issubset(result_sets[key]):
             return "progression_research_item_not_in_receipt", None
 
-    matching_families = [
-        family
-        for receipt in receipts
-        for family in (receipt.get("result") or {}).get("buildFamilies", [])
-        if isinstance(family, dict)
-        and family.get("ascendancyKey") == identity.ascendancy_key
-        and family.get("primarySkillKey") == identity.primary_skill_key
-        and sorted(family.get("secondarySkillKeys") or []) == sorted(identity.secondary_skill_keys)
-    ]
-    if usage.build_family_keys and not any(
-        str(item.get("buildFamilyKey")) in used_sets["buildFamilyKeys"]
-        for item in matching_families
-    ):
-        return "progression_research_family_identity_mismatch", None
+    premise_error, premise_summary = _validate_premise_decisions(
+        usage=usage,
+        receipts=receipts,
+    )
+    if premise_error:
+        return premise_error, None
+    return (
+        None,
+        {
+            "usage": usage,
+            "receipts": receipts,
+            "usedSets": used_sets,
+            **(premise_summary or {}),
+        },
+    )
 
-    summary = {
-        "dedupeQueryRefs": list(usage.dedupe_query_refs),
-        "exactIdentityQueryRefs": exact_refs,
-        **{key: sorted(value) for key, value in used_sets.items()},
-        "retrievalOutcome": usage.retrieval_outcome,
-        "noRawQuery": True,
-        "noRawMatureBuildMaterial": True,
+
+def _validate_premise_decisions(
+    *,
+    usage: models.ResearchMemoryUse,
+    receipts: list[dict[str, Any]],
+) -> tuple[str | None, dict[str, Any] | None]:
+    selected_family_keys = set(usage.build_family_keys)
+    catalog: dict[str, dict[str, Any]] = {}
+    premise_audit_available = False
+    for receipt in receipts:
+        result = receipt.get("result") or {}
+        if result.get("premiseAuditVersion") == 1:
+            premise_audit_available = True
+        for item in result.get("familyPremiseCatalog") or []:
+            if not isinstance(item, dict):
+                continue
+            family_key = str(item.get("buildFamilyKey") or "")
+            if selected_family_keys and family_key not in selected_family_keys:
+                continue
+            premise_id = str(item.get("premiseId") or "")
+            if not premise_id:
+                continue
+            previous = catalog.get(premise_id)
+            if previous is not None and previous != item:
+                return "progression_research_premise_receipt_conflict", None
+            catalog[premise_id] = item
+
+    if catalog and usage.premise_audit_version != 1:
+        return "progression_research_premise_audit_required", None
+    if usage.premise_audit_version == 1 and not premise_audit_available:
+        return "progression_research_premise_catalog_missing", None
+
+    decisions = {item.premise_id: item for item in usage.premise_decisions}
+    if any(premise_id not in catalog for premise_id in decisions):
+        return "progression_research_premise_not_in_receipt", None
+    required_failure_ids = {
+        premise_id
+        for premise_id, item in catalog.items()
+        if item.get("premiseType") == "failure_condition"
     }
-    if _unsafe(summary):
-        return "progression_research_provenance_unsafe", None
-    return None, summary
+    if not required_failure_ids.issubset(decisions):
+        return "progression_research_premise_decision_incomplete", None
+
+    deep_read_ids = _result_ids(receipts, "deepReadRecordIds")
+    for decision in decisions.values():
+        if decision.decision != "resolved":
+            continue
+        resolution_records = {ref for ref in decision.resolution_refs if ref.startswith("drr-")}
+        if not resolution_records or not resolution_records.issubset(deep_read_ids):
+            return "progression_research_resolution_not_deep_read", None
+
+    serialized = [
+        item.model_dump(mode="json", by_alias=True)
+        for item in sorted(usage.premise_decisions, key=lambda value: value.premise_id)
+    ]
+    return (
+        None,
+        {
+            "premiseDecisions": serialized,
+            "premiseDecisionIds": sorted(decisions),
+            "caveatedPremiseIds": sorted(
+                item.premise_id for item in usage.premise_decisions if item.decision == "caveated"
+            ),
+        },
+    )
 
 
 def receipt_matches_identity_query(

@@ -17,7 +17,9 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from ..knowledge import db, itemparse
+from ..knowledge import db, item_legality
+from ..judge import hard_legality
+from ..runtime import craft_receipts
 from .engine import PobEngine
 
 _RANGE = re.compile(r"\((\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\)")
@@ -86,9 +88,17 @@ def _item_text(base: str, lines: list[str], slot: str, *, ilvl: int | None = Non
     return f"Rarity: Rare\nOptimized {slot}\n{base}\n{level_line}--------\n{body}"
 
 
-def _generated_item_legality(raw: str) -> dict[str, Any]:
+def _generated_item_legality(
+    raw: str,
+    *,
+    prepared_receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run the exact deterministic legality audit used by completeness and final artifacts."""
-    return itemparse.audit_item_legality(raw)
+    return item_legality.audit_item(
+        raw,
+        prepared_receipt=prepared_receipt,
+        require_special_provenance=True,
+    )
 
 
 def _craft_summary(
@@ -141,6 +151,7 @@ def optimize_item(
     keep_resists_capped: bool = True,
     goals: dict[str, float] | None = None,
     extra_mods: dict[str, list[dict[str, Any]]] | None = None,
+    special_affix_sources: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare for a single `metric`, or a weighted blend via `goals`.
 
@@ -204,6 +215,10 @@ def optimize_item(
         return {"ok": False, "error": f"No craftable affixes found for base '{base}'."}
 
     snapshot = engine.get_xml()
+    before_equipped_slots = _equipped_slots(build)
+    before_whole_build_legality = hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(build, snapshot)
+    )
     try:
         before_vals = engine.get_stats(keys)["stats"]
         before_missing = (
@@ -291,7 +306,32 @@ def optimize_item(
 
         chosen = chosen_pre + chosen_suf
         final = _item_text(base, lines(), slot, ilvl=ilvl)
-        legality = _generated_item_legality(final)
+        selected_special_sources = [
+            special_affix_sources[line]
+            for line in lines()
+            if special_affix_sources and line in special_affix_sources
+        ]
+        prepared_receipt = (
+            craft_receipts.prepare_receipt(
+                final,
+                slot=slot,
+                item_level=ilvl,
+                perfect_essences=selected_special_sources,
+                runtime_context=craft_receipts.current_runtime_context(
+                    getattr(engine, "info", None)
+                ),
+            )
+            if selected_special_sources
+            else None
+        )
+        legality = (
+            _generated_item_legality(
+                final,
+                prepared_receipt=prepared_receipt,
+            )
+            if prepared_receipt is not None
+            else _generated_item_legality(final)
+        )
         if not legality.get("ok"):
             return {
                 "ok": False,
@@ -305,8 +345,55 @@ def optimize_item(
                 "legalityCheck": legality,
             }
         engine.add_item(final, slot=slot)
+        candidate_xml = engine.get_xml()
+        candidate_build = engine.get_build()
+        after_equipped_slots = _equipped_slots(candidate_build)
+        slot_regressions = sorted(before_equipped_slots - after_equipped_slots)
+        whole_build_legality = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(
+                candidate_build,
+                candidate_xml,
+                item_legality_overrides={slot: legality},
+            )
+        )
+        legality_regression = hard_legality.compare_audits_for_regression(
+            before_whole_build_legality,
+            whole_build_legality,
+        )
+        rejection_reasons = [
+            *(
+                [{"code": "equipped_slot_regression", "slots": slot_regressions}]
+                if slot_regressions
+                else []
+            ),
+            *legality_regression["reasons"],
+        ]
+        if rejection_reasons:
+            return {
+                "ok": False,
+                "errorCode": "whole_build_legality_check_failed",
+                "error": (
+                    "The optimized item made the complete character illegal and was discarded."
+                ),
+                "slot": slot,
+                "base": base,
+                "rejectedCandidate": final,
+                "rejectionReasons": rejection_reasons,
+                "wholeBuildLegality": whole_build_legality,
+                "legalityRegression": legality_regression,
+                "slotRegression": {
+                    "beforeCount": len(before_equipped_slots),
+                    "afterCount": len(after_equipped_slots),
+                    "missingSlots": slot_regressions,
+                },
+            }
         after_vals = engine.get_stats(keys)["stats"]
         warnings = []
+        if whole_build_legality.get("hardFailures") and not legality_regression["regressed"]:
+            warnings.append(
+                "the candidate did not introduce or worsen deterministic legality failures, "
+                "but the diagnostic baseline already has unresolved hard-legality blockers"
+            )
         if keep_resists_capped:
             after_missing = engine.get_defenses().get("resistMissing") or {}
             # A resist "broke" if it was at/above cap before (0 points missing) and is below cap
@@ -345,6 +432,13 @@ def optimize_item(
         "itemLevel": ilvl,
         "item": final,
         "legalityCheck": legality,
+        "wholeBuildLegality": whole_build_legality,
+        "legalityRegression": legality_regression,
+        "slotRegression": {
+            "beforeCount": len(before_equipped_slots),
+            "afterCount": len(after_equipped_slots),
+            "missingSlots": [],
+        },
         "affixes": [x["line"] for x in chosen],
         "attainability": [
             {"affix": c["line"], "ilvl": c.get("ilvl", 0), "tiers": c.get("tiers", 1)}
@@ -367,6 +461,17 @@ def optimize_item(
         out["metricBefore"] = _round2(before_vals.get(metric))
         out["metricAfter"] = _round2(after_vals.get(metric))
     return out
+
+
+def _equipped_slots(build: dict[str, Any]) -> set[str]:
+    gear = build.get("gear") if isinstance(build, dict) else None
+    if not isinstance(gear, dict):
+        return set()
+    return {
+        str(slot)
+        for slot, item in gear.items()
+        if (isinstance(item, dict) and bool(item)) or (isinstance(item, str) and bool(item.strip()))
+    }
 
 
 _UPGRADE_SLOTS = (
@@ -402,11 +507,22 @@ def rank_upgrades(
     candidate_slots = list(slots) if slots else list(_UPGRADE_SLOTS)
     ranked: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    rejected: list[dict[str, Any]] = []
     for slot in candidate_slots:
         r = optimize_item(
             engine, slot, metric=metric, goals=goals, rolls=rolls, keep_resists_capped=True
         )
         if not r.get("ok"):
+            if r.get("errorCode") == "whole_build_legality_check_failed":
+                rejected.append(
+                    {
+                        "slot": slot,
+                        "errorCode": r["errorCode"],
+                        "rejectionReasons": r.get("rejectionReasons") or [],
+                        "wholeBuildLegality": r.get("wholeBuildLegality"),
+                        "slotRegression": r.get("slotRegression"),
+                    }
+                )
             skipped.append({"slot": slot, "reason": str(r.get("error", "no craftable affixes"))})
             continue
         entry: dict[str, Any] = {"slot": slot, "affixes": r["affixes"], "item": r["item"]}
@@ -443,6 +559,7 @@ def rank_upgrades(
         "goals": goals or None,
         "ranked": ranked[:top],
         "skipped": skipped,
+        "rejected": rejected,
         "note": (
             "Each slot recrafted independently to its best for the goal, ranked by the gain over "
             "your CURRENT item there — upgrade the top slot first. Gains are NOT additive (crafting "

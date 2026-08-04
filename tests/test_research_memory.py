@@ -762,6 +762,10 @@ def test_query_receipt_preserves_typed_identity_and_safe_result_ids(tmp_path):
         "patternIds": [],
         "semanticEdgeIds": [],
         "memoryItemIds": [],
+        "deepReadRecordIds": [],
+        "familyRecordCoverage": [],
+        "familyPremiseCatalog": [],
+        "premiseAuditVersion": None,
     }
     assert receipt["noRawQuery"] is True
     assert "Plan a target Family." not in str(receipt)
@@ -1011,6 +1015,239 @@ def test_family_summary_indexes_record_kinds_for_targeted_recall(tmp_path):
     assert targeted["requestedRecordKinds"] == ["rotation"]
     assert invalid["status"] == "error"
     assert invalid["errorCode"] == "invalid_record_kinds"
+
+
+def test_exact_family_query_indexes_the_seventh_critical_record_and_allows_exact_deep_read(
+    tmp_path,
+):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode(
+                    "skill:FlickerStrikePlayer",
+                    "active_skill",
+                    "Flicker Strike",
+                    ("fixture:phase4",),
+                ),
+                pg.GraphNode(
+                    "skill:HollowFocusPlayer",
+                    "active_skill",
+                    "Hollow Focus",
+                    ("fixture:phase4",),
+                ),
+                pg.GraphNode(
+                    "skill:KillingPalmPlayer",
+                    "active_skill",
+                    "Killing Palm",
+                    ("fixture:phase4",),
+                ),
+            ]
+        ),
+    )
+    record_kinds = [
+        "mechanic_chain",
+        "rotation",
+        "resource_engine",
+        "passive_package",
+        "defense_engine",
+        "design_tradeoff",
+        "failure_mode",
+    ]
+    records: list[dict] = []
+    for index, record_kind in enumerate(record_kinds):
+        is_boss_failure = index == len(record_kinds) - 1
+        payload = _deep_record_payload(
+            f"{record_kind} 记录用于验证同一 Family 的完整知识索引与定向深读。"
+        )
+        record = payload["deep_research_records"][0]
+        record["research_group_id"] = "research:flicker-coverage"
+        record["record_kind"] = record_kind
+        record["title"] = (
+            "无小怪 Boss 的 Hollow Focus 充能替代链"
+            if is_boss_failure
+            else f"Flicker coverage {record_kind}"
+        )
+        record["summary"] = (
+            "Killing Palm 不能单独保证健康 Boss 的起始球，需定向验证 Hollow Focus 替代链。"
+            if is_boss_failure
+            else f"Flicker {record_kind} 的安全摘要。"
+        )
+        record["component_keys"] = [
+            "skill:FlickerStrikePlayer",
+            *(
+                ["skill:HollowFocusPlayer"]
+                if record_kind == "mechanic_chain" or is_boss_failure
+                else []
+            ),
+            *(["skill:KillingPalmPlayer"] if is_boss_failure else []),
+        ]
+        record["component_mentions"] = [
+            {
+                "candidate_name": "Flicker Strike",
+                "role": "primary_damage",
+                "resolver_query": "skill:FlickerStrikePlayer",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:FlickerStrikePlayer",
+                "resolution_status": "resolved",
+            },
+            *(
+                [
+                    {
+                        "candidate_name": "Hollow Focus",
+                        "role": "boss_skill",
+                        "resolver_query": "skill:HollowFocusPlayer",
+                        "expected_node_types": ["active_skill"],
+                        "scope": "player",
+                        "component_key": "skill:HollowFocusPlayer",
+                        "resolution_status": "resolved",
+                    }
+                ]
+                if record_kind == "mechanic_chain" or is_boss_failure
+                else []
+            ),
+            *(
+                [
+                    {
+                        "candidate_name": "Killing Palm",
+                        "role": "generator",
+                        "resolver_query": "skill:KillingPalmPlayer",
+                        "expected_node_types": ["active_skill"],
+                        "scope": "player",
+                        "component_key": "skill:KillingPalmPlayer",
+                        "resolution_status": "resolved",
+                    }
+                ]
+                if is_boss_failure
+                else []
+            ),
+        ]
+        record["source_case_refs"] = [f"case:flicker-coverage-{index}"]
+        record["safe_evidence_refs"] = [f"safe:flicker-coverage:{index}"]
+        record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        record["conditions"] = (
+            ["Hollow Focus 已启用且可生成 Power Charge"]
+            if is_boss_failure
+            else [f"{record_kind} 前提已验证"]
+        )
+        record["failure_conditions"] = (
+            ["无小怪 Boss 中 Power Charge 枯竭"] if is_boss_failure else [f"{record_kind} 失败条件"]
+        )
+        records.append(record)
+
+    accepted = service.propose_deep_research_records(
+        {
+            "schema_version": 5,
+            "deep_research_records": records,
+        }
+    )
+    assert accepted["status"] == "accepted", accepted
+    assert len(accepted["buildFamilyKeys"]) == 1
+    family_key = accepted["buildFamilyKeys"][0]
+    record_ids = list(accepted["recordIds"])
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        boss_record_id = str(
+            con.execute(
+                "SELECT record_id FROM deep_research_records WHERE title = ?",
+                ("无小怪 Boss 的 Hollow Focus 充能替代链",),
+            ).fetchone()["record_id"]
+        )
+        for index, record_id in enumerate(record_ids):
+            con.execute(
+                "UPDATE deep_research_records SET evidence_count = ? WHERE record_id = ?",
+                (10 + index, record_id),
+            )
+        con.execute(
+            "UPDATE deep_research_records SET evidence_count = 1 WHERE record_id = ?",
+            (boss_record_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    first_page = service.query_research_memory(
+        "",
+        build_family_keys=[family_key],
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+        limit=6,
+    )
+
+    assert len(first_page["deepResearchRecords"]) == 6
+    coverage = first_page["familyRecordCoverage"][0]
+    assert coverage["eligibleRecordCount"] == 7
+    assert coverage["returnedRecordCount"] == 6
+    assert coverage["unreturnedRecordCount"] == 1
+    assert coverage["responseComplete"] is False
+    assert len(first_page["familyRecordIndex"]) == 1
+    omitted = first_page["familyRecordIndex"]
+    assert [row["recordId"] for row in omitted] == [boss_record_id]
+    assert set(omitted[0]["componentKeys"]) >= {
+        "skill:FlickerStrikePlayer",
+        "skill:HollowFocusPlayer",
+        "skill:KillingPalmPlayer",
+    }
+    failure_premises = [
+        row
+        for row in first_page["familyPremiseCatalog"]
+        if row["premiseType"] == "failure_condition"
+    ]
+    assert any(row["text"] == "无小怪 Boss 中 Power Charge 枯竭" for row in failure_premises)
+
+    targeted_failure = service.query_research_memory(
+        "无小怪 Boss 中 Power Charge 枯竭",
+        build_family_keys=[family_key],
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+        limit=1,
+    )
+    assert [row["recordId"] for row in targeted_failure["deepResearchRecords"]] == [boss_record_id]
+
+    receipt = service.read_query_receipt(first_page["dedupeQueryRef"])
+    assert receipt is not None
+    assert receipt["result"]["familyRecordCoverage"] == first_page["familyRecordCoverage"]
+    assert receipt["result"]["familyPremiseCatalog"] == first_page["familyPremiseCatalog"]
+
+    discovery = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:monk",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+    discovered_family = next(
+        row for row in discovery["buildFamilies"] if row["buildFamilyKey"] == family_key
+    )
+    kind_by_id = {
+        row["recordId"]: row["recordKind"]
+        for row in [
+            *first_page["deepResearchRecords"],
+            *first_page["familyRecordIndex"],
+        ]
+    }
+    assert {kind_by_id[record_id] for record_id in discovered_family["supportingRecordIds"]} == {
+        "mechanic_chain",
+        "rotation",
+        "resource_engine",
+        "failure_mode",
+    }
+
+    exact_deep_read = service.query_research_memory(
+        "",
+        build_family_keys=[family_key],
+        record_ids=record_ids,
+        detail_level="record",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+        limit=1,
+    )
+    assert {row["recordId"] for row in exact_deep_read["deepResearchRecords"]} == set(record_ids)
+    deep_receipt = service.read_query_receipt(exact_deep_read["dedupeQueryRef"])
+    assert deep_receipt is not None
+    assert set(deep_receipt["result"]["deepReadRecordIds"]) == set(record_ids)
 
 
 def test_deep_record_resolution_enrichment_updates_existing_knowledge_unit(tmp_path):
@@ -3237,3 +3474,149 @@ def test_still_valid_revalidation_does_not_promote_unsafe_semantic_edge(tmp_path
         assert row["planner_visible"] == 0
     finally:
         con.close()
+
+
+def _seed_family_discovery_service(tmp_path, count: int):
+    skill_nodes = [
+        pg.GraphNode(
+            f"skill:FamilyDiscovery{i:02d}",
+            "active_skill",
+            f"Family Discovery Skill {i:02d}",
+            ("fixture:phase4",),
+        )
+        for i in range(count)
+    ]
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode("class:monk", "class", "Monk", ("fixture:phase4",)),
+                *skill_nodes,
+            ]
+        ),
+    )
+    record_ids: list[str] = []
+    for index, node in enumerate(skill_nodes):
+        payload = _deep_record_payload(
+            f"Family {index:02d} 的机制闭环条件必须在目标 Create 中独立验证。"
+        )
+        record = payload["deep_research_records"][0]
+        record["research_group_id"] = f"research:family-discovery-{index:02d}"
+        record["record_kind"] = "skill_package"
+        record["title"] = f"Family discovery {index:02d}"
+        record["summary"] = f"Family {index:02d} 的轻量候选证据。"
+        record["component_keys"] = [node.stable_key]
+        record["component_mentions"] = [
+            {
+                "candidate_name": node.display_name,
+                "role": "primary_damage",
+                "resolver_query": node.display_name,
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": node.stable_key,
+                "resolution_status": "resolved",
+            }
+        ]
+        record["source_case_refs"] = [f"case:family-discovery-{index:02d}"]
+        record["safe_evidence_refs"] = [f"safe:family-discovery:{index:02d}"]
+        record["conditions"] = [f"family {index:02d} premise"]
+        record["failure_conditions"] = [f"family {index:02d} failure"]
+        record["class_key"] = "class:monk"
+        record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        accepted = service.propose_deep_research_records(payload)
+        assert accepted["status"] == "accepted", accepted
+        record_ids.append(accepted["recordIds"][0])
+    return service, record_ids
+
+
+def test_family_discovery_returns_top_ten_and_persists_exact_typed_receipt(tmp_path):
+    service, record_ids = _seed_family_discovery_service(tmp_path, 12)
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        for index, record_id in enumerate(record_ids):
+            con.execute(
+                "UPDATE deep_research_records SET evidence_count = ? WHERE record_id = ?",
+                (index + 1, record_id),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:monk",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert result["familyDiscovery"] == {
+        "requestedCandidateCount": 10,
+        "returnedCandidateCount": 10,
+        "coverage": "sufficient",
+        "exactVersionOnly": True,
+        "didNotBackfillWithStaleFamilies": True,
+    }
+    assert [row["evidenceCount"] for row in result["buildFamilies"]] == list(range(12, 2, -1))
+    assert all("content" not in row for row in result["buildFamilies"])
+    receipt = service.read_query_receipt(result["dedupeQueryRef"])
+    assert receipt is not None
+    assert receipt["request"]["detailLevel"] == "family"
+    assert receipt["request"]["classKey"] == "class:monk"
+    assert receipt["request"]["gamePatch"] == "0.5.4"
+    assert receipt["request"]["passiveTreeVersion"] == "0_5"
+    assert {row["buildFamilyKey"] for row in receipt["result"]["buildFamilies"]} == {
+        row["buildFamilyKey"] for row in result["buildFamilies"]
+    }
+
+
+def test_family_discovery_returns_all_when_database_has_fewer_than_ten(tmp_path):
+    for count, expected_coverage in ((9, "sufficient"), (4, "limited"), (1, "insufficient")):
+        service, _record_ids = _seed_family_discovery_service(tmp_path / str(count), count)
+        result = service.query_research_memory(
+            "",
+            detail_level="family",
+            class_key="class:monk",
+            game_patch="0.5.4",
+            passive_tree_version="0_5",
+        )
+        assert len(result["buildFamilies"]) == count
+        assert result["familyDiscovery"]["returnedCandidateCount"] == count
+        assert result["familyDiscovery"]["coverage"] == expected_coverage
+
+
+def test_family_discovery_never_backfills_wrong_class_patch_or_status(tmp_path):
+    service, record_ids = _seed_family_discovery_service(tmp_path, 5)
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        con.execute(
+            "UPDATE deep_research_records SET game_patch = '0.5.3' WHERE record_id = ?",
+            (record_ids[0],),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET passive_tree_version = '0_4' WHERE record_id = ?",
+            (record_ids[1],),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET status = 'needs_revalidation' WHERE record_id = ?",
+            (record_ids[2],),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET class_key = 'class:ranger' WHERE record_id = ?",
+            (record_ids[3],),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:monk",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert len(result["buildFamilies"]) == 1
+    assert result["familyDiscovery"]["coverage"] == "insufficient"
+    assert result["buildFamilies"][0]["primarySkillKey"] == "skill:FamilyDiscovery04"

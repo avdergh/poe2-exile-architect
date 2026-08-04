@@ -62,6 +62,67 @@ def _usage() -> dict[str, object]:
     }
 
 
+def _premise_receipt(*, deep_read_ids: list[str] | None = None) -> dict[str, object]:
+    receipt = _receipt()
+    receipt["result"].update(
+        {
+            "deepRecordIds": ["drr-failure-loop", "drr-alternative-loop"],
+            "deepReadRecordIds": list(deep_read_ids or []),
+            "familyRecordCoverage": [
+                {
+                    "buildFamilyKey": "family:target",
+                    "eligibleRecordCount": 2,
+                    "returnedRecordCount": 2,
+                    "unreturnedRecordCount": 0,
+                    "recordKindCounts": {"failure_mode": 1, "resource_engine": 1},
+                    "responseComplete": True,
+                }
+            ],
+            "familyPremiseCatalog": [
+                {
+                    "premiseId": "rp-0123456789abcdef",
+                    "buildFamilyKey": "family:target",
+                    "evidenceRef": "drr-failure-loop",
+                    "recordKind": "failure_mode",
+                    "premiseType": "failure_condition",
+                    "text": "目标场景中原始资源生成方式会失效。",
+                    "componentKeys": ["skill:target-attack"],
+                }
+            ],
+            "premiseAuditVersion": 1,
+        }
+    )
+    return receipt
+
+
+def _premise_usage(
+    *,
+    decision: str = "resolved",
+    resolution_refs: list[str] | None = None,
+) -> dict[str, object]:
+    usage = _usage()
+    usage["deepRecordIds"] = ["drr-failure-loop", "drr-alternative-loop"]
+    usage["insightDecisions"] = [
+        {
+            "sourceRefs": ["drr-alternative-loop"],
+            "decision": "adopted",
+            "summary": "Adopt the deep-read alternative resource loop.",
+            "application": "Use the alternative only in the target scenario.",
+        }
+    ]
+    usage["premiseAuditVersion"] = 1
+    premise_decision: dict[str, object] = {
+        "premiseId": "rp-0123456789abcdef",
+        "decision": decision,
+        "resolutionRefs": list(resolution_refs or []),
+        "application": "Handle the target resource failure explicitly.",
+    }
+    if decision == "caveated":
+        premise_decision["caveat"] = "The target resource loop remains only partially verified."
+    usage["premiseDecisions"] = [premise_decision]
+    return usage
+
+
 def test_progression_research_provenance_accepts_exact_family_and_used_ids():
     error, summary = progression_provenance.validate_research_provenance(
         identity=IDENTITY,
@@ -151,3 +212,77 @@ def test_progression_research_family_must_match_confirmed_core_secondary_skills(
     )
 
     assert error == "progression_research_family_identity_mismatch"
+
+
+def test_progression_research_provenance_requires_every_failure_premise_decision():
+    usage = _premise_usage(
+        resolution_refs=["drr-alternative-loop"],
+    )
+    usage["premiseDecisions"] = []
+
+    error, _summary = progression_provenance.validate_research_provenance(
+        identity=IDENTITY,
+        research_memory_use=usage,
+        artifact_research_ref="dq-0000000000000001",
+        receipt_reader=lambda _ref: _premise_receipt(deep_read_ids=["drr-alternative-loop"]),
+    )
+
+    assert error == "progression_research_premise_decision_incomplete"
+
+
+def test_progression_research_provenance_rejects_a_resolution_seen_only_in_summary():
+    error, _summary = progression_provenance.validate_research_provenance(
+        identity=IDENTITY,
+        research_memory_use=_premise_usage(
+            resolution_refs=["drr-alternative-loop"],
+        ),
+        artifact_research_ref="dq-0000000000000001",
+        receipt_reader=lambda _ref: _premise_receipt(deep_read_ids=[]),
+    )
+
+    assert error == "progression_research_resolution_not_deep_read"
+
+
+def test_progression_research_provenance_rejects_a_forged_premise_receipt_id():
+    usage = _premise_usage(
+        resolution_refs=["drr-alternative-loop"],
+    )
+    usage["premiseDecisions"][0]["premiseId"] = "rp-fedcba9876543210"
+
+    error, _summary = progression_provenance.validate_research_provenance(
+        identity=IDENTITY,
+        research_memory_use=usage,
+        artifact_research_ref="dq-0000000000000001",
+        receipt_reader=lambda _ref: _premise_receipt(deep_read_ids=["drr-alternative-loop"]),
+    )
+
+    assert error == "progression_research_premise_not_in_receipt"
+
+
+def test_progression_research_provenance_accepts_any_deep_read_alternative_solution():
+    error, summary = progression_provenance.validate_research_provenance(
+        identity=IDENTITY,
+        research_memory_use=_premise_usage(
+            resolution_refs=["drr-alternative-loop"],
+        ),
+        artifact_research_ref="dq-0000000000000001",
+        receipt_reader=lambda _ref: _premise_receipt(deep_read_ids=["drr-alternative-loop"]),
+    )
+
+    assert error is None
+    assert summary is not None
+    assert summary["premiseDecisionIds"] == ["rp-0123456789abcdef"]
+    assert summary["caveatedPremiseIds"] == []
+
+
+def test_progression_research_provenance_preserves_an_explicit_premise_caveat():
+    error, summary = progression_provenance.validate_research_provenance(
+        identity=IDENTITY,
+        research_memory_use=_premise_usage(decision="caveated"),
+        artifact_research_ref="dq-0000000000000001",
+        receipt_reader=lambda _ref: _premise_receipt(),
+    )
+
+    assert error is None
+    assert summary is not None
+    assert summary["caveatedPremiseIds"] == ["rp-0123456789abcdef"]

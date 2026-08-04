@@ -116,6 +116,12 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `dedupeQueryRef`、定向查询使用的 stable component keys、命中的 Build Family / 深度记录 /
   pattern / semantic edge，以及每条研究结论被采用、保留或拒绝后如何影响候选。无匹配可以显式
   记录 `no_matching_memory`，不能用空泛工具调用冒充记忆已参与设计。
+  选中 Family 的查询若返回 `familyPremiseCatalog`，还必须使用
+  `premiseAuditVersion=1 + premiseDecisions` 覆盖全部关键失败 premise。每项 decision 为
+  `resolved / caveated / not_applicable`：resolved 必须引用本轮
+  `detail_level="record"` 回执实际出现的 DeepResearchRecord；caveated 必须保存具体风险；
+  not_applicable 必须说明当前候选为何不受影响。普通单阶段 Create 与 progression target 使用
+  同一 receipt 审计器。
 - `TransientBuildStateRef`：由 `evaluate_generation_candidate` 从真实活动 PoB 快照生成的临时
   构筑状态引用；对外和持久报告里只能出现不透明本地引用、摘要和安全 hash，不能
   展开 PoB 导入码、原始 XML、第三方成熟 BD 的完整装备表、完整天赋路径或原始技能连接。
@@ -123,7 +129,11 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   全部主动技能及数量、辅助技能和启用状态，使蓝耗、Spirit、伤害和可建模性结论可复核。新评估
   同时带 `semanticStateHash`，用于判断 PoB 派生输出刷新前后是否仍是同一构筑输入。
   `mainSocketGroup` 只标记 PoB 当前计算组，不声明整个 BD 只有一个主技能。
-- `JudgeAdvisoryReport`：Phase 1 Judge 生成的参考评估。它表达硬阻断、分数、证据等级、可建模
+- `JudgeAdvisoryReport`：Phase 1 Judge 生成的参考评估，新增 `feedbackMode` 与
+  `subjectiveFeedbackSuppressed`。新 Create 默认写 `hard_only/true`，只保留硬阻断、`passed`、
+  快照绑定、实际选择技能、技能组和属性缺口等确定性诊断；aggregate、score vector、quality
+  band、playability/quality warning、reward、offense floor、modelability/score caveat 必须为空。
+  用户手动传 `strict_mode=true` 时写 `strict/false`，才表达硬阻断、分数、证据等级、可建模
   注意事项和失败原因；可信报告还应提供 Judge 实际选择的技能、选中技能组的安全插槽诊断和
   属性缺口摘要，使 Agent 与人工能定位硬阻断。条件性内部效果作为 supplemental component 单独
   记录，不能因没有普通宝石插槽被判非法。`offenseEvidence` 保存脱敏的 raw/effective DPS、
@@ -140,11 +150,32 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `errorCode`，并且不能携带构筑 `hardFailures`。`trustedEvaluationScope` 固定为
   `snapshot_and_judge_only`，`versionContextTrusted=false`；这表示程序签住快照和 Judge 结果，
   不表示调用者传入的赛季、补丁、图或记忆版本已经获得程序签名。
+  同一 run 的首个可信 attempt 会锁定反馈模式；后续 attempt 请求另一模式时返回
+  `judge_feedback_mode_mismatch` 和 `attemptConsumed=false`，不消耗三次 Judge 额度。
+- `HardLegalityAudit`：不含强度评分的共享确定性合法性结果，由 checkpoint、正式 Judge、
+  `optimize_item` / `rank_upgrades` 和 artifact 保存共同复用。字段包括
+  `auditVersion / hardLegalityReady / hardFailures / checks / sourceContext`；checks 分别记录
+  职业/升华、属性差额、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/武器组天赋预算和
+  已装备词缀合法性。`inspect_generation_checkpoint` v2 另外把
+  `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge` 分开返回。预检失败
+  必须带 `attemptConsumed=false`，不能写 Judge attempt receipt。装备候选比较同时保留换装前后
+  两份审计：新增或加重确定性错误的候选必须拒绝；诊断用基础构筑本来就存在且未被候选加重的
+  错误继续披露，但不能被错误归因为本次换装。
+- `CraftLegalityReceipt`：由服务端根据当前 PoB `crafting_options` 签发的本地、raw-free、
+  content-addressed 制作来源凭据。它绑定底材、槽位类型、物品等级、PoB/数据版本、原始与 PoB
+  round-trip 语义指纹，以及 Perfect Essence、符文和腐化选项的安全哈希；不保存完整物品文本。
+  `craft_item` 只有在最终物品和 PoB 写回态都通过共享来源感知审计后才持久化 receipt，并返回
+  `craftReceiptRef`。`equip_item` 与 `FunctionalBuildMutationBatch.equip_item` 可携带该引用；
+  引用、物品、槽位或版本不一致时失败关闭。普通黄装不需要 receipt；第三方特殊来源无 receipt
+  时只保留未验证诊断，不能授权新的生成 artifact。
 - `HumanReviewPacket`：供人工验收使用的安全报告。至少包含用户需求摘要、Agent 改写后的提示词
   或 `BuildBrief` 摘要、候选 BD 摘要、使用过的查询和工具引用、Judge 状态、硬阻断、注意事项、
   人工评分字段和是否建议进入下一阶段。`lifecycleEvidenceCoverage` 只根据最终可信 snapshot
   标出至多一个 `evaluatedStage`，其余候选声明阶段进入 `textOnlyStages`，不得把一轮 Judge
   误写成完整生命周期验证。
+  多 attempt 的可信 Review 必须从 `artifact-selection.json` 继承
+  `selectedAttemptIndex / artifactSelectionOutcome`；不得默认为最后一轮。单 attempt 与旧版
+  无 selection receipt 的包保持兼容。
 - `ToolFeedbackEvent`：开发/验收反馈，用于记录 Judge/工具无法评估、误判、覆盖缺口或接口难用；
   它不自动调整 graph / memory 权重，不自动放宽安全边界，也不自动改变工具行为。
 - `FailureAuditSummary`：Agent 对某一轮 Judge 结果的可审查结论摘要，绑定本轮候选编号和快照编号，
@@ -154,8 +185,37 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   非最后一轮必须明确选择继续重试，最后一轮必须接受或说明停止原因。Agent 文件可以只提交
   attempt index、candidate 和 failure audit；helper 从连续、严格校验的本 run trusted receipts
   补全 state/Judge。显式提交可信字段时仍必须逐字段匹配 receipt。
-- `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它只比较同一用户请求下的安全摘要、
-  Judge 结果和人工可审查差异，不写奖励记忆，不做长期进化式学习。
+- `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它记录同一
+  `feedbackMode`。`hard_only` 不产生 `scoreDelta/score_improved/regressed-by-score`，人工字段只
+  复核硬合法性、重试范围和停止理由；`strict` 才保留分数变化和质量改善复核。它只比较同一用户请求下的安全摘要、
+  Judge 结果和人工可审查差异，不写奖励记忆，不做长期进化式学习。若后续质量探索失败但旧
+  passing baseline 被恢复，结果使用 `baseline_restored_after_regression`。
+
+### FunctionalBuildMutationBatch
+
+`apply_build_mutation_batch` 只接受单一职能的小事务，不是整套 BD 的通用大事务。`batchKind` 固定为：
+
+- `bootstrap`：一次 `set_class`、一次 `set_level`，可选首项 `new_build`，最多 3 步；
+- `mechanism_shell`：恰好一次主技能，加必要副技能与显式武器槽，最多 6 步；
+- `skill_loadout`：只增加已决定的次级技能组，最多 8 步；
+- `passive_delta`：精确天赋节点增删，最多 16 步；
+- `required_gear`：机制必需装备/珠宝，最多 4 步；
+- `ordinary_gear`：普通装备补全，最多 10 步；
+- `config`：一次配置提交。
+
+所有 scope 都禁止搜索和 optimizer，总请求体不得超过 128KB。装备和珠宝必须提供显式 slot/socket；
+批量 `equip_item` 使用 `craft_item` 特殊制作结果时还必须原样携带 `craftReceiptRef`；
+需要 skill-group fingerprint 的精确编辑继续使用独立 CAS 工具，不能混入批次。只有首项为
+`new_build` 的 bootstrap 可以省略 `expectedStateHash`；其余批次必须链入上一批
+`outputStateHash`。
+
+执行器只回滚当前职能批次，不修改此前已经提交的 scope。失败回执必须区分
+`attemptedOperationsBeforeFailure` 与 `persistedOperationCount`；只有 `rolledBack=true` 才能确认
+输入状态已恢复。`rolledBack=false` 时必须同时返回 `atomic=false` 和
+`recoveryRequired=true`；执行器标记该引擎并拒绝后续职能事务，只有显式从 `new_build` 开始的
+bootstrap 可以解除恢复状态。调用者不得继续把活动引擎当作可信状态。RPC 成功不等于构筑质量通过；
+每种 scope 只执行自己的轻量后置条件，完整性、资源闭环、数值和 lifecycle 仍由
+`inspect_generation_checkpoint`、Judge 与可信 lifecycle receipt 验证。
 
 P5.2 研究记忆对照不新增持久对照报告。现有创建入口支持 `--no-memory`：普通模式必须渐进查询
 研究记忆并填写 `ResearchMemoryUse`；无记忆模式禁止调用研究记忆、禁止填写该结构，但保留其他
@@ -261,9 +321,10 @@ P5.1 证据可信度边界：
   attack_skill_without_weapon、incompatible_weapon_skill_tags、spirit_budget_exceeded、
   invalid_class_ascendancy_pairing、invalid_socket_setup、support_limit_exceeded、
   duplicate_support_gem、invalid_support_gem、illegal_equipped_item_affixes；
-- playability failure codes：`severe_elemental_resistance_shortfall`、
+- playability failure codes：`severe_elemental_resistance_shortfall`（仅历史 artifact 兼容读取；
+  当前新 Judge 不再发出）、
   `below_playability_floor`、`catastrophic_defense_shortboard`；
-- quality warnings：`elemental_resistance_below_cap`、`negative_chaos_resistance`、各 offense / Max Hit
+- quality warnings：`elemental_resistance_below_cap`（仅历史兼容）、`negative_chaos_resistance`、各 offense / Max Hit
   quality target miss，以及生成候选 offense delivery evidence 为 limited/unavailable 时的
   `offense_delivery_not_established`；后者限制综合档位和最终交付，但不属于确定性非法。strong
   direct DPS 低于地板时使用 `below_playability_floor`，不复用 delivery warning；
@@ -774,12 +835,30 @@ Phase 6 MVP 不要求自动生成 `level_interval` 或多阶段生命周期。�
 - 当前临时交付策略只要求可信 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效；
   playability failure、`barely_playable`、分数不可用或 offense 为 0 等非硬性结论不阻止创建和
   导出，但必须随 artifact 保留并在用户输出中明确披露，不能据此宣称质量通过；
-- Judge 的精确 XML 只在当前 MCP 进程内短暂保留，不写进 run receipt；保存时重新读取活动 PoB，
-  用 `semanticStateHash` 拒绝真实构筑变化，再把进程内保留的精确 Judge 快照写入 artifact；
+- 每个 Judge passed 且 `HardLegalityAudit.hardLegalityReady=true` 的 attempt 都可成为 passing
+  baseline。`save_final_build_artifact(attempt_index)` 可以选择任意仍可信的 passing attempt，
+  不再机械要求最后一轮；
+- Judge 的精确 XML 只在当前 MCP 进程内短暂保留，不写进 run receipt；保存最新 attempt 时仍
+  重新读取活动 PoB，用 `semanticStateHash` 拒绝真实构筑变化。保存旧 passing attempt 时不要求
+  活动 PoB 回退，但必须使用内存中该轮精确快照和同 state hash 的合法性回执；
 - `PlayerStat`、`FullDPSSkill` 等派生输出刷新不算构筑变化；如果进程内精确快照已经丢失且原始
   XML hash 也不再一致，保存必须以 `trusted_evaluation_snapshot_unavailable` 失败关闭并要求重新
   评估，不能把新 XML 冒充 Judge 快照；
 - 每个生成运行最多一个 artifact，不覆盖；
+- 选择旧 attempt 必须提交有界 `selectionReason`，并证明后续发现仅为
+  `laterFindingsScope=candidate_delta_only`。若后续问题影响旧 baseline、范围未知、精确快照因
+  进程重启丢失或 Judge/合法性绑定不一致，必须失败关闭；
+- 质量增量也可能在共享合法性预检中被拒绝，因此不会产生新的 Judge attempt。此时保存器仍须
+  检测到活动状态已经偏离 passing baseline，并只在 `selectionReason` 与
+  `laterFindingsScope=candidate_delta_only` 明确、旧快照仍在进程内且绑定一致时恢复 baseline；
+  不能因为“最后一条 Judge receipt 仍然是 passing attempt”而误把当前非法活动状态当成该快照；
+- 保存写入 raw-free `ArtifactSelectionReceipt`，记录实际 attempt、state hash、Judge snapshot、
+  选择结果（包括 `baseline_restored_after_regression`）和 artifact id。review 与 retry report
+  以该 receipt 的实际保存 attempt 为最终候选，而不是最后一次 attempt；
+- review consumption 不属于构筑证据。正常顺序仍是先保存 artifact 再 review；若旧任务误先消费
+  review，保存仅可在 run token、实际选择的 candidate/attempt、精确 Judge snapshot 和语义
+  `build_state_hash` 全部一致时恢复，并返回 `orderingRecovery.reviewAlreadyConsumed=true`。
+  这不能绕过任何 trusted evaluation 或完整度检查；
 - 失败轮次不保存完整 PoB XML；
 - XML 只能存在本地 artifact store，不能进入 `HumanReviewPacket`、聊天、研究记忆或 Git；
 - artifact 必须能在 MCP 重启后重新载入 Headless PoB。
@@ -810,20 +889,57 @@ supported。
 packet 以 base class + 精确 patch + tree version 缓存七天；同赛季但版本不一致或过期时只能作为
 stale candidate，跨赛季不能采用。它不进入 Research SQLite 或 Learning Memory。
 
-## TargetAnchorCreatePacket / TargetDesignCoverage
+## TargetCandidateSelection / TargetAnchorCreatePacket / TargetDesignCoverage
 
-`start_build_progression` 首先返回 `TargetAnchorCreatePacket`，要求 Agent 使用普通单阶段 Create
-从空状态生成目标 BD。必要字段包括 progression id、base class、target level、goal、版本事实，
-以及固定策略：
+用户未锁定唯一目标时，`start_build_progression` 首先返回
+`TargetCandidateSelectionPacket`，其中 `candidateCountRequested=10`、最少 2、最多 10，并携带
+`classKey` 与可选升华/主技能/Family 硬过滤条件。Agent 使用
+`query_research_memory(detail_level="family", class_key, game_patch, passive_tree_version)` 获取
+轻量 Family 集合和 typed receipt。
+
+Family discovery 只接受当前精确 patch/tree 下由 `creator_visible + train_context +
+copy-safety passed + status=valid` 深度记录支持的成熟 Family。返回按证据量、record kind 覆盖和
+记录数排序；超过 10 个取前 10 个，不足 10 个返回全部，不用旧 patch、stale 或自由拼装 Family
+补数。5–10 个为充分覆盖，2–4 个为有限覆盖，少于 2 个时 progression 暂停并报告 Research
+缺口。
+
+`TargetCandidateSelection` 接受 2–10 个 `MinimalTargetCandidate`，必须覆盖 discovery receipt
+实际返回的全部 Family。每项带真实 `buildFamilyKey`、同一个 `familyDiscoveryRef`、精确
+ascendancy/primary/secondary identity 和安全摘要；候选集合、身份与数据库 receipt 必须逐项一致，
+不能删改或补造。`candidateRanking` 是完整排列，第一名 selected、第二名 reserve，并逐项比较
+`mechanism_closure / research_support / goal_fit_and_power_evidence / playability_risk /
+modelability`。modelability 不能在前三项均无优势时单独选择第一名。候选
+`globalOptimizerUsed=false`、`fullJudgeUsed=false`；不保存临时 PoB、完整装备/天赋或伪造数值。
+用户只指定升华/技能时作为硬过滤；用户提供完整唯一 `lockedIdentity + buildFamilyKey` 时跳过
+discovery，禁止备用切换。`submit_build_progression_target_selection` 选定一个候选后才返回
+`TargetAnchorCreatePacket`，要求 Agent 使用普通单阶段 Create 从空状态生成目标 BD。该 packet
+携带完整的安全 `selectedCandidate`（机制摘要、优势、风险和 evidence refs），并锁定所选候选
+id 与升华/主技能身份；同 Family 变体不会在候选选择后丢失。它还包含：
 
 - `createMode=standard_single_stage`；
 - `buildFromBlank=true`；
 - `researchMemoryPolicy=progressive_actual_queries`；
-- `judgePolicy=advisory_only`。
+- `judgePolicy=advisory_only`；
+- `globalOptimizerAllowed=false`；
+- `optimizationPolicy.mode=target_anchor_targeted`；
+- `passiveTreeOptimizationMode=manual_targeted`；
+- target level 低于 80 时 `judgeElementalResistancePolicy=diagnostic_only`；80 级及以上为
+  `judgeElementalResistancePolicy=endgame_minimums_60_30`（火/冰/电各 60%、非 CI 混沌抗
+  30%，CI 只豁免混沌抗）。
+- `LifecycleStageVerification` 的元素抗性检查以 artifact/活动 PoB 实际等级为唯一依据：45–64 级
+  火/冰/电各 30%，65–79 级各 50%，80–89 级各 60%；45 级以下和 90 级以上返回
+  `not_applicable`。stage label 与 caller `state.level` 不能覆盖真实 PoB 等级；Lifecycle 不检查
+  混沌抗，也不额外要求 75% 满抗。
 
 `TargetAnchorIdentity` 同时保存已解析的 ascendancy/primary/secondary stable key，以及升华、
-主技能和已确认核心副技能的规范名称。绑定时升华/主技能必须与 artifact safe summary 一致，
-每个核心副技能还必须真实出现在 artifact 的启用 `testedSkillGroups` 中。
+主技能和已确认核心副技能的 artifact 实际名称。stable key 是 Family 身份权威；Research
+候选 stable key 先由 typed Family discovery receipt 验证。候选展示名与 PoB safe summary
+名称不同时，artifact 使用的同一 `graphSnapshotId` 还必须把 artifact 名称唯一解析到该 stable
+key，绑定才可继续，并在 `identityAliasResolution` 保存组件职责、两个显示名、stable key、
+snapshot、证明模式和安全来源引用。Research Family 标题不必本身是物理图别名。artifact 名称
+缺图、歧义、跨 snapshot 或解析到不同 key 都失败关闭。绑定时 identity 中的升华/主技能名称仍
+必须与 artifact safe summary 一致，每个核心副技能还必须真实出现在 artifact 的启用
+`testedSkillGroups` 中。
 
 `TargetDesignCoverage` 恰好包含以下十个维度，每个维度只能出现一次：
 
@@ -840,6 +956,20 @@ anchor 的真实 `FinalBuildArtifact`，或其 Phase 5 run/source-hash 证据；
 冒充独立验证。`unavailable_with_caveat` 必须说明 caveat；任一维度为 `rejected` 时不能绑定
 target anchor。
 
+Progression 控制状态 schema v3 显式区分 `selection_pending / anchor_running / anchor_failed /
+anchor_paused / anchor_bound`。选定 Family 后必须用 `bind_build_progression_target_run` 绑定当前
+普通 Phase 5 run。工具、审批或控制中断可为同一 Family 打开一次外部 retry；这不替代 Phase 5
+内部三次正式 Judge。机制无法闭环、质量不可接受或证据不足时，只有 Agent 能基于安全证据显式
+切换一次 reserve Family，Judge 分数/warning 不能自动触发。`bind_build_progression_target_anchor`
+还要求 `accepted` 或 `limited_accepted`；后者 caveat 必须进入路线。只有 artifact、
+artifact-bound lifecycle 和 acceptance decision 同时完成后才成为 immutable anchor。
+
+启动时只有精确值 `graphSnapshotId=unavailable:pending_discovery` 可以在 target anchor 绑定时解析
+一次。最终值来自可信 target artifact，可以是具体 snapshot，也可以是非 pending 的
+`unavailable:<reason>`；其余版本字段不变。成功后原子更新 canonical version context、相关 packet
+并追加 `graphSnapshotResolution` 事件。已是具体 snapshot 的状态不能改变，也不能借解析失败创建
+第二条 progression 或消耗 target external retry。
+
 ## ResearchQueryReceipt
 
 `query_research_memory` 的 durable dedupe row 增加两个 copy-safe JSON contract：
@@ -847,8 +977,10 @@ target anchor。
 - `request_contract`：精确 ascendancy/primary skill、graph-backed gem/active-skill 等价
   `primarySkillKeys`、component keys、Family/record filters、axes、detail level 和 transferable
   开关；
-- `result_contract`：返回的 Family identity 以及 deep record、pattern、semantic edge、
-  fragment ID。
+- `result_contract`：返回的 Family identity、deep record、pattern、semantic edge、fragment ID；
+  精确 Family 查询还保存 `familyRecordCoverage`、`familyPremiseCatalog`、
+  `premiseAuditVersion` 和 `deepReadRecordIds`。`familyRecordIndex` 只作为当前响应中的未展开记录
+  导航，不持久化重复索引。
 
 receipt 不保存网页、PoB、成熟整角色或原始 query 文本。历史没有 typed contract 的 dedupe row
 仍可用于 Research proposal 去重，但不能授权新的 target anchor 或 progression stage。ref 的身份
@@ -857,17 +989,62 @@ Family identity 本身仍统一使用玩家 `active_skill` 的 `skill:` stable k
 查询别名。typed receipt 的等价 key 集合允许一次真实 gem 查询授权对应的 active-skill Family，
 但不能授权无图关系的任意 key 替换。
 
+## ProgressionWorkingCheckpoint / ResumePacket
+
+完整成长流程的临时语义工作集，独立于 progression 控制 revision、Research SQLite、Learning
+Memory 和最终 Route。它解决自动上下文压缩后“typed receipt 仍在，但 Agent 已忘记记录条件”的
+问题。
+
+`ProgressionWorkingCheckpoint` 包含：
+
+- `checkpointId`、可选当前 `stageId`、当前目标、`knowledgeMode`，以及与模式对应的
+  `FamilyIdentity` 或 `StarterStageIdentity`；
+- 最多 24 条 `RecalledEvidenceCheckpoint`：evidence ref、知识类型、标题、
+  `adopted/caveated/rejected`、实际应用、关键条件、失败条件、验证任务和验证引用；
+- `premiseDecisions`：premise ID、`resolved/caveated/not_applicable`、解决记录、
+  Create 应用方式、具体 caveat 和验证任务；resume packet 原样恢复，不依赖聊天历史；
+- `MechanismCheckpoint`：简短机制摘要、伤害/资源/防御循环、配置假设和未解决项；
+- 后续动作，以及可选 artifact id / build-state hash。
+
+文本和数组都严格有界；完整 JSON 最大 24 KB。禁止 PoB code/XML、完整 URL、网页正文、整角色
+材料、聊天记录和隐藏推理。写入使用独立 `contextRevision + operationId` 做 CAS 与幂等，不改变
+progression `revision`。
+
+`get_build_progression_status` 有三种 response profile：
+
+- `compact`：默认，只返回请求、anchor/阶段摘要、当前状态、下一步和 working-context ref；
+- `resume`：一次返回当前请求、必要 anchor 信息、活动 StageCreatePacket、完成阶段引用及最新
+  checkpoint，用于压缩/重启恢复；
+- `full`：兼容的完整安全控制状态，只在确实需要时显式请求。
+
+`query_research_memory(response_profile="create_compact")` 继续生成同一个 durable typed query
+receipt，但对当前 Create 回包只删除每项中的重复检索字段，不按固定条数截断命中结果，并增加
+`criticalPremiseDigest`。该 digest 只重组已返回记录/pattern 的 conditions、
+failure/exclusion conditions 和 verification tasks，不创造新的机制事实。
+
 兼容入口 `save_build_progression_route` 只写 Route v2，不能提交 anchor 字段来绕过状态服务。
 Route v3 只能由 `finalize_build_progression` 在 target anchor、Research provenance、阶段
 artifact、lifecycle hash、转型 readiness 与成本回执全部通过后写入。
 
-阶段/anchor 的 `researchMemoryUse` 中每个 Family/record/pattern/edge/fragment ID 都必须属于其
-引用 receipt 的结果并且至少有一次精确 Family 查询。普通 Create target anchor 没有 stage
+target anchor 与 `family_exact` 阶段的 `researchMemoryUse` 中，每个
+Family/record/pattern/edge/fragment ID 都必须属于其引用 receipt 的结果并且至少有一次精确
+Family 查询。普通 Create target anchor 没有 stage
 packet，其 artifact `researchMemoryRef` 只需属于本次实际 `dedupeQueryRefs`；目标前阶段的
 artifact 必须原样保留 claim 返回的 `StageCreatePacket.versionContext.researchMemoryRef`，后续
 渐进查询仍进入 `researchMemoryUse`，但不能替换绑定版本。receipt 的 `lastSeenAt` 还必须晚于
 progression 启动；蓝图提交时就会检查这一点，防止旧 ref 冒充本轮召回，同时保证恢复运行不依赖
 已经丢失的原始自然语言 query。
+
+`starter_common` 阶段不属于成熟 Family recall：`familyIdentity=null`，必须提供
+`StarterStageIdentity`、非空 `commonKnowledgeRefs`，且 `researchQueryRefs=[]`。其
+`StageCreatePacket` 使用 `generationMemoryMode=standard`、
+`researchMemoryPolicy=starter_common_no_family_memory`，版本引用绑定
+`StarterResearchPacket.packetId`。阶段 Artifact 可以是 `None/Unascended`；若声明预期升华，
+key/name 必须成对提供并与 readback 一致。
+
+`StageCreatePacket.generationMemoryMode` 是 progression 阶段的唯一事实源。run 绑定和阶段完成都会
+读取 Phase 5 run manifest 校验实际 `memoryMode`。不一致时返回 expected/actual，不能绑定或完成，
+不改变 stage revision、不消耗 external retry，原 claim 可以继续绑定一个新建的正确 run。
 
 ## ProgressionBlueprint / StageCreatePacket
 
@@ -879,22 +1056,48 @@ progression 启动；蓝图提交时就会检查这一点，防止旧 ref 冒充
 - 默认四个 artifact（一个 target anchor + 三个前置里程碑）、最多五个；无实质变化时合并；
 - 每阶段有稳定 `stageId`、route role、target level、lifecycle stage、技能/升华意图、职责覆盖、
   独立 evidence status、Starter/Research evidence use、cost profile 和 transition bridge；
-- `StageFamilyIdentity.ascendancyKey` 必须是 `ascendancy:` stable key，主副技能必须是
+- `knowledgeMode=family_exact` 时，`StageFamilyIdentity.ascendancyKey` 必须是
+  `ascendancy:` stable key，主副技能必须是
   `skill:` stable key；新 progression 还必须保存规范升华/主技能名称，并与阶段 artifact 摘要
   一致；声明核心副技能 key 时还必须逐一保存规范名称并匹配启用技能组；
+- `knowledgeMode=starter_common` 只允许 starter route role，使用 `StarterStageIdentity` 保存
+  主副 `skill:` key/name 以及可选升华；它不伪造 `buildFamilyKey`，证据来自开荒 packet、
+  corpus/graph、mechanics 与 PoB；
 - starter 阶段的 evidence status 必须与 packet 一致，不能让有限或离线社区证据冒充
   `supported`；target/transition 阶段按自己的 Research、mechanic 和 PoB 证据记录；
 - `StarterEvidenceUse` 逐 claim 记录 `adopted/caveated/rejected`、application 和 verification refs；
   所有 claim 都必须有决策，且至少一条必须是 `adopted` 或 `caveated`；全部 rejected 的 packet
   不能授权开荒蓝图；
+- `StarterClaim.skillRoles` 可按 resolved `skill:` key 结构化记录
+  clear/boss/setup/payoff/mobility/defense/recovery/resource 职责，以及 `provides/requires`；
+  `applicabilityConditions` 与 `exclusionConditions` 保存候选选择前提，避免把模糊网页摘要误固化
+  为单一主技能；
+- `StarterResearchPacket.packetSchemaVersion=2`；新 `skill_package` claim 缺少
+  `skillRoles` 时 intake 失败。旧 v1 cache 仍可读取，但只能以
+  `starter_role_schema_revalidation_required` 作为 stale candidate，不能直接授权蓝图；
 - `TransitionBridge` 至少包含一个非价格的机制 readiness requirement。价格不能作为唯一转型门槛；
 - 最后阶段必须 `routeRole=target`，且 Family、等级与 target anchor 完全一致。
 
 `StageCreatePacket` 只包含当前阶段所需安全蓝图、上一 artifact ref、完整生命周期目标和版本。
-第一阶段从空 PoB 创建；后续阶段可以加载上一 artifact 正向修改，也可以在大规模转型时重新搭建。
+第一阶段从空 PoB 创建；后续阶段默认加载上一 artifact 正向修改。只有蓝图声明了技能体系、升华或
+资源系统的重大转型，并同时提供 `rebuildFromScratch=true` 与非空 `rebuildReason`，才允许重新搭建；
+第一阶段不能声明重建。
 目标之前的阶段仍使用独立 Phase 5 run 和渐进 Research query。最后 target closure 的 packet
 设置 `requiresPhase5Run=false` 与 `targetAnchorArtifactId`，只加载、验证并完成同一个 anchor，
 不再运行一次 Create。
+
+每个 packet 还带不可由 Agent 改写的 `StageOptimizationPolicy`。所有阶段（包括
+`campaign_early`）都使用 `loadoutScope=stage_complete_loadout`、
+`qualityGoal=complete_stage_build`，并覆盖技能可用、武器兼容、资源、伤害投送、防御层、装备合法性
+与 lifecycle readiness。它描述当前等级下完整、强力且可玩的交付目标，不引入固定 DPS/EHP、装备
+槽或天赋点等主观硬门槛。`globalOptimizerAllowed` 始终为 false，被动树保持
+`manual_targeted`。
+
+`mutationStrategy=single_initialization_then_function_scoped_deltas` 规定同一阶段只有一次初始化，
+后续只接受按职能拆分的局部变化；
+`designChangePolicy=blueprint_declared_or_versioned_replan_only` 规定 claim 后冻结设计。普通确定性问题
+必须局部修复；整体方向只能通过既有的一次版本化 stage replan 改变。历史 route 中旧的早期 policy
+仍可读取，但新 route 不再生成该降级 policy。
 
 `StageCompletionReport.transitionReadiness` 必须逐项复用 entry bridge 的 requirement id、kind、
 blocking 和 description。所有 blocking 非价格机制门槛必须为 `satisfied` 且有安全证据；
@@ -905,20 +1108,41 @@ budget/price 永远不能 blocking。
 Phase 8 本地安全控制状态。所有 mutation 使用唯一 `operationId` 和 `expectedRevision`：
 
 ```text
-target_anchor_pending -> research_pending / blueprint_pending
+selection_pending -> anchor_running -> anchor_bound -> research_pending / blueprint_pending
+                    |                    ^
+                    +-> anchor_failed ---+ (same-Family retry or one explicit reserve switch)
   -> stage_pending -> stage_running -> stage_completed
   -> finalize_pending -> completed
 ```
 
-`target_anchor_pending` 的公开状态隐藏内部命中的 starter packet/candidate，仅返回
-`starterEvidenceWithheldUntilAnchor`；anchor 绑定后才允许状态读取安全开荒证据。
+schema v3 将目标阶段拆为 `selection_pending / anchor_running / anchor_failed /
+anchor_paused / anchor_bound`。未指定唯一 Family 时，公开状态返回精确版本 Family discovery
+请求；候选不足两个时暂停并报告 Research 缺口。选择完成后必须绑定本次普通 Create run。
+目标 Family 构筑失败时，同一 Family 只允许一次面向工具/审批/控制中断的外部 retry；机制无法
+闭环、质量不可接受或证据不足时，只允许 Agent 带证据显式切换一次排名第二的备用 Family。
+用户锁定 Family 时跳过选择且禁止切换。anchor artifact、artifact-bound lifecycle 与
+`accepted / limited_accepted` 决定全部可信后才进入 `anchor_bound`。
+
+目标 anchor 绑定前的公开状态隐藏 starter packet/candidate，仅返回
+`starterEvidenceWithheldUntilAnchor`。anchor 绑定后才允许状态读取安全开荒证据。
 
 另有 `paused` 和 `failed`。每次只允许一个阶段 running；普通阶段绑定 Phase 5 run id 后，完成时必须
 回读 artifact 的 run id、职业、等级、版本、source hash 和 artifact-bound lifecycle
 `verificationRef`。Phase 5
-内部允许既有两次 retry；整个阶段失败后只允许一次显式外部 retry。已经开始过的阶段（包括已进入
-显式 retry 的阶段）不可修改，只能通过版本化操作调整尚未开始的未来阶段。schema v1 状态按旧
-语义恢复，不自动迁移到 anchor-first。
+内部允许既有两次 retry；整个阶段失败后只允许一次显式外部 retry。已经完成、已有 artifact、
+target closure 或已消耗外部 retry 的阶段不可修改。尚未保存 artifact 的当前失败阶段可以在这
+一次 retry 中提交 `revisedStage + revisedBlueprintId + replanSummary`，但 stage id、等级、
+lifecycle、route role、基础职业、目标和版本不可变；common 阶段需要新公共证据 ref，Family
+阶段需要新 Research ref，并追加 old/new identity 审计。其他情况下只能通过版本化操作调整
+尚未开始的未来阶段。schema v1/v2 状态按旧语义恢复，不自动迁移到 v3 target 控制状态。
+
+任何尚未完成且已绑定可信 target anchor 的 progression，可用原
+`export_build_progression_package(progressionId)` 入口导出 recovery package。返回必须包含
+`status=partial`、`routeIncomplete=true`、当前 progression state、可选失败/活动阶段和完整
+inventory；它覆盖 `stage_pending / stage_running / paused / failed / finalize_pending` 以及失败
+登记/审批层阻断，并兼容旧 anchor 状态 `bound` 和当前 `anchor_bound`。inventory 至少包括已完成
+阶段 XML/导入码、target XML/导入码/单阶段 `.build` 和恢复说明。失败响应还要返回
+`recoveryExportAvailable` 与下一动作。它不创建 Route v3，不得称为完整成长路线。
 
 ### LifecycleStageVerificationState
 
@@ -944,6 +1168,14 @@ Phase 8 在 `verify_lifecycle_stage` 处使用的有界外部证据：
 - lifecycle stage 与验证预算绑定：`endgame_budget` 的最低目标等级为 82，
   `endgame_final` 为 92。80 级目标应使用 `maps_entry` 或保留已验证桥接形态，不能借高阶段标签
   跳过验证。
+
+公开响应默认 `detail=compact`，包含状态、failed/unknown checks、每项 check status、完整阻断行、
+有界关键 metrics、建议、caveat 和内容寻址引用；不重复返回完整 plan、state snapshot、全部 passed
+check 细节。`detail=full` 只用于局部诊断。无论响应 profile 如何，artifact-bound receipt 都保存
+既有的安全信任字段（hash、stage、状态、failed/unknown、caveat、evidence tags），并从投影前的
+完整计算结果生成；它本来就不持久化 plan、metrics 或全部 check 细节。每个正式 Judge attempt
+前最多执行一次活动 gate，同一 state hash 不重复；artifact 保存后独立执行一次
+artifact-bound gate。
 
 ### ArtifactLifecycleReceipt
 

@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from server.knowledge import itemparse
+from server.knowledge import item_legality
 
 from .engine import PobEngine
 
@@ -59,6 +59,7 @@ def inspect_build_completeness(
     rune_socketed_slots: list[str] = []
     rune_decision_slots: list[str] = []
     illegal_affix_slots: list[dict[str, Any]] = []
+    unverified_special_source_slots: list[str] = []
     for slot, item in gear.items():
         if not isinstance(item, dict):
             continue
@@ -82,6 +83,8 @@ def inspect_build_completeness(
             illegal_affix_slots.append(
                 {"slot": str(slot), "issues": list(legality.get("issues") or [])}
             )
+        if isinstance(legality, dict) and legality.get("provenanceStatus") == "unverified":
+            unverified_special_source_slots.append(str(slot))
         if slot in _RUNE_RELEVANT_SLOTS:
             if int(item.get("runeSockets") or 0) > 0:
                 rune_socketed_slots.append(str(slot))
@@ -118,6 +121,8 @@ def inspect_build_completeness(
         advisories.append("charm_capacity_not_planned")
     if equipped_charms and charm_capacity < len(equipped_charms):
         advisories.append("equipped_charms_exceed_belt_capacity")
+    if unverified_special_source_slots:
+        advisories.append("special_item_source_unverified")
 
     hard_failures = ["equipped_item_level_requirement_unmet"] if underlevelled else []
     if active_gem_level_violations:
@@ -133,6 +138,7 @@ def inspect_build_completeness(
         "underlevelledItems": underlevelled,
         "activeSkillGemLevelViolations": active_gem_level_violations,
         "illegalAffixItems": illegal_affix_slots,
+        "unverifiedSpecialSourceSlots": unverified_special_source_slots,
         "scaffoldSlots": scaffold_slots,
         "runes": {
             "socketedSlots": rune_socketed_slots,
@@ -156,7 +162,11 @@ def inspect_build_completeness(
     }
 
 
-def equipped_item_metadata(xml: str) -> dict[str, dict[str, Any]]:
+def equipped_item_metadata(
+    xml: str,
+    *,
+    require_special_provenance: bool = False,
+) -> dict[str, dict[str, Any]]:
     """Read only active-slot item metadata from PoB XML; raw item text never leaves this module."""
     try:
         root = ET.fromstring(xml)
@@ -166,9 +176,7 @@ def equipped_item_metadata(xml: str) -> dict[str, dict[str, Any]]:
     if items is None:
         return {}
     by_id = {
-        str(item.get("id")): _parse_item_text(item.text or "")
-        for item in items.findall("Item")
-        if item.get("id")
+        str(item.get("id")): item.text or "" for item in items.findall("Item") if item.get("id")
     }
     active_id = str(items.get("activeItemSet") or "1")
     item_set = next(
@@ -182,13 +190,48 @@ def equipped_item_metadata(xml: str) -> dict[str, dict[str, Any]]:
         item_id = str(slot.get("itemId") or "0")
         slot_name = str(slot.get("name") or "")
         if item_id != "0" and slot_name and item_id in by_id:
-            gear[slot_name] = by_id[item_id]
+            gear[slot_name] = _parse_item_text(
+                by_id[item_id],
+                slot=slot_name,
+                require_special_provenance=require_special_provenance,
+            )
     return gear
+
+
+def equipped_item_text(xml: str, slot_name: str) -> str | None:
+    """Return one private active-slot item text for internal receipt canonicalization only."""
+
+    try:
+        root = ET.fromstring(xml)
+    except (ET.ParseError, TypeError):
+        return None
+    items = root.find("Items")
+    if items is None:
+        return None
+    active_id = str(items.get("activeItemSet") or "1")
+    item_set = next(
+        (node for node in items.findall("ItemSet") if str(node.get("id")) == active_id),
+        None,
+    )
+    if item_set is None:
+        return None
+    slot = next(
+        (node for node in item_set.findall("Slot") if str(node.get("name") or "") == slot_name),
+        None,
+    )
+    if slot is None:
+        return None
+    item_id = str(slot.get("itemId") or "0")
+    item = next(
+        (node for node in items.findall("Item") if str(node.get("id") or "") == item_id),
+        None,
+    )
+    return item.text or "" if item is not None else None
 
 
 def artifact_blockers(xml: str) -> list[str]:
     """Return structural equipment omissions that can never be a final playable artifact."""
-    gear = equipped_item_metadata(xml)
+    gear = equipped_item_metadata(xml, require_special_provenance=True)
     blockers: list[str] = []
     if any(item.get("isScaffold") for item in gear.values()):
         blockers.append("final_artifact_contains_scaffold_gear")
@@ -203,7 +246,12 @@ def artifact_blockers(xml: str) -> list[str]:
     return blockers
 
 
-def _parse_item_text(raw: str) -> dict[str, Any]:
+def _parse_item_text(
+    raw: str,
+    *,
+    slot: str | None = None,
+    require_special_provenance: bool = False,
+) -> dict[str, Any]:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
     rarity = _matched_value(lines, r"^Rarity:\s*(\S+)")
     name = lines[1] if len(lines) > 1 else ""
@@ -223,7 +271,11 @@ def _parse_item_text(raw: str) -> dict[str, Any]:
         "runes": runes,
         "charmSlots": charm_slots,
         "isScaffold": name.startswith("Scaffold "),
-        "affixLegality": itemparse.audit_item_legality(raw),
+        "affixLegality": item_legality.audit_item(
+            raw,
+            slot=slot,
+            require_special_provenance=require_special_provenance,
+        ),
     }
 
 

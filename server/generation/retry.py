@@ -68,7 +68,17 @@ def validate_and_build_retry_report(
         if requery_error is not None:
             return requery_error
 
-    report = _build_retry_report(run_id, experiment, attempts)
+    feedback_modes = {attempt.judge_advisory_report.feedback_mode for attempt in attempts}
+    if len(feedback_modes) != 1:
+        return models.rejected("mixed_judge_feedback_modes")
+
+    report = _build_retry_report(
+        run_id,
+        experiment,
+        attempts,
+        selected_attempt_index=packet.selected_attempt_index,
+        artifact_selection_outcome=packet.artifact_selection_outcome,
+    )
     return {
         "status": "accepted",
         "experimentContext": experiment.model_dump(by_alias=True),
@@ -174,6 +184,9 @@ def _build_retry_report(
     run_id: str,
     experiment: models.GenerationExperimentContext,
     attempts: list[models.GenerationAttemptRecord],
+    *,
+    selected_attempt_index: int | None = None,
+    artifact_selection_outcome: str | None = None,
 ) -> models.RetryComparisonReport:
     summaries = [
         models.RetryAttemptSummary(
@@ -183,6 +196,10 @@ def _build_retry_report(
             snapshot_id=str(attempt.transient_build_state.snapshot_id),
             source_hash=str(attempt.transient_build_state.source_hash),
             judge_status=attempt.judge_advisory_report.status,
+            feedback_mode=attempt.judge_advisory_report.feedback_mode,
+            subjective_feedback_suppressed=(
+                attempt.judge_advisory_report.subjective_feedback_suppressed
+            ),
             passed=attempt.judge_advisory_report.passed,
             aggregate_score=attempt.judge_advisory_report.aggregate_score,
             hard_failures=attempt.judge_advisory_report.hard_failures,
@@ -195,26 +212,41 @@ def _build_retry_report(
     ]
     first = summaries[0]
     final = summaries[-1]
+    feedback_mode = first.feedback_mode
     score_delta = None
     if first.aggregate_score is not None and final.aggregate_score is not None:
         score_delta = final.aggregate_score - first.aggregate_score
     resolved = sorted(set(first.hard_failures) - set(final.hard_failures))
     introduced = sorted(set(final.hard_failures) - set(first.hard_failures))
     outcome = _programmatic_outcome(summaries, score_delta, resolved, introduced)
+    if artifact_selection_outcome == "baseline_restored_after_regression":
+        outcome = "baseline_restored_after_regression"
     return models.RetryComparisonReport(
         report_id=f"retry-comparison:{run_id}",
         experiment_context=experiment,
+        feedback_mode=feedback_mode,
+        subjective_feedback_suppressed=feedback_mode == "hard_only",
         attempts=summaries,
         score_delta=score_delta,
         resolved_hard_failures=resolved,
         introduced_hard_failures=introduced,
+        selected_attempt_index=selected_attempt_index,
+        artifact_selection_outcome=artifact_selection_outcome,
         programmatic_outcome=outcome,
-        human_review_fields={
-            "failureAuditReasonable": "pending",
-            "retryChangesRelevant": "pending",
-            "qualityActuallyImproved": "pending",
-            "stopReasonReasonable": "pending",
-        },
+        human_review_fields=(
+            {
+                "failureAuditReasonable": "pending",
+                "retryChangesRelevant": "pending",
+                "qualityActuallyImproved": "pending",
+                "stopReasonReasonable": "pending",
+            }
+            if feedback_mode == "strict"
+            else {
+                "hardLegalityPreserved": "pending",
+                "retryScopeReasonable": "pending",
+                "stopReasonReasonable": "pending",
+            }
+        ),
         no_raw_material=True,
     )
 

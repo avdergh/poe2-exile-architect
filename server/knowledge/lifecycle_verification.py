@@ -16,6 +16,11 @@ from server.compute import sustain
 from server.knowledge import copy_safety
 
 _ELEMENTAL_RESISTS = ("fire", "cold", "lightning")
+_ELEMENTAL_RESISTANCE_BANDS: tuple[tuple[int, int, float], ...] = (
+    (45, 64, 30.0),
+    (65, 79, 50.0),
+    (80, 89, 60.0),
+)
 _DEFENSE_FLOORS: dict[str, dict[str, float]] = {
     "campaign_early": {"pool": 300, "ehp": 600},
     "campaign_mid": {"pool": 800, "ehp": 1500},
@@ -310,6 +315,8 @@ def plan_stage_verification(stage: str, state: dict[str, Any] | None = None) -> 
     if budget is None:
         return {"ok": False, "error": "unknown lifecycle stage", "stage": stage}
     plan = deepcopy(budget)
+    planned_level = _lifecycle_level((state or {}).get("level"), fallback=plan["levelTarget"])
+    resistance_minimum = lifecycle_elemental_resistance_minimum(planned_level)
     plan.update(
         {
             "ok": True,
@@ -317,6 +324,7 @@ def plan_stage_verification(stage: str, state: dict[str, Any] | None = None) -> 
             "status": "planned",
             "source": "stage-verification-budget",
             "stateSnapshot": state or {},
+            "elementalResistanceMinimum": resistance_minimum,
             "note": (
                 "This is a verification plan, not a computed result. Run the listed engine tools "
                 "before presenting DPS/EHP/resistance claims."
@@ -349,7 +357,12 @@ def verify_stage_metrics(
     if not plan.get("ok"):
         return {**plan, "status": "unknown", "pass": False}
 
-    observations = _observations(stats or {}, defenses or {}, state=state or {})
+    observations = _observations(
+        stats or {},
+        defenses or {},
+        state=state or {},
+        fallback_level=plan["levelTarget"],
+    )
     checks = _evaluate_known_checks(stage, plan["targetChecks"], observations, engine_warning)
     failed = [row["check"] for row in checks if row["status"] == "failed"]
     unknown = [row["check"] for row in checks if row["status"] == "unknown"]
@@ -411,6 +424,7 @@ def _observations(
     defenses: dict[str, Any],
     *,
     state: dict[str, Any],
+    fallback_level: int | None = None,
 ) -> dict[str, Any]:
     resists = _resistances(stats, defenses)
     life = _number(stats.get("Life") or defenses.get("life"))
@@ -430,6 +444,7 @@ def _observations(
         mana_flask_equipped=_optional_bool(state.get("manaFlaskEquipped")),
     )
     return {
+        "level": _lifecycle_level(state.get("level"), fallback=fallback_level),
         "resistances": resists,
         "life": life,
         "energyShield": es,
@@ -491,10 +506,14 @@ def _evaluate_known_checks(
             rows.append(_single_target_duty_check(observations))
         elif check == "build_defining_component_online":
             rows.append(_build_defining_component_check(observations))
-        elif check == "resists_capped":
-            rows.append(_resist_check(check, observations, minimum=75))
-        elif check == "resists_near_cap":
-            rows.append(_resist_check(check, observations, minimum=60))
+        elif check in {"resists_capped", "resists_near_cap"}:
+            rows.append(
+                _resist_check(
+                    check,
+                    observations,
+                    minimum=lifecycle_elemental_resistance_minimum(observations.get("level")),
+                )
+            )
         elif check == "basic_defense_online":
             rows.append(_basic_defense_check(stage, observations))
         elif check == "sustain_ok":
@@ -620,9 +639,44 @@ def _resistances(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, f
     }
 
 
-def _resist_check(check: str, observations: dict[str, Any], *, minimum: float) -> dict[str, Any]:
+def lifecycle_elemental_resistance_minimum(level: Any) -> float | None:
+    """Return the lifecycle-only elemental resistance floor for the actual build level."""
+
+    numeric_level = _lifecycle_level(level)
+    if numeric_level is None:
+        return None
+    for minimum_level, maximum_level, minimum in _ELEMENTAL_RESISTANCE_BANDS:
+        if minimum_level <= numeric_level <= maximum_level:
+            return minimum
+    return None
+
+
+def _lifecycle_level(value: Any, *, fallback: int | None = None) -> int | None:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return numeric if 1 <= numeric <= 100 else fallback
+
+
+def _resist_check(
+    check: str,
+    observations: dict[str, Any],
+    *,
+    minimum: float | None,
+) -> dict[str, Any]:
     resists = observations.get("resistances") or {}
     values = {name: resists.get(name) for name in _ELEMENTAL_RESISTS}
+    if minimum is None:
+        return {
+            "check": check,
+            "status": "not_applicable",
+            "ok": True,
+            "detail": values,
+            "target": None,
+        }
     if any(value is None for value in values.values()):
         return {
             "check": check,

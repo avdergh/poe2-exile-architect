@@ -30,10 +30,22 @@ def _group(
 
 
 class _Engine:
-    def __init__(self, xml: str, *, build: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        xml: str,
+        *,
+        build: dict[str, object] | None = None,
+        resistances: dict[str, float] | None = None,
+    ) -> None:
         self.xml = xml
         self.xml_reads = 0
         self.build = build or {"class": "Monk", "level": 70, "gear": {}}
+        self.resistances = resistances or {
+            "fire": 75,
+            "cold": 75,
+            "lightning": 75,
+            "chaos": 75,
+        }
 
     def get_xml(self) -> str:
         self.xml_reads += 1
@@ -45,6 +57,9 @@ class _Engine:
     def list_jewel_sockets(self) -> dict[str, object]:
         return {"sockets": []}
 
+    def get_defenses(self) -> dict[str, object]:
+        return {"resistances": self.resistances}
+
 
 def test_preflight_blocks_exact_duplicate_enabled_group_from_one_snapshot():
     engine = _Engine(_xml(_group() + _group()))
@@ -54,6 +69,8 @@ def test_preflight_blocks_exact_duplicate_enabled_group_from_one_snapshot():
     assert result["readyForJudge"] is False
     assert result["blockingIssues"] == ["duplicate_enabled_skill_group"]
     assert result["duplicateGroupIndices"] == [1, 2]
+    assert result["feedbackMode"] == "hard_only"
+    assert result["subjectiveFeedbackSuppressed"] is True
     assert engine.xml_reads == 1
 
 
@@ -106,6 +123,24 @@ def test_preflight_blocks_active_gem_above_character_requirement():
 
     assert result["readyForJudge"] is False
     assert "active_skill_gem_level_requirement_unmet" in result["blockingIssues"]
+
+
+def test_preflight_blocks_endgame_resistance_gate_without_consuming_judge():
+    engine = _Engine(
+        _xml(_group()),
+        build={"class": "Monk", "ascendancy": "Martial Artist", "level": 85, "gear": {}},
+        resistances={"fire": 60, "cold": 59, "lightning": 60, "chaos": 29},
+    )
+
+    result = preflight.inspect_generation_preflight(engine)
+
+    assert result["readyForJudge"] is False
+    assert result["readinessReady"] is False
+    assert result["blockingIssues"] == [
+        "endgame_elemental_resistance_below_60",
+        "endgame_chaos_resistance_below_30",
+    ]
+    assert result["readinessGates"]["endgameResistances"]["belowElemental"] == ["cold"]
 
 
 def test_main_skill_socket_evidence_uses_active_main_group():

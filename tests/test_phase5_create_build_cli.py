@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts import create_build
 from tests.test_phase5_prototype_models import agent_submission_payload
 
 
@@ -53,6 +54,9 @@ def test_start_run_defaults_to_memory_assisted(tmp_path: Path):
 
     result = json.loads(completed.stdout)
     assert result["experimentContext"]["memoryMode"] == "memory_assisted"
+    assert result["experimentContext"]["globalOptimizerAllowed"] is False
+    assert result["experimentContext"]["passiveTreeOptimizationMode"] == "manual_targeted"
+    assert result["experimentContext"]["mutationBatchPreferred"] is True
 
 
 def test_start_run_initializes_bound_agent_output_template(tmp_path: Path):
@@ -79,6 +83,10 @@ def _bind_submission_to_run(payload: dict[str, object], run: dict[str, object]) 
     prompt["prompt_id"] = run["promptId"]
     prompt["request_ref"] = run["requestRef"]
     candidate["prompt_ref"] = run["promptId"]
+    # Most CLI tests exercise run binding/consumption rather than Research provenance.
+    # Remove the generic model fixture's synthetic Research IDs so those tests do not
+    # depend on a user's real local Research database.
+    candidate["research_memory_use"] = None
 
 
 def _review_command(run: dict[str, object]) -> list[str]:
@@ -97,6 +105,120 @@ def _review_env(run: dict[str, object]) -> dict[str, str]:
     env = os.environ.copy()
     env["POE_BD_CREATE_RUNS_DIR"] = str(run["_runsDir"])
     return env
+
+
+def test_ordinary_create_cannot_skip_a_receipt_premise_audit():
+    payload = agent_submission_payload()
+    candidate = payload["prototypeBuildCandidate"]
+    assert isinstance(candidate, dict)
+    usage = candidate["research_memory_use"]
+    assert isinstance(usage, dict)
+    usage["build_family_keys"] = ["bf-1234567890abcdef"]
+    receipt = {
+        "dedupeQueryRef": "dq-0123456789abcdef",
+        "result": {
+            "buildFamilies": [
+                {"buildFamilyKey": "bf-1234567890abcdef"},
+            ],
+            "deepRecordIds": ["drr-1234567890abcdef"],
+            "patternIds": ["bdp-1234567890abcdef"],
+            "semanticEdgeIds": [],
+            "memoryItemIds": [],
+            "deepReadRecordIds": [],
+            "premiseAuditVersion": 1,
+            "familyPremiseCatalog": [
+                {
+                    "premiseId": "rp-0123456789abcdef",
+                    "buildFamilyKey": "bf-1234567890abcdef",
+                    "recordId": "drr-1234567890abcdef",
+                    "recordKind": "failure_mode",
+                    "premiseType": "failure_condition",
+                    "text": "目标场景中的基础资源生成方式会失效。",
+                    "componentKeys": ["skill:LightningArrowPlayer"],
+                }
+            ],
+        },
+    }
+    canonical_payload = {
+        "prototypeBuildCandidate": {
+            "researchMemoryUse": {
+                "retrievalOutcome": usage["retrieval_outcome"],
+                "dedupeQueryRefs": usage["dedupe_query_refs"],
+                "componentKeys": usage["component_keys"],
+                "buildFamilyKeys": usage["build_family_keys"],
+                "deepRecordIds": usage["deep_record_ids"],
+                "patternIds": usage["pattern_ids"],
+                "semanticEdgeIds": usage["semantic_edge_ids"],
+                "memoryItemIds": usage["memory_item_ids"],
+                "insightDecisions": [
+                    {
+                        "sourceRefs": item["source_refs"],
+                        "decision": item["decision"],
+                        "summary": item["summary"],
+                        "application": item["application"],
+                    }
+                    for item in usage["insight_decisions"]
+                ],
+                "premiseAuditVersion": None,
+                "premiseDecisions": [],
+                "noMatchReason": None,
+            }
+        }
+    }
+
+    error = create_build._validate_candidate_research_use(
+        canonical_payload,
+        receipt_reader=lambda _ref: receipt,
+    )
+
+    assert error == "progression_research_premise_audit_required"
+
+
+def test_ordinary_create_rejects_a_deep_read_receipt_not_seen_in_this_run():
+    canonical_payload = {
+        "prototypeBuildCandidate": {
+            "researchMemoryUse": {
+                "retrievalOutcome": "matched",
+                "dedupeQueryRefs": ["dq-0123456789abcdef"],
+                "componentKeys": ["skill:LightningArrowPlayer"],
+                "buildFamilyKeys": ["bf-1234567890abcdef"],
+                "deepRecordIds": ["drr-1234567890abcdef"],
+                "patternIds": [],
+                "semanticEdgeIds": [],
+                "memoryItemIds": [],
+                "insightDecisions": [
+                    {
+                        "sourceRefs": ["drr-1234567890abcdef"],
+                        "decision": "adopted",
+                        "summary": "Use the selected record.",
+                        "application": "Apply it to the candidate.",
+                    }
+                ],
+                "premiseAuditVersion": None,
+                "premiseDecisions": [],
+                "noMatchReason": None,
+            }
+        }
+    }
+    receipt = {
+        "dedupeQueryRef": "dq-0123456789abcdef",
+        "lastSeenAt": "2026-07-29T00:00:00+00:00",
+        "result": {
+            "buildFamilies": [{"buildFamilyKey": "bf-1234567890abcdef"}],
+            "deepRecordIds": ["drr-1234567890abcdef"],
+            "patternIds": [],
+            "semanticEdgeIds": [],
+            "memoryItemIds": [],
+        },
+    }
+
+    error = create_build._validate_candidate_research_use(
+        canonical_payload,
+        receipt_reader=lambda _ref: receipt,
+        not_before="2026-07-30T00:00:00+00:00",
+    )
+
+    assert error == "progression_research_receipt_not_current_run"
 
 
 def _attach_trusted_evaluation(payload: dict[str, object], run: dict[str, object]) -> None:

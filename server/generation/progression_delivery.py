@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,12 +162,274 @@ def export_build_progression_package(
     }
 
 
+def export_build_progression_recovery_package(
+    state: dict[str, Any],
+    *,
+    name: str = "",
+    author: str = "",
+    description: str = "",
+) -> dict[str, Any]:
+    """Export recoverable verified artifacts from any unfinished anchored progression.
+
+    This deliberately cannot produce a Route artifact or claim a complete progression.  It gives
+    the user the immutable target anchor (and any already completed milestones) instead of turning
+    a late stage failure, control-plane timeout, or approval interruption into a zero-file delivery.
+    """
+
+    progression_status = str(state.get("status") or "")
+    if progression_status == "completed":
+        return {"status": "rejected", "errorCode": "progression_recovery_not_available"}
+    target = state.get("targetAnchor") or {}
+    target_artifact_id = target.get("artifactId")
+    if target.get("status") not in {"bound", "anchor_bound"} or not isinstance(
+        target_artifact_id, str
+    ):
+        return {"status": "rejected", "errorCode": "progression_recovery_target_not_bound"}
+    metadata = {"name": name, "author": author, "description": description}
+    if copy_safety.copyability_flags(metadata) or copy_safety.contains_raw_url(metadata):
+        return {"status": "rejected", "errorCode": "unsafe_progression_export_metadata"}
+
+    progression_id = str(state.get("progressionId") or "")
+    blueprint = state.get("blueprint") or {}
+    route_name = str(
+        name
+        or blueprint.get("routeName")
+        or f"{state.get('request', {}).get('baseClass', 'PoE2')}-progression-recovery"
+    )
+    package_name = _safe_filename(route_name)
+    package_dir = (
+        paths.build_progression_exports_dir()
+        / f"{package_name}-{progression_id[:8]}-{uuid4().hex[:8]}-incomplete"
+    )
+    try:
+        package_dir.mkdir(parents=True, exist_ok=False)
+    except OSError:
+        return {"status": "rejected", "errorCode": "progression_export_directory_failed"}
+
+    blueprints_by_id = {
+        item.get("stageId"): item
+        for item in blueprint.get("stages", [])
+        if isinstance(item, dict) and item.get("stageId")
+    }
+    recoverable: list[dict[str, Any]] = []
+    seen_artifacts: set[str] = set()
+    for stage in state.get("stages", []):
+        artifact_id = stage.get("artifactId")
+        if stage.get("status") != "completed" or not isinstance(artifact_id, str):
+            continue
+        stage_id = str(stage.get("stageId") or "stage:unknown")
+        stage_blueprint = blueprints_by_id.get(stage_id) or {}
+        recoverable.append(
+            {
+                "stageId": stage_id,
+                "targetLevel": stage_blueprint.get("targetLevel") or 0,
+                "artifactId": artifact_id,
+                "scope": "completed_stage",
+            }
+        )
+        seen_artifacts.add(artifact_id)
+    if target_artifact_id not in seen_artifacts:
+        recoverable.append(
+            {
+                "stageId": "stage:target-anchor-recovery",
+                "targetLevel": state.get("request", {}).get("targetLevel") or 0,
+                "artifactId": target_artifact_id,
+                "scope": "target_anchor",
+            }
+        )
+
+    inventory: list[dict[str, Any]] = []
+    for ordinal, item in enumerate(recoverable, start=1):
+        loaded = artifacts.read_final_build_artifact_for_export(item["artifactId"])
+        if loaded is None:
+            inventory.extend(
+                [
+                    _failed_row("stage_pob_xml", item["stageId"], "final_artifact_invalid"),
+                    _failed_row(
+                        "stage_pob_import_code",
+                        item["stageId"],
+                        "final_artifact_invalid",
+                    ),
+                ]
+            )
+            continue
+        manifest, xml = loaded
+        stem = _safe_filename(
+            f"{ordinal:02d}-{item['stageId'].removeprefix('stage:')}-level-{item['targetLevel']}"
+        )
+        for artifact_type, suffix, content in (
+            ("stage_pob_xml", ".xml", xml),
+            ("stage_pob_import_code", ".pobcode.txt", encode_code(xml) + "\n"),
+        ):
+            output = package_dir / f"{stem}{suffix}"
+            try:
+                _atomic_write(output, content)
+            except OSError:
+                inventory.append(
+                    _failed_row(artifact_type, item["stageId"], "pob_export_write_failed")
+                )
+            else:
+                inventory.append(
+                    {
+                        "artifactType": artifact_type,
+                        "stageId": item["stageId"],
+                        "artifactId": manifest.artifact_id,
+                        "status": "exported",
+                        "outputPath": str(output),
+                        "errorCode": None,
+                        "recoveryScope": item["scope"],
+                    }
+                )
+
+    failed_stage = next(
+        (item for item in state.get("stages", []) if item.get("status") == "failed"),
+        None,
+    )
+    guide_output = package_dir / "progression-recovery.md"
+    guide = _recovery_guide(
+        route_name=route_name,
+        target_artifact_id=target_artifact_id,
+        failed_stage=failed_stage,
+        state=state,
+    )
+    try:
+        _atomic_write(guide_output, guide)
+    except OSError:
+        inventory.append(
+            _failed_row("progression_recovery_guide", None, "route_guide_write_failed")
+        )
+    else:
+        inventory.append(
+            {
+                "artifactType": "progression_recovery_guide",
+                "stageId": None,
+                "status": "exported",
+                "outputPath": str(guide_output),
+                "errorCode": None,
+            }
+        )
+
+    official_output = package_dir / f"{package_name}-target-recovery.build"
+    official = build_planner_exporter.export_final_build_artifact(
+        target_artifact_id,
+        name=name or route_name,
+        author=author,
+        description=description or "Incomplete progression recovery: verified target stage only.",
+        _destination_path=official_output,
+    )
+    if official.get("status") == "exported" and official.get("outputPath"):
+        output = Path(str(official["outputPath"]))
+        if output.resolve() == official_output.resolve() and output.is_file():
+            inventory.append(
+                {
+                    "artifactType": "target_official_build",
+                    "stageId": "stage:target-anchor-recovery",
+                    "artifactId": target_artifact_id,
+                    "status": "exported",
+                    "outputPath": str(output),
+                    "errorCode": None,
+                    "warnings": official.get("warnings") or [],
+                    "singleStage": True,
+                    "recoveryScope": "target_anchor",
+                }
+            )
+        else:
+            inventory.append(
+                _failed_row("target_official_build", None, "build_package_destination_mismatch")
+            )
+    else:
+        inventory.append(
+            {
+                **_failed_row(
+                    "target_official_build",
+                    "stage:target-anchor-recovery",
+                    str(official.get("errorCode") or "build_export_failed"),
+                ),
+                "artifactId": target_artifact_id,
+                "warnings": official.get("warnings") or [],
+                "singleStage": True,
+                "recoveryScope": "target_anchor",
+            }
+        )
+
+    return {
+        "status": "partial",
+        "progressionId": progression_id,
+        "progressionState": progression_status,
+        "routeId": None,
+        "routeIncomplete": True,
+        "recoveryReason": "stage_failed" if failed_stage else "route_incomplete",
+        "targetArtifactId": target_artifact_id,
+        "activeStageId": state.get("activeStageId"),
+        "failedStageId": failed_stage.get("stageId") if failed_stage else None,
+        "failureCode": failed_stage.get("failureCode") if failed_stage else None,
+        "packageDirectory": str(package_dir),
+        "artifacts": inventory,
+        "exportedCount": sum(row["status"] == "exported" for row in inventory),
+        "expectedCount": len(recoverable) * 2 + 2,
+        "officialBuildScope": "verified_target_anchor_recovery_only",
+        "responseContainsRawPob": False,
+        "localFilesContainPobMaterial": True,
+        "exportedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _recovery_guide(
+    *,
+    route_name: str,
+    target_artifact_id: str,
+    failed_stage: dict[str, Any] | None,
+    state: dict[str, Any],
+) -> str:
+    pending = [
+        str(item.get("stageId"))
+        for item in state.get("stages", [])
+        if item.get("status") not in {"completed", "failed"}
+    ]
+    target_coverage = (state.get("targetAnchor") or {}).get("designCoverage") or {}
+    target_caveats = list(target_coverage.get("unresolvedCaveats") or [])
+    lines = [
+        f"# {route_name} · 未完成路线恢复包",
+        "",
+        "这不是完整成长路线。流程尚未完成，只恢复交付已经可信保存的文件。",
+        "",
+        f"- 当前流程状态：{state.get('status') or 'unknown'}",
+        f"- 当前活动阶段：{state.get('activeStageId') or 'none'}",
+        f"- 目标 artifact：{target_artifact_id}",
+        *(
+            [
+                f"- 失败阶段：{failed_stage.get('stageId') or 'unknown'}",
+                f"- 失败代码：{failed_stage.get('failureCode') or 'unknown'}",
+            ]
+            if failed_stage
+            else ["- 失败记录：尚未写入；路线在运行中或控制/审批步骤中断"]
+        ),
+        f"- 尚未完成：{', '.join(pending) if pending else 'none'}",
+        "",
+        *(
+            [
+                "目标 Research / 机制限制：",
+                "",
+                *[f"- {item}" for item in target_caveats],
+                "",
+            ]
+            if target_caveats
+            else []
+        ),
+        "目标 `.build` 只表示目标阶段，不能据此声称早期成长路线已经验证。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _route_guide(route: dict[str, Any]) -> str:
     facts = {
         item["artifactId"]: item
         for item in route.get("artifactFacts", [])
         if isinstance(item, dict) and item.get("artifactId")
     }
+    target_coverage = route.get("targetDesignCoverage") or {}
+    target_caveats = list(target_coverage.get("unresolvedCaveats") or [])
     lines = [
         f"# {route['routeName']}",
         "",
@@ -176,6 +439,16 @@ def _route_guide(route: dict[str, Any]) -> str:
         f"- 路线质量：{route['qualityStatus']}",
         f"- 目标 artifact：{route['targetArtifactId']}",
         "",
+        *(
+            [
+                "## 目标 Research / 机制限制",
+                "",
+                *[f"- {item}" for item in target_caveats],
+                "",
+            ]
+            if target_caveats
+            else []
+        ),
         "## 阶段",
         "",
     ]
@@ -282,7 +555,9 @@ def _failed_row(
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    temp = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    # Do not repeat the full destination filename in the temporary sibling.  On Windows that can
+    # push only the longer import-code file over MAX_PATH even though its XML sibling succeeds.
+    temp = path.parent / f".tmp-{uuid4().hex}.tmp"
     try:
         temp.write_text(content, encoding="utf-8")
         temp.replace(path)
@@ -293,4 +568,11 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def _safe_filename(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
-    return cleaned[:80] or "poe2-progression"
+    # The package directory and stage filename are composed together.  Keeping each component
+    # short prevents Windows MAX_PATH failures where XML succeeds but the longer `.pobcode.txt`
+    # sibling silently becomes the only failed inventory row. Preserve a content suffix when
+    # truncating so two long stage ids with the same prefix cannot overwrite one another.
+    if len(cleaned) > 48:
+        digest = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{cleaned[:39]}-{digest}"
+    return cleaned or "poe2-progression"

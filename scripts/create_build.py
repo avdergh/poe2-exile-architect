@@ -16,7 +16,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server.generation import canonicalize, models, prototype, retry, run_store  # noqa: E402
+from server.generation import (  # noqa: E402
+    canonicalize,
+    models,
+    progression_provenance,
+    prototype,
+    retry,
+    run_store,
+)
+from server.knowledge import research_memory  # noqa: E402
 
 
 RUN_TTL = timedelta(hours=2)
@@ -89,6 +97,9 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
         "experimentContext": {
             "memoryMode": args.memory_mode,
             "maxRetryCount": 2,
+            "globalOptimizerAllowed": False,
+            "passiveTreeOptimizationMode": "manual_targeted",
+            "mutationBatchPreferred": True,
         },
     }
     manifest_path = run_dir / "run-manifest.json"
@@ -168,11 +179,25 @@ def _run_review_packet(
         trusted_receipts = run_store.read_trusted_evaluations_strict(bound_run)
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
-    canonical = canonicalize.canonicalize_agent_output(data, trusted_receipts)
+    artifact_selection = run_store.read_artifact_selection(bound_run)
+    if bound_run.artifact_selection_path.exists() and artifact_selection is None:
+        return models.rejected("artifact_selection_receipt_corrupt")
+    canonical = canonicalize.canonicalize_agent_output(
+        data,
+        trusted_receipts,
+        artifact_selection=artifact_selection,
+    )
     if canonical.get("status") != "accepted":
         return canonical
 
     canonical_payload = canonical["payload"]
+    premise_error = _validate_candidate_research_use(
+        canonical_payload,
+        receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
+        not_before=manifest["startedAt"],
+    )
+    if premise_error:
+        return models.rejected(premise_error)
     result = prototype.validate_and_build_human_review_packet(
         canonical_payload,
         trusted_evaluation=True,
@@ -212,6 +237,25 @@ def _run_review_packet(
     if compact and result.get("status") == "accepted":
         return _compact_review_result(result, run_dir=run_dir, consumed=True)
     return result
+
+
+def _validate_candidate_research_use(
+    canonical_payload: dict[str, Any],
+    *,
+    receipt_reader: Any,
+    not_before: str | None = None,
+) -> str | None:
+    """Apply the shared receipt/premise audit to ordinary single-stage Create."""
+
+    research_use = canonical_payload.get("prototypeBuildCandidate", {}).get("researchMemoryUse")
+    if not isinstance(research_use, dict):
+        return None
+    premise_error, _premise_summary = progression_provenance.validate_research_use_receipts(
+        research_memory_use=research_use,
+        receipt_reader=receipt_reader,
+        not_before=not_before,
+    )
+    return premise_error
 
 
 def _compact_review_result(

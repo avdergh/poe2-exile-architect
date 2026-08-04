@@ -32,6 +32,20 @@ def isolated_service(tmp_path, monkeypatch):
         lambda _run_id, *, not_before: bool(not_before),
     )
     monkeypatch.setattr(
+        progression_service,
+        "_phase5_run_manifest",
+        lambda run_id, *, not_before, require_fresh=True: {
+            "startedAt": not_before,
+            "experimentContext": {
+                "memoryMode": (
+                    "standard"
+                    if run_id == "12000000-0000-0000-0000-000000000001"
+                    else "memory_assisted"
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
         progression_service.progression_costs,
         "read_trusted_cost_profile",
         lambda cost_profile_ref, *, stage_id, allow_expired=False: (
@@ -59,6 +73,49 @@ def isolated_service(tmp_path, monkeypatch):
         def read(ref: str):
             suffix = int(ref.removeprefix("dq-"), 16)
             target = suffix not in {1, 2}
+            if ref in {"dq-aaaaaaaaaaaaaaaa", "dq-cccccccccccccccc"}:
+                families = [
+                    {
+                        "buildFamilyKey": "family:target-high",
+                        "ascendancyKey": "ascendancy:target-monk",
+                        "primarySkillKey": "skill:target-attack",
+                        "secondarySkillKeys": [],
+                    },
+                    {
+                        "buildFamilyKey": "family:target-alternate",
+                        "ascendancyKey": "ascendancy:alternate-monk",
+                        "primarySkillKey": "skill:alternate-attack",
+                        "secondarySkillKeys": [],
+                    },
+                ]
+                if ref == "dq-cccccccccccccccc":
+                    families = families[:1]
+                return {
+                    "dedupeQueryRef": ref,
+                    "queryHash": f"hash:{ref}",
+                    "componentKeys": [],
+                    "request": {
+                        "detailLevel": "family",
+                        "classKey": "class:monk",
+                        "gamePatch": "0.5.4",
+                        "passiveTreeVersion": "0_5",
+                        "limit": 10,
+                        "ascendancyKey": None,
+                        "primarySkillKey": None,
+                        "buildFamilyKeys": [],
+                    },
+                    "result": {
+                        "buildFamilies": families,
+                        "deepRecordIds": [],
+                        "patternIds": [],
+                        "semanticEdgeIds": [],
+                        "memoryItemIds": [],
+                    },
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+                    "noRawQuery": True,
+                    "noRawMatureBuildMaterial": True,
+                }
             return {
                 "dedupeQueryRef": ref,
                 "queryHash": f"hash:{ref}",
@@ -79,6 +136,7 @@ def isolated_service(tmp_path, monkeypatch):
                     "memoryItemIds": [],
                 },
                 "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+                "createdAt": datetime.now(timezone.utc).isoformat(),
                 "noRawQuery": True,
                 "noRawMatureBuildMaterial": True,
             }
@@ -181,7 +239,10 @@ def _research() -> dict[str, object]:
                 "levelMin": 1,
                 "levelMax": 65,
                 "summary": "Use the fast-forming campaign ascendancy.",
-                "componentKeys": ["ascendancy:starter-monk"],
+                "componentKeys": [
+                    "ascendancy:starter-monk",
+                    "skill:starter-attack",
+                ],
                 "sourceRefs": ["source:guide-current"],
                 "verificationTasks": ["Resolve the ascendancy and verify each stage."],
             }
@@ -285,6 +346,11 @@ def _blueprint(
                 "expectedCostBand": "unknown",
                 "researchQueryRefs": [f"dq-{index + 1:016x}"],
                 "rebuildFromScratch": index == 2,
+                "rebuildReason": (
+                    "The target skill and resource engine replace the established starter route."
+                    if index == 2
+                    else None
+                ),
             }
         )
     return {
@@ -318,6 +384,27 @@ def _blueprint(
         "versionContext": VERSION.model_dump(mode="json", by_alias=True),
         "noRawMaterial": True,
     }
+
+
+def _use_common_unascended_starter(
+    blueprint: dict[str, object],
+    packet_id: str,
+) -> dict[str, object]:
+    first = blueprint["stages"][0]
+    first["knowledgeMode"] = "starter_common"
+    first["familyIdentity"] = None
+    first["starterIdentity"] = {
+        "primarySkillKey": "skill:starter-attack",
+        "secondarySkillKeys": [],
+        "primarySkillName": "Early Attack",
+        "secondarySkillNames": [],
+        "expectedAscendancyKey": None,
+        "expectedAscendancyName": None,
+    }
+    first["ascendancyIntent"] = "Remain unascended before the first campaign trial."
+    first["researchQueryRefs"] = []
+    first["commonKnowledgeRefs"] = [packet_id, "skill:starter-attack"]
+    return blueprint
 
 
 def _target_coverage() -> dict[str, object]:
@@ -374,6 +461,102 @@ def _lifecycle_result(
     }
 
 
+def _target_selection() -> dict[str, object]:
+    candidates = [
+        {
+            "candidateId": "target-candidate:high-ceiling",
+            "buildFamilyKey": "family:target-high",
+            "familyDiscoveryRef": "dq-aaaaaaaaaaaaaaaa",
+            "identity": {
+                "ascendancyKey": "ascendancy:target-monk",
+                "primarySkillKey": "skill:target-attack",
+                "secondarySkillKeys": [],
+                "ascendancyName": "High Ceiling Ascendancy",
+                "primarySkillName": "Target Attack",
+                "secondarySkillNames": [],
+            },
+            "mechanismSummary": "Scale the verified target attack through its primary loop.",
+            "expectedStrengths": ["High target ceiling after the mechanism closes."],
+            "knownRisks": ["Requires the target resource loop to be verified."],
+            "evidenceRefs": ["dq-aaaaaaaaaaaaaaaa", "dq-0000000000000004"],
+            "globalOptimizerUsed": False,
+            "fullJudgeUsed": False,
+        },
+        {
+            "candidateId": "target-candidate:alternate",
+            "buildFamilyKey": "family:target-alternate",
+            "familyDiscoveryRef": "dq-aaaaaaaaaaaaaaaa",
+            "identity": {
+                "ascendancyKey": "ascendancy:alternate-monk",
+                "primarySkillKey": "skill:alternate-attack",
+                "secondarySkillKeys": [],
+                "ascendancyName": "Alternate Ascendancy",
+                "primarySkillName": "Alternate Attack",
+                "secondarySkillNames": [],
+            },
+            "mechanismSummary": "Use a simpler alternate attack with a lower projected ceiling.",
+            "expectedStrengths": ["Simpler initial mechanism closure."],
+            "knownRisks": ["Lower projected target scaling."],
+            "evidenceRefs": ["dq-aaaaaaaaaaaaaaaa", "skill:alternate-attack"],
+            "globalOptimizerUsed": False,
+            "fullJudgeUsed": False,
+        },
+    ]
+    return {
+        "selectionId": "target-selection:fixture",
+        "familyDiscoveryRef": "dq-aaaaaaaaaaaaaaaa",
+        "candidates": candidates,
+        "dimensionComparisons": [
+            {
+                "dimension": "mechanism_closure",
+                "preferredCandidateId": "target-candidate:high-ceiling",
+                "summary": "The selected loop has a verifiable closure plan.",
+            },
+            {
+                "dimension": "research_support",
+                "preferredCandidateId": "target-candidate:high-ceiling",
+                "summary": "The selected Family has the stronger exact Research basis.",
+            },
+            {
+                "dimension": "goal_fit_and_power_evidence",
+                "preferredCandidateId": "target-candidate:high-ceiling",
+                "summary": "The selected Family has stronger evidence for the requested ceiling.",
+            },
+            {
+                "dimension": "playability_risk",
+                "preferredCandidateId": "target-candidate:alternate",
+                "summary": "The alternate is simpler but gives up the requested ceiling.",
+            },
+            {
+                "dimension": "modelability",
+                "preferredCandidateId": "target-candidate:high-ceiling",
+                "summary": "Both are modelable and the selected candidate better fits the goal.",
+            },
+        ],
+        "candidateRanking": [
+            "target-candidate:high-ceiling",
+            "target-candidate:alternate",
+        ],
+        "selectedCandidateId": "target-candidate:high-ceiling",
+        "selectionSummary": "Select the high-ceiling target after comparing every discovered Family.",
+        "unresolvedRisks": ["Verify the complete resource loop in the ordinary target Create."],
+    }
+
+
+def _select_target_candidates(
+    started: dict[str, object],
+    *,
+    operation_suffix: str,
+    selection: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return progression_service.submit_build_progression_target_selection(
+        progression_id=str(started["progressionId"]),
+        selection=selection or _target_selection(),
+        expected_revision=int(started["revision"]),
+        operation_id=f"op:target-selection:{operation_suffix}",
+    )
+
+
 def _bind_target_anchor(
     started: dict[str, object],
     manifests: dict[str, SimpleNamespace],
@@ -383,7 +566,22 @@ def _bind_target_anchor(
     secondary_skill_keys: list[str] | None = None,
     secondary_skill_names: list[str] | None = None,
     manifest_core_skills: list[str] | None = None,
+    manifest_graph_snapshot_id: str | None = None,
+    selected_primary_skill_name: str | None = None,
+    artifact_primary_skill_name: str | None = None,
+    acceptance_decision: str = "accepted",
 ) -> dict[str, object]:
+    selection = _target_selection()
+    if selected_primary_skill_name is not None:
+        selection["candidates"][0]["identity"]["primarySkillName"] = selected_primary_skill_name
+    if secondary_skill_keys is not None:
+        selection["candidates"][0]["identity"]["secondarySkillKeys"] = secondary_skill_keys
+        selection["candidates"][0]["identity"]["secondarySkillNames"] = secondary_skill_names or []
+    selected = _select_target_candidates(
+        started,
+        operation_suffix=operation_suffix,
+        selection=selection,
+    )
     artifact_id = f"final-build:target-anchor-{operation_suffix}"
     run_id = f"90000000-0000-0000-0000-{len(manifests) + 1:012d}"
     source_hash = f"target-anchor-hash-{operation_suffix}"
@@ -394,9 +592,18 @@ def _bind_target_anchor(
         source_hash,
         research_ref="dq-0000000000000004",
         ascendancy="High Ceiling Ascendancy",
-        main_skill="Target Attack",
+        main_skill=artifact_primary_skill_name or "Target Attack",
         core_skills=manifest_core_skills,
+        graph_snapshot_id=manifest_graph_snapshot_id,
     )
+    run_bound = progression_service.bind_build_progression_target_run(
+        progression_id=str(started["progressionId"]),
+        run_id=run_id,
+        expected_revision=int(selected["revision"]),
+        operation_id=f"op:anchor-run:{operation_suffix}",
+    )
+    if "revision" not in run_bound:
+        return run_bound
     coverage_payload = deepcopy(design_coverage or _target_coverage())
     for dimension in coverage_payload["dimensions"]:
         if dimension["status"] == "independently_verified" and all(
@@ -414,7 +621,7 @@ def _bind_target_anchor(
             "primarySkillKey": "skill:target-attack",
             "secondarySkillKeys": secondary_skill_keys or [],
             "ascendancyName": "High Ceiling Ascendancy",
-            "primarySkillName": "Target Attack",
+            "primarySkillName": artifact_primary_skill_name or "Target Attack",
             "secondarySkillNames": secondary_skill_names or [],
         },
         design_coverage=coverage_payload,
@@ -423,8 +630,9 @@ def _bind_target_anchor(
             "maps_entry",
             source_hash,
         ),
-        expected_revision=int(started["revision"]),
+        expected_revision=int(run_bound["revision"]),
         operation_id=f"op:anchor:{operation_suffix}",
+        acceptance_decision=acceptance_decision,
     )
 
 
@@ -458,6 +666,739 @@ def _start_and_blueprint(
         blueprint=blueprint,
     )
     return progression_id, accepted["revision"], blueprint
+
+
+def test_progression_requires_two_target_candidates_before_target_create(isolated_service):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-selection-contract",
+        base_class="Monk",
+        target_level=80,
+        goal="Compare two bounded target designs before full synthesis.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+
+    assert started["nextAction"] == "compare_and_select_target_candidates"
+    assert started["targetCandidateSelectionPacket"]["candidateCountRequested"] == 10
+    assert started["targetCandidateSelectionPacket"]["minimumCandidateCount"] == 2
+    assert started["targetCandidateSelectionPacket"]["globalOptimizerAllowed"] is False
+    assert started["targetAnchorCreatePacket"] is None
+
+    blocked = progression_service.bind_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        artifact_id="final-build:not-yet-created",
+        target_identity=_target_selection()["candidates"][0]["identity"],
+        design_coverage=_target_coverage(),
+        lifecycle_verification_ref="lifecycle-verification:0000000000000000",
+        expected_revision=started["revision"],
+        operation_id="op:anchor:before-selection",
+    )
+    assert blocked["errorCode"] == "progression_target_selection_required"
+
+    selected = _select_target_candidates(
+        started,
+        operation_suffix="selection-contract",
+    )
+    packet = selected["targetAnchorCreatePacket"]
+    assert packet["selectedCandidateId"] == "target-candidate:high-ceiling"
+    assert packet["selectedTargetIdentity"]["primarySkillKey"] == "skill:target-attack"
+    assert packet["selectedCandidate"]["mechanismSummary"].startswith("Scale the verified")
+    assert packet["globalOptimizerAllowed"] is False
+    assert packet["optimizationPolicy"]["passiveTreeOptimizationMode"] == "manual_targeted"
+    assert packet["optimizationPolicy"]["loadoutScope"] == "stage_complete_loadout"
+
+
+def test_pending_graph_snapshot_resolves_once_inside_the_same_progression(
+    isolated_service,
+):
+    manifests = isolated_service
+    pending_version = VERSION.model_copy(
+        update={"graph_snapshot_id": "unavailable:pending_discovery"}
+    )
+    started = progression_service.start_build_progression(
+        operation_id="op:start:pending-graph",
+        base_class="Monk",
+        target_level=80,
+        goal="Resolve the graph snapshot from the trusted target artifact.",
+        version_context=pending_version.model_dump(mode="json", by_alias=True),
+    )
+
+    anchored = _bind_target_anchor(
+        started,
+        manifests,
+        operation_suffix="pending-graph",
+        manifest_graph_snapshot_id="graph:resolved-target",
+    )
+
+    assert anchored["status"] == "target_anchor_bound"
+    assert anchored["progressionId"] == started["progressionId"]
+    assert anchored["graphSnapshotResolution"]["originalGraphSnapshotId"] == (
+        "unavailable:pending_discovery"
+    )
+    assert anchored["graphSnapshotResolution"]["resolvedGraphSnapshotId"] == (
+        "graph:resolved-target"
+    )
+    full = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    assert full["request"]["versionContext"]["graphSnapshotId"] == "graph:resolved-target"
+    assert (
+        full["targetSelection"]["selectionPacket"]["versionContext"]["graphSnapshotId"]
+        == "graph:resolved-target"
+    )
+    assert (
+        full["targetAnchor"]["targetAnchorCreatePacket"]["versionContext"]["graphSnapshotId"]
+        == "graph:resolved-target"
+    )
+    assert full["graphSnapshotResolution"]["sourceArtifactId"] == anchored["targetArtifactId"]
+
+
+def test_target_anchor_accepts_graph_proven_skill_display_alias_for_same_stable_key(
+    isolated_service,
+    monkeypatch,
+):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-skill-alias",
+        base_class="Monk",
+        target_level=80,
+        goal="Bind a PoB display alias without changing the selected target Family.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+
+    def resolve_alias(display_name: str, *, node_type: str, scope: str, graph_snapshot_id: str):
+        assert node_type == "active_skill"
+        assert scope == "player"
+        assert graph_snapshot_id == "graph:test"
+        if display_name != "Rend":
+            return None
+        return {
+            "stableKey": "skill:target-attack",
+            "sourceRefs": ["source:fixture-graph"],
+        }
+
+    monkeypatch.setattr(
+        progression_service,
+        "_resolve_graph_component_name",
+        resolve_alias,
+    )
+    anchored = _bind_target_anchor(
+        started,
+        manifests,
+        operation_suffix="target-skill-alias",
+        selected_primary_skill_name="Wyvern Rend",
+        artifact_primary_skill_name="Rend",
+    )
+
+    assert anchored["status"] == "target_anchor_bound"
+    assert anchored["targetIdentity"]["primarySkillKey"] == "skill:target-attack"
+    assert anchored["targetIdentity"]["primarySkillName"] == "Rend"
+    assert anchored["identityAliasResolution"] == [
+        {
+            "componentRole": "primary_skill",
+            "componentKey": "skill:target-attack",
+            "proofMode": "artifact_name_to_selected_stable_key",
+            "artifactDisplayName": "Rend",
+            "expectedDisplayName": "Wyvern Rend",
+            "expectedIdentitySource": "selected_candidate",
+            "graphSnapshotId": "graph:test",
+            "sourceRefs": ["source:fixture-graph"],
+        }
+    ]
+    full = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    assert full["targetAnchor"]["identity"]["primarySkillName"] == "Rend"
+    assert full["targetAnchor"]["identityAliasResolution"] == (anchored["identityAliasResolution"])
+
+
+def test_target_anchor_rejects_unproven_skill_display_alias_even_when_key_is_claimed(
+    isolated_service,
+    monkeypatch,
+):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-skill-alias-rejected",
+        base_class="Monk",
+        target_level=80,
+        goal="Reject a display name that cannot be proven to be the selected skill.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+
+    def resolve_alias(display_name: str, *, node_type: str, scope: str, graph_snapshot_id: str):
+        del node_type, scope, graph_snapshot_id
+        stable_key = {
+            "Wyvern Rend": "skill:target-attack",
+            "Unrelated Attack": "skill:unrelated-attack",
+        }.get(display_name)
+        if stable_key is None:
+            return None
+        return {"stableKey": stable_key, "sourceRefs": ["source:fixture-graph"]}
+
+    monkeypatch.setattr(
+        progression_service,
+        "_resolve_graph_component_name",
+        resolve_alias,
+    )
+    rejected = _bind_target_anchor(
+        started,
+        manifests,
+        operation_suffix="target-skill-alias-rejected",
+        selected_primary_skill_name="Wyvern Rend",
+        artifact_primary_skill_name="Unrelated Attack",
+    )
+
+    assert rejected["errorCode"] == "progression_target_anchor_selection_mismatch"
+    full = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    assert full["currentState"] == "anchor_running"
+    assert full["targetAnchor"].get("artifactId") is None
+
+
+def test_concrete_graph_snapshot_cannot_drift_during_target_binding(isolated_service):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:concrete-graph",
+        base_class="Monk",
+        target_level=80,
+        goal="Keep an already concrete graph snapshot immutable.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+
+    rejected = _bind_target_anchor(
+        started,
+        manifests,
+        operation_suffix="concrete-graph",
+        manifest_graph_snapshot_id="graph:different",
+    )
+
+    assert rejected["errorCode"] == "progression_version_context_mismatch"
+    status = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    assert status["request"]["versionContext"]["graphSnapshotId"] == "graph:test"
+    assert status["graphSnapshotResolution"] is None
+
+
+def test_progression_target_selection_rejects_one_candidate_and_wrong_anchor_identity(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-selection-invalid",
+        base_class="Monk",
+        target_level=80,
+        goal="Fail closed when target comparison or binding does not match.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    one = _target_selection()
+    one["candidates"] = one["candidates"][:1]
+    invalid = progression_service.submit_build_progression_target_selection(
+        progression_id=started["progressionId"],
+        selection=one,
+        expected_revision=started["revision"],
+        operation_id="op:target-selection:one",
+    )
+    assert invalid["errorCode"] == "invalid_progression_target_selection"
+
+    selected = _select_target_candidates(started, operation_suffix="identity-mismatch")
+    expanded_identity = deepcopy(_target_selection()["candidates"][0]["identity"])
+    expanded_identity["secondarySkillKeys"] = ["skill:unselected-secondary"]
+    expanded_identity["secondarySkillNames"] = ["Unselected Secondary"]
+    expanded = progression_service.bind_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        artifact_id="final-build:not-yet-created",
+        target_identity=expanded_identity,
+        design_coverage=_target_coverage(),
+        lifecycle_verification_ref="lifecycle-verification:0000000000000000",
+        expected_revision=selected["revision"],
+        operation_id="op:anchor:unselected-secondary",
+    )
+    assert expanded["errorCode"] == "progression_target_anchor_selection_mismatch"
+
+    mismatch = progression_service.bind_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        artifact_id="final-build:not-yet-created",
+        target_identity=_target_selection()["candidates"][1]["identity"],
+        design_coverage=_target_coverage(),
+        lifecycle_verification_ref="lifecycle-verification:0000000000000000",
+        expected_revision=selected["revision"],
+        operation_id="op:anchor:selection-mismatch",
+    )
+    assert mismatch["errorCode"] == "progression_target_anchor_selection_mismatch"
+
+
+def test_progression_target_selection_rejects_a_shrunk_discovery_receipt(
+    isolated_service,
+    monkeypatch,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-selection-shrunk-receipt",
+        base_class="Monk",
+        target_level=80,
+        goal="Reject a receipt that did not request the complete ten-Family discovery window.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    trusted_reader = progression_service._research_receipt_reader()
+
+    def read_with_shrunk_limit(ref: str):
+        receipt = trusted_reader(ref)
+        if ref == "dq-aaaaaaaaaaaaaaaa":
+            receipt = deepcopy(receipt)
+            receipt["request"]["limit"] = 5
+        return receipt
+
+    monkeypatch.setattr(
+        progression_service,
+        "_research_receipt_reader",
+        lambda: read_with_shrunk_limit,
+    )
+    rejected = progression_service.submit_build_progression_target_selection(
+        progression_id=started["progressionId"],
+        selection=_target_selection(),
+        expected_revision=started["revision"],
+        operation_id="op:target-selection:shrunk-receipt",
+    )
+
+    assert rejected["errorCode"] == "progression_target_discovery_limit_mismatch"
+
+
+def test_target_selection_allows_two_material_variants_inside_a_user_locked_family():
+    selection = _target_selection()
+    candidates = selection["candidates"]
+    candidates[1]["identity"] = deepcopy(candidates[0]["identity"])
+
+    parsed = progression_models.TargetCandidateSelection.model_validate(selection)
+
+    assert (
+        parsed.candidates[0].identity.primary_skill_key
+        == parsed.candidates[1].identity.primary_skill_key
+    )
+    duplicate = deepcopy(selection)
+    duplicate["candidates"][1]["mechanismSummary"] = duplicate["candidates"][0]["mechanismSummary"]
+    with pytest.raises(ValueError, match="materially distinct"):
+        progression_models.TargetCandidateSelection.model_validate(duplicate)
+
+
+def test_target_selection_rejects_a_modelability_only_winner():
+    selection = _target_selection()
+    for comparison in selection["dimensionComparisons"]:
+        comparison["preferredCandidateId"] = (
+            "target-candidate:high-ceiling"
+            if comparison["dimension"] == "modelability"
+            else "target-candidate:alternate"
+        )
+
+    with pytest.raises(ValueError, match="modelability alone"):
+        progression_models.TargetCandidateSelection.model_validate(selection)
+
+
+def test_family_discovery_with_fewer_than_two_exact_families_pauses(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:insufficient-family-research",
+        base_class="Monk",
+        target_level=80,
+        goal="Pause when exact-version Research cannot support a comparison.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+
+    result = progression_service.submit_build_progression_target_selection(
+        progression_id=started["progressionId"],
+        selection={"familyDiscoveryRef": "dq-cccccccccccccccc"},
+        expected_revision=started["revision"],
+        operation_id="op:target-selection:insufficient-family-research",
+    )
+
+    assert result["status"] == "target_family_discovery_insufficient"
+    assert result["discoveredFamilyCount"] == 1
+    assert result["currentState"] == "paused"
+    status = progression_service.get_build_progression_status(started["progressionId"])
+    assert status["buildProgression"]["currentState"] == "paused"
+    assert status["buildProgression"]["targetAnchor"]["status"] == "anchor_paused"
+
+    resumed = progression_service.resume_build_progression(
+        progression_id=started["progressionId"],
+        expected_revision=result["revision"],
+        operation_id="op:resume:insufficient-family-research",
+    )
+    assert resumed["currentState"] == "selection_pending"
+    resumed_status = progression_service.get_build_progression_status(started["progressionId"])
+    assert resumed_status["buildProgression"]["targetAnchor"]["status"] == "selection_pending"
+
+
+def test_target_anchor_allows_one_explicit_reserve_switch_and_no_second_switch(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:reserve-switch",
+        base_class="Monk",
+        target_level=80,
+        goal="Switch only after the Agent records a supported target failure.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    selected = _select_target_candidates(started, operation_suffix="reserve-switch")
+    failed = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="quality_unacceptable",
+        expected_revision=selected["revision"],
+        operation_id="op:target-fail:reserve-switch",
+    )
+    assert failed["reserveFamilyReselectionAvailable"] is True
+    assert failed["sameFamilyRetryAvailable"] is False
+
+    switched = progression_service.reselect_build_progression_target_candidate(
+        progression_id=started["progressionId"],
+        decision_summary=(
+            "The selected Family remained below the requested target after its bounded quality pass."
+        ),
+        evidence_refs=["judge:target-attempt-1"],
+        expected_revision=failed["revision"],
+        operation_id="op:target-reselect:reserve-switch",
+    )
+    assert switched["selectedBuildFamilyKey"] == "family:target-alternate"
+    assert switched["fallbackUsed"] is True
+    assert switched["judgeTriggeredAutomatically"] is False
+
+    failed_again = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="quality_unacceptable",
+        expected_revision=switched["revision"],
+        operation_id="op:target-fail:reserve-switch-again",
+    )
+    rejected = progression_service.reselect_build_progression_target_candidate(
+        progression_id=started["progressionId"],
+        decision_summary="Try another Family.",
+        evidence_refs=["judge:target-attempt-2"],
+        expected_revision=failed_again["revision"],
+        operation_id="op:target-reselect:reserve-switch-again",
+    )
+    assert failed_again["reserveFamilyReselectionAvailable"] is False
+    assert rejected["errorCode"] == "progression_target_reselection_not_available"
+
+
+def test_target_anchor_same_family_external_retry_is_limited_but_reserve_has_its_own_budget(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-retry",
+        base_class="Monk",
+        target_level=80,
+        goal="Reserve external retry for control interruptions only.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    selected = _select_target_candidates(started, operation_suffix="target-retry")
+    interrupted = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="tool_interruption",
+        expected_revision=selected["revision"],
+        operation_id="op:target-fail:tool-interruption",
+    )
+    retried = progression_service.retry_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        expected_revision=interrupted["revision"],
+        operation_id="op:target-retry:first",
+    )
+    interrupted_again = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="tool_interruption",
+        expected_revision=retried["revision"],
+        operation_id="op:target-fail:tool-interruption-again",
+    )
+    retry_rejected = progression_service.retry_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        expected_revision=interrupted_again["revision"],
+        operation_id="op:target-retry:second",
+    )
+    assert retried["externalRetryCount"] == 1
+    assert retry_rejected["errorCode"] == "progression_target_anchor_retry_limit_reached"
+
+
+def test_target_control_interruption_rebinds_a_new_run_on_the_same_progression(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:target-control-retry",
+        base_class="Monk",
+        target_level=80,
+        goal="Keep the same progression while retrying one interrupted target run.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    selected = _select_target_candidates(
+        started,
+        operation_suffix="target-control-retry",
+    )
+    first_run = "91000000-0000-0000-0000-000000000001"
+    first_bound = progression_service.bind_build_progression_target_run(
+        progression_id=started["progressionId"],
+        run_id=first_run,
+        expected_revision=selected["revision"],
+        operation_id="op:target-run:control-first",
+    )
+    interrupted = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="control_interruption",
+        expected_revision=first_bound["revision"],
+        operation_id="op:target-fail:control",
+    )
+    retried = progression_service.retry_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        expected_revision=interrupted["revision"],
+        operation_id="op:target-retry:control",
+    )
+    second_run = "91000000-0000-0000-0000-000000000002"
+    second_bound = progression_service.bind_build_progression_target_run(
+        progression_id=started["progressionId"],
+        run_id=second_run,
+        expected_revision=retried["revision"],
+        operation_id="op:target-run:control-second",
+    )
+
+    assert second_bound["status"] == "target_run_bound"
+    assert second_bound["progressionId"] == started["progressionId"]
+    full = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    assert full["targetAnchor"]["currentRunId"] == second_run
+    assert full["targetAnchor"]["externalRetryCount"] == 1
+    assert [row["runId"] for row in full["targetAnchor"]["runHistory"]] == [
+        first_run,
+        second_run,
+    ]
+    assert full["targetAnchor"]["runHistory"][0]["status"] == "failed"
+    assert full["targetAnchor"]["runHistory"][1]["status"] == "running"
+
+
+def test_user_locked_target_skips_discovery_and_cannot_switch_family(isolated_service):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:user-locked-family",
+        base_class="Monk",
+        target_level=80,
+        goal="Keep the user-selected Family.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+        target_family_constraint={
+            "ascendancyKey": "ascendancy:target-monk",
+            "primarySkillKey": "skill:target-attack",
+            "buildFamilyKey": "family:target-high",
+            "lockedIdentity": {
+                "ascendancyKey": "ascendancy:target-monk",
+                "primarySkillKey": "skill:target-attack",
+                "secondarySkillKeys": [],
+                "ascendancyName": "High Ceiling Ascendancy",
+                "primarySkillName": "Target Attack",
+                "secondarySkillNames": [],
+            },
+        },
+    )
+
+    assert started["currentState"] == "anchor_running"
+    assert started["targetCandidateSelectionPacket"] is None
+    assert started["targetFamilyDiscoveryRequest"] is None
+    failed = progression_service.fail_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        failure_code="quality_unacceptable",
+        expected_revision=started["revision"],
+        operation_id="op:target-fail:user-locked-family",
+    )
+    rejected = progression_service.reselect_build_progression_target_candidate(
+        progression_id=started["progressionId"],
+        decision_summary="Attempt to switch a locked target.",
+        evidence_refs=["judge:target-attempt-1"],
+        expected_revision=failed["revision"],
+        operation_id="op:target-reselect:user-locked-family",
+    )
+    assert failed["userLocked"] is True
+    assert failed["reserveFamilyReselectionAvailable"] is False
+    assert rejected["errorCode"] == "progression_target_reselection_not_available"
+
+
+def test_partial_target_constraint_becomes_a_hard_family_discovery_filter(
+    isolated_service,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:partial-family-filter",
+        base_class="Monk",
+        target_level=80,
+        goal="Discover only Families matching the requested ascendancy.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+        target_family_constraint={
+            "ascendancyKey": "ascendancy:target-monk",
+        },
+    )
+
+    assert started["currentState"] == "selection_pending"
+    assert started["targetCandidateSelectionPacket"]["familyFilters"] == {
+        "ascendancyKey": "ascendancy:target-monk"
+    }
+    assert started["targetFamilyDiscoveryRequest"]["ascendancyKey"] == ("ascendancy:target-monk")
+
+
+def test_target_anchor_must_preserve_a_core_secondary_declared_by_selected_candidate(
+    isolated_service,
+    monkeypatch,
+):
+    started = progression_service.start_build_progression(
+        operation_id="op:start:selected-secondary",
+        base_class="Monk",
+        target_level=80,
+        goal="Lock an explicitly compared secondary mechanism.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    selection = _target_selection()
+    selection["candidates"][0]["identity"]["secondarySkillKeys"] = ["skill:target-secondary"]
+    selection["candidates"][0]["identity"]["secondarySkillNames"] = ["Target Secondary"]
+    trusted_reader = progression_service._research_receipt_reader()
+
+    def read_with_secondary(ref: str):
+        receipt = trusted_reader(ref)
+        if ref == "dq-aaaaaaaaaaaaaaaa":
+            receipt = deepcopy(receipt)
+            receipt["result"]["buildFamilies"][0]["secondarySkillKeys"] = ["skill:target-secondary"]
+        return receipt
+
+    monkeypatch.setattr(
+        progression_service,
+        "_research_receipt_reader",
+        lambda: read_with_secondary,
+    )
+    selected = progression_service.submit_build_progression_target_selection(
+        progression_id=started["progressionId"],
+        selection=selection,
+        expected_revision=started["revision"],
+        operation_id="op:target-selection:selected-secondary",
+    )
+
+    mismatch = progression_service.bind_build_progression_target_anchor(
+        progression_id=started["progressionId"],
+        artifact_id="final-build:not-yet-created",
+        target_identity=_target_selection()["candidates"][0]["identity"],
+        design_coverage=_target_coverage(),
+        lifecycle_verification_ref="lifecycle-verification:0000000000000000",
+        expected_revision=selected["revision"],
+        operation_id="op:anchor:selected-secondary-mismatch",
+    )
+
+    assert mismatch["errorCode"] == "progression_target_anchor_selection_mismatch"
+
+
+def test_progression_stage_optimization_policy_requires_complete_loadouts_at_every_level():
+    blueprint = _blueprint("starter-research:packet-123")
+    early = progression_models.StageBlueprint.model_validate(blueprint["stages"][0])
+    later = progression_models.StageBlueprint.model_validate(blueprint["stages"][1])
+    endgame = progression_models.StageBlueprint.model_validate(blueprint["stages"][-1])
+
+    early_policy = progression_models.stage_optimization_policy(early)
+    later_policy = progression_models.stage_optimization_policy(later)
+    endgame_policy = progression_models.stage_optimization_policy(endgame)
+
+    assert early_policy.mode == "stage_targeted"
+    assert early_policy.required_objectives == later_policy.required_objectives
+    assert early_policy.loadout_scope == "stage_complete_loadout"
+    assert early_policy.outside_mask_findings == "report_only_no_retry"
+    assert early_policy.advisory_objectives == []
+    assert "global_passive_tree_optimization" in early_policy.excluded_objectives
+    assert "full_gear_optimization" not in early_policy.excluded_objectives
+    assert early_policy.quality_goal == "complete_stage_build"
+    assert early_policy.mutation_strategy == ("single_initialization_then_function_scoped_deltas")
+    assert early_policy.design_change_policy == ("blueprint_declared_or_versioned_replan_only")
+    assert later_policy.mode == "stage_targeted"
+    assert later_policy.loadout_scope == "stage_complete_loadout"
+    assert "damage_delivery" in later_policy.required_objectives
+    assert later_policy.global_optimizer_allowed is False
+    assert early_policy.judge_elemental_resistance_policy == "diagnostic_only"
+    assert "elemental_resistance_judgment" in early_policy.excluded_objectives
+    assert endgame_policy.judge_elemental_resistance_policy == "endgame_minimums_60_30"
+    assert "elemental_resistance_judgment" not in endgame_policy.excluded_objectives
+
+
+def test_target_anchor_optimization_policy_uses_endgame_resistance_gate_at_level_80():
+    campaign_policy = progression_models.target_anchor_optimization_policy(79)
+    endgame_policy = progression_models.target_anchor_optimization_policy(80)
+
+    assert campaign_policy.judge_elemental_resistance_policy == "diagnostic_only"
+    assert "elemental_resistance_judgment" in campaign_policy.excluded_objectives
+    assert endgame_policy.judge_elemental_resistance_policy == "endgame_minimums_60_30"
+    assert "elemental_resistance_judgment" not in endgame_policy.excluded_objectives
+
+
+def test_legacy_campaign_early_optimization_policy_remains_loadable():
+    blueprint = _blueprint("starter-research:packet-123")
+    early = progression_models.StageBlueprint.model_validate(blueprint["stages"][0])
+    legacy_policy = progression_models.StageOptimizationPolicy(
+        mode="early_minimal",
+        loadout_scope="minimal_mechanism_shell",
+        required_objectives=[
+            "skill_availability",
+            "weapon_compatibility",
+            "resource_sustain",
+        ],
+        excluded_objectives=[
+            "elemental_resistance_judgment",
+            "global_whole_build_optimization",
+            "global_passive_tree_optimization",
+            "offense_quality_chasing",
+            "defense_quality_chasing",
+            "full_gear_optimization",
+        ],
+    )
+
+    packet = progression_models.StageCreatePacket(
+        progression_id="00000000-0000-0000-0000-000000000001",
+        blueprint_id=blueprint["blueprintId"],
+        base_class=blueprint["baseClass"],
+        target_level=early.target_level,
+        route_target_level=blueprint["targetLevel"],
+        target_intent=blueprint["targetIntent"],
+        stage=early,
+        previous_artifact_id=None,
+        starter_research_packet_id=blueprint["starterResearchPacketId"],
+        starter_evidence_use=blueprint["starterEvidenceUse"],
+        optimization_policy=legacy_policy,
+        version_context=VERSION,
+        no_raw_material=True,
+        progression_bound=True,
+    )
+
+    assert packet.optimization_policy is not None
+    assert packet.optimization_policy.mode == "early_minimal"
+    assert packet.optimization_policy.quality_goal == "legacy_early_policy"
+
+
+def test_new_blueprint_rebuild_requires_a_reason_and_first_stage_never_rebuilds():
+    blueprint_payload = _blueprint("starter-research:packet-123")
+    parsed = progression_models.ProgressionBlueprint.model_validate(blueprint_payload)
+    assert progression_service._blueprint_execution_contract_error(parsed) is None
+
+    missing_reason = deepcopy(blueprint_payload)
+    missing_reason["stages"][2]["rebuildReason"] = None
+    parsed_missing = progression_models.ProgressionBlueprint.model_validate(missing_reason)
+    assert progression_service._blueprint_execution_contract_error(parsed_missing) == (
+        "progression_stage_rebuild_reason_required"
+    )
+
+    first_stage_rebuild = deepcopy(blueprint_payload)
+    first_stage_rebuild["stages"][0]["rebuildFromScratch"] = True
+    first_stage_rebuild["stages"][0]["rebuildReason"] = (
+        "The first stage already initializes a new build and cannot request another rebuild."
+    )
+    parsed_first = progression_models.ProgressionBlueprint.model_validate(first_stage_rebuild)
+    assert progression_service._blueprint_execution_contract_error(parsed_first) == (
+        "progression_first_stage_rebuild_forbidden"
+    )
+
+    stray_reason = deepcopy(blueprint_payload)
+    stray_reason["stages"][1]["rebuildReason"] = (
+        "This reason is invalid because the stage is configured to inherit its predecessor."
+    )
+    parsed_stray = progression_models.ProgressionBlueprint.model_validate(stray_reason)
+    assert progression_service._blueprint_execution_contract_error(parsed_stray) == (
+        "progression_stage_rebuild_reason_without_rebuild"
+    )
 
 
 def test_progression_blueprint_rejects_endgame_stage_below_verification_level():
@@ -504,6 +1445,320 @@ def test_progression_blueprint_requires_resolved_typed_family_keys():
     blueprint["stages"][0]["familyIdentity"]["primarySkillKey"] = "unique:not-a-skill"
     with pytest.raises(ValueError, match="resolved skill keys"):
         progression_models.ProgressionBlueprint.model_validate(blueprint)
+
+
+def test_progression_common_starter_does_not_require_a_mature_family_receipt(
+    isolated_service,
+    monkeypatch,
+):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:common-starter",
+        base_class="Monk",
+        target_level=80,
+        goal="Use public campaign knowledge before the mature Family transition.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    anchored = _bind_target_anchor(started, manifests, operation_suffix="common-starter")
+    research = progression_service.intake_starter_research_packet(
+        progression_id=started["progressionId"],
+        expected_revision=anchored["revision"],
+        operation_id="op:research:common-starter",
+        packet=_research(),
+    )
+    blueprint = _use_common_unascended_starter(
+        _blueprint(
+            research["packetId"],
+            target_anchor_artifact_id=anchored["targetArtifactId"],
+        ),
+        research["packetId"],
+    )
+    accepted = progression_service.submit_build_progression_blueprint(
+        progression_id=started["progressionId"],
+        expected_revision=research["revision"],
+        operation_id="op:blueprint:common-starter",
+        blueprint=blueprint,
+    )
+    assert accepted["status"] == "blueprint_accepted"
+
+    claimed = progression_service.claim_build_progression_stage(
+        progression_id=started["progressionId"],
+        expected_revision=accepted["revision"],
+        operation_id="op:claim:common-starter",
+    )
+    packet = claimed["stageCreatePacket"]
+    assert packet["stage"]["knowledgeMode"] == "starter_common"
+    assert packet["stage"]["familyIdentity"] is None
+    assert packet["generationMemoryMode"] == "standard"
+    assert packet["researchMemoryPolicy"] == "starter_common_no_family_memory"
+    assert packet["versionContext"]["researchMemoryRef"] == research["packetId"]
+    assert packet["optimizationPolicy"]["mode"] == "stage_targeted"
+    assert packet["optimizationPolicy"]["loadoutScope"] == "stage_complete_loadout"
+    assert packet["optimizationPolicy"]["qualityGoal"] == "complete_stage_build"
+    assert packet["optimizationPolicy"]["mutationStrategy"] == (
+        "single_initialization_then_function_scoped_deltas"
+    )
+    assert packet["optimizationPolicy"]["designChangePolicy"] == (
+        "blueprint_declared_or_versioned_replan_only"
+    )
+    assert packet["optimizationPolicy"]["outsideMaskFindings"] == "report_only_no_retry"
+    assert packet["globalOptimizerAllowed"] is False
+
+    run_id = "12000000-0000-0000-0000-000000000001"
+    bound = progression_service.bind_build_progression_stage_run(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        run_id=run_id,
+        expected_revision=claimed["revision"],
+        operation_id="op:bind:common-starter",
+    )
+    artifact_id = "final-build:common-unascended-starter"
+    source_hash = "common-unascended-starter-hash"
+    manifests[artifact_id] = _manifest(
+        artifact_id,
+        run_id,
+        10,
+        source_hash,
+        research_ref=research["packetId"],
+        ascendancy="None",
+        main_skill="Early Attack",
+    )
+    monkeypatch.setattr(
+        progression_service,
+        "_read_phase5_provenance",
+        lambda _run_id: {
+            "runId": run_id,
+            "candidateId": f"candidate:{artifact_id}",
+            "sourceHash": source_hash,
+            "researchMemoryUse": None,
+            "finalFailureAudit": {
+                "classification": "no_material_failure",
+                "retryDecision": "accept",
+            },
+        },
+    )
+    completed = progression_service.complete_build_progression_stage(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        artifact_id=artifact_id,
+        lifecycle_verification=_lifecycle_result(
+            artifact_id,
+            "campaign_early",
+            source_hash,
+        ),
+        cost_profile=_cost(claimed["stageId"]),
+        completion_report={
+            "purpose": "Verify the unascended public-knowledge starter.",
+            "playPattern": "Use the early attack while remaining unascended.",
+            "changesFromPrevious": [],
+            "sourceRefs": [research["packetId"]],
+        },
+        expected_revision=bound["revision"],
+        operation_id="op:complete:common-starter",
+    )
+    assert completed["status"] == "stage_completed"
+    status = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )
+    provenance = status["buildProgression"]["stages"][0]["researchProvenance"]
+    assert provenance["knowledgeMode"] == "starter_common"
+    assert provenance["dedupeQueryRefs"] == []
+
+
+def test_wrong_stage_memory_mode_is_rejected_without_consuming_the_claim_or_retry(
+    isolated_service,
+    monkeypatch,
+):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:stage-memory-mode",
+        base_class="Monk",
+        target_level=80,
+        goal="Keep the starter stage on the packet-selected standard memory mode.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    anchored = _bind_target_anchor(
+        started,
+        manifests,
+        operation_suffix="stage-memory-mode",
+    )
+    research = progression_service.intake_starter_research_packet(
+        progression_id=started["progressionId"],
+        expected_revision=anchored["revision"],
+        operation_id="op:research:stage-memory-mode",
+        packet=_research(),
+    )
+    blueprint = _use_common_unascended_starter(
+        _blueprint(
+            research["packetId"],
+            target_anchor_artifact_id=anchored["targetArtifactId"],
+        ),
+        research["packetId"],
+    )
+    accepted = progression_service.submit_build_progression_blueprint(
+        progression_id=started["progressionId"],
+        expected_revision=research["revision"],
+        operation_id="op:blueprint:stage-memory-mode",
+        blueprint=blueprint,
+    )
+    claimed = progression_service.claim_build_progression_stage(
+        progression_id=started["progressionId"],
+        expected_revision=accepted["revision"],
+        operation_id="op:claim:stage-memory-mode",
+    )
+    assert claimed["stageCreatePacket"]["generationMemoryMode"] == "standard"
+
+    wrong_run_id = "12000000-0000-0000-0000-000000000002"
+    rejected = progression_service.bind_build_progression_stage_run(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        run_id=wrong_run_id,
+        expected_revision=claimed["revision"],
+        operation_id="op:bind:stage-memory-mode-wrong",
+    )
+    assert rejected["errorCode"] == "progression_stage_memory_mode_mismatch"
+    assert rejected["expectedMemoryMode"] == "standard"
+    assert rejected["actualMemoryMode"] == "memory_assisted"
+    assert rejected["stageRetryConsumed"] is False
+    assert rejected["claimRemainsActive"] is True
+    assert rejected["revision"] == claimed["revision"]
+
+    after_rejection = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )["buildProgression"]
+    stage = after_rejection["stages"][0]
+    assert stage["retryCount"] == 0
+    assert stage["boundRunId"] is None
+    assert after_rejection["activeStage"]["claimId"] == claimed["claimId"]
+
+    correct_run_id = "12000000-0000-0000-0000-000000000001"
+    bound = progression_service.bind_build_progression_stage_run(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        run_id=correct_run_id,
+        expected_revision=claimed["revision"],
+        operation_id="op:bind:stage-memory-mode-correct",
+    )
+    assert bound["status"] == "run_bound"
+    assert bound["runId"] == correct_run_id
+    monkeypatch.setattr(
+        progression_service,
+        "_phase5_run_manifest",
+        lambda _run_id, *, not_before, require_fresh=True: {
+            "startedAt": not_before,
+            "experimentContext": {"memoryMode": "memory_assisted"},
+        },
+    )
+    tampered = progression_service.complete_build_progression_stage(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        artifact_id="final-build:not-read-because-mode-mismatch",
+        lifecycle_verification={},
+        cost_profile={},
+        completion_report={},
+        expected_revision=bound["revision"],
+        operation_id="op:complete:stage-memory-mode-tampered",
+    )
+    assert tampered["errorCode"] == "progression_stage_memory_mode_mismatch"
+    assert tampered["expectedMemoryMode"] == "standard"
+    assert tampered["actualMemoryMode"] == "memory_assisted"
+    assert tampered["stageRetryConsumed"] is False
+    assert tampered["revision"] == bound["revision"]
+
+
+def test_failed_unsaved_starter_stage_can_replan_once_with_fresh_public_evidence(
+    isolated_service,
+):
+    manifests = isolated_service
+    started = progression_service.start_build_progression(
+        operation_id="op:start:starter-replan",
+        base_class="Monk",
+        target_level=80,
+        goal="Allow one audited starter direction change after a failed viability attempt.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    anchored = _bind_target_anchor(started, manifests, operation_suffix="starter-replan")
+    research = progression_service.intake_starter_research_packet(
+        progression_id=started["progressionId"],
+        expected_revision=anchored["revision"],
+        operation_id="op:research:starter-replan",
+        packet=_research(),
+    )
+    blueprint = _use_common_unascended_starter(
+        _blueprint(
+            research["packetId"],
+            target_anchor_artifact_id=anchored["targetArtifactId"],
+        ),
+        research["packetId"],
+    )
+    accepted = progression_service.submit_build_progression_blueprint(
+        progression_id=started["progressionId"],
+        expected_revision=research["revision"],
+        operation_id="op:blueprint:starter-replan",
+        blueprint=blueprint,
+    )
+    claimed = progression_service.claim_build_progression_stage(
+        progression_id=started["progressionId"],
+        expected_revision=accepted["revision"],
+        operation_id="op:claim:starter-replan",
+    )
+    failed = progression_service.fail_build_progression_stage(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        claim_id=claimed["claimId"],
+        failure_code="starter_loop_not_viable",
+        expected_revision=claimed["revision"],
+        operation_id="op:fail:starter-replan",
+    )
+    revised_stage = deepcopy(blueprint["stages"][0])
+    revised_stage["starterIdentity"] = {
+        "primarySkillKey": "skill:replacement-attack",
+        "secondarySkillKeys": [],
+        "primarySkillName": "Replacement Attack",
+        "secondarySkillNames": [],
+        "expectedAscendancyKey": None,
+        "expectedAscendancyName": None,
+    }
+    revised_stage["primarySkillIntent"] = "Replacement Attack"
+    revised_stage["commonKnowledgeRefs"] = [
+        research["packetId"],
+        "skill:replacement-attack",
+        "corpus:replacement-attack",
+    ]
+    retried = progression_service.retry_build_progression_stage(
+        progression_id=started["progressionId"],
+        stage_id=claimed["stageId"],
+        expected_revision=failed["revision"],
+        operation_id="op:retry:starter-replan",
+        revised_stage=revised_stage,
+        revised_blueprint_id="progression-blueprint:starter-replan-v2",
+        replan_summary="The first skill loop failed; use the independently checked replacement.",
+    )
+    assert retried["status"] == "stage_retry_opened"
+    assert retried["replanned"] is True
+
+    reclaimed = progression_service.claim_build_progression_stage(
+        progression_id=started["progressionId"],
+        expected_revision=retried["revision"],
+        operation_id="op:claim:starter-replan-v2",
+    )
+    assert (
+        reclaimed["stageCreatePacket"]["stage"]["starterIdentity"]["primarySkillKey"]
+        == "skill:replacement-attack"
+    )
+    status = progression_service.get_build_progression_status(
+        started["progressionId"],
+        detail="full",
+    )
+    history = status["buildProgression"]["stages"][0]["replanHistory"]
+    assert history[0]["failureCode"] == "starter_loop_not_viable"
 
 
 def test_progression_blueprint_rejects_research_receipts_not_queried_in_this_run(
@@ -642,6 +1897,7 @@ def _manifest(
     ascendancy: str = "Fast Campaign Ascendancy",
     main_skill: str = "Early Attack",
     core_skills: list[str] | None = None,
+    graph_snapshot_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         artifact_id=artifact_id,
@@ -656,7 +1912,16 @@ def _manifest(
             "mainSkill": main_skill,
         },
         tested_skill_groups=[SimpleNamespace(enabled=True, active_skills=list(core_skills or []))],
-        version_context=VERSION.model_copy(update={"research_memory_ref": research_ref}),
+        version_context=VERSION.model_copy(
+            update={
+                "research_memory_ref": research_ref,
+                **(
+                    {"graph_snapshot_id": graph_snapshot_id}
+                    if graph_snapshot_id is not None
+                    else {}
+                ),
+            }
+        ),
         judge_report=SimpleNamespace(
             playability_failures=[],
             quality_warnings=[],
@@ -717,7 +1982,7 @@ def test_starter_cache_is_withheld_from_target_create_then_exposed_after_anchor(
         goal="Reuse the exact-patch starter packet.",
         version_context=VERSION.model_dump(mode="json", by_alias=True),
     )
-    assert reused["currentState"] == "target_anchor_pending"
+    assert reused["currentState"] == "selection_pending"
     assert reused["starterResearchPacket"] is None
     assert reused["starterResearchCandidate"] is None
     assert reused["starterEvidenceWithheldUntilAnchor"] is True
@@ -749,7 +2014,7 @@ def test_starter_cache_is_withheld_from_target_create_then_exposed_after_anchor(
         goal="Revalidate a stale safe candidate.",
         version_context=VERSION.model_dump(mode="json", by_alias=True),
     )
-    assert stale["currentState"] == "target_anchor_pending"
+    assert stale["currentState"] == "selection_pending"
     assert stale["starterResearchPacket"] is None
     assert stale["starterResearchCandidate"] is None
     assert stale["starterEvidenceWithheldUntilAnchor"] is True
@@ -952,8 +2217,6 @@ def test_progression_is_serial_cas_bound_and_finalizes_anchored_route_v3(isolate
         status["buildProgression"]["targetAnchor"]["artifactId"]
         == (blueprint["targetAnchorArtifactId"])
     )
-    target_manifest = manifests[blueprint["targetAnchorArtifactId"]]
-    target_manifest.judge_report.playability_failures = ["resource_loop_not_sustainable"]
     cloned_payload = {
         key: route[key]
         for key in (
@@ -969,6 +2232,19 @@ def test_progression_is_serial_cas_bound_and_finalizes_anchored_route_v3(isolate
         )
     }
     cloned_payload["noRawMaterial"] = True
+    caveated_payload = deepcopy(cloned_payload)
+    caveated_payload["targetDesignCoverage"]["unresolvedCaveats"] = [
+        "The target boss resource loop remains only partially verified."
+    ]
+    caveated = progression_service.progression.save_anchored_progression_route(
+        caveated_payload,
+        route_id="00000000-0000-0000-0000-000000000098",
+    )
+    assert caveated["status"] == "saved"
+    assert caveated["progressionRoute"]["qualityStatus"] == "limited"
+
+    target_manifest = manifests[blueprint["targetAnchorArtifactId"]]
+    target_manifest.judge_report.playability_failures = ["resource_loop_not_sustainable"]
     limited = progression_service.progression.save_anchored_progression_route(
         cloned_payload,
         route_id="00000000-0000-0000-0000-000000000099",
@@ -1049,6 +2325,14 @@ def test_progression_rejects_hash_mismatch_and_allows_only_one_external_retry(
         expected_revision=revision,
         operation_id="op:fail:first",
     )
+    assert failed["recoveryExportAvailable"] is True
+    assert failed["recoveryExportAction"] == "export_build_progression_package"
+    assert failed["nextAction"] == "retry_stage_or_export_recovery"
+    failed_status = progression_service.get_build_progression_status(
+        progression_id,
+        detail="compact",
+    )
+    assert failed_status["buildProgression"]["nextAction"] == ("retry_stage_or_export_recovery")
     retried = progression_service.retry_build_progression_stage(
         progression_id=progression_id,
         stage_id=claimed["stageId"],
@@ -1624,6 +2908,10 @@ def test_progression_rejects_a_target_anchor_with_failed_lifecycle_receipt(
         goal="Reject a resource-broken target before it shapes the progression.",
         version_context=VERSION.model_dump(mode="json", by_alias=True),
     )
+    selected = _select_target_candidates(
+        started,
+        operation_suffix="failed-lifecycle-anchor",
+    )
     artifact_id = "final-build:failed-lifecycle-anchor"
     run_id = "70000000-0000-0000-0000-000000000001"
     source_hash = "failed-lifecycle-anchor-hash"
@@ -1666,13 +2954,13 @@ def test_progression_rejects_a_target_anchor_with_failed_lifecycle_receipt(
         },
         design_coverage=_target_coverage(),
         lifecycle_verification_ref=verification_ref,
-        expected_revision=started["revision"],
+        expected_revision=selected["revision"],
         operation_id="op:anchor:failed-lifecycle",
     )
 
     assert result["errorCode"] == "progression_target_anchor_lifecycle_not_verified"
     status = progression_service.get_build_progression_status(started["progressionId"])
-    assert status["buildProgression"]["currentState"] == "target_anchor_pending"
+    assert status["buildProgression"]["currentState"] == "anchor_running"
 
 
 def test_progression_rejects_target_anchor_when_agent_found_a_real_build_failure(
@@ -1687,6 +2975,7 @@ def test_progression_rejects_target_anchor_when_agent_found_a_real_build_failure
         goal="Do not anchor a target that the creating Agent rejected.",
         version_context=VERSION.model_dump(mode="json", by_alias=True),
     )
+    selected = _select_target_candidates(started, operation_suffix="bad-anchor")
     artifact_id = "final-build:bad-target-anchor"
     run_id = "80000000-0000-0000-0000-000000000001"
     manifests[artifact_id] = _manifest(
@@ -1722,6 +3011,12 @@ def test_progression_rejects_target_anchor_when_agent_found_a_real_build_failure
             },
         },
     )
+    run_bound = progression_service.bind_build_progression_target_run(
+        progression_id=started["progressionId"],
+        run_id=run_id,
+        expected_revision=selected["revision"],
+        operation_id="op:anchor-run:bad-anchor",
+    )
 
     result = progression_service.bind_build_progression_target_anchor(
         progression_id=started["progressionId"],
@@ -1739,13 +3034,13 @@ def test_progression_rejects_target_anchor_when_agent_found_a_real_build_failure
             "maps_entry",
             "bad-target-anchor-hash",
         ),
-        expected_revision=started["revision"],
+        expected_revision=run_bound["revision"],
         operation_id="op:anchor:bad-anchor",
     )
 
     assert result["errorCode"] == "progression_target_anchor_agent_rejected"
     status = progression_service.get_build_progression_status(started["progressionId"])
-    assert status["buildProgression"]["currentState"] == "target_anchor_pending"
+    assert status["buildProgression"]["currentState"] == "anchor_running"
 
 
 def test_progression_rejects_target_anchor_from_a_preexisting_phase5_run(
@@ -1772,9 +3067,9 @@ def test_progression_rejects_target_anchor_from_a_preexisting_phase5_run(
         operation_suffix="old-anchor-run",
     )
 
-    assert result["errorCode"] == "progression_target_anchor_run_not_new"
+    assert result["errorCode"] == "progression_phase5_run_not_found"
     status = progression_service.get_build_progression_status(started["progressionId"])
-    assert status["buildProgression"]["currentState"] == "target_anchor_pending"
+    assert status["buildProgression"]["currentState"] == "anchor_running"
 
 
 def test_progression_rejects_untraceable_research_adopted_target_coverage(
@@ -1855,6 +3150,86 @@ def test_target_coverage_requires_an_adopted_research_item_not_only_a_query_rece
     )
 
 
+def test_caveated_research_premise_requires_limited_target_acceptance(
+    isolated_service,
+    monkeypatch,
+):
+    manifests = isolated_service
+    premise_id = "rp-0123456789abcdef"
+    provenance = {
+        "dedupeQueryRefs": ["dq-0000000000000004"],
+        "exactIdentityQueryRefs": ["dq-0000000000000004"],
+        "buildFamilyKeys": ["family:target-high"],
+        "deepRecordIds": ["drr-target-resource-alternative"],
+        "patternIds": [],
+        "semanticEdgeIds": [],
+        "memoryItemIds": [],
+        "premiseDecisionIds": [premise_id],
+        "caveatedPremiseIds": [premise_id],
+        "premiseDecisions": [
+            {
+                "premiseId": premise_id,
+                "decision": "caveated",
+                "resolutionRefs": [],
+                "application": "Keep the unresolved target resource risk visible.",
+                "caveat": "The longest boss scenario remains only partially verified.",
+            }
+        ],
+        "retrievalOutcome": "matched",
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
+    monkeypatch.setattr(
+        progression_service.progression_provenance,
+        "validate_research_provenance",
+        lambda **_kwargs: (None, deepcopy(provenance)),
+    )
+    coverage = _target_coverage()
+    coverage["dimensions"][0] = {
+        **coverage["dimensions"][0],
+        "status": "research_adopted",
+        "evidenceRefs": [premise_id],
+    }
+    coverage["unresolvedCaveats"] = [
+        "The longest boss resource loop remains only partially verified."
+    ]
+
+    strict_started = progression_service.start_build_progression(
+        operation_id="op:start:strict-premise-acceptance",
+        base_class="Monk",
+        target_level=80,
+        goal="Do not silently accept an unresolved Research premise.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    rejected = _bind_target_anchor(
+        strict_started,
+        manifests,
+        operation_suffix="strict-premise-acceptance",
+        design_coverage=coverage,
+    )
+    assert rejected["errorCode"] == (
+        "progression_target_caveated_premise_requires_limited_acceptance"
+    )
+
+    limited_started = progression_service.start_build_progression(
+        operation_id="op:start:limited-premise-acceptance",
+        base_class="Monk",
+        target_level=80,
+        goal="Preserve an explicit Research premise caveat in a limited target anchor.",
+        version_context=VERSION.model_dump(mode="json", by_alias=True),
+    )
+    accepted = _bind_target_anchor(
+        limited_started,
+        manifests,
+        operation_suffix="limited-premise-acceptance",
+        design_coverage=coverage,
+        acceptance_decision="limited_accepted",
+    )
+    assert accepted["status"] == "target_anchor_bound"
+    assert accepted["acceptanceDecision"] == "limited_accepted"
+    assert accepted["caveatedPremiseIds"] == [premise_id]
+
+
 def test_progression_rejects_untrusted_independently_verified_target_coverage(
     isolated_service,
 ):
@@ -1881,8 +3256,25 @@ def test_progression_rejects_untrusted_independently_verified_target_coverage(
 
 def test_progression_target_core_secondary_skill_must_exist_in_the_anchor_artifact(
     isolated_service,
+    monkeypatch,
 ):
     manifests = isolated_service
+    trusted_reader = progression_service._research_receipt_reader()
+
+    def read_with_core_secondary(ref: str):
+        receipt = trusted_reader(ref)
+        if ref == "dq-aaaaaaaaaaaaaaaa":
+            receipt = deepcopy(receipt)
+            receipt["result"]["buildFamilies"][0]["secondarySkillKeys"] = [
+                "skill:TempestBellPlayer"
+            ]
+        return receipt
+
+    monkeypatch.setattr(
+        progression_service,
+        "_research_receipt_reader",
+        lambda: read_with_core_secondary,
+    )
     missing_started = progression_service.start_build_progression(
         operation_id="op:start:missing-core-skill",
         base_class="Monk",
