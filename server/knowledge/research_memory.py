@@ -40,6 +40,19 @@ TRANSFER_CONFIDENCE_WEIGHTS = {
     "recurring_observation": 0.65,
     "likely_pattern": 1.0,
 }
+PREMISE_AUDIT_VERSION = 1
+MECHANISM_RECORD_KINDS = {
+    "mechanic_chain",
+    "rotation",
+    "resource_engine",
+    "failure_mode",
+}
+MECHANISM_RECORD_KIND_PRIORITY = (
+    "mechanic_chain",
+    "rotation",
+    "resource_engine",
+    "failure_mode",
+)
 
 
 def _normalize_deep_record_version_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -441,15 +454,26 @@ class ResearchMemoryService:
         primary_skill_key: str | None = None,
         build_family_keys: list[str] | None = None,
         record_kinds: list[str] | None = None,
+        class_key: str | None = None,
+        game_patch: str | None = None,
+        passive_tree_version: str | None = None,
     ) -> dict[str, Any]:
-        if detail_level not in {"summary", "record"}:
+        if detail_level not in {"summary", "record", "family"}:
             return research_models.public_error(
-                "invalid_detail_level", ["detail_level must be summary or record"]
+                "invalid_detail_level", ["detail_level must be summary, record or family"]
             )
         component_keys = sorted({str(key) for key in component_keys or [] if str(key).strip()})
         research_axes = sorted({str(axis) for axis in research_axes or [] if str(axis).strip()})
         ascendancy_key = str(ascendancy_key or "").strip() or None
         primary_skill_key = str(primary_skill_key or "").strip() or None
+        class_key = str(class_key or "").strip() or None
+        game_patch = str(game_patch or "").strip() or None
+        passive_tree_version = str(passive_tree_version or "").strip() or None
+        if detail_level == "family" and not (class_key and game_patch and passive_tree_version):
+            return research_models.public_error(
+                "family_discovery_requires_exact_context",
+                ["detail_level=family requires class_key, game_patch and passive_tree_version"],
+            )
         build_family_keys = sorted(
             {str(key).strip() for key in build_family_keys or [] if str(key).strip()}
         )
@@ -486,67 +510,61 @@ class ResearchMemoryService:
             else []
         )
         record_ids = sorted({str(item) for item in record_ids or [] if str(item).strip()})
-        dedupe_ref = (
-            "dq-"
-            + _stable_hash(
-                {
-                    "query": _normalize_text(query),
-                    "component_keys": component_keys,
-                    "detail_level": detail_level,
-                    "record_ids": record_ids,
-                    "include_transferable": include_transferable,
-                    "research_axes": research_axes,
-                    "ascendancy_key": ascendancy_key,
-                    "primary_skill_key": primary_skill_key,
-                    "build_family_keys": build_family_keys,
-                    "record_kinds": record_kinds,
-                }
-            )[:16]
-        )
         con = mature_learning.connect(self.db_path)
         try:
             now = _now()
-            self._record_dedupe_query(
-                con,
-                dedupe_ref=dedupe_ref,
-                query=query,
-                component_keys=component_keys,
-                now=now,
-            )
+            family_discovery = detail_level == "family"
             rows = (
                 []
-                if record_ids and not query.strip() and not component_keys
+                if family_discovery or (record_ids and not query.strip() and not component_keys)
                 else self._query_rows(con, query, component_key_groups, limit)
             )
             results = [self._fragment_result(row) for row in rows]
             explicit_family_filter = bool(ascendancy_key or primary_skill_key or build_family_keys)
             family_rows = (
-                self._query_build_family_rows(
+                self._query_discovery_family_rows(
+                    con,
+                    class_key=class_key or "",
+                    game_patch=game_patch or "",
+                    passive_tree_version=passive_tree_version or "",
+                    ascendancy_key=ascendancy_key,
+                    primary_skill_keys=primary_skill_keys,
+                    build_family_keys=build_family_keys,
+                    limit=10,
+                )
+                if family_discovery
+                else self._query_build_family_rows(
                     con,
                     ascendancy_key=ascendancy_key,
                     primary_skill_keys=primary_skill_keys,
                     build_family_keys=build_family_keys,
-                    limit=min(max(1, limit), 12),
+                    limit=max(1, limit),
                 )
                 if explicit_family_filter
                 else []
             )
             selected_family_keys = [str(row["build_family_key"]) for row in family_rows]
-            record_rows = self._query_deep_record_rows(
-                con,
-                query=query,
-                component_key_groups=component_key_groups,
-                limit=min(max(1, limit), 6),
-                record_ids=record_ids,
-                build_family_keys=selected_family_keys,
-                record_kinds=record_kinds,
-                query_is_preference=explicit_family_filter,
+            record_rows = (
+                []
+                if family_discovery
+                else self._query_deep_record_rows(
+                    con,
+                    query=query,
+                    component_key_groups=component_key_groups,
+                    limit=max(1, limit),
+                    record_ids=record_ids,
+                    build_family_keys=selected_family_keys,
+                    record_kinds=record_kinds,
+                    query_is_preference=explicit_family_filter,
+                    game_patch=game_patch,
+                    passive_tree_version=passive_tree_version,
+                )
             )
             deep_records = [
                 self._deep_record_result(row, include_content=detail_level == "record")
                 for row in record_rows
             ]
-            if not explicit_family_filter:
+            if not explicit_family_filter and not family_discovery:
                 selected_family_keys = sorted(
                     {str(row["build_family_key"]) for row in record_rows if row["build_family_key"]}
                 )
@@ -555,9 +573,36 @@ class ResearchMemoryService:
                     ascendancy_key=None,
                     primary_skill_keys=[],
                     build_family_keys=selected_family_keys,
-                    limit=min(max(1, limit), 12),
+                    limit=max(1, limit),
                 )
-            build_families = self._build_family_results(con, family_rows)
+            build_families = (
+                self._build_discovery_family_results(
+                    con,
+                    family_rows,
+                    class_key=class_key or "",
+                    game_patch=game_patch or "",
+                    passive_tree_version=passive_tree_version or "",
+                )
+                if family_discovery
+                else self._build_family_results(con, family_rows)
+            )
+            family_record_coverage: list[dict[str, Any]] = []
+            family_record_index: list[dict[str, Any]] = []
+            family_premise_catalog: list[dict[str, Any]] = []
+            if not family_discovery and selected_family_keys:
+                (
+                    family_record_coverage,
+                    family_record_index,
+                    family_premise_catalog,
+                ) = self._build_family_record_context(
+                    con,
+                    family_keys=selected_family_keys,
+                    returned_record_ids={
+                        str(row["record_id"]) for row in record_rows if row["record_id"]
+                    },
+                    game_patch=game_patch,
+                    passive_tree_version=passive_tree_version,
+                )
             family_keys = [str(row["buildFamilyKey"]) for row in build_families]
             scope_component_keys = {key for group in component_key_groups for key in group}
             for row in rows:
@@ -573,17 +618,25 @@ class ResearchMemoryService:
                         *family["secondarySkillKeys"],
                     ]
                 )
-            context_limit = min(max(1, limit), 6)
-            semantic_edges = self._query_creator_semantic_edges(
-                con,
-                component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
-                limit=context_limit,
+            context_limit = max(1, limit)
+            semantic_edges = (
+                []
+                if family_discovery
+                else self._query_creator_semantic_edges(
+                    con,
+                    component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
+                    limit=context_limit,
+                )
             )
-            build_patterns = self._query_creator_build_patterns(
-                con,
-                component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
-                family_keys=family_keys,
-                limit=context_limit,
+            build_patterns = (
+                []
+                if family_discovery
+                else self._query_creator_build_patterns(
+                    con,
+                    component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
+                    family_keys=family_keys,
+                    limit=context_limit,
+                )
             )
             transferable_patterns = (
                 self._query_creator_transferable_patterns(
@@ -594,8 +647,73 @@ class ResearchMemoryService:
                     exclude_origin_family_keys=family_keys,
                     limit=min(4, max(1, limit)),
                 )
-                if include_transferable
+                if include_transferable and not family_discovery
                 else []
+            )
+            request_contract = {
+                "componentKeys": component_keys,
+                # Family discovery has one stable contract: compare up to ten exact-version
+                # Families. A caller-provided ordinary query limit must not silently shrink it.
+                "limit": 10 if family_discovery else limit,
+                "detailLevel": detail_level,
+                "recordIds": record_ids,
+                "includeTransferable": include_transferable,
+                "researchAxes": research_axes,
+                "ascendancyKey": ascendancy_key,
+                "primarySkillKey": primary_skill_key,
+                **({"primarySkillKeys": primary_skill_keys} if primary_skill_key else {}),
+                "buildFamilyKeys": build_family_keys,
+                "recordKinds": record_kinds,
+                "classKey": class_key,
+                "gamePatch": game_patch,
+                "passiveTreeVersion": passive_tree_version,
+            }
+            result_contract = {
+                "buildFamilies": sorted(
+                    [
+                        {
+                            "buildFamilyKey": item["buildFamilyKey"],
+                            "ascendancyKey": item["ascendancyKey"],
+                            "primarySkillKey": item["primarySkillKey"],
+                            "secondarySkillKeys": sorted(item["secondarySkillKeys"]),
+                        }
+                        for item in build_families
+                    ],
+                    key=lambda item: item["buildFamilyKey"],
+                ),
+                "deepRecordIds": sorted(item["recordId"] for item in deep_records),
+                "deepReadRecordIds": (
+                    sorted(item["recordId"] for item in deep_records)
+                    if detail_level == "record"
+                    else []
+                ),
+                "patternIds": sorted(
+                    {str(item["patternId"]) for item in [*build_patterns, *transferable_patterns]}
+                ),
+                "semanticEdgeIds": sorted(item["edgeId"] for item in semantic_edges),
+                "memoryItemIds": sorted(item["memoryItemId"] for item in results),
+                "familyRecordCoverage": family_record_coverage,
+                "familyPremiseCatalog": family_premise_catalog,
+                "premiseAuditVersion": (PREMISE_AUDIT_VERSION if family_record_coverage else None),
+            }
+            dedupe_ref = (
+                "dq-"
+                + _stable_hash(
+                    {
+                        "query": _normalize_text(query),
+                        "request": request_contract,
+                        "result": result_contract,
+                    }
+                )[:16]
+            )
+            self._record_dedupe_query(
+                con,
+                dedupe_ref=dedupe_ref,
+                query=query,
+                component_keys=component_keys,
+                request_contract=request_contract,
+                result_contract=result_contract,
+                now=now,
             )
             con.commit()
         finally:
@@ -609,12 +727,19 @@ class ResearchMemoryService:
             "semanticEdges": semantic_edges,
             "buildPatterns": build_patterns,
             "transferablePatterns": transferable_patterns,
+            "familyRecordCoverage": family_record_coverage,
+            "familyRecordIndex": family_record_index,
+            "familyPremiseCatalog": family_premise_catalog,
+            "premiseAuditVersion": (PREMISE_AUDIT_VERSION if family_record_coverage else None),
             "requestedComponentKeys": component_keys,
             "requestedResearchAxes": research_axes,
             "requestedAscendancyKey": ascendancy_key,
             "requestedPrimarySkillKey": primary_skill_key,
             "requestedBuildFamilyKeys": build_family_keys,
             "requestedRecordKinds": record_kinds,
+            "requestedClassKey": class_key,
+            "requestedGamePatch": game_patch,
+            "requestedPassiveTreeVersion": passive_tree_version,
             "includeTransferable": include_transferable,
             "retrievalPolicy": {
                 "familyKnowledgePriority": "higher",
@@ -627,9 +752,78 @@ class ResearchMemoryService:
             },
             "componentKeyGroups": component_key_groups,
             "detailLevel": detail_level,
+            **(
+                {
+                    "familyDiscovery": {
+                        "requestedCandidateCount": 10,
+                        "returnedCandidateCount": len(build_families),
+                        "coverage": (
+                            "sufficient"
+                            if len(build_families) >= 5
+                            else "limited"
+                            if len(build_families) >= 2
+                            else "insufficient"
+                        ),
+                        "exactVersionOnly": True,
+                        "didNotBackfillWithStaleFamilies": True,
+                    }
+                }
+                if detail_level == "family"
+                else {}
+            ),
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def read_query_receipt(self, dedupe_query_ref: str) -> dict[str, Any] | None:
+        """Read one copy-safe typed query/result receipt for progression provenance checks."""
+
+        if not re.fullmatch(r"dq-[A-Fa-f0-9]{16}", str(dedupe_query_ref or "")):
+            return None
+        con = mature_learning.connect(self.db_path)
+        try:
+            row = con.execute(
+                """
+                SELECT dedupe_query_ref, query_hash, component_keys, request_contract,
+                       result_contract, created_at, last_seen_at
+                FROM research_dedupe_queries
+                WHERE dedupe_query_ref = ?
+                  AND visibility = 'creator_visible'
+                  AND split = 'train_context'
+                LIMIT 1
+                """,
+                (dedupe_query_ref,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            con.close()
+        if row is None:
+            return None
+        request = _loads(row["request_contract"], {})
+        result = _loads(row["result_contract"], {})
+        if not isinstance(request, dict) or not isinstance(result, dict) or not request:
+            # Historical receipts remain valid for query-before-propose dedupe, but they cannot
+            # authorize a new progression stage or target anchor.
+            return None
+        receipt = {
+            "dedupeQueryRef": row["dedupe_query_ref"],
+            "queryHash": row["query_hash"],
+            "componentKeys": _loads(row["component_keys"], []),
+            "request": request,
+            "result": result,
+            "createdAt": row["created_at"],
+            "lastSeenAt": row["last_seen_at"],
+            "noRawQuery": True,
+            "noRawMatureBuildMaterial": True,
+        }
+        if (
+            copy_safety.find_forbidden_paths(receipt)
+            or copy_safety.durable_knowledge_flags(receipt)
+            or copy_safety.contains_raw_url(receipt)
+        ):
+            return None
+        return receipt
 
     def _component_key_groups(self, component_keys: list[str]) -> list[list[str]]:
         """Expand graph-backed gem/active-skill identities without fuzzy matching."""
@@ -2180,6 +2374,200 @@ class ResearchMemoryService:
         params.append(limit)
         return list(con.execute(sql, params).fetchall())
 
+    def _query_discovery_family_rows(
+        self,
+        con: sqlite3.Connection,
+        *,
+        class_key: str,
+        game_patch: str,
+        passive_tree_version: str,
+        ascendancy_key: str | None,
+        primary_skill_keys: list[str],
+        build_family_keys: list[str],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Return only exact-version Families backed by eligible mature Research records."""
+
+        class_token = re.sub(
+            r"[^a-z0-9_]+",
+            "_",
+            class_key.split(":", 1)[-1].strip().casefold().replace(" ", "_"),
+        ).strip("_")
+        where = [
+            "(records.class_key = ? OR "
+            "(records.class_key IS NULL AND families.ascendancy_key LIKE ?))",
+            "records.game_patch = ?",
+            "records.passive_tree_version = ?",
+            "records.visibility = 'creator_visible'",
+            "records.split = 'train_context'",
+            "records.copy_safety_state = 'passed'",
+            "records.status = 'valid'",
+            "COALESCE(json_extract(records.typed_payload, '$.availability'), 'standard') "
+            "!= 'source_specific_random'",
+        ]
+        params: list[Any] = [
+            class_key,
+            f"ascendancy:{class_token}:%",
+            game_patch,
+            passive_tree_version,
+        ]
+        if ascendancy_key:
+            where.append("families.ascendancy_key = ?")
+            params.append(ascendancy_key)
+        if primary_skill_keys:
+            placeholders = ",".join("?" for _ in primary_skill_keys)
+            where.append(f"families.primary_skill_key IN ({placeholders})")
+            params.extend(primary_skill_keys)
+        if build_family_keys:
+            placeholders = ",".join("?" for _ in build_family_keys)
+            where.append(f"families.build_family_key IN ({placeholders})")
+            params.extend(build_family_keys)
+        sql = f"""
+            SELECT families.*,
+                   COUNT(records.record_id) AS eligible_record_count,
+                   COUNT(DISTINCT records.record_kind) AS eligible_record_kind_count,
+                   COALESCE(SUM(records.evidence_count), 0) AS eligible_evidence_count
+            FROM research_build_families AS families
+            JOIN deep_research_records AS records
+              ON records.build_family_key = families.build_family_key
+            WHERE {" AND ".join(where)}
+            GROUP BY families.build_family_key
+            ORDER BY eligible_evidence_count DESC,
+                     eligible_record_kind_count DESC,
+                     eligible_record_count DESC,
+                     families.build_family_key
+            LIMIT ?
+        """
+        params.append(min(max(1, limit), 10))
+        return list(con.execute(sql, params).fetchall())
+
+    def _build_discovery_family_results(
+        self,
+        con: sqlite3.Connection,
+        family_rows: list[sqlite3.Row],
+        *,
+        class_key: str,
+        game_patch: str,
+        passive_tree_version: str,
+    ) -> list[dict[str, Any]]:
+        """Build compact comparison summaries without exposing record content."""
+
+        if not family_rows:
+            return []
+        family_keys = [str(row["build_family_key"]) for row in family_rows]
+        placeholders = ",".join("?" for _ in family_keys)
+        class_token = re.sub(
+            r"[^a-z0-9_]+",
+            "_",
+            class_key.split(":", 1)[-1].strip().casefold().replace(" ", "_"),
+        ).strip("_")
+        record_rows = con.execute(
+            f"""
+            SELECT records.record_id, records.build_family_key, records.record_kind,
+                   records.summary, records.conditions, records.failure_conditions,
+                   records.evidence_count
+            FROM deep_research_records AS records
+            JOIN research_build_families AS families
+              ON families.build_family_key = records.build_family_key
+            WHERE records.build_family_key IN ({placeholders})
+              AND (
+                    records.class_key = ?
+                    OR (
+                        records.class_key IS NULL
+                        AND families.ascendancy_key LIKE ?
+                    )
+                  )
+              AND records.game_patch = ?
+              AND records.passive_tree_version = ?
+              AND records.visibility = 'creator_visible'
+              AND records.split = 'train_context'
+              AND records.copy_safety_state = 'passed'
+              AND records.status = 'valid'
+              AND COALESCE(json_extract(records.typed_payload, '$.availability'), 'standard')
+                  != 'source_specific_random'
+            ORDER BY records.build_family_key, records.evidence_count DESC,
+                     records.last_validated_at DESC, records.record_id
+            """,
+            [
+                *family_keys,
+                class_key,
+                f"ascendancy:{class_token}:%",
+                game_patch,
+                passive_tree_version,
+            ],
+        ).fetchall()
+        grouped: dict[str, list[sqlite3.Row]] = {key: [] for key in family_keys}
+        for row in record_rows:
+            grouped[str(row["build_family_key"])].append(row)
+        results: list[dict[str, Any]] = []
+        for family in family_rows:
+            family_key = str(family["build_family_key"])
+            records = grouped.get(family_key, [])
+            representative_records = self._representative_family_records(records)
+            kind_counts: dict[str, int] = {}
+            premises: list[str] = []
+            failure_conditions: list[str] = []
+            for record in records:
+                kind = str(record["record_kind"])
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+            for record in representative_records:
+                for premise in _loads(record["conditions"], []):
+                    text = str(premise).strip()
+                    if text and text not in premises and len(premises) < 4:
+                        premises.append(text)
+                for failure in _loads(record["failure_conditions"], []):
+                    text = str(failure).strip()
+                    if text and text not in failure_conditions and len(failure_conditions) < 4:
+                        failure_conditions.append(text)
+            results.append(
+                {
+                    "buildFamilyKey": family_key,
+                    "ascendancyKey": family["ascendancy_key"],
+                    "primarySkillKey": family["primary_skill_key"],
+                    "secondarySkillKeys": _loads(family["secondary_skill_keys"], []),
+                    "classKey": class_key,
+                    "gamePatch": game_patch,
+                    "passiveTreeVersion": passive_tree_version,
+                    "evidenceCount": int(family["eligible_evidence_count"] or 0),
+                    "deepRecordCount": int(family["eligible_record_count"] or 0),
+                    "recordKindCounts": kind_counts,
+                    "availableRecordKinds": sorted(kind_counts),
+                    "keyPremises": premises,
+                    "failureConditions": failure_conditions,
+                    "supportingRecordIds": [
+                        str(row["record_id"]) for row in representative_records[:4]
+                    ],
+                    "eligibility": {
+                        "exactVersion": True,
+                        "creatorVisible": True,
+                        "trainContext": True,
+                        "copySafetyPassed": True,
+                        "status": "valid",
+                    },
+                }
+            )
+        return results
+
+    @staticmethod
+    def _representative_family_records(
+        records: list[sqlite3.Row],
+    ) -> list[sqlite3.Row]:
+        """Prefer one mechanism-duty record per kind before filling by evidence order."""
+
+        selected: list[sqlite3.Row] = []
+        selected_ids: set[str] = set()
+        for record_kind in MECHANISM_RECORD_KIND_PRIORITY:
+            match = next(
+                (row for row in records if str(row["record_kind"]) == record_kind),
+                None,
+            )
+            if match is None:
+                continue
+            selected.append(match)
+            selected_ids.add(str(match["record_id"]))
+        selected.extend(row for row in records if str(row["record_id"]) not in selected_ids)
+        return selected
+
     def _build_family_results(
         self,
         con: sqlite3.Connection,
@@ -2228,6 +2616,120 @@ class ResearchMemoryService:
             )
         return results
 
+    def _build_family_record_context(
+        self,
+        con: sqlite3.Connection,
+        *,
+        family_keys: list[str],
+        returned_record_ids: set[str],
+        game_patch: str | None,
+        passive_tree_version: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Expose a complete safe index even when the first content page is intentionally small."""
+
+        if not family_keys:
+            return [], [], []
+        placeholders = ",".join("?" for _ in family_keys)
+        where = [
+            f"build_family_key IN ({placeholders})",
+            "visibility = 'creator_visible'",
+            "split = 'train_context'",
+            "copy_safety_state = 'passed'",
+            "status IN ('valid', 'needs_revalidation')",
+            (
+                "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
+                "!= 'source_specific_random'"
+            ),
+        ]
+        params: list[Any] = [*family_keys]
+        if game_patch:
+            where.append("game_patch = ?")
+            params.append(game_patch)
+        if passive_tree_version:
+            where.append("passive_tree_version = ?")
+            params.append(passive_tree_version)
+        rows = list(
+            con.execute(
+                """
+                SELECT record_id, build_family_key, record_kind, title, summary,
+                       component_keys, conditions, failure_conditions, evidence_count
+                FROM deep_research_records
+                WHERE """
+                + " AND ".join(where)
+                + """
+                ORDER BY build_family_key, evidence_count DESC, last_validated_at DESC, record_id
+                """,
+                params,
+            ).fetchall()
+        )
+        grouped: dict[str, list[sqlite3.Row]] = {key: [] for key in family_keys}
+        for row in rows:
+            grouped.setdefault(str(row["build_family_key"]), []).append(row)
+
+        coverage: list[dict[str, Any]] = []
+        record_index: list[dict[str, Any]] = []
+        premise_catalog: list[dict[str, Any]] = []
+        for family_key in family_keys:
+            family_rows = grouped.get(family_key, [])
+            kind_counts: dict[str, int] = {}
+            returned_count = 0
+            for row in family_rows:
+                record_id = str(row["record_id"])
+                record_kind = str(row["record_kind"])
+                component_keys = _loads(row["component_keys"], [])
+                returned = record_id in returned_record_ids
+                returned_count += int(returned)
+                kind_counts[record_kind] = kind_counts.get(record_kind, 0) + 1
+                if not returned:
+                    record_index.append(
+                        {
+                            "recordId": record_id,
+                            "buildFamilyKey": family_key,
+                            "recordKind": record_kind,
+                            "title": row["title"],
+                            "summary": row["summary"],
+                            "componentKeys": component_keys,
+                            "returnedInThisResponse": False,
+                        }
+                    )
+                if record_kind not in MECHANISM_RECORD_KINDS:
+                    continue
+                for premise_type, values in (
+                    ("condition", _loads(row["conditions"], [])),
+                    ("failure_condition", _loads(row["failure_conditions"], [])),
+                ):
+                    for value in values:
+                        text = str(value).strip()
+                        if not text:
+                            continue
+                        premise_catalog.append(
+                            {
+                                "premiseId": _research_premise_id(
+                                    record_id,
+                                    premise_type,
+                                    text,
+                                ),
+                                "buildFamilyKey": family_key,
+                                "evidenceRef": record_id,
+                                "recordKind": record_kind,
+                                "premiseType": premise_type,
+                                "text": text,
+                                "componentKeys": component_keys,
+                            }
+                        )
+            eligible_count = len(family_rows)
+            coverage.append(
+                {
+                    "buildFamilyKey": family_key,
+                    "eligibleRecordCount": eligible_count,
+                    "returnedRecordCount": returned_count,
+                    "unreturnedRecordCount": eligible_count - returned_count,
+                    "recordKindCounts": kind_counts,
+                    "responseComplete": returned_count == eligible_count,
+                }
+            )
+        return coverage, record_index, premise_catalog
+
     def _query_deep_record_rows(
         self,
         con: sqlite3.Connection,
@@ -2239,6 +2741,8 @@ class ResearchMemoryService:
         build_family_keys: list[str],
         record_kinds: list[str],
         query_is_preference: bool,
+        game_patch: str | None,
+        passive_tree_version: str | None,
     ) -> list[sqlite3.Row]:
         where = [
             "visibility = 'creator_visible'",
@@ -2266,16 +2770,26 @@ class ResearchMemoryService:
             placeholders = ",".join("?" for _ in record_kinds)
             where.append(f"record_kind IN ({placeholders})")
             params.extend(record_kinds)
+        if game_patch:
+            where.append("game_patch = ?")
+            params.append(game_patch)
+        if passive_tree_version:
+            where.append("passive_tree_version = ?")
+            params.append(passive_tree_version)
         if not record_ids and query.strip() and not query_is_preference:
             terms = [term.casefold() for term in _search_terms(query)]
             if terms:
                 clauses: list[str] = []
                 for term in terms:
                     clauses.append(
-                        "(lower(title) LIKE ? OR lower(summary) LIKE ? OR lower(record_kind) LIKE ?)"
+                        "("
+                        "lower(title) LIKE ? OR lower(summary) LIKE ? "
+                        "OR lower(record_kind) LIKE ? OR lower(conditions) LIKE ? "
+                        "OR lower(failure_conditions) LIKE ?"
+                        ")"
                     )
                     token = f"%{term}%"
-                    params.extend([token, token, token])
+                    params.extend([token, token, token, token, token])
                 where.append("(" + " OR ".join(clauses) + ")")
         if component_key_groups:
             for group in component_key_groups:
@@ -2312,6 +2826,10 @@ class ResearchMemoryService:
             params.append(limit)
         rows = list(con.execute(sql, params).fetchall())
         if query_is_preference:
+            # Explicit record IDs are a caller-authored deep-read set.  Never silently discard
+            # one because an ordinary summary limit is smaller than that exact set.
+            if record_ids:
+                return rows
             terms = [term.casefold() for term in _search_terms(query)]
             if terms:
                 rows.sort(
@@ -2324,6 +2842,8 @@ class ResearchMemoryService:
                                     str(row["title"] or ""),
                                     str(row["summary"] or ""),
                                     str(row["record_kind"] or ""),
+                                    str(row["conditions"] or ""),
+                                    str(row["failure_conditions"] or ""),
                                 ]
                             ).casefold()
                             for term in terms
@@ -2653,17 +3173,22 @@ class ResearchMemoryService:
         dedupe_ref: str,
         query: str,
         component_keys: list[str],
+        request_contract: dict[str, Any],
+        result_contract: dict[str, Any],
         now: str,
     ) -> None:
         con.execute(
             """
             INSERT INTO research_dedupe_queries(
                 dedupe_query_ref, query_hash, query_text_preview, component_keys,
-                visibility, split, knowledge_scope, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, 'creator_visible', 'train_context', 'global_seed', ?, ?)
+                request_contract, result_contract, visibility, split, knowledge_scope,
+                created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'creator_visible', 'train_context', 'global_seed', ?, ?)
             ON CONFLICT(dedupe_query_ref) DO UPDATE SET
                 query_text_preview = excluded.query_text_preview,
                 component_keys = excluded.component_keys,
+                request_contract = excluded.request_contract,
+                result_contract = excluded.result_contract,
                 last_seen_at = excluded.last_seen_at
             """,
             (
@@ -2671,6 +3196,8 @@ class ResearchMemoryService:
                 _stable_hash({"query": _normalize_text(query), "component_keys": component_keys}),
                 _normalize_text(query)[:240],
                 _json(component_keys),
+                _json(request_contract),
+                _json(result_contract),
                 now,
                 now,
             ),
@@ -3678,6 +4205,19 @@ def _safe_projection(payload: Any) -> Any:
 def _stable_hash(payload: Any) -> str:
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _research_premise_id(record_id: str, premise_type: str, text: str) -> str:
+    return (
+        "rp-"
+        + _stable_hash(
+            {
+                "recordId": record_id,
+                "premiseType": premise_type,
+                "text": _normalize_text(text),
+            }
+        )[:16]
+    )
 
 
 def _json(value: Any) -> str:

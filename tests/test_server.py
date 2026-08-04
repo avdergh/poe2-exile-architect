@@ -17,7 +17,7 @@ from server.main import mcp
 
 def test_instructions_are_delivered():
     instr = mcp.instructions or ""
-    # Sourced from server/ASSISTANT_GUIDE.md; must actually reach the client, not be empty.
+    # Sourced from the bounded MCP bootstrap; must actually reach the client, not be empty.
     assert len(instr) > 500
     assert "Path of Exile 2" in instr
     # The cardinal rule has to survive — it's why answers stay grounded in the engine.
@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 121
+    assert len(tools) == 148
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -88,6 +88,8 @@ def test_tool_surface_intact():
         "set_skill_group_state",
         "inspect_build_completeness",
         "inspect_generation_preflight",
+        "inspect_generation_checkpoint",
+        "apply_build_mutation_batch",
         "equip_jewel",
         "apply_combat_profile",
         "pinnacle_readiness",
@@ -97,6 +99,26 @@ def test_tool_surface_intact():
         "load_final_build_artifact",
         "export_final_pob_artifact",
         "export_final_build_package",
+        "save_build_progression_route",
+        "list_build_progression_routes",
+        "load_build_progression_stage",
+        "start_build_progression",
+        "submit_build_progression_target_selection",
+        "intake_starter_research_packet",
+        "submit_build_progression_blueprint",
+        "revise_future_build_progression_stages",
+        "claim_build_progression_stage",
+        "bind_build_progression_stage_run",
+        "complete_build_progression_stage",
+        "fail_build_progression_stage",
+        "retry_build_progression_stage",
+        "pause_build_progression",
+        "resume_build_progression",
+        "checkpoint_build_progression_context",
+        "get_build_progression_status",
+        "classify_build_progression_costs",
+        "finalize_build_progression",
+        "export_build_progression_package",
         "get_build_planner_converter_status",
         "export_final_build_artifact",
         "list_reference_builds",
@@ -152,6 +174,108 @@ def test_tool_surface_intact():
         "resume_learning_campaign",
         "get_learning_campaign_status",
     } <= names
+
+
+def test_global_optimizer_is_temporarily_disabled_by_default(monkeypatch):
+    from server import main
+
+    monkeypatch.delenv("POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER", raising=False)
+    monkeypatch.setattr(
+        main,
+        "get_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("disabled optimizer touched the engine")),
+    )
+    result = main.optimize_build()
+
+    assert result["errorCode"] == "global_optimizer_temporarily_disabled"
+    assert result["stateChanged"] is False
+
+
+def test_progression_tools_publish_nested_typed_input_schemas():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    start_schema = tools["start_build_progression"].inputSchema
+    assert start_schema["properties"]["version_context"] == {"$ref": "#/$defs/VersionContext"}
+    version_properties = start_schema["$defs"]["VersionContext"]["properties"]
+    assert "trade/SSF mode belongs" in version_properties["ruleset"]["description"]
+    assert (
+        "StageCreatePacket value verbatim" in version_properties["researchMemoryRef"]["description"]
+    )
+    packet_schema = tools["intake_starter_research_packet"].inputSchema
+    assert packet_schema["properties"]["packet"] == {"$ref": "#/$defs/StarterResearchSubmission"}
+    assert (
+        packet_schema["$defs"]["StarterSourceInput"]["properties"]["explicitLevelBands"]["type"]
+        == "boolean"
+    )
+    blueprint_schema = tools["submit_build_progression_blueprint"].inputSchema
+    assert blueprint_schema["properties"]["blueprint"] == {"$ref": "#/$defs/ProgressionBlueprint"}
+    assert "targetIntent" in blueprint_schema["$defs"]["ProgressionBlueprint"]["properties"]
+    selection_schema = tools["submit_build_progression_target_selection"].inputSchema
+    assert selection_schema["properties"]["selection"] == {
+        "$ref": "#/$defs/TargetCandidateSelection"
+    }
+    assert (
+        selection_schema["$defs"]["TargetCandidateSelection"]["properties"]["candidates"][
+            "minItems"
+        ]
+        == 2
+    )
+    batch_schema = tools["apply_build_mutation_batch"].inputSchema
+    assert batch_schema["properties"]["operations"]["maxItems"] == 16
+    assert batch_schema["properties"]["batch_kind"]["enum"] == [
+        "bootstrap",
+        "mechanism_shell",
+        "skill_loadout",
+        "passive_delta",
+        "required_gear",
+        "ordinary_gear",
+        "config",
+    ]
+    assert set(batch_schema["required"]) == {"batch_kind", "operations"}
+    cost_schema = tools["classify_build_progression_costs"].inputSchema
+    assert cost_schema["properties"]["cost_request"] == {"$ref": "#/$defs/CostRequest"}
+    completion_schema = tools["complete_build_progression_stage"].inputSchema
+    assert completion_schema["properties"]["completion_report"] == {
+        "$ref": "#/$defs/StageCompletionReport"
+    }
+    lifecycle_schema = tools["verify_lifecycle_stage"].inputSchema
+    assert lifecycle_schema["properties"]["state"] == {
+        "anyOf": [
+            {"$ref": "#/$defs/LifecycleStageVerificationState"},
+            {"type": "null"},
+        ],
+        "default": None,
+    }
+    lifecycle_state = lifecycle_schema["$defs"]["LifecycleStageVerificationState"]
+    assert "singleTargetSkillName" in lifecycle_state["properties"]
+    assert "singleTargetEvidenceRefs" in lifecycle_state["properties"]
+    assert "buildDefiningComponentKind" in lifecycle_state["properties"]
+    assert "buildDefiningComponentName" in lifecycle_state["properties"]
+    assert "buildDefiningComponentKey" in lifecycle_state["properties"]
+    assert "buildDefiningEvidenceRefs" in lifecycle_state["properties"]
+    lifecycle_detail = lifecycle_schema["properties"]["detail"]
+    assert lifecycle_detail["default"] == "compact"
+    assert lifecycle_detail["enum"] == ["compact", "full"]
+    assert lifecycle_detail["type"] == "string"
+    for tool_name in (
+        "inspect_generation_preflight",
+        "inspect_generation_checkpoint",
+        "evaluate_generation_candidate",
+        "verify_lifecycle_stage",
+    ):
+        strict_mode_schema = tools[tool_name].inputSchema["properties"]["strict_mode"]
+        assert strict_mode_schema["default"] is False
+        assert strict_mode_schema["type"] == "boolean"
+    expected_search_defaults = {
+        "search_passives": 30,
+        "search_items": 20,
+        "search_mods": 30,
+    }
+    for tool_name, expected_default in expected_search_defaults.items():
+        limit_schema = tools[tool_name].inputSchema["properties"]["limit"]
+        assert limit_schema["default"] == expected_default
+        assert "minimum" not in limit_schema
+        assert "maximum" not in limit_schema
 
 
 def test_graph_tool_query_exposes_typed_payload_schema():
@@ -270,6 +394,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             primary_skill_key=None,
             build_family_keys=None,
             record_kinds=None,
+            class_key=None,
+            game_patch=None,
+            passive_tree_version=None,
         ):
             calls.append(
                 (
@@ -286,6 +413,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
                         primary_skill_key,
                         build_family_keys,
                         record_kinds,
+                        class_key,
+                        game_patch,
+                        passive_tree_version,
                     ),
                 )
             )
@@ -327,6 +457,9 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             primary_skill_key="skill:LightningArrowPlayer",
             build_family_keys=["bf-1234567890abcdef"],
             record_kinds=["skill_package"],
+            class_key="class:monk",
+            game_patch="0.5.4",
+            passive_tree_version="0_5",
         )["status"]
         == "known"
     )
@@ -369,11 +502,14 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
         "patterns",
         "revalidate",
     ]
-    assert calls[0][1][-4:] == (
+    assert calls[0][1][-7:] == (
         "ascendancy:monk:martial_artist",
         "skill:LightningArrowPlayer",
         ["bf-1234567890abcdef"],
         ["skill_package"],
+        "class:monk",
+        "0.5.4",
+        "0_5",
     )
 
 
@@ -656,6 +792,12 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
     from server import main
 
     class _Stub:
+        def get_xml(self):
+            return "<PathOfBuilding><Build/></PathOfBuilding>"
+
+        def get_build(self):
+            return {"level": 68, "gear": {}}
+
         def get_stats(self, keys=None):
             return {
                 "stats": {
@@ -677,13 +819,476 @@ def test_verify_lifecycle_stage_collects_active_build_metrics(monkeypatch):
 
     monkeypatch.setattr(main, "get_engine", lambda: _Stub())
 
-    result = main.verify_lifecycle_stage("maps_entry", state={"level": 68})
+    # A stale caller hint cannot move the evaluated build into the 80-89 resistance band.
+    result = main.verify_lifecycle_stage("maps_entry", state={"level": 80})
 
     assert result["ok"] is True
     assert result["stage"] == "maps_entry"
     assert result["pass"] is True
-    assert result["stateSnapshot"]["level"] == 68
+    assert result["responseProfile"] == "compact"
+    assert result["feedbackMode"] == "hard_only"
+    assert result["subjectiveFeedbackSuppressed"] is True
+    assert result["recommendedActions"] == []
+    assert result["caveats"] == []
+    assert result["stateSummary"]["level"] == 68
+    assert result["metrics"]["totalEHP"] == 12000
+    assert "stateSnapshot" not in result
+    assert "observations" not in result
+    assert "checks" not in result
     assert "engine-computed" in result["evidenceTags"]
+    assert result["evaluatedSourceHash"]
+
+
+def test_lifecycle_feedback_projection_requires_explicit_strict_mode():
+    from server import main
+
+    payload = {
+        "recommendedActions": ["redesign the damage loop"],
+        "caveats": ["subjective_quality_caveat"],
+        "failedChecks": ["sustain_ok"],
+    }
+    hard_only = main._project_lifecycle_verification_feedback(
+        payload,
+        strict_mode=False,
+    )
+    strict = main._project_lifecycle_verification_feedback(
+        payload,
+        strict_mode=True,
+    )
+
+    assert hard_only["recommendedActions"] == []
+    assert hard_only["caveats"] == []
+    assert hard_only["failedChecks"] == ["sustain_ok"]
+    assert strict["recommendedActions"] == ["redesign the damage loop"]
+    assert strict["caveats"] == ["subjective_quality_caveat"]
+
+
+def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_claim(
+    monkeypatch,
+):
+    from server import main
+
+    artifact_id = "final-build:artifact-lifecycle-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Flicker Strike" gemId="Metadata/Items/Gems/SkillGemFlickerStrike"
+      skillId="FlickerStrikePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_xml = '<PathOfBuilding><Build level="80"/></PathOfBuilding>'
+    recorded: dict[str, object] = {}
+
+    class _Stub:
+        def load_build_xml(self, xml, name=None):
+            assert xml == artifact_xml
+            assert name == artifact_id
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 3000,
+                    "Mana": 540,
+                    "ManaUnreserved": 540,
+                    "ManaCost": 221,
+                    "Speed": 6.454,
+                    "NetManaRegen": 28.1,
+                    "TotalDPS": 329791,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 16000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+
+    def save_receipt(**kwargs):
+        recorded.update(kwargs)
+        return {
+            "status": "recorded",
+            "verificationRef": "lifecycle-verification:0123456789abcdef",
+        }
+
+    monkeypatch.setattr(
+        main.generation_progression_lifecycle,
+        "save_artifact_lifecycle_receipt",
+        save_receipt,
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"manaFlaskEquipped": True},
+        artifact_id=artifact_id,
+        detail="full",
+    )
+
+    assert result["pass"] is False
+    assert "sustain_ok" in result["failedChecks"]
+    assert result["stateSnapshot"]["manaFlaskEquipped"] is False
+    assert result["evaluatedSourceHash"] == artifact_source_hash
+    assert result["restoredEngineSourceHash"] != artifact_source_hash
+    assert result["artifactBound"] is True
+    assert recorded["source_hash"] == artifact_source_hash
+    assert recorded["restored_engine_source_hash"] == result["restoredEngineSourceHash"]
+    assert recorded["result"]["evaluatedSourceHash"] == artifact_source_hash
+
+
+def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-derived-output-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_before = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1">
+    <PlayerStat stat="TotalDPS" value="100" />
+  </Build>
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_after = restored_before.replace('value="100"', 'value="999"')
+
+    class _Stub:
+        refreshed = False
+
+        def load_build_xml(self, xml, name=None):
+            assert xml == artifact_xml
+            assert name == artifact_id
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_after if self.refreshed else restored_before
+
+        def get_build(self):
+            self.refreshed = True
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 3000,
+                    "Mana": 540,
+                    "ManaUnreserved": 540,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 60,
+                    "TotalDPS": 100000,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 16000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        main.generation_progression_lifecycle,
+        "save_artifact_lifecycle_receipt",
+        lambda **kwargs: {
+            "status": "recorded",
+            "verificationRef": "lifecycle-verification:0123456789abcdef",
+        },
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"level": 80},
+        artifact_id=artifact_id,
+    )
+
+    assert result["ok"] is True
+    assert result["pass"] is True
+    assert result["artifactBound"] is True
+    assert result["evaluatedSourceHash"] == artifact_source_hash
+    assert result["restoredEngineSourceHash"].startswith("sha256:")
+
+
+def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-semantic-mutation-test"
+    artifact_source_hash = "original-artifact-hash"
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+    restored_after = artifact_xml.replace('level="80"', 'level="79"')
+
+    class _Stub:
+        mutated = False
+
+        def load_build_xml(self, xml, name=None):
+            return {"loaded": True}
+
+        def get_xml(self):
+            return restored_after if self.mutated else artifact_xml
+
+        def get_build(self):
+            self.mutated = True
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {"stats": {}}
+
+        def get_defenses(self):
+            return {}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (
+                SimpleNamespace(
+                    artifact_id=artifact_id,
+                    source_hash=artifact_source_hash,
+                ),
+                artifact_xml,
+            )
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        state={"level": 80},
+        artifact_id=artifact_id,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "unknown"
+    assert result["errorCode"] == "lifecycle_snapshot_changed_during_verification"
+
+
+def test_verify_campaign_early_derives_main_skill_from_same_xml_snapshot(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" level="22" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Glacial Cascade" gemId="Metadata/Items/Gems/SkillGemGlacialCascade"
+      skillId="GlacialCascadePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "Life": 900,
+                    "Mana": 400,
+                    "ManaUnreserved": 400,
+                    "ManaCost": 10,
+                    "Speed": 1.5,
+                    "NetManaRegen": 20,
+                }
+            }
+
+        def get_defenses(self):
+            return {"totalEHP": 2500}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "campaign_early",
+        state={"mainSkillSocketed": False},
+        detail="full",
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["mainSkillSocketed"] is True
+    assert result["stateSnapshot"]["mainSkillSocketEvidence"]["activeSkills"] == ["Glacial Cascade"]
+    assert result["evaluatedSourceHash"]
+
+
+def test_verify_campaign_mid_matches_named_single_target_skill_to_same_xml(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" ascendClassName="Martial Artist" level="40"
+    mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+        skillId="StormWavePlayer" />
+      <Gem nameSpec="Close Combat" gemId="Metadata/Items/Gems/SupportGemCloseCombat"
+        skillId="SupportCloseCombatPlayer" />
+    </Skill>
+    <Skill enabled="true">
+      <Gem nameSpec="Tempest Bell" gemId="Metadata/Items/Gems/SkillGemTempestBell"
+        skillId="TempestBellPlayer" />
+    </Skill>
+  </SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "TotalDPS": 5000,
+                    "Life": 1400,
+                    "Mana": 500,
+                    "ManaUnreserved": 500,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 50,
+                }
+            }
+
+        def get_defenses(self):
+            return {"totalEHP": 8000}
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "campaign_mid",
+        state={
+            "singleTargetSkillName": "Tempest Bell",
+            "singleTargetEvidenceRefs": [
+                "gem:TempestBellPlayer",
+                "mechanic:bell_single_target",
+            ],
+        },
+        detail="full",
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["ascendancyOrKeySupport"]["verified"] is True
+    assert result["stateSnapshot"]["singleTargetDuty"]["verified"] is True
+    assert result["stateSnapshot"]["singleTargetDuty"]["matchedSkillName"] == "Tempest Bell"
+    assert result["evaluatedSourceHash"]
+
+
+def test_verify_endgame_budget_matches_build_defining_skill_to_same_xml(monkeypatch):
+    from server import main
+
+    xml = """<PathOfBuilding>
+  <Build className="Monk" ascendClassName="Martial Artist" level="82"
+    mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Whirling Assault"
+        gemId="Metadata/Items/Gems/SkillGemWhirlingAssault"
+        skillId="WhirlingAssaultPlayer" />
+      <Gem nameSpec="Close Combat" gemId="Metadata/Items/Gems/SupportGemCloseCombat"
+        skillId="SupportCloseCombatPlayer" />
+    </Skill>
+  </SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class _Stub:
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}}
+
+        def get_stats(self, keys=None):
+            return {
+                "stats": {
+                    "TotalDPS": 10000,
+                    "Life": 4000,
+                    "Mana": 600,
+                    "ManaUnreserved": 600,
+                    "ManaCost": 20,
+                    "Speed": 2,
+                    "NetManaRegen": 50,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 14000,
+            }
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+
+    result = main.verify_lifecycle_stage(
+        "endgame_budget",
+        state={
+            "buildDefiningComponentKind": "skill",
+            "buildDefiningComponentName": "Whirling Assault",
+            "buildDefiningComponentKey": "skill:WhirlingAssaultPlayer",
+            "buildDefiningEvidenceRefs": [
+                "skill:WhirlingAssaultPlayer",
+                "dq-0123456789abcdef",
+            ],
+        },
+        detail="full",
+    )
+
+    assert result["pass"] is True
+    assert result["stateSnapshot"]["buildDefiningComponent"]["verified"] is True
+    assert result["stateSnapshot"]["buildDefiningComponent"]["matchedName"] == "Whirling Assault"
+    assert result["evaluatedSourceHash"]
 
 
 def test_audit_lifecycle_route_tool_forwards_route(monkeypatch):

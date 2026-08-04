@@ -6,12 +6,12 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 from typing import Any
 from uuid import uuid4
 
 from server import paths
+from server.runtime.node import resolve_node_executable
 
 
 PROVIDER_ID = "praedythxiv-poe2-build-converter"
@@ -237,13 +237,12 @@ def validate_single_stage_build(build: dict[str, Any]) -> list[str]:
 
 
 def _node_runtime() -> tuple[Path | None, tuple[int, int, int] | None]:
-    configured = os.environ.get("POE_BD_NODE_EXECUTABLE")
-    executable = configured or shutil.which("node") or shutil.which("node.cmd")
-    if not executable:
+    executable = resolve_node_executable()
+    if executable is None:
         return None, None
     try:
         result = subprocess.run(
-            [executable, "--version"],
+            [str(executable), "--version"],
             capture_output=True,
             text=True,
             timeout=NODE_PROBE_TIMEOUT_SECONDS,
@@ -253,7 +252,7 @@ def _node_runtime() -> tuple[Path | None, tuple[int, int, int] | None]:
         return None, None
     match = re.search(r"v?(\d+)\.(\d+)\.(\d+)", result.stdout)
     version = tuple(map(int, match.groups())) if result.returncode == 0 and match else None
-    return Path(executable), version
+    return executable, version
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

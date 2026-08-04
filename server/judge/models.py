@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v7"
+EVALUATOR_VERSION = "judge_phase1_v8"
 WEIGHT_PROFILE = "judge_v6_evidence_separated"
 
 LIMITED_REWARD_CAVEATS = {
@@ -48,6 +48,8 @@ FAILURE_CODES = {
     "passive_budget_exceeded",
     "weapon_set_budget_exceeded",
     "spirit_budget_exceeded",
+    "endgame_elemental_resistance_below_60",
+    "endgame_chaos_resistance_below_30",
     "severe_elemental_resistance_shortfall",
     "below_playability_floor",
     "catastrophic_defense_shortboard",

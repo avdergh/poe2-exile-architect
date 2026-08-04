@@ -18,6 +18,14 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
   不创建会话、不调用模型，也不启动后台控制台。
 - 用 `/poe-bd-create` 或 `$poe-bd-create` 启动 Phase 5 Agent 主导生成原型；Agent 负责理解、
   查询、候选设计和活动 PoB 搭建，程序负责运行绑定、快照捕获、Judge 调用和人工验收包生成。
+- 用户明确要求完整成长流程时，`/poe-bd-create` 进入 progression 模式：外部 Agent 有界检索同
+  职业开荒资料；但在此之前先按普通单阶段 Create 生成并绑定不可变目标 anchor。之后串行生成
+  目标前真实阶段，最后直接复用同一个目标 artifact/hash。
+- 长 progression 会把选中的 Research 条件、失败场景、验证任务、机制结论和下一步保存到本地
+  有界 working checkpoint。自动上下文压缩或任务恢复后由 resume packet 一次恢复；正常状态和
+  Create Research 查询使用紧凑响应，避免反复展开完整状态与检索协议。精确 Family 查询会返回
+  记录覆盖、未展开索引和失败前提目录；首轮 `limit` 不是总上限，未解决职责可以继续定向深读。
+  路线中断但 target anchor 已绑定时仍会返回不完整恢复包，不以零文件结束。
 - 用 `/poe-bd-learning-loop` 或 `$poe-bd-learning-loop` 运行 Phase 7 对照学习。默认首批 10 个案例
   严格串行；每案例只运行一次 Create，Judge 只作参考，改进只影响后续案例。
 - 对最终通过且被 Agent 接受的候选，保存本地私有 PoB artifact，并导出桌面 PoB XML、PoB
@@ -25,9 +33,13 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 - 当前 Researcher Agent 每次只处理一个 transient 案例，并通过有界清单、分区读取和搜索获得证据。
 - 通过 resolver、typed schema、copy-safety 和 acceptance gate 后才入库。
 
-Phase 7 功能正在建设；十案例趋势只能证明方向性信号，不能证明 Memory 与质量提升之间的因果。
-分场景多技能组合评分和 Phase 8 仍待后续规划。当前导出能力用于交付和暴露前置构筑问题，不代表
-Agent 已能稳定创造所有类型的高水平 BD，也不代表完整产品闭环已经成熟。
+Phase 7 十案例趋势只能证明方向性信号，不能证明 Memory 与质量提升之间的因果。Phase 8 已进入
+最终验收：实现把文字阶段路线升级为 target anchor、artifact-bound lifecycle 回执与多个可信
+PoB artifact 组成的完整成长流程；未升华开荒阶段使用联网证据与 corpus/mechanics 公共知识，
+转型后才要求成熟 Family Recall；失败路线可交付明确标记不完整的 target 恢复包。联网攻略只形成
+patch-scoped 候选证据，不自动写入 Research/Memory。在真实四阶段任务和最终 full 门禁完成前，
+它仍是完成候选。当前能力不代表 Agent 已能稳定创造所有类型的高水平 BD，也不代表完整产品闭环
+已经成熟。
 
 ## 安装
 
@@ -35,6 +47,10 @@ Codex 本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会注
 `poe2_build_mcp`，并优先使用仓库内
 `.tools/uv`，其次使用 `PATH` 中的 `uv`。两者都不存在时会明确停止，不会写入一个无法启动的
 MCP 配置。
+
+官方 `.build` 转换和 MCPB manifest 校验需要 Node.js。项目优先使用
+`POE_BD_NODE_EXECUTABLE` 显式配置或系统 `PATH`，也会自动发现 Codex Desktop 随附的 Node
+运行时；不要求用户额外安装全局 `npx`。转换 provider 仍要求 Node 20 或更高版本。
 
 Windows PowerShell：
 
@@ -86,12 +102,15 @@ PoB 中搭建候选 BD。程序先通过 `scripts/create_build.py start-run` 创
 `inspect_generation_preflight` 先检查活动构筑，再由 `scripts/create_build.py validate-output` 做
 非消费校验、`scripts/create_build.py review-packet --compact` 核对可信评估结果并整理人工验收包。
 程序不接管 BD 补全，
-Judge 结果也仍需人工判断。
+Judge 结果也仍需人工判断。默认 Create 以 `strict_mode=false` 运行 Judge，只返回硬合法性和
+确定性诊断，避免不可靠的主观评分驱动 Agent 重做构筑；需要查看旧版完整评分、质量档位和警告时，
+可在相应 MCP 调用中手动传 `strict_mode=true`，且同一个生成 run 不能中途切换模式。
 
 示例：
 
 ```text
 /poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD
+/poe-bd-create 给我一条武僧从开荒到 80 级、后期转高上限流派的完整成长路线
 ```
 
 无参数时，skill 应先询问目标、职业/升华、主技能、预算、trade/SSF 和防御偏好，而不是直接
@@ -101,6 +120,12 @@ Judge 结果也仍需人工判断。
 如果用户只要求当前开荒阶段、但同时说明后期要洗点转攻坚/终局，Agent 产物应把当前输出阶段
 保存在 `currentOutputStages`，把完整生命周期目标保存在 `targetLifecycleStages`，并用
 `crossStageLockedDimensions=["class"]` 表达跨阶段只能锁职业。
+
+完整成长模式默认交付四个 artifact：先由普通 Create 从空状态生成一个目标 anchor，再生成三个
+目标前开荒/桥接里程碑；无实质变化时合并、最多五个。开荒和目标只锁基础职业，可以更换升华和
+全部技能体系。最后目标阶段不再次 Create，而是加载并验证同一个 anchor。转型由机制闭环决定；
+实时价格只标记装备平价、昂贵或未知，不自动决定转型等级。联网不可用时允许本地知识降级继续，
+但必须说明开荒证据有限。
 
 ## 使用 `/poe-bd-research`
 

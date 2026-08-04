@@ -20,7 +20,7 @@ def test_phase7_docs_define_comparative_learning_boundary():
     assert "advisoryOnly" in phase
     assert "10 个" in phase
     assert "不运行额外 Holdout" in phase
-    assert "待重新规划" in spec
+    assert "Phase 8 多可信阶段 artifact" in spec
     assert "corrected_lesson_requires_new_evidence" in schemas
     assert "$poe-bd-learning-loop" in guide
 

@@ -17,7 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import itemopt
+from ..judge import hard_legality
+from ..knowledge import item_legality
+from ..runtime import craft_receipts
+from . import completeness, itemopt
 from .engine import PobEngine
 
 _num = itemopt._num
@@ -82,7 +85,8 @@ def craft_item(
     Builds on `optimize_item` (the best rare, with Perfect-essence mods injected into the affix pool),
     then sockets the best rune(s) and applies the best corrupted implicit — each valued on the engine.
     `rune_sockets` is how many rune sockets the base is assumed to have (Artificer's Orb; martial
-    weapons/armour typically allow up to 2). Read-only: the build is restored. See the module docstring.
+    weapons/armour typically allow up to 2). The build is restored; only a raw-free legality receipt
+    for the returned item is persisted. See the module docstring.
     """
     weights: dict[str, float] = {}
     if goals:
@@ -113,7 +117,7 @@ def craft_item(
         # power — normal essences just guarantee a mod already in the pool. Injected so the same greedy
         # values them against the natural pool, respecting prefix/suffix caps + group exclusivity.
         extra: dict[str, list[dict[str, Any]]] = {"prefixes": [], "suffixes": []}
-        essence_by_line: dict[str, str] = {}
+        essence_by_line: dict[str, dict[str, Any]] = {}
         if use_essences:
             for e in co.get("essences") or []:
                 if not e.get("special"):
@@ -122,6 +126,7 @@ def craft_item(
                 if mt not in ("prefix", "suffix"):
                     continue
                 stat = str(e.get("stat") or "")
+                rolled_line = _roll(stat, rolls)
                 extra[mt + "es"].append(
                     {
                         "group": e.get("group") or e.get("name"),
@@ -130,7 +135,17 @@ def craft_item(
                         "required_level": e.get("tier") or 0,
                     }
                 )
-                essence_by_line[_roll(stat, rolls)] = str(e.get("name"))
+                required_level = e.get("requiredLevel") or e.get("required_level")
+                essence_by_line[rolled_line] = {
+                    "line": rolled_line,
+                    "name": str(e.get("name") or ""),
+                    "group": str(e.get("group") or e.get("name") or ""),
+                    "affixType": mt,
+                    "requiredLevel": (
+                        int(required_level) if isinstance(required_level, int) else None
+                    ),
+                    "option": dict(e),
+                }
 
         # 2) Best rare (with essence mods available in the pool).
         opt = itemopt.optimize_item(
@@ -143,35 +158,21 @@ def craft_item(
             thorough=True,
             keep_resists_capped=keep_resists_capped,
             extra_mods=extra if (extra["prefixes"] or extra["suffixes"]) else None,
+            special_affix_sources=essence_by_line or None,
             ilvl=ilvl,
         )
-        essence_candidates_rejected = False
-        if (
+        essence_candidates_rejected = bool(
             not opt.get("ok")
             and opt.get("errorCode") == "generated_item_legality_check_failed"
             and (extra["prefixes"] or extra["suffixes"])
-        ):
-            # Perfect-essence affixes can sit outside the ordinary base pool, but the final PoB
-            # item text does not carry trustworthy essence provenance for completeness to verify.
-            # Fall back to the normal legal pool instead of returning an item that our own final
-            # artifact audit would reject.
-            essence_candidates_rejected = True
-            opt = itemopt.optimize_item(
-                engine,
-                slot,
-                metric=metric,
-                base=base,
-                goals=goals,
-                rolls=rolls,
-                thorough=True,
-                keep_resists_capped=keep_resists_capped,
-                extra_mods=None,
-                ilvl=ilvl,
-            )
+        )
         if not opt.get("ok"):
             return opt
         affix_lines: list[str] = list(opt.get("affixes") or [])
-        essences_used = sorted({essence_by_line[ln] for ln in affix_lines if ln in essence_by_line})
+        selected_essences = [
+            essence_by_line[line] for line in affix_lines if line in essence_by_line
+        ]
+        essences_used = sorted({str(entry.get("name") or "") for entry in selected_essences})
 
         # scoring: single metric = its value; goals = weighted gain relative to the rare baseline.
         engine.add_item(_build_item(base, affix_lines, [], None, ilvl), slot=slot)
@@ -195,13 +196,16 @@ def craft_item(
         # the result can mix runes (e.g. damage + attack speed) or stack one, whichever the engine
         # prefers, and handles diminishing returns. Skip "Bonded:" set-bonus lines (need matching runes).
         chosen_runes: list[tuple[str, list[str]]] = []
+        rune_options: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
         rune_cands: list[tuple[str, list[str]]] = []
         for r in co.get("runes") or []:
             mod_lines = [
                 ml for ml in (r.get("mods") or []) if not str(ml).lower().startswith("bonded:")
             ]
             if mod_lines:
-                rune_cands.append((str(r.get("name")), mod_lines))
+                candidate = (str(r.get("name")), mod_lines)
+                rune_cands.append(candidate)
+                rune_options[(candidate[0], tuple(candidate[1]))] = dict(r)
         if rune_cands and rune_sockets > 0:
             ranked = engine.eval_items(
                 slot,
@@ -239,7 +243,11 @@ def craft_item(
         runed_base = _build_item(base, affix_lines, chosen_runes, None, ilvl)
         runed_score = score(engine.eval_items(slot, [runed_base], keys=keys)["results"][0] or {})
         if use_corruption and (co.get("corruptions") or []):
-            corr_lines = [_roll(str(c.get("line")), rolls) for c in co["corruptions"]]
+            corruption_options = {
+                _roll(str(candidate.get("line")), rolls): dict(candidate)
+                for candidate in co["corruptions"]
+            }
+            corr_lines = list(corruption_options)
             texts = [_build_item(base, affix_lines, chosen_runes, cl, ilvl) for cl in corr_lines]
             cres = engine.eval_items(slot, texts, keys=keys)["results"]
             cbest_score, cbest_line = max(
@@ -251,10 +259,121 @@ def craft_item(
 
         # 5) Final item + measured stats.
         final = _build_item(base, affix_lines, chosen_runes, chosen_corruption, ilvl)
+        selected_rune_sources = [
+            {
+                "name": name,
+                "lines": mod_lines,
+                "option": rune_options[(name, tuple(mod_lines))],
+            }
+            for name, mod_lines in chosen_runes
+        ]
+        selected_corruption_source = (
+            {
+                "line": chosen_corruption,
+                "option": corruption_options[chosen_corruption],
+            }
+            if chosen_corruption
+            else None
+        )
+        receipt_runtime_context = craft_receipts.current_runtime_context(
+            getattr(engine, "info", None)
+        )
+        prepared_receipt = craft_receipts.prepare_receipt(
+            final,
+            slot=slot,
+            item_level=ilvl,
+            perfect_essences=selected_essences,
+            runes=selected_rune_sources,
+            corruption=selected_corruption_source,
+            runtime_context=receipt_runtime_context,
+        )
+        final_legality = item_legality.audit_item(
+            final,
+            slot=slot,
+            require_special_provenance=True,
+            prepared_receipt=prepared_receipt,
+        )
+        if not final_legality.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "generated_item_legality_check_failed",
+                "error": "The final crafted item failed the shared source-aware legality audit.",
+                "slot": slot,
+                "base": base,
+                "legalityCheck": final_legality,
+            }
         engine.add_item(final, slot=slot)
+        final_xml = engine.get_xml()
+        canonical_final = completeness.equipped_item_text(final_xml, slot) or final
+        prepared_receipt = craft_receipts.prepare_receipt(
+            final,
+            canonical_item_text=canonical_final,
+            slot=slot,
+            item_level=ilvl,
+            perfect_essences=selected_essences,
+            runes=selected_rune_sources,
+            corruption=selected_corruption_source,
+            runtime_context=receipt_runtime_context,
+        )
+        final_legality = item_legality.audit_item(
+            final,
+            slot=slot,
+            require_special_provenance=True,
+            prepared_receipt=prepared_receipt,
+        )
+        canonical_legality = item_legality.audit_item(
+            canonical_final,
+            slot=slot,
+            require_special_provenance=True,
+            prepared_receipt=prepared_receipt,
+        )
+        if not final_legality.get("ok") or not canonical_legality.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "generated_item_roundtrip_legality_check_failed",
+                "error": "PoB changed the crafted item into a state the source receipt cannot verify.",
+                "slot": slot,
+                "base": base,
+                "legalityCheck": final_legality,
+                "roundTripLegalityCheck": canonical_legality,
+            }
+        final_build = engine.get_build()
+        final_whole_build_legality = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(
+                final_build,
+                final_xml,
+                item_legality_overrides={slot: canonical_legality},
+            )
+        )
+        baseline_whole_build_legality = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(build, snapshot)
+        )
+        legality_regression = hard_legality.compare_audits_for_regression(
+            baseline_whole_build_legality,
+            final_whole_build_legality,
+        )
+        if legality_regression["regressed"]:
+            return {
+                "ok": False,
+                "errorCode": "whole_build_legality_check_failed",
+                "error": "The final crafted item made the complete character illegal.",
+                "slot": slot,
+                "base": base,
+                "legalityCheck": final_legality,
+                "wholeBuildLegality": final_whole_build_legality,
+                "rejectionReasons": legality_regression["reasons"],
+            }
         final_stats = engine.get_stats(keys)["stats"]
     finally:
         engine.load_build_xml(snapshot)
+
+    receipt_result = craft_receipts.persist_receipt(prepared_receipt)
+    if receipt_result.get("status") != "recorded":
+        return {
+            "ok": False,
+            "errorCode": receipt_result.get("errorCode") or "craft_receipt_write_failed",
+            "error": "The crafted item was measured but its trusted source receipt could not be saved.",
+        }
 
     def r2(x: Any) -> Any:
         return round(x, 2) if _num(x) else x
@@ -282,6 +401,11 @@ def craft_item(
             "corruptedImplicit": chosen_corruption,
         },
         "craftSteps": steps,
+        "craftReceiptRef": receipt_result["craftReceiptRef"],
+        "itemFingerprint": receipt_result["itemFingerprint"],
+        "legalityCheck": final_legality,
+        "roundTripLegalityCheck": canonical_legality,
+        "wholeBuildLegality": final_whole_build_legality,
         "note": (
             "Best-in-slot using the full crafting system, every option valued on the engine. Runes "
             "socket on top of affixes; Perfect essences add mods the normal pool can't roll; the "
@@ -290,11 +414,6 @@ def craft_item(
             "target — price the steps. 'Bonded' rune set-bonuses aren't modelled."
         ),
     }
-    if essence_candidates_rejected:
-        out["note"] += (
-            " Perfect-essence-only affixes were omitted because the final item text did not carry "
-            "enough provenance for the shared legality audit to verify them."
-        )
     if weights:
         out["goals"] = weights
         out["metricsBefore"] = {k: r2(rare_stats.get(k)) for k in keys}

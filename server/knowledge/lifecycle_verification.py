@@ -7,11 +7,20 @@ not computed results; the engine still owns all DPS/EHP/resistance numbers.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+import re
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from server.compute import sustain
+from server.knowledge import copy_safety
 
 _ELEMENTAL_RESISTS = ("fire", "cold", "lightning")
+_ELEMENTAL_RESISTANCE_BANDS: tuple[tuple[int, int, float], ...] = (
+    (45, 64, 30.0),
+    (65, 79, 50.0),
+    (80, 89, 60.0),
+)
 _DEFENSE_FLOORS: dict[str, dict[str, float]] = {
     "campaign_early": {"pool": 300, "ehp": 600},
     "campaign_mid": {"pool": 800, "ehp": 1500},
@@ -20,6 +29,115 @@ _DEFENSE_FLOORS: dict[str, dict[str, float]] = {
     "endgame_budget": {"pool": 3500, "ehp": 12000},
     "endgame_final": {"pool": 4500, "ehp": 18000},
 }
+_SAFE_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9_.:/\-]{3,240}$")
+
+
+class LifecycleStageVerificationState(BaseModel):
+    """Typed external evidence accepted by the lifecycle verification MCP boundary."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
+
+    level: int | None = Field(default=None, ge=1, le=100)
+    mana_flask_equipped: bool | None = Field(
+        default=None,
+        alias="manaFlaskEquipped",
+        description=(
+            "Legacy compatibility hint. The public verifier replaces it with flask presence "
+            "derived from the evaluated build, so callers cannot authorize sustain."
+        ),
+    )
+    single_target_skill_name: str | None = Field(
+        default=None,
+        alias="singleTargetSkillName",
+        min_length=1,
+        max_length=160,
+        description=(
+            "Exact enabled active-skill name expected in the current PoB XML for the stage's "
+            "single-target duty."
+        ),
+    )
+    single_target_evidence_refs: list[str] = Field(
+        default_factory=list,
+        alias="singleTargetEvidenceRefs",
+        max_length=8,
+        description=(
+            "Safe graph/mechanic/Research refs supporting the named skill's single-target duty."
+        ),
+    )
+    build_defining_component_kind: Literal["skill", "ascendancy", "item"] | None = Field(
+        default=None,
+        alias="buildDefiningComponentKind",
+    )
+    build_defining_component_name: str | None = Field(
+        default=None,
+        alias="buildDefiningComponentName",
+        min_length=1,
+        max_length=160,
+    )
+    build_defining_component_key: str | None = Field(
+        default=None,
+        alias="buildDefiningComponentKey",
+        min_length=3,
+        max_length=240,
+    )
+    build_defining_evidence_refs: list[str] = Field(
+        default_factory=list,
+        alias="buildDefiningEvidenceRefs",
+        max_length=8,
+    )
+
+    @field_validator("single_target_evidence_refs", "build_defining_evidence_refs")
+    @classmethod
+    def _safe_refs(cls, value: list[str]) -> list[str]:
+        if (
+            len(value) != len(set(value))
+            or any(not _SAFE_EVIDENCE_REF.fullmatch(item) for item in value)
+            or copy_safety.contains_raw_url(value)
+        ):
+            raise ValueError("lifecycle evidence refs must be unique safe refs")
+        return value
+
+    @field_validator("build_defining_component_key")
+    @classmethod
+    def _safe_component_key(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not _SAFE_EVIDENCE_REF.fullmatch(value) or copy_safety.contains_raw_url(value)
+        ):
+            raise ValueError("build-defining component key must be a safe stable key")
+        return value
+
+    @model_validator(mode="after")
+    def _complete_build_defining_component(self) -> "LifecycleStageVerificationState":
+        single_target_values = (
+            self.single_target_skill_name is not None,
+            bool(self.single_target_evidence_refs),
+        )
+        if any(single_target_values) and not all(single_target_values):
+            raise ValueError(
+                "single-target evidence requires both an exact skill name and evidence refs"
+            )
+        component_values = (
+            self.build_defining_component_kind is not None,
+            self.build_defining_component_name is not None,
+            self.build_defining_component_key is not None,
+            bool(self.build_defining_evidence_refs),
+        )
+        if any(component_values) and not all(component_values):
+            raise ValueError(
+                "build-defining component evidence requires kind, name, key and evidence refs"
+            )
+        if self.build_defining_component_kind and self.build_defining_component_key:
+            allowed_prefixes = {
+                "skill": ("skill:",),
+                "ascendancy": ("ascendancy:",),
+                "item": ("unique:", "item_base:", "item:"),
+            }[self.build_defining_component_kind]
+            if not self.build_defining_component_key.startswith(allowed_prefixes):
+                raise ValueError(
+                    "build-defining component key type must match the declared component kind"
+                )
+        return self
+
 
 _BUDGETS: dict[str, dict[str, Any]] = {
     "campaign_early": {
@@ -197,6 +315,8 @@ def plan_stage_verification(stage: str, state: dict[str, Any] | None = None) -> 
     if budget is None:
         return {"ok": False, "error": "unknown lifecycle stage", "stage": stage}
     plan = deepcopy(budget)
+    planned_level = _lifecycle_level((state or {}).get("level"), fallback=plan["levelTarget"])
+    resistance_minimum = lifecycle_elemental_resistance_minimum(planned_level)
     plan.update(
         {
             "ok": True,
@@ -204,6 +324,7 @@ def plan_stage_verification(stage: str, state: dict[str, Any] | None = None) -> 
             "status": "planned",
             "source": "stage-verification-budget",
             "stateSnapshot": state or {},
+            "elementalResistanceMinimum": resistance_minimum,
             "note": (
                 "This is a verification plan, not a computed result. Run the listed engine tools "
                 "before presenting DPS/EHP/resistance claims."
@@ -236,7 +357,12 @@ def verify_stage_metrics(
     if not plan.get("ok"):
         return {**plan, "status": "unknown", "pass": False}
 
-    observations = _observations(stats or {}, defenses or {}, state=state or {})
+    observations = _observations(
+        stats or {},
+        defenses or {},
+        state=state or {},
+        fallback_level=plan["levelTarget"],
+    )
     checks = _evaluate_known_checks(stage, plan["targetChecks"], observations, engine_warning)
     failed = [row["check"] for row in checks if row["status"] == "failed"]
     unknown = [row["check"] for row in checks if row["status"] == "unknown"]
@@ -298,6 +424,7 @@ def _observations(
     defenses: dict[str, Any],
     *,
     state: dict[str, Any],
+    fallback_level: int | None = None,
 ) -> dict[str, Any]:
     resists = _resistances(stats, defenses)
     life = _number(stats.get("Life") or defenses.get("life"))
@@ -317,6 +444,7 @@ def _observations(
         mana_flask_equipped=_optional_bool(state.get("manaFlaskEquipped")),
     )
     return {
+        "level": _lifecycle_level(state.get("level"), fallback=fallback_level),
         "resistances": resists,
         "life": life,
         "energyShield": es,
@@ -331,6 +459,27 @@ def _observations(
         "manaOnHitRate": mana_on_hit_rate,
         "skillUseRate": speed,
         "manaSustain": mana_sustain,
+        "mainSkillSocketed": _optional_bool(state.get("mainSkillSocketed")),
+        "mainSkillSocketEvidence": (
+            dict(state["mainSkillSocketEvidence"])
+            if isinstance(state.get("mainSkillSocketEvidence"), dict)
+            else {}
+        ),
+        "ascendancyOrKeySupport": (
+            dict(state["ascendancyOrKeySupport"])
+            if isinstance(state.get("ascendancyOrKeySupport"), dict)
+            else {}
+        ),
+        "singleTargetDuty": (
+            dict(state["singleTargetDuty"])
+            if isinstance(state.get("singleTargetDuty"), dict)
+            else {}
+        ),
+        "buildDefiningComponent": (
+            dict(state["buildDefiningComponent"])
+            if isinstance(state.get("buildDefiningComponent"), dict)
+            else {}
+        ),
         "spirit": spirit,
         "offense": {
             "TotalDPS": _number(stats.get("TotalDPS")),
@@ -349,10 +498,22 @@ def _evaluate_known_checks(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for check in target_checks:
-        if check == "resists_capped":
-            rows.append(_resist_check(check, observations, minimum=75))
-        elif check == "resists_near_cap":
-            rows.append(_resist_check(check, observations, minimum=60))
+        if check == "main_skill_socketed":
+            rows.append(_main_skill_socketed_check(observations))
+        elif check == "first_ascendancy_or_key_support":
+            rows.append(_ascendancy_or_key_support_check(observations))
+        elif check == "single_target_feels_ok":
+            rows.append(_single_target_duty_check(observations))
+        elif check == "build_defining_component_online":
+            rows.append(_build_defining_component_check(observations))
+        elif check in {"resists_capped", "resists_near_cap"}:
+            rows.append(
+                _resist_check(
+                    check,
+                    observations,
+                    minimum=lifecycle_elemental_resistance_minimum(observations.get("level")),
+                )
+            )
         elif check == "basic_defense_online":
             rows.append(_basic_defense_check(stage, observations))
         elif check == "sustain_ok":
@@ -378,6 +539,96 @@ def _evaluate_known_checks(
     return rows
 
 
+def _build_defining_component_check(observations: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(observations.get("buildDefiningComponent") or {})
+    verified = evidence.get("verified")
+    return {
+        "check": "build_defining_component_online",
+        "status": "passed" if verified is True else "failed" if verified is False else "unknown",
+        "ok": verified if isinstance(verified, bool) else None,
+        "detail": evidence,
+        "target": (
+            "a named skill, ascendancy or equipped item matched in the active XML with a stable "
+            "component key and external evidence refs"
+        ),
+    }
+
+
+def _ascendancy_or_key_support_check(observations: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(observations.get("ascendancyOrKeySupport") or {})
+    verified = evidence.get("verified")
+    return {
+        "check": "first_ascendancy_or_key_support",
+        "status": "passed" if verified is True else "failed" if verified is False else "unknown",
+        "ok": verified if isinstance(verified, bool) else None,
+        "detail": evidence,
+        "target": "an active ascendancy or at least one support in the active PoB main group",
+    }
+
+
+def _single_target_duty_check(observations: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(observations.get("singleTargetDuty") or {})
+    modeled_offense = observations.get("offense") or {}
+    damage_values = [modeled_offense.get(key) for key in ("TotalDPS", "FullDPS", "AverageDamage")]
+    known_damage = [value for value in damage_values if isinstance(value, (int, float))]
+    positive_damage = any(value > 0 for value in known_damage)
+    verified = evidence.get("verified")
+    if verified is True and positive_damage:
+        status = "passed"
+        ok: bool | None = True
+    elif verified is True and known_damage:
+        status = "failed"
+        ok = False
+    elif verified is False:
+        status = "failed"
+        ok = False
+    else:
+        status = "unknown"
+        ok = None
+    return {
+        "check": "single_target_feels_ok",
+        "status": status,
+        "ok": ok,
+        "detail": {
+            **evidence,
+            "positiveModelledOffense": positive_damage,
+            "scope": "single_target_duty_present_not_gameplay_feel_certification",
+        },
+        "target": (
+            "an enabled active skill matched to external mechanic evidence plus positive PoB "
+            "offense; actual gameplay feel remains an Agent judgment"
+        ),
+    }
+
+
+def _main_skill_socketed_check(observations: dict[str, Any]) -> dict[str, Any]:
+    socketed = observations.get("mainSkillSocketed")
+    evidence = dict(observations.get("mainSkillSocketEvidence") or {})
+    if socketed is True:
+        return {
+            "check": "main_skill_socketed",
+            "status": "passed",
+            "ok": True,
+            "detail": evidence or {"socketed": True},
+            "target": "one enabled active gem in the active PoB main socket group",
+        }
+    if socketed is False:
+        return {
+            "check": "main_skill_socketed",
+            "status": "failed",
+            "ok": False,
+            "detail": evidence or {"socketed": False},
+            "target": "one enabled active gem in the active PoB main socket group",
+        }
+    return {
+        "check": "main_skill_socketed",
+        "status": "unknown",
+        "ok": None,
+        "detail": evidence or {"socketed": None},
+        "target": "requires evidence from the active PoB XML snapshot",
+    }
+
+
 def _resistances(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, float | None]:
     raw = defenses.get("resistances") if isinstance(defenses.get("resistances"), dict) else {}
     return {
@@ -388,9 +639,44 @@ def _resistances(stats: dict[str, Any], defenses: dict[str, Any]) -> dict[str, f
     }
 
 
-def _resist_check(check: str, observations: dict[str, Any], *, minimum: float) -> dict[str, Any]:
+def lifecycle_elemental_resistance_minimum(level: Any) -> float | None:
+    """Return the lifecycle-only elemental resistance floor for the actual build level."""
+
+    numeric_level = _lifecycle_level(level)
+    if numeric_level is None:
+        return None
+    for minimum_level, maximum_level, minimum in _ELEMENTAL_RESISTANCE_BANDS:
+        if minimum_level <= numeric_level <= maximum_level:
+            return minimum
+    return None
+
+
+def _lifecycle_level(value: Any, *, fallback: int | None = None) -> int | None:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return numeric if 1 <= numeric <= 100 else fallback
+
+
+def _resist_check(
+    check: str,
+    observations: dict[str, Any],
+    *,
+    minimum: float | None,
+) -> dict[str, Any]:
     resists = observations.get("resistances") or {}
     values = {name: resists.get(name) for name in _ELEMENTAL_RESISTS}
+    if minimum is None:
+        return {
+            "check": check,
+            "status": "not_applicable",
+            "ok": True,
+            "detail": values,
+            "target": None,
+        }
     if any(value is None for value in values.values()):
         return {
             "check": check,
@@ -506,6 +792,18 @@ def _recommended_actions(
         actions.append(
             "PoB reports a modeling limitation; do not present the computed number as the true "
             "mechanic value."
+        )
+    if "main_skill_socketed" in failed:
+        actions.append("Socket exactly one enabled active gem in the active PoB main skill group.")
+    if "first_ascendancy_or_key_support" in failed:
+        actions.append("Activate the stage ascendancy or socket a support in the PoB main group.")
+    if "single_target_feels_ok" in failed:
+        actions.append(
+            "Add a real enabled single-target duty and verify it with graph/mechanic evidence."
+        )
+    if "build_defining_component_online" in failed:
+        actions.append(
+            "Bring the declared build-defining component online in the active PoB snapshot."
         )
 
     for check in unknown:

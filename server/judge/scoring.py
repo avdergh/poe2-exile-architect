@@ -296,25 +296,12 @@ def score_metrics(
     if source_context == "trusted_reference" and _resistance_state_suspect(metrics, res, ci_active):
         caveats.append("source_data_problem_caveat")
         caveats.append("state_or_import_suspect_caveat")
-    elemental_values = [_num(res.get(k)) for k in ("fire", "cold", "lightning")]
-    resistance_floor = ELEMENTAL_RESISTANCE_SEVERE_FLOOR[band]
-    severe_resistance_shortfall = any(value < resistance_floor for value in elemental_values)
-    below_resistance_target = any(
-        value < ELEMENTAL_RESISTANCE_QUALITY_TARGET for value in elemental_values
-    )
-    if severe_resistance_shortfall:
-        playability_failures.append("severe_elemental_resistance_shortfall")
-    if below_resistance_target:
-        quality_warnings.append("elemental_resistance_below_cap")
+    # Temporary policy: elemental resistance percentages remain visible in defense diagnostics,
+    # but they do not create failures, warnings or score caps.  Elemental Max Hit is still judged
+    # independently because it measures the resulting survivability rather than prescribing one
+    # particular gearing solution.
     if (not ci_active) and _num(res.get("chaos")) < 0:
         quality_warnings.append("negative_chaos_resistance")
-    if severe_resistance_shortfall and source_context == "trusted_reference":
-        playability_failures = [
-            failure
-            for failure in playability_failures
-            if failure != "severe_elemental_resistance_shortfall"
-        ]
-        caveats.append("trusted_reference_uncapped_resistance_caveat")
 
     score_vector = {
         "offense": {
@@ -342,8 +329,6 @@ def score_metrics(
             aggregate,
             CRITICAL_FAILURE_PENALTIES_V1["UNESTABLISHED_OFFENSE_SCORE_CAP"],
         )
-    if "severe_elemental_resistance_shortfall" in playability_failures:
-        aggregate = min(aggregate, CRITICAL_FAILURE_PENALTIES_V1["SEVERE_RESISTANCE_SCORE_CAP"])
     if "catastrophic_defense_shortboard" in playability_failures:
         aggregate = min(aggregate, CRITICAL_FAILURE_PENALTIES_V1["CATASTROPHIC_DEFENSE_SCORE_CAP"])
     if blocked:
@@ -374,6 +359,11 @@ def score_metrics(
             "weights": aggregate_weights,
         },
         "metricProvenance": provenance,
+        "judgmentPolicy": {
+            "elementalResistances": "endgame_hard_gate_60_otherwise_diagnostic",
+            "elementalMaximumHit": "scored",
+            "chaosResistance": "endgame_hard_gate_30_ci_exempt_otherwise_quality_signal",
+        },
     }
 
 

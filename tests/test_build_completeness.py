@@ -228,6 +228,23 @@ def test_completeness_rejects_affix_above_item_level():
     assert "affix_item_level_requirement_unmet" in legality["issues"]
 
 
+def test_item_legality_uses_base_specific_low_level_weapon_tiers():
+    # Several weapon families share these display templates but have different, overlapping tier
+    # ranges. A legal ilvl-18 quarterstaff roll must not be classified as a higher-level tier from
+    # another weapon family.
+    raw = (
+        "Rarity: Rare\nOptimized Weapon 1\nCrackling Quarterstaff\nItem Level: 18\n--------\n"
+        "68% increased Elemental Damage with Attacks\n"
+        "Adds 16 to 27 Fire Damage"
+    )
+
+    legality = completeness._parse_item_text(raw)["affixLegality"]
+
+    assert legality["ok"] is True
+    assert legality["overItemLevelAffixes"] == []
+    assert legality["outOfRangeGroups"] == []
+
+
 def test_item_legality_counts_multiline_hybrid_affix_as_one_prefix():
     raw = (
         "Rarity: Rare\nHybrid Gloves\nAdorned Gloves\nItem Level: 95\n--------\n"
@@ -252,3 +269,35 @@ def test_item_legality_keeps_adjacent_independent_defense_prefixes_separate():
     assert legality["ok"] is True
     assert legality["prefixes"] == 2
     assert legality["outOfRangeGroups"] == []
+
+
+def test_item_legality_does_not_merge_adjacent_life_and_mana_into_soul_mod():
+    # The corpus also contains a two-line Life+Mana soul-core modifier. Ordinary jewellery can
+    # legally roll the two lines as separate prefixes, so display-text similarity alone must not
+    # merge them or import the soul modifier's tier requirement.
+    raw = (
+        "Rarity: Rare\nIndependent Resources\nGold Ring\nItem Level: 80\n--------\n"
+        "+177 to maximum Mana\n+116 to maximum Life"
+    )
+
+    legality = completeness._parse_item_text(raw)["affixLegality"]
+
+    assert legality["ok"] is True
+    assert legality["prefixes"] == 2
+    assert legality["overItemLevelAffixes"] == []
+    assert legality["duplicateGroups"] == []
+
+
+def test_item_legality_accepts_generic_weapon_fixed_point_crit_tier():
+    raw = (
+        "Rarity: Rare\nCritical Staff\nGothic Quarterstaff\nItem Level: 80\n--------\n"
+        "+5% to Critical Hit Chance\n"
+        "+25% to Critical Damage Bonus"
+    )
+
+    legality = completeness._parse_item_text(raw)["affixLegality"]
+
+    assert legality["ok"] is True
+    assert legality["suffixes"] == 2
+    assert legality["outOfRangeGroups"] == []
+    assert legality["overItemLevelAffixes"] == []

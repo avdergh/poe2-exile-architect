@@ -633,6 +633,8 @@ CREATE TABLE IF NOT EXISTS research_dedupe_queries (
     query_hash TEXT NOT NULL,
     query_text_preview TEXT NOT NULL,
     component_keys TEXT NOT NULL,
+    request_contract TEXT NOT NULL DEFAULT '{}',
+    result_contract TEXT NOT NULL DEFAULT '{}',
     visibility TEXT NOT NULL,
     split TEXT NOT NULL,
     knowledge_scope TEXT NOT NULL,
@@ -715,6 +717,18 @@ def schema_version(con: sqlite3.Connection) -> int:
 
 
 def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        con,
+        "research_dedupe_queries",
+        "request_contract",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        con,
+        "research_dedupe_queries",
+        "result_contract",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
     _add_column_if_missing(
         con,
         "deep_research_records",

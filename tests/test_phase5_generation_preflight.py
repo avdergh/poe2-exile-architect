@@ -30,10 +30,22 @@ def _group(
 
 
 class _Engine:
-    def __init__(self, xml: str, *, build: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        xml: str,
+        *,
+        build: dict[str, object] | None = None,
+        resistances: dict[str, float] | None = None,
+    ) -> None:
         self.xml = xml
         self.xml_reads = 0
         self.build = build or {"class": "Monk", "level": 70, "gear": {}}
+        self.resistances = resistances or {
+            "fire": 75,
+            "cold": 75,
+            "lightning": 75,
+            "chaos": 75,
+        }
 
     def get_xml(self) -> str:
         self.xml_reads += 1
@@ -45,6 +57,9 @@ class _Engine:
     def list_jewel_sockets(self) -> dict[str, object]:
         return {"sockets": []}
 
+    def get_defenses(self) -> dict[str, object]:
+        return {"resistances": self.resistances}
+
 
 def test_preflight_blocks_exact_duplicate_enabled_group_from_one_snapshot():
     engine = _Engine(_xml(_group() + _group()))
@@ -54,6 +69,8 @@ def test_preflight_blocks_exact_duplicate_enabled_group_from_one_snapshot():
     assert result["readyForJudge"] is False
     assert result["blockingIssues"] == ["duplicate_enabled_skill_group"]
     assert result["duplicateGroupIndices"] == [1, 2]
+    assert result["feedbackMode"] == "hard_only"
+    assert result["subjectiveFeedbackSuppressed"] is True
     assert engine.xml_reads == 1
 
 
@@ -106,3 +123,135 @@ def test_preflight_blocks_active_gem_above_character_requirement():
 
     assert result["readyForJudge"] is False
     assert "active_skill_gem_level_requirement_unmet" in result["blockingIssues"]
+
+
+def test_preflight_blocks_endgame_resistance_gate_without_consuming_judge():
+    engine = _Engine(
+        _xml(_group()),
+        build={"class": "Monk", "ascendancy": "Martial Artist", "level": 85, "gear": {}},
+        resistances={"fire": 60, "cold": 59, "lightning": 60, "chaos": 29},
+    )
+
+    result = preflight.inspect_generation_preflight(engine)
+
+    assert result["readyForJudge"] is False
+    assert result["readinessReady"] is False
+    assert result["blockingIssues"] == [
+        "endgame_elemental_resistance_below_60",
+        "endgame_chaos_resistance_below_30",
+    ]
+    assert result["readinessGates"]["endgameResistances"]["belowElemental"] == ["cold"]
+
+
+def test_main_skill_socket_evidence_uses_active_main_group():
+    result = preflight.inspect_main_skill_socketed(_xml(_group(active_name="Glacial Cascade")))
+
+    assert result == {
+        "status": "passed",
+        "socketed": True,
+        "groupIndex": 1,
+        "activeSkillCount": 1,
+        "activeSkills": ["Glacial Cascade"],
+    }
+
+
+def test_main_skill_socket_evidence_rejects_missing_active_main_group():
+    result = preflight.inspect_main_skill_socketed(_xml(_group(enabled=False)))
+
+    assert result["status"] == "failed"
+    assert result["socketed"] is False
+    assert result["errorCode"] == "missing_active_skill_group"
+
+
+def test_lifecycle_skill_evidence_reads_ascendancy_supports_and_named_duty():
+    groups = _group(active_name="Storm Wave") + _group(
+        active_name="Tempest Bell",
+        active_id="SkillGemTempestBell",
+    )
+
+    result = preflight.inspect_lifecycle_skill_evidence(
+        _xml(groups),
+        single_target_skill_name="Tempest Bell",
+    )
+
+    assert result["ascendancyOrKeySupport"] == {
+        "verified": True,
+        "ascendancy": "Martial Artist",
+        "ascendancyActive": True,
+        "mainGroupSupportCount": 1,
+    }
+    assert result["singleTargetDuty"] == {
+        "verified": True,
+        "requestedSkillName": "Tempest Bell",
+        "matchedSkillName": "Tempest Bell",
+        "groupIndex": 2,
+        "role": "additional_skill_group",
+    }
+
+
+def test_lifecycle_skill_evidence_does_not_accept_unmatched_named_duty():
+    result = preflight.inspect_lifecycle_skill_evidence(
+        _xml(_group(active_name="Storm Wave")),
+        single_target_skill_name="Tempest Bell",
+    )
+
+    assert result["singleTargetDuty"]["verified"] is False
+    assert result["singleTargetDuty"]["matchedSkillName"] == ""
+
+
+def test_lifecycle_component_evidence_matches_enabled_skill_and_ascendancy():
+    xml = _xml(_group(active_name="Whirling Assault"))
+
+    skill = preflight.inspect_lifecycle_component_evidence(
+        xml,
+        component_kind="skill",
+        component_name="Whirling Assault",
+    )
+    ascendancy = preflight.inspect_lifecycle_component_evidence(
+        xml,
+        component_kind="ascendancy",
+        component_name="Martial Artist",
+    )
+
+    assert skill == {
+        "verified": True,
+        "kind": "skill",
+        "requestedName": "Whirling Assault",
+        "matchedName": "Whirling Assault",
+        "groupIndex": 1,
+        "role": "pob_main_group",
+    }
+    assert ascendancy["verified"] is True
+    assert ascendancy["matchedName"] == "Martial Artist"
+
+
+def test_lifecycle_component_evidence_matches_only_equipped_active_set_item():
+    xml = _xml(_group()).replace(
+        '<Items activeItemSet="1"><ItemSet id="1" /></Items>',
+        """<Items activeItemSet="1">
+    <Item id="1">Rarity: UNIQUE
+Choir of the Storm
+Lapis Amulet</Item>
+    <Item id="2">Rarity: UNIQUE
+Dream Fragments
+Sapphire Ring</Item>
+    <ItemSet id="1"><Slot name="Amulet" itemId="1" /></ItemSet>
+    <ItemSet id="2"><Slot name="Ring 1" itemId="2" /></ItemSet>
+  </Items>""",
+    )
+
+    equipped = preflight.inspect_lifecycle_component_evidence(
+        xml,
+        component_kind="item",
+        component_name="Choir of the Storm",
+    )
+    inactive = preflight.inspect_lifecycle_component_evidence(
+        xml,
+        component_kind="item",
+        component_name="Dream Fragments",
+    )
+
+    assert equipped["verified"] is True
+    assert equipped["matchedName"] == "Choir of the Storm"
+    assert equipped["slot"] == "Amulet"
+    assert inactive["verified"] is False

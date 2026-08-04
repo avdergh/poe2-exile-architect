@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from server.generation import prototype, retry, run_store
+from server.generation import canonicalize, prototype, retry, run_store
 from tests.test_phase5_prototype_models import agent_submission_payload
 
 
@@ -169,6 +169,8 @@ def _retry_payload(
     payload["transientBuildState"] = final["transientBuildState"]
     payload["judgeAdvisoryReport"] = final["judgeAdvisoryReport"]
     payload["generationAttempts"] = attempts
+    payload["selectedAttemptIndex"] = 1
+    payload["artifactSelectionOutcome"] = "latest_passing_attempt_selected"
     receipts = [
         {
             "schemaVersion": 1,
@@ -206,6 +208,117 @@ def test_same_run_retry_builds_trusted_before_after_report():
     assert report["resolvedHardFailures"] == ["attribute_requirement_unmet"]
     assert report["scoreDelta"] == pytest.approx(0.5)
     assert [row["attemptIndex"] for row in report["attempts"]] == [0, 1]
+    assert reviewed["humanReviewPacket"]["selectedAttemptIndex"] == 1
+    assert (
+        reviewed["humanReviewPacket"]["artifactSelectionOutcome"]
+        == "latest_passing_attempt_selected"
+    )
+    assert report["selectedAttemptIndex"] == 1
+
+
+def test_hard_only_retry_report_does_not_compare_subjective_scores():
+    payload, receipts = _retry_payload("no_memory")
+    for attempt in payload["generationAttempts"]:
+        judge = attempt["judgeAdvisoryReport"]
+        judge.update(
+            {
+                "feedbackMode": "hard_only",
+                "subjectiveFeedbackSuppressed": True,
+                "caveats": [],
+                "aggregateScore": None,
+                "rewardStrength": "unknown",
+                "qualityBand": None,
+            }
+        )
+    payload["judgeAdvisoryReport"] = payload["generationAttempts"][-1]["judgeAdvisoryReport"]
+    reviewed = prototype.validate_and_build_human_review_packet(
+        payload,
+        trusted_evaluation=True,
+    )
+    assert reviewed["status"] == "accepted"
+
+    result = retry.validate_and_build_retry_report(
+        reviewed["humanReviewPacket"],
+        {"experimentContext": {"memoryMode": "no_memory", "maxRetryCount": 2}},
+        receipts,
+        run_id="run:test:hard-only",
+    )
+
+    assert result["status"] == "accepted"
+    report = result["retryComparisonReport"]
+    assert report["feedbackMode"] == "hard_only"
+    assert report["subjectiveFeedbackSuppressed"] is True
+    assert report["scoreDelta"] is None
+    assert "qualityActuallyImproved" not in report["humanReviewFields"]
+    assert report["humanReviewFields"]["hardLegalityPreserved"] == "pending"
+
+
+def test_review_preserves_attempt_zero_baseline_selection():
+    payload, _receipts = _retry_payload("no_memory")
+    version = payload["agentRefinedBuildPrompt"]["version_context"]
+    base_candidate = payload["generationAttempts"][0]["prototypeBuildCandidate"]
+    attempts = [
+        _attempt(base_candidate, version, index=0, passed=True, score=0.7),
+        _attempt(base_candidate, version, index=1, passed=False, score=0.4),
+    ]
+    payload["generationAttempts"] = attempts
+    payload["prototypeBuildCandidate"] = attempts[0]["prototypeBuildCandidate"]
+    payload["transientBuildState"] = attempts[0]["transientBuildState"]
+    payload["judgeAdvisoryReport"] = attempts[0]["judgeAdvisoryReport"]
+    payload["failureAudit"] = attempts[0]["failureAudit"]
+    payload["selectedAttemptIndex"] = 0
+    payload["artifactSelectionOutcome"] = "baseline_restored_after_regression"
+
+    reviewed = prototype.validate_and_build_human_review_packet(
+        payload,
+        trusted_evaluation=True,
+    )
+
+    assert reviewed["status"] == "accepted"
+    assert reviewed["humanReviewPacket"]["selectedAttemptIndex"] == 0
+    assert (
+        reviewed["humanReviewPacket"]["artifactSelectionOutcome"]
+        == "baseline_restored_after_regression"
+    )
+
+
+def test_multiple_attempt_review_rejects_missing_selection():
+    payload, _receipts = _retry_payload("no_memory")
+    payload.pop("selectedAttemptIndex")
+    payload.pop("artifactSelectionOutcome")
+
+    reviewed = prototype.validate_and_build_human_review_packet(
+        payload,
+        trusted_evaluation=True,
+    )
+
+    assert reviewed["status"] == "rejected"
+
+
+def test_canonical_multi_attempt_review_requires_trusted_artifact_selection():
+    payload, receipts = _retry_payload("no_memory")
+
+    canonical = canonicalize.canonicalize_agent_output(
+        payload,
+        receipts,
+        artifact_selection=None,
+    )
+
+    assert canonical["status"] == "rejected"
+    assert canonical["errorCode"] == "missing_artifact_selection"
+
+
+def test_canonical_multi_attempt_review_rejects_malformed_artifact_selection():
+    payload, receipts = _retry_payload("no_memory")
+
+    canonical = canonicalize.canonicalize_agent_output(
+        payload,
+        receipts,
+        artifact_selection={},
+    )
+
+    assert canonical["status"] == "rejected"
+    assert canonical["errorCode"] == "artifact_selection_receipt_mismatch"
 
 
 def test_no_memory_mode_rejects_research_memory_usage():
@@ -505,6 +618,25 @@ def test_no_memory_retry_cli_validates_all_attempt_receipts(tmp_path: Path):
         json.dumps(receipts[-1], ensure_ascii=False),
         encoding="utf-8",
     )
+    (run_dir / "artifact-selection.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "runId": run["runContext"]["runId"],
+                "artifactId": "final-build:retry-cli",
+                "candidateId": receipts[-1]["candidateId"],
+                "selectedAttemptIndex": 1,
+                "selectedEvaluationRef": (f"run:{run['runContext']['runId']}:attempt:1"),
+                "selectionOutcome": "latest_passing_attempt_selected",
+                "selectionReason": None,
+                "laterFindingsScope": "not_applicable",
+                "createdAt": "2026-07-10T00:00:00+00:00",
+                "containsRawPob": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     Path(run["agentOutputFile"]).write_text(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
@@ -533,3 +665,8 @@ def test_no_memory_retry_cli_validates_all_attempt_receipts(tmp_path: Path):
     assert result["retryComparisonReport"]["resolvedHardFailures"] == [
         "attribute_requirement_unmet"
     ]
+    assert result["humanReviewPacket"]["selectedAttemptIndex"] == 1
+    assert (
+        result["humanReviewPacket"]["artifactSelectionOutcome"] == "latest_passing_attempt_selected"
+    )
+    assert result["retryComparisonReport"]["selectedAttemptIndex"] == 1

@@ -15,6 +15,8 @@ def test_verification_script_exposes_layered_profiles():
     script = Path("scripts/verify.ps1").read_text(encoding="utf-8")
 
     assert 'ValidateSet("quick", "noncompute", "compute", "full", "lint")' in script
+    assert "scripts/validate_mcpb_manifest.py" in script
+    assert "& npx" not in script
     assert "tests/test_lifecycle.py" in script
     assert "tests/test_server.py" in script
     assert "--ignore=tests/test_compute.py" in script

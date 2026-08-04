@@ -92,6 +92,64 @@ def test_evaluator_requests_judge_metric_keys():
     assert result["pass"] is True
 
 
+def test_endgame_generated_candidate_blocks_resistances_below_60_and_30():
+    engine = _StubEngine(
+        _build(level=85),
+        _stats(),
+        _defenses(resistances={"fire": 59, "cold": 60, "lightning": 75, "chaos": 29}),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "endgame-low-resists")
+
+    assert result["pass"] is False
+    assert "endgame_elemental_resistance_below_60" in result["hardFailures"]
+    assert "endgame_chaos_resistance_below_30" in result["hardFailures"]
+    gate = result["readinessGates"]["endgameResistances"]
+    assert gate["belowElemental"] == ["fire"]
+    assert gate["chaosBelowMinimum"] is True
+
+
+def test_endgame_generated_candidate_accepts_exact_resistance_minimums():
+    engine = _StubEngine(
+        _build(level=85),
+        _stats(),
+        _defenses(resistances={"fire": 60, "cold": 60, "lightning": 60, "chaos": 30}),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "endgame-resists-at-minimum")
+
+    assert result["pass"] is True
+    assert result["readinessGates"]["endgameResistances"]["status"] == "passed"
+
+
+def test_non_endgame_resistances_remain_diagnostic_only():
+    engine = _StubEngine(
+        _build(level=79),
+        _stats(),
+        _defenses(resistances={"fire": -60, "cold": -60, "lightning": -60, "chaos": -60}),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "maps-entry-low-resists")
+
+    assert "endgame_elemental_resistance_below_60" not in result["hardFailures"]
+    assert "endgame_chaos_resistance_below_30" not in result["hardFailures"]
+    assert result["readinessGates"]["endgameResistances"]["status"] == "not_applicable"
+
+
+def test_endgame_ci_is_exempt_from_chaos_resistance_minimum():
+    engine = _StubEngine(
+        _build(level=90, keystones=["Chaos Inoculation"]),
+        _stats(),
+        _defenses(resistances={"fire": 60, "cold": 60, "lightning": 60, "chaos": -60}),
+    )
+
+    result = evaluator.evaluate_active_build(engine, "endgame-ci-resists")
+
+    assert "endgame_chaos_resistance_below_30" not in result["hardFailures"]
+    assert result["pass"] is True
+    assert result["readinessGates"]["endgameResistances"]["chaosInoculation"] is True
+
+
 def test_evaluator_flags_no_weapon_attack_warning_as_physical_invalid():
     engine = _StubEngine(
         _build(),
@@ -466,7 +524,7 @@ def test_evaluator_flags_spirit_over_budget():
     assert result["pass"] is False
 
 
-def test_evaluator_flags_uncapped_resistance_without_physical_invalid():
+def test_evaluator_blocks_uncapped_endgame_resistances():
     engine = _StubEngine(
         _build(),
         _stats(TotalDPS=20_000_000),
@@ -475,10 +533,17 @@ def test_evaluator_flags_uncapped_resistance_without_physical_invalid():
 
     result = evaluator.evaluate_active_build(engine, "uncapped")
 
-    assert result["hardFailures"] == []
-    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
-    assert result["pass"] is True
-    assert result["aggregateScore"]["value"] < 0.6
+    assert result["hardFailures"] == [
+        "endgame_elemental_resistance_below_60",
+        "endgame_chaos_resistance_below_30",
+    ]
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert result["pass"] is False
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
 
 
 def test_trusted_reference_can_downgrade_uncapped_resistance_when_other_evidence_is_mature():
@@ -524,7 +589,11 @@ def test_trusted_reference_can_downgrade_uncapped_resistance_when_other_evidence
 
     assert result["pass"] is True
     assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
-    assert "elemental_resistance_below_cap" in result["qualityWarnings"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
     assert result["rewardEligible"] == "limited"
 
 
@@ -579,7 +648,7 @@ def test_trusted_reference_auto_selected_secondary_skill_can_downgrade_floor():
     assert result["rewardEligible"] == "limited"
 
 
-def test_evaluator_ci_still_flags_uncapped_elemental_resistance():
+def test_evaluator_ci_keeps_uncapped_elemental_resistance_diagnostic_only():
     engine = _StubEngine(
         _build(
             **{"class": "Sorceress"},
@@ -606,9 +675,14 @@ def test_evaluator_ci_still_flags_uncapped_elemental_resistance():
 
     result = evaluator.evaluate_active_build(engine, "ci-ele-uncapped")
 
-    assert "severe_elemental_resistance_shortfall" in result["playabilityFailures"]
-    assert result["hardFailures"] == []
+    assert "severe_elemental_resistance_shortfall" not in result["playabilityFailures"]
+    assert "elemental_resistance_below_cap" not in result["qualityWarnings"]
+    assert result["hardFailures"] == ["endgame_elemental_resistance_below_60"]
     assert result["scoreBreakdown"]["chaos"]["sourceMetric"] == "ChaosInoculation"
+    assert (
+        result["judgmentPolicy"]["elementalResistances"]
+        == "endgame_hard_gate_60_otherwise_diagnostic"
+    )
 
 
 def test_evaluator_reports_non_endgame_scope_without_score_or_reward_penalty():

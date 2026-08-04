@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import evaluation, run_store
+from server.compute.state import build_state_hash
+from server.generation import evaluation, evaluation_snapshots, run_store
 
 
 BUILD_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -65,19 +66,35 @@ def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
 
 
 class _ActiveEngine:
-    def __init__(self, xml: str = BUILD_XML) -> None:
+    def __init__(
+        self,
+        xml: str = BUILD_XML,
+        *,
+        build: dict[str, object] | None = None,
+        resistances: dict[str, float] | None = None,
+    ) -> None:
         self.xml = xml
         self.get_xml_calls = 0
+        self.build = build or {"class": "Ranger", "level": 68, "gear": {}}
+        self.resistances = resistances or {
+            "fire": 75,
+            "cold": 75,
+            "lightning": 75,
+            "chaos": 75,
+        }
 
     def get_xml(self) -> str:
         self.get_xml_calls += 1
         return self.xml
 
     def get_build(self) -> dict[str, object]:
-        return {"class": "Ranger", "level": 68, "gear": {}}
+        return self.build
 
     def list_jewel_sockets(self) -> dict[str, object]:
         return {"sockets": []}
+
+    def get_defenses(self) -> dict[str, object]:
+        return {"resistances": self.resistances}
 
 
 class _JudgeEngine:
@@ -186,6 +203,7 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
         run_token=token,
         candidate_id="candidate:test:1",
         version_context=_version_context(),
+        strict_mode=True,
         engine_factory=_JudgeEngine,
     )
 
@@ -194,6 +212,7 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert result["trustedEvaluation"] is True
     assert result["trustedEvaluationScope"] == "snapshot_and_judge_only"
     assert result["versionContextTrusted"] is False
+    assert result["transientBuildState"]["semanticStateHash"] == build_state_hash(BUILD_XML)
     assert result["transientBuildState"]["safeSummary"]["passivePointsUsed"] == "72"
     assert result["transientBuildState"]["testedSkillGroups"][0] == {
         "groupIndex": 1,
@@ -249,6 +268,8 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
         "selectedByJudge": True,
     }
     assert result["judgeAdvisoryReport"]["attributeShortfalls"] == []
+    assert result["judgeAdvisoryReport"]["feedbackMode"] == "strict"
+    assert result["judgeAdvisoryReport"]["subjectiveFeedbackSuppressed"] is False
     assert result["judgeAdvisoryReport"]["supplementalSkills"] == [
         {
             "skillName": "On Kill Monster Explosion",
@@ -261,6 +282,100 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert "PathOfBuilding" not in receipt_text
     assert "Lightning Arrow" in receipt_text
     assert (run_dir / "trusted-evaluations" / "attempt-0.json").is_file()
+    remembered = evaluation_snapshots.read(
+        run_id=run_id,
+        attempt_index=0,
+        candidate_id="candidate:test:1",
+        source_hash=result["transientBuildState"]["sourceHash"],
+    )
+    assert remembered is not None
+    assert remembered.xml == BUILD_XML
+    assert not list(run_dir.rglob("*.xml"))
+
+
+def test_evaluate_generation_candidate_defaults_to_hard_only_feedback(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        result = _judge_result(snapshot_id)
+        result["playabilityFailures"] = ["subjective_playability_failure"]
+        result["qualityWarnings"] = ["subjective_quality_warning"]
+        result["rewardLimitReasons"] = ["limited_evidence"]
+        return result
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:hard-only",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    report = result["judgeAdvisoryReport"]
+    assert result["feedbackMode"] == "hard_only"
+    assert result["subjectiveFeedbackSuppressed"] is True
+    assert report["feedbackMode"] == "hard_only"
+    assert report["subjectiveFeedbackSuppressed"] is True
+    assert report["passed"] is True
+    assert report["hardFailures"] == []
+    assert report["aggregateScore"] is None
+    assert report["playabilityFailures"] == []
+    assert report["qualityWarnings"] == []
+    assert report["caveats"] == []
+    assert report["rewardStrength"] == "unknown"
+    assert report["rewardLimitReasons"] == []
+    assert report["qualityBand"] is None
+    assert report["scoreVector"] is None
+    assert report["offenseEvidence"] is None
+    assert report["modelabilityStatus"] is None
+    assert report["scoreApplicability"] == "unknown"
+    assert report["selectedSkill"]["skillName"] == "Lightning Arrow"
+    receipt_text = (run_dir / "trusted-evaluation.json").read_text(encoding="utf-8")
+    assert "subjective_playability_failure" not in receipt_text
+    assert "subjective_quality_warning" not in receipt_text
+    assert "projectile_count_lower_bound_caveat" not in receipt_text
+
+
+def test_evaluate_generation_candidate_rejects_feedback_mode_change_without_consuming_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, _ = _bound_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        evaluation.runner,
+        "safe_evaluate_active_build",
+        lambda factory, **kwargs: _judge_result(kwargs["snapshot_id"]),
+    )
+    first = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:mode-lock",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+    assert first["attemptIndex"] == 0
+
+    mismatch = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:mode-lock:strict",
+        version_context=_version_context(),
+        strict_mode=True,
+        engine_factory=_JudgeEngine,
+    )
+
+    assert mismatch["status"] == "rejected"
+    assert mismatch["errorCode"] == "judge_feedback_mode_mismatch"
+    assert mismatch["expectedFeedbackMode"] == "hard_only"
+    assert mismatch["actualFeedbackMode"] == "strict"
+    assert mismatch["attemptConsumed"] is False
+    assert mismatch["attemptCount"] == 1
 
 
 def test_evaluate_generation_candidate_rejects_snapshot_without_main_skill(tmp_path, monkeypatch):
@@ -315,6 +430,106 @@ def test_generation_preflight_blocks_duplicate_group_without_consuming_attempt(
     assert result["errorCode"] == "generation_preflight_failed"
     assert result["preflight"]["blockingIssues"] == ["duplicate_enabled_skill_group"]
     assert active.get_xml_calls == 1
+    assert factory_called is False
+    assert not (run_dir / "trusted-evaluations").exists()
+
+
+def test_attribute_shortfall_is_blocked_without_consuming_a_judge_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    active = _ActiveEngine(
+        build={
+            "class": "Ranger",
+            "ascendancy": "Deadeye",
+            "level": 68,
+            "gear": {},
+            "attributes": {
+                "strength": 50,
+                "dexterity": 120,
+                "intelligence": 72,
+            },
+            "attributeRequirements": {
+                "strength": 50,
+                "dexterity": 120,
+                "intelligence": 80,
+            },
+        }
+    )
+    factory_called = False
+
+    def factory():
+        nonlocal factory_called
+        factory_called = True
+        return _JudgeEngine()
+
+    first = evaluation.evaluate_generation_candidate(
+        active,
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:attribute-shortfall",
+        version_context=_version_context(),
+        engine_factory=factory,
+    )
+    second = evaluation.evaluate_generation_candidate(
+        active,
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:attribute-shortfall",
+        version_context=_version_context(),
+        engine_factory=factory,
+    )
+
+    for result in (first, second):
+        assert result["errorCode"] == "generation_preflight_failed"
+        assert result["attemptConsumed"] is False
+        assert result["attemptCount"] == 0
+        assert result["preflight"]["hardLegalityReady"] is False
+        assert result["preflight"]["mechanismReady"] is True
+        assert result["preflight"]["blockingIssues"] == ["attribute_requirement_unmet"]
+    assert factory_called is False
+    assert not (run_dir / "trusted-evaluations").exists()
+
+
+def test_endgame_resistance_shortfall_is_blocked_without_consuming_a_judge_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    active = _ActiveEngine(
+        build={
+            "class": "Ranger",
+            "ascendancy": "Deadeye",
+            "level": 85,
+            "gear": {},
+        },
+        resistances={"fire": 60, "cold": 59, "lightning": 60, "chaos": 29},
+    )
+    factory_called = False
+
+    def factory():
+        nonlocal factory_called
+        factory_called = True
+        return _JudgeEngine()
+
+    result = evaluation.evaluate_generation_candidate(
+        active,
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:endgame-resistance-shortfall",
+        version_context=_version_context(),
+        engine_factory=factory,
+    )
+
+    assert result["errorCode"] == "generation_preflight_failed"
+    assert result["attemptConsumed"] is False
+    assert result["attemptCount"] == 0
+    assert result["preflight"]["readinessReady"] is False
+    assert result["preflight"]["blockingIssues"] == [
+        "endgame_elemental_resistance_below_60",
+        "endgame_chaos_resistance_below_30",
+    ]
     assert factory_called is False
     assert not (run_dir / "trusted-evaluations").exists()
 

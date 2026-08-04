@@ -115,10 +115,11 @@ unsolved modelability gap。
   - metric provenance（PoB-computed、hard-check-derived、unavailable、unmodelled）。
 - 建立四层结果 taxonomy：
   - legality：确定性职业、插槽、武器、属性、预算、Spirit 和装备非法；
-  - severe playability：阶段抗性、强证据 DPS 和灾难性防御短板；
-  - quality warnings：75% 元素抗目标、混沌抗与 offense/Max Hit 质量目标；
+  - severe playability：强证据 DPS 和灾难性防御短板；
+  - quality warnings：剧情阶段混沌抗与 offense/Max Hit 质量目标；
   - modelability：PoB/Judge 当前是否能可靠计算；
-  - severe_elemental_resistance_shortfall；
+  - 新生成的 80 级及以上候选要求火/冰/电各 60%、非 CI 混沌抗 30%；共享 preflight 先拦截且
+    不消耗 Judge attempt，79 级及以下和可信第三方参考只作 diagnostic；
   - attribute_requirement_unmet；
   - passive_budget_exceeded；
   - attack_skill_without_weapon；
@@ -135,7 +136,7 @@ unsolved modelability gap。
   - `rules.py`：class/ascendancy、support/socket v1、physical-invalid blocker；
   - `scoring.py`：`judge_v6_evidence_separated`，包含 hard floor / quality target 分离、阶段感知权重、
     hard-floor 到 target 的对数连续评分、动态可用主资源池 recovery、异构 Max Hit、CI
-    混沌免疫、EHP 物理短板补偿、30%/60%/75% 阶段抗性、offense evidence provenance
+    混沌免疫、EHP 物理短板补偿、终局抗性 readiness gate、offense evidence provenance
     和扁平 aggregate；
   - `modelability.py`：main socket group meta-trigger 不可数值验证、partial modelability、白名单 caveat；
   - `comparison.py`：`selectionWinner` 与 `rewardWinner` 分离，并输出 `rewardStrength`；

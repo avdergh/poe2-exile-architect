@@ -10,9 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from server.compute import buildopt, craftopt, itemopt
+from server import main, paths
+from server.compute import buildopt, craftopt, itemopt, mutation_batch
 from server.compute.engine import PobEngine
 from server.compute.pob_code import decode_code, encode_code
+from server.compute.state import build_state_hash
+from server.judge import hard_legality
 from server.knowledge import db, refbuilds
 
 FIREBALL_DPS = 124.833
@@ -318,6 +321,9 @@ def test_optimize_item_on_empty_weapon_slot_for_attack_skill(engine):
     engine.set_class("Huntress", "Amazon")
     engine.set_level(95)
     engine.paste_skill("Lightning Spear 20/20  1")  # attack, no weapon -> uncomputable
+    # Keep this regression focused on empty-slot crafting. Attribute-invalid weapon candidates are
+    # rejected separately by the shared whole-build legality audit.
+    engine.set_config(custom_mods="+200 to Strength\n+200 to Dexterity")
     assert isinstance(
         engine.get_stats(["TotalDPS"])["stats"], dict
     )  # not [] even when uncomputable
@@ -326,6 +332,48 @@ def test_optimize_item_on_empty_weapon_slot_for_attack_skill(engine):
     assert r["metricBefore"] is None  # no weapon -> nothing to measure before
     assert isinstance(r["metricAfter"], (int, float)) and r["metricAfter"] > 0
     assert r["affixes"]  # crafted a real spear
+
+
+def test_optimize_item_rejects_empty_weapon_candidate_with_new_attribute_shortfall(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Huntress", "Amazon")
+    engine.set_level(95)
+    engine.paste_skill("Lightning Spear 20/20  1")
+
+    result = itemopt.optimize_item(engine, "Weapon 1", base="Grand Spear", metric="TotalDPS")
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "whole_build_legality_check_failed"
+    assert any(
+        reason["code"] == "attribute_requirement_unmet"
+        and reason["change"] in {"introduced", "worsened"}
+        for reason in result["rejectionReasons"]
+    )
+
+
+def test_optimize_item_low_ilvl_weapon_passes_shared_legality_audit(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Monk", "Martial Artist")
+    engine.set_level(18)
+    engine.paste_skill("Glacial Cascade")
+
+    r = itemopt.optimize_item(
+        engine,
+        "Weapon 1",
+        base="Crackling Quarterstaff",
+        ilvl=18,
+        goals={"TotalDPS": 0.75, "TotalEHP": 0.25},
+        keep_resists_capped=False,
+    )
+
+    assert r["ok"] is True
+    assert r["itemLevel"] == 18
+    assert r["legalityCheck"]["ok"] is True
+    assert all(affix["ilvl"] <= 18 for affix in r["attainability"])
 
 
 def test_optimize_item_warns_when_it_breaks_resist_cap(engine):
@@ -1262,13 +1310,18 @@ def test_optimize_build_crafting_keeps_resists_capped(engine):
     assert res["resistsCapped"] is True  # crafting must NOT break the resist cap
 
 
-def test_craft_item_beats_plain_rare(engine):
+def test_craft_item_beats_plain_rare_and_round_trips_source_receipt(
+    engine,
+    tmp_path,
+    monkeypatch,
+):
     # craft_item adds the crafting system on top of the best rare, so it must not be worse than a
     # plain optimize_item rare, and should actually engage at least one crafting method. Slow (~15s).
     engine.new_build()
     engine.set_class("Sorceress")
     engine.set_level(92)
     engine.paste_skill("Fireball 20/20  1")
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
     base = db.pick_base("Body Armour", "int")
     plain = itemopt.optimize_item(engine, "Body Armour", metric="TotalEHP", base=base)
     crafted = craftopt.craft_item(
@@ -1278,3 +1331,24 @@ def test_craft_item_beats_plain_rare(engine):
     assert (crafted["metricCrafted"] or 0) >= (plain["metricAfter"] or 0)
     c = crafted["crafting"]
     assert c["runes"] or c["essencesUsed"] or c["corruptedImplicit"]  # crafting actually engaged
+    assert crafted["craftReceiptRef"].startswith("craft-legality:")
+    assert crafted["legalityCheck"]["ok"] is True
+
+    before_hash = build_state_hash(engine.get_xml())
+    equipped = mutation_batch.apply_build_mutation_batch(
+        engine,
+        batch_kind="required_gear",
+        operations=[
+            mutation_batch.BuildMutationOperation(
+                operation="equip_item",
+                raw=crafted["item"],
+                slot="Body Armour",
+                craft_receipt_ref=crafted["craftReceiptRef"],
+            )
+        ],
+        expected_state_hash=before_hash,
+        result_decorator=main._decorate_batch_mutation_result,
+    )
+    assert equipped["ok"] is True, equipped
+    legality = hard_legality.audit_active_build(engine)
+    assert "illegal_equipped_item_affixes" not in legality["hardFailures"]

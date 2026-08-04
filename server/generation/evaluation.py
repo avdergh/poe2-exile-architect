@@ -11,9 +11,10 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from server.compute.engine import PobEngine
+from server.compute.state import build_state_hash
 from server.judge import evaluator, runner, sample_audit
 
-from . import models, preflight, run_store
+from . import evaluation_snapshots, models, preflight, run_store
 
 
 def evaluate_generation_candidate(
@@ -23,6 +24,7 @@ def evaluate_generation_candidate(
     run_token: str,
     candidate_id: str,
     version_context: dict[str, Any],
+    strict_mode: bool = False,
     engine_factory: Callable[[], Any] = PobEngine,
     timeout_seconds: float | None = 900.0,
 ) -> dict[str, Any]:
@@ -49,6 +51,22 @@ def evaluate_generation_candidate(
             return _rejected(exc.code)
         if len(existing_receipts) >= 3:
             return _rejected("retry_limit_reached")
+        requested_feedback_mode = "strict" if strict_mode else "hard_only"
+        if existing_receipts:
+            existing_feedback_mode = str(
+                (existing_receipts[0].get("judgeAdvisoryReport") or {}).get(
+                    "feedbackMode",
+                    "strict",
+                )
+            )
+            if existing_feedback_mode != requested_feedback_mode:
+                return {
+                    **_rejected("judge_feedback_mode_mismatch"),
+                    "expectedFeedbackMode": existing_feedback_mode,
+                    "actualFeedbackMode": requested_feedback_mode,
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
         try:
             xml = active_engine.get_xml()
         except Exception:  # noqa: BLE001 - MCP response must not expose engine internals.
@@ -58,7 +76,14 @@ def evaluate_generation_candidate(
         if not preflight_report.get("readyForJudge"):
             return {
                 **_rejected("generation_preflight_failed"),
-                "preflight": preflight_report,
+                "preflight": preflight.project_feedback(
+                    preflight_report,
+                    strict_mode=strict_mode,
+                ),
+                "feedbackMode": requested_feedback_mode,
+                "subjectiveFeedbackSuppressed": not strict_mode,
+                "attemptConsumed": False,
+                "attemptCount": len(existing_receipts),
             }
 
         parsed = _parse_build_snapshot(xml)
@@ -66,6 +91,7 @@ def evaluate_generation_candidate(
             return _rejected(str(parsed["errorCode"]))
 
         source_hash = evaluator.compute_source_hash(xml)
+        semantic_state_hash = build_state_hash(xml)
         snapshot_id = f"generation:{bound_run.run_id}:{source_hash}"
         captured: dict[str, Any] = {}
 
@@ -92,11 +118,12 @@ def evaluate_generation_candidate(
         state = _build_state_ref(
             parsed,
             captured.get("build") or {},
-            completeness_advisories=[
-                str(item) for item in preflight_report.get("advisories") or []
-            ],
+            completeness_advisories=[str(item) for item in preflight_report.get("advisories") or []]
+            if strict_mode
+            else [],
             snapshot_id=snapshot_id,
             source_hash=source_hash,
+            semantic_state_hash=semantic_state_hash,
             version=version,
         )
         judge_report = _build_judge_report(
@@ -106,21 +133,56 @@ def evaluate_generation_candidate(
             snapshot_id=snapshot_id,
             source_hash=source_hash,
             version=version,
+            strict_mode=strict_mode,
         )
         receipt = {
             "candidateId": candidate_id,
             "transientBuildState": state,
             "judgeAdvisoryReport": judge_report,
+            "hardLegalityAudit": {
+                **dict(preflight_report.get("hardLegality") or {}),
+                "stateHash": semantic_state_hash,
+                "validationRef": f"hard-legality:{semantic_state_hash[:24]}",
+            },
         }
+        expected_attempt_index = len(existing_receipts)
         try:
+            evaluation_snapshots.remember(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+                candidate_id=candidate_id,
+                source_hash=source_hash,
+                xml=xml,
+            )
             attempt_index = run_store.write_trusted_evaluation(bound_run, receipt)
-        except run_store.RunStoreError as exc:
-            return _rejected(exc.code)
+        except (run_store.RunStoreError, ValueError) as exc:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
+            if isinstance(exc, run_store.RunStoreError):
+                return _rejected(exc.code)
+            return _rejected("trusted_evaluation_snapshot_failed")
+        if attempt_index != expected_attempt_index:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
+            if attempt_index is None:
+                return _rejected("run_state_write_failed")
+            return _rejected("trusted_attempt_index_mismatch")
         if attempt_index is None:
+            evaluation_snapshots.forget(
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
             return _rejected("run_state_write_failed")
         return {
             "status": judge_report["status"],
+            "feedbackMode": requested_feedback_mode,
+            "subjectiveFeedbackSuppressed": not strict_mode,
             "attemptIndex": attempt_index,
+            "attemptConsumed": True,
             **receipt,
             "trustedEvaluation": True,
             "trustedEvaluationScope": "snapshot_and_judge_only",
@@ -201,6 +263,7 @@ def _build_state_ref(
     completeness_advisories: list[str],
     snapshot_id: str,
     source_hash: str,
+    semantic_state_hash: str,
     version: models.VersionContext,
 ) -> dict[str, Any]:
     summary = {
@@ -218,6 +281,7 @@ def _build_state_ref(
         status="available",
         snapshot_id=snapshot_id,
         source_hash=source_hash,
+        semantic_state_hash=semantic_state_hash,
         safe_summary=summary,
         tested_skill_groups=parsed["testedSkillGroups"],
         completeness_advisories=list(dict.fromkeys(completeness_advisories)),
@@ -236,12 +300,15 @@ def _build_judge_report(
     snapshot_id: str,
     source_hash: str,
     version: models.VersionContext,
+    strict_mode: bool,
 ) -> dict[str, Any]:
     error_kind = result.get("errorKind")
     if error_kind:
         report = models.JudgeAdvisoryReport(
             report_id=f"judge:{snapshot_id}",
             status="error",
+            feedback_mode="strict" if strict_mode else "hard_only",
+            subjective_feedback_suppressed=not strict_mode,
             hard_failures=[],
             caveats=["judge_execution_failed"],
             reward_strength="unknown",
@@ -264,28 +331,40 @@ def _build_judge_report(
     report = models.JudgeAdvisoryReport(
         report_id=f"judge:{snapshot_id}",
         status="evaluated",
+        feedback_mode="strict" if strict_mode else "hard_only",
+        subjective_feedback_suppressed=not strict_mode,
         hard_failures=[str(item) for item in result.get("hardFailures") or []],
-        playability_failures=[str(item) for item in result.get("playabilityFailures") or []],
-        quality_warnings=[str(item) for item in result.get("qualityWarnings") or []],
-        caveats=[str(item) for item in result.get("caveats") or []],
-        aggregate_score=max(0.0, min(1.0, aggregate)),
-        reward_strength=reward_strength,
-        reward_limit_reasons=[str(item) for item in result.get("rewardLimitReasons") or []],
+        playability_failures=(
+            [str(item) for item in result.get("playabilityFailures") or []] if strict_mode else []
+        ),
+        quality_warnings=(
+            [str(item) for item in result.get("qualityWarnings") or []] if strict_mode else []
+        ),
+        caveats=[str(item) for item in result.get("caveats") or []] if strict_mode else [],
+        aggregate_score=max(0.0, min(1.0, aggregate)) if strict_mode else None,
+        reward_strength=reward_strength if strict_mode else "unknown",
+        reward_limit_reasons=(
+            [str(item) for item in result.get("rewardLimitReasons") or []] if strict_mode else []
+        ),
         evaluated_snapshot_id=snapshot_id,
         evaluated_source_hash=source_hash,
         passed=bool(result.get("pass")),
-        quality_band=str(result.get("qualityBand") or "unknown"),
-        score_vector=_safe_score_vector(result.get("scoreVector") or {}),
-        offense_evidence=_safe_offense_evidence(
-            (result.get("scoreBreakdown") or {}).get("offense") or {}
+        quality_band=str(result.get("qualityBand") or "unknown") if strict_mode else None,
+        score_vector=_safe_score_vector(result.get("scoreVector") or {}) if strict_mode else None,
+        offense_evidence=(
+            _safe_offense_evidence((result.get("scoreBreakdown") or {}).get("offense") or {})
+            if strict_mode
+            else None
         ),
-        modelability_status=modelability_status,
-        score_applicability=score_applicability,
-        level_band=str(result.get("levelBand") or "unknown"),
+        modelability_status=modelability_status if strict_mode else None,
+        score_applicability=score_applicability if strict_mode else "unknown",
+        level_band=str(result.get("levelBand") or "unknown") if strict_mode else None,
         evaluator_version=str(
             (result.get("reproducibility") or {}).get("evaluatorVersion") or "unknown"
         ),
-        final_classification=str(result.get("finalClassification") or "unknown"),
+        final_classification=(
+            str(result.get("finalClassification") or "unknown") if strict_mode else None
+        ),
         selected_skill=_selected_skill_diagnostic(build),
         supplemental_skills=_supplemental_skill_diagnostics(build),
         skill_group_diagnostics=_skill_group_diagnostics(parsed, build),

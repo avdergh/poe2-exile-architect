@@ -13,6 +13,7 @@ from server.knowledge import copy_safety
 
 FIELD_SOURCE = Literal["user_explicit", "agent_inferred", "defaulted", "unknown"]
 MEMORY_MODE = Literal["standard", "no_memory", "memory_assisted"]
+JUDGE_FEEDBACK_MODE = Literal["hard_only", "strict"]
 LIFECYCLE_STAGE = Literal[
     "campaign_early",
     "campaign_mid",
@@ -66,13 +67,34 @@ class StrictModel(BaseModel):
 
 
 class VersionContext(StrictModel):
-    league: str = Field(min_length=1)
-    ruleset: str = Field(min_length=1)
-    game_patch: str = Field(min_length=1)
-    passive_tree_version: str = Field(min_length=1)
-    pob_version_or_commit: str = Field(min_length=1)
-    graph_snapshot_id: str = Field(min_length=1)
-    research_memory_ref: str = Field(min_length=1)
+    league: str = Field(min_length=1, description="Exact league provenance used by this run.")
+    ruleset: str = Field(
+        min_length=1,
+        description=(
+            "Exact game ruleset from freshness (for example `poe2`); trade/SSF mode belongs in "
+            "the build goal, not this field."
+        ),
+    )
+    game_patch: str = Field(min_length=1, description="Exact game patch from freshness.")
+    passive_tree_version: str = Field(
+        min_length=1,
+        description="Exact passive-tree generation from freshness.",
+    )
+    pob_version_or_commit: str = Field(
+        min_length=1,
+        description="Exact validated PoB version or commit.",
+    )
+    graph_snapshot_id: str = Field(
+        min_length=1,
+        description="Physical graph snapshot used for component resolution.",
+    )
+    research_memory_ref: str = Field(
+        min_length=1,
+        description=(
+            "Research query provenance for this exact candidate. In progression mode copy the "
+            "current StageCreatePacket value verbatim; each stage may use a different ref."
+        ),
+    )
 
 
 class VersionedSafeModel(StrictModel):
@@ -89,6 +111,9 @@ class VersionedSafeModel(StrictModel):
 class GenerationExperimentContext(StrictModel):
     memory_mode: MEMORY_MODE = "standard"
     max_retry_count: Literal[2] = 2
+    global_optimizer_allowed: Literal[False] = False
+    passive_tree_optimization_mode: Literal["manual_targeted"] = "manual_targeted"
+    mutation_batch_preferred: Literal[True] = True
 
 
 class AgentRefinedBuildPrompt(VersionedSafeModel):
@@ -142,18 +167,48 @@ class ResearchMemoryInsightDecision(StrictModel):
     application: str = Field(min_length=1, max_length=320)
 
 
+class ResearchPremiseDecision(StrictModel):
+    premise_id: str = Field(pattern=r"^rp-[0-9a-f]{16}$")
+    decision: Literal["resolved", "caveated", "not_applicable"]
+    resolution_refs: list[str] = Field(default_factory=list, max_length=12)
+    application: str = Field(min_length=1, max_length=360)
+    caveat: str | None = Field(default=None, min_length=1, max_length=360)
+
+    @model_validator(mode="after")
+    def _decision_is_complete(self) -> "ResearchPremiseDecision":
+        if len(self.resolution_refs) != len(set(self.resolution_refs)):
+            raise ValueError("premise resolution_refs must not contain duplicates")
+        if any(not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", ref) for ref in self.resolution_refs):
+            raise ValueError("premise resolution_refs must use safe references")
+        if self.decision == "resolved":
+            if not self.resolution_refs:
+                raise ValueError("resolved premise requires a deep-read resolution reference")
+            if self.caveat is not None:
+                raise ValueError("resolved premise cannot carry a caveat")
+        elif self.decision == "caveated":
+            if not self.caveat:
+                raise ValueError("caveated premise requires a caveat")
+        elif self.resolution_refs or self.caveat is not None:
+            raise ValueError("not_applicable premise uses application as its complete reason")
+        return self
+
+
 class ResearchMemoryUse(StrictModel):
     retrieval_outcome: Literal["matched", "no_matching_memory"]
-    dedupe_query_refs: list[str] = Field(min_length=1, max_length=8)
+    dedupe_query_refs: list[str] = Field(min_length=1)
     component_keys: list[str] = Field(default_factory=list, max_length=24)
     build_family_keys: list[str] = Field(default_factory=list, max_length=12)
-    deep_record_ids: list[str] = Field(default_factory=list, max_length=24)
+    deep_record_ids: list[str] = Field(default_factory=list)
     pattern_ids: list[str] = Field(default_factory=list, max_length=24)
     semantic_edge_ids: list[str] = Field(default_factory=list, max_length=24)
     memory_item_ids: list[str] = Field(default_factory=list, max_length=24)
     insight_decisions: list[ResearchMemoryInsightDecision] = Field(
         default_factory=list,
         max_length=12,
+    )
+    premise_audit_version: Literal[1] | None = None
+    premise_decisions: list[ResearchPremiseDecision] = Field(
+        default_factory=list,
     )
     no_match_reason: str | None = Field(default=None, min_length=1, max_length=320)
 
@@ -178,6 +233,15 @@ class ResearchMemoryUse(StrictModel):
             )
 
         source_refs = set(self.source_refs())
+        premise_ids = [item.premise_id for item in self.premise_decisions]
+        if len(premise_ids) != len(set(premise_ids)):
+            raise ValueError("premise_decisions must not contain duplicate premise IDs")
+        if self.premise_decisions and self.premise_audit_version != 1:
+            raise ValueError("premise decisions require premise_audit_version=1")
+        for decision in self.premise_decisions:
+            unknown_resolution_refs = sorted(set(decision.resolution_refs) - source_refs)
+            if unknown_resolution_refs:
+                raise ValueError("premise decision resolution refs must be recalled Research items")
         if self.retrieval_outcome == "matched":
             if not source_refs:
                 raise ValueError("matched research memory requires at least one recalled item")
@@ -192,8 +256,10 @@ class ResearchMemoryUse(StrictModel):
                         "insight decision references memory items absent from research_memory_use"
                     )
         else:
-            if source_refs or self.insight_decisions:
+            if source_refs or self.insight_decisions or self.premise_decisions:
                 raise ValueError("no_matching_memory cannot carry recalled items or decisions")
+            if self.premise_audit_version is not None:
+                raise ValueError("no_matching_memory cannot enable premise audit")
             if not self.no_match_reason:
                 raise ValueError("no_matching_memory requires no_match_reason")
         return self
@@ -335,6 +401,7 @@ class TransientBuildStateRef(VersionedSafeModel):
     status: Literal["available", "missing", "error"]
     snapshot_id: str | None = None
     source_hash: str | None = None
+    semantic_state_hash: str | None = None
     safe_summary: dict[str, str] = Field(default_factory=dict)
     tested_skill_groups: list[TestedSkillGroup] = Field(default_factory=list)
     completeness_advisories: list[str] = Field(default_factory=list)
@@ -347,9 +414,14 @@ class TransientBuildStateRef(VersionedSafeModel):
                 raise ValueError("available transient state requires snapshot_id and source_hash")
             if not self.tested_skill_groups:
                 raise ValueError("available transient state requires tested_skill_groups")
-        elif self.snapshot_id or self.source_hash or self.tested_skill_groups:
+        elif (
+            self.snapshot_id
+            or self.source_hash
+            or self.semantic_state_hash
+            or self.tested_skill_groups
+        ):
             raise ValueError(
-                "missing or error transient state cannot carry snapshot, source hash, or tested skills"
+                "missing or error transient state cannot carry snapshot hashes or tested skills"
             )
         return self
 
@@ -405,6 +477,11 @@ class JudgeOffenseEvidence(StrictModel):
 class JudgeAdvisoryReport(StrictModel):
     report_id: str = Field(min_length=1)
     status: Literal["evaluated", "not_evaluated", "error"]
+    # Existing receipts predate the switch and contain the complete advisory payload, so an
+    # omitted field must continue to deserialize as strict.  New public Judge calls default to
+    # hard_only and write the mode explicitly.
+    feedback_mode: JUDGE_FEEDBACK_MODE = "strict"
+    subjective_feedback_suppressed: bool = False
     hard_failures: list[str] = Field(default_factory=list)
     playability_failures: list[str] = Field(default_factory=list)
     quality_warnings: list[str] = Field(default_factory=list)
@@ -445,11 +522,33 @@ class JudgeAdvisoryReport(StrictModel):
             raise ValueError("no_raw_material must be true")
         if self.reward_strength == "strong":
             raise ValueError("phase5 prototype judge report cannot carry strong reward_strength")
+        if self.feedback_mode == "hard_only" and not self.subjective_feedback_suppressed:
+            raise ValueError("hard_only judge report must suppress subjective feedback")
+        if self.feedback_mode == "strict" and self.subjective_feedback_suppressed:
+            raise ValueError("strict judge report cannot suppress subjective feedback")
         if self.status == "evaluated":
             if self.error_code is not None:
                 raise ValueError("evaluated judge report cannot carry error_code")
-            if self.aggregate_score is None:
+            if self.feedback_mode == "strict" and self.aggregate_score is None:
                 raise ValueError("evaluated judge report requires aggregate_score")
+            if self.feedback_mode == "hard_only" and any(
+                (
+                    self.playability_failures,
+                    self.quality_warnings,
+                    self.caveats,
+                    self.reward_limit_reasons,
+                    self.aggregate_score is not None,
+                    self.reward_strength != "unknown",
+                    self.quality_band is not None,
+                    self.score_vector is not None,
+                    self.offense_evidence is not None,
+                    self.modelability_status is not None,
+                    self.score_applicability != "unknown",
+                    self.level_band is not None,
+                    self.final_classification is not None,
+                )
+            ):
+                raise ValueError("hard_only judge report contains subjective evaluation feedback")
             if not self.evaluated_snapshot_id or not self.evaluated_source_hash:
                 raise ValueError(
                     "evaluated judge report requires evaluated_snapshot_id and "
@@ -622,6 +721,15 @@ class HumanReviewPacket(StrictModel):
         default_factory=list,
         max_length=3,
     )
+    selected_attempt_index: int | None = Field(default=None, ge=0, le=2)
+    artifact_selection_outcome: (
+        Literal[
+            "latest_passing_attempt_selected",
+            "earlier_passing_baseline_selected",
+            "baseline_restored_after_regression",
+        ]
+        | None
+    ) = None
     lifecycle_evidence_coverage: LifecycleEvidenceCoverage
     human_review_fields: dict[str, str] = Field(default_factory=dict)
     recommended_next_action: Literal[
@@ -682,9 +790,27 @@ class HumanReviewPacket(StrictModel):
             indices = [attempt.attempt_index for attempt in self.generation_attempts]
             if indices != list(range(len(indices))):
                 raise ValueError("generation attempts must be contiguous and ordered from zero")
-            for attempt in self.generation_attempts[:-1]:
-                if attempt.failure_audit.retry_decision != "retry":
-                    raise ValueError("non-final generation attempt must choose retry")
+            feedback_modes = {
+                attempt.judge_advisory_report.feedback_mode for attempt in self.generation_attempts
+            }
+            if len(feedback_modes) != 1:
+                raise ValueError("generation attempts cannot mix Judge feedback modes")
+            if len(self.generation_attempts) > 1 and self.selected_attempt_index is None:
+                raise ValueError("multiple generation attempts require selected_attempt_index")
+            if self.selected_attempt_index is not None and self.artifact_selection_outcome is None:
+                raise ValueError("selected_attempt_index requires artifact_selection_outcome")
+            selected_index = (
+                self.selected_attempt_index
+                if self.selected_attempt_index is not None
+                else len(self.generation_attempts) - 1
+            )
+            if selected_index >= len(self.generation_attempts):
+                raise ValueError("selected attempt index is outside the trusted attempt chain")
+            restoring_baseline = selected_index != len(self.generation_attempts) - 1
+            if not restoring_baseline:
+                for attempt in self.generation_attempts[:-1]:
+                    if attempt.failure_audit.retry_decision != "retry":
+                        raise ValueError("non-final generation attempt must choose retry")
             for attempt in self.generation_attempts:
                 if not same_version(
                     self.version_context,
@@ -696,18 +822,26 @@ class HumanReviewPacket(StrictModel):
                     != self.agent_refined_build_prompt.prompt_id
                 ):
                     raise ValueError("generation attempt prompt_ref must match prompt_id")
-            final_attempt = self.generation_attempts[-1]
-            if final_attempt.failure_audit.retry_decision == "retry":
+            selected_attempt = self.generation_attempts[selected_index]
+            if not restoring_baseline and selected_attempt.failure_audit.retry_decision == "retry":
                 raise ValueError("final generation attempt cannot choose retry")
             if (
-                final_attempt.prototype_build_candidate.model_dump()
+                selected_attempt.prototype_build_candidate.model_dump()
                 != self.prototype_build_candidate.model_dump()
-                or final_attempt.transient_build_state.model_dump()
+                or selected_attempt.transient_build_state.model_dump()
                 != self.transient_build_state.model_dump()
-                or final_attempt.judge_advisory_report.model_dump()
+                or selected_attempt.judge_advisory_report.model_dump()
                 != self.judge_advisory_report.model_dump()
             ):
-                raise ValueError("top-level candidate and evaluation must match final attempt")
+                raise ValueError("top-level candidate and evaluation must match selected attempt")
+            if restoring_baseline:
+                if self.artifact_selection_outcome not in {
+                    "earlier_passing_baseline_selected",
+                    "baseline_restored_after_regression",
+                }:
+                    raise ValueError("earlier baseline requires a trusted selection outcome")
+                if self.failure_audit is None or self.failure_audit.retry_decision != "accept":
+                    raise ValueError("restored baseline requires an explicit acceptance audit")
         return self
 
 
@@ -718,6 +852,8 @@ class RetryAttemptSummary(StrictModel):
     snapshot_id: str = Field(min_length=1)
     source_hash: str = Field(min_length=1)
     judge_status: Literal["evaluated", "not_evaluated", "error"]
+    feedback_mode: JUDGE_FEEDBACK_MODE = "strict"
+    subjective_feedback_suppressed: bool = False
     passed: bool | None = None
     aggregate_score: float | None = Field(default=None, ge=0.0, le=1.0)
     hard_failures: list[str] = Field(default_factory=list)
@@ -730,16 +866,22 @@ class RetryAttemptSummary(StrictModel):
     def _attempt_is_safe(self) -> "RetryAttemptSummary":
         if not self.no_raw_material:
             raise ValueError("no_raw_material must be true")
+        if self.subjective_feedback_suppressed is not (self.feedback_mode == "hard_only"):
+            raise ValueError("retry attempt feedback mode and suppression flag must agree")
         return self
 
 
 class RetryComparisonReport(StrictModel):
     report_id: str = Field(min_length=1)
     experiment_context: GenerationExperimentContext
+    feedback_mode: JUDGE_FEEDBACK_MODE = "strict"
+    subjective_feedback_suppressed: bool = False
     attempts: list[RetryAttemptSummary] = Field(min_length=1, max_length=3)
     score_delta: float | None = None
     resolved_hard_failures: list[str] = Field(default_factory=list)
     introduced_hard_failures: list[str] = Field(default_factory=list)
+    selected_attempt_index: int | None = Field(default=None, ge=0, le=2)
+    artifact_selection_outcome: str | None = None
     programmatic_outcome: Literal[
         "initial_accepted",
         "legality_improved",
@@ -748,6 +890,7 @@ class RetryComparisonReport(StrictModel):
         "mixed",
         "no_measurable_improvement",
         "regressed",
+        "baseline_restored_after_regression",
         "stopped_with_reason",
     ]
     human_review_fields: dict[str, str] = Field(default_factory=dict)
@@ -760,6 +903,12 @@ class RetryComparisonReport(StrictModel):
         indices = [attempt.attempt_index for attempt in self.attempts]
         if indices != list(range(len(indices))):
             raise ValueError("retry attempts must be contiguous and ordered from zero")
+        if self.subjective_feedback_suppressed is not (self.feedback_mode == "hard_only"):
+            raise ValueError("retry report feedback mode and suppression flag must agree")
+        if any(attempt.feedback_mode != self.feedback_mode for attempt in self.attempts):
+            raise ValueError("retry attempts cannot mix Judge feedback modes")
+        if self.feedback_mode == "hard_only" and self.score_delta is not None:
+            raise ValueError("hard_only retry report cannot carry score_delta")
         return self
 
 

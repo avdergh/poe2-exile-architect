@@ -29,11 +29,11 @@ function Invoke-Uv {
 }
 
 function Invoke-ManifestValidation {
-    Write-Host "==> mcpb manifest validation"
-    & npx --yes "@anthropic-ai/mcpb" validate manifest.json
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
+    Invoke-Uv "mcpb manifest validation" @(
+        "python",
+        "scripts/validate_mcpb_manifest.py",
+        "manifest.json"
+    )
 }
 
 function Invoke-StaticChecks {

@@ -40,6 +40,10 @@ class BoundRun:
     def trusted_evaluations_dir(self) -> Path:
         return self.run_dir / "trusted-evaluations"
 
+    @property
+    def artifact_selection_path(self) -> Path:
+        return self.run_dir / "artifact-selection.json"
+
 
 def runs_dir() -> Path:
     override = os.environ.get("POE_BD_CREATE_RUNS_DIR")
@@ -118,13 +122,15 @@ def read_trusted_evaluation(bound_run: BoundRun) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("schemaVersion") != 1 or payload.get("runId") != bound_run.run_id:
+    if payload.get("schemaVersion") not in {1, 2} or payload.get("runId") != bound_run.run_id:
         return None
     if not isinstance(payload.get("candidateId"), str) or not payload["candidateId"]:
         return None
     if not isinstance(payload.get("transientBuildState"), dict):
         return None
     if not isinstance(payload.get("judgeAdvisoryReport"), dict):
+        return None
+    if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
         return None
     return payload
 
@@ -141,13 +147,15 @@ def read_trusted_evaluations(bound_run: BoundRun) -> list[dict[str, Any]]:
             return []
         if (
             not isinstance(payload, dict)
-            or payload.get("schemaVersion") != 1
+            or payload.get("schemaVersion") not in {1, 2}
             or payload.get("runId") != bound_run.run_id
             or payload.get("attemptIndex") != attempt_index
             or not isinstance(payload.get("candidateId"), str)
             or not isinstance(payload.get("transientBuildState"), dict)
             or not isinstance(payload.get("judgeAdvisoryReport"), dict)
         ):
+            return []
+        if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
             return []
         receipts.append(payload)
     return receipts
@@ -179,7 +187,7 @@ def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]
             raise RunStoreError("trusted_evaluation_corrupt") from exc
         if (
             not isinstance(payload, dict)
-            or payload.get("schemaVersion") != 1
+            or payload.get("schemaVersion") not in {1, 2}
             or payload.get("runId") != bound_run.run_id
             or payload.get("attemptIndex") != attempt_index
             or not isinstance(payload.get("candidateId"), str)
@@ -191,6 +199,8 @@ def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]
             models.JudgeAdvisoryReport.model_validate(payload.get("judgeAdvisoryReport"))
         except ValidationError as exc:
             raise RunStoreError("trusted_evaluation_corrupt") from exc
+        if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
+            raise RunStoreError("trusted_evaluation_corrupt")
         receipts.append(payload)
 
     latest_path = bound_run.trusted_evaluation_path
@@ -212,14 +222,16 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
     attempt_index = len(existing)
     if attempt_index >= 3:
         raise RunStoreError("retry_limit_reached")
+    schema_version = 2 if isinstance(payload.get("hardLegalityAudit"), dict) else 1
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": schema_version,
         "runId": bound_run.run_id,
         "attemptIndex": attempt_index,
         "candidateId": payload["candidateId"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "transientBuildState": payload["transientBuildState"],
         "judgeAdvisoryReport": payload["judgeAdvisoryReport"],
+        **({"hardLegalityAudit": payload["hardLegalityAudit"]} if schema_version == 2 else {}),
     }
     attempt_path = bound_run.trusted_evaluations_dir / f"attempt-{attempt_index}.json"
     if attempt_path.exists() or not write_json_atomic(attempt_path, receipt):
@@ -228,6 +240,104 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
         attempt_path.unlink(missing_ok=True)
         return None
     return attempt_index
+
+
+def _valid_hard_legality_audit(receipt: dict[str, Any]) -> bool:
+    audit = receipt.get("hardLegalityAudit")
+    state = receipt.get("transientBuildState")
+    if not isinstance(audit, dict) or not isinstance(state, dict):
+        return False
+    failures = audit.get("hardFailures")
+    state_hash = audit.get("stateHash")
+    if (
+        audit.get("auditVersion") != "hard_legality_v1"
+        or audit.get("status") not in {"passed", "blocked"}
+        or not isinstance(audit.get("hardLegalityReady"), bool)
+        or not isinstance(failures, list)
+        or any(not isinstance(item, str) for item in failures)
+        or not isinstance(state_hash, str)
+        or state_hash != state.get("semanticStateHash")
+        or not re.fullmatch(r"sha256:[A-Fa-f0-9]{64}", state_hash)
+        or not isinstance(audit.get("validationRef"), str)
+    ):
+        return False
+    return audit["hardLegalityReady"] is (not failures) and audit["status"] == (
+        "passed" if not failures else "blocked"
+    )
+
+
+def write_artifact_selection(bound_run: BoundRun, payload: dict[str, Any]) -> bool:
+    """Persist a raw-free receipt identifying the exact Judge attempt chosen for delivery."""
+
+    if bound_run.artifact_selection_path.exists():
+        return False
+    receipt = {
+        "schemaVersion": 1,
+        "runId": bound_run.run_id,
+        "artifactId": payload["artifactId"],
+        "candidateId": payload["candidateId"],
+        "selectedAttemptIndex": payload["selectedAttemptIndex"],
+        "selectedEvaluationRef": payload["selectedEvaluationRef"],
+        "selectionOutcome": payload["selectionOutcome"],
+        "selectionReason": payload.get("selectionReason"),
+        "laterFindingsScope": payload["laterFindingsScope"],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "containsRawPob": False,
+    }
+    return write_json_atomic(bound_run.artifact_selection_path, receipt)
+
+
+def read_artifact_selection(bound_run: BoundRun) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(bound_run.artifact_selection_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    selected_index = payload.get("selectedAttemptIndex")
+    selection_outcome = payload.get("selectionOutcome")
+    selection_reason = payload.get("selectionReason")
+    later_findings_scope = payload.get("laterFindingsScope")
+    if (
+        payload.get("schemaVersion") != 1
+        or payload.get("runId") != bound_run.run_id
+        or not isinstance(selected_index, int)
+        or selected_index not in {0, 1, 2}
+        or not isinstance(payload.get("artifactId"), str)
+        or not payload["artifactId"].startswith("final-build:")
+        or not isinstance(payload.get("candidateId"), str)
+        or not payload["candidateId"]
+        or payload.get("selectedEvaluationRef")
+        != f"run:{bound_run.run_id}:attempt:{selected_index}"
+        or selection_outcome
+        not in {
+            "latest_passing_attempt_selected",
+            "earlier_passing_baseline_selected",
+            "baseline_restored_after_regression",
+        }
+        or later_findings_scope not in {"not_applicable", "candidate_delta_only"}
+        or (
+            selection_reason is not None
+            and (
+                not isinstance(selection_reason, str)
+                or not selection_reason.strip()
+                or len(selection_reason) > 500
+                or "://" in selection_reason
+            )
+        )
+        or (
+            selection_outcome
+            in {"earlier_passing_baseline_selected", "baseline_restored_after_regression"}
+            and (
+                later_findings_scope != "candidate_delta_only"
+                or not isinstance(selection_reason, str)
+                or not selection_reason.strip()
+            )
+        )
+        or payload.get("containsRawPob") is not False
+    ):
+        return None
+    return payload
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> bool:

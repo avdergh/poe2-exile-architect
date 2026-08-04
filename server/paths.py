@@ -77,6 +77,41 @@ def comparative_learning_memory_path() -> Path:
     return comparative_learning_dir() / "learning-memory.jsonl"
 
 
+def build_progression_dir() -> Path:
+    """Writable, local-only root for Phase 8 progression control state."""
+    return user_data_dir() / "build-progression"
+
+
+def starter_research_cache_dir() -> Path:
+    """Patch-scoped safe starter-research cache; never part of Research Memory."""
+    return build_progression_dir() / "starter-research-cache"
+
+
+def build_progression_runs_dir() -> Path:
+    """Recoverable Phase 8 progression run manifests."""
+    return build_progression_dir() / "runs"
+
+
+def build_progression_exports_dir() -> Path:
+    """Local delivery packages for completed multi-stage routes."""
+    return build_progression_dir() / "exports"
+
+
+def build_progression_cost_cache_dir() -> Path:
+    """Six-hour safe price/craft-effort snapshots for Phase 8."""
+    return build_progression_dir() / "cost-cache"
+
+
+def build_progression_lifecycle_receipts_dir() -> Path:
+    """Artifact-bound lifecycle receipts used by Phase 8 provenance checks."""
+    return build_progression_dir() / "lifecycle-receipts"
+
+
+def craft_legality_receipts_dir() -> Path:
+    """Content-addressed, raw-free receipts for PoB-generated special crafting sources."""
+    return user_data_dir() / "runtime" / "craft-legality-receipts"
+
+
 def mature_learning_seed_fixtures_path() -> Path:
     """Bundled sanitized seed fixtures for the mature-learning store."""
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "seed_cases.json"

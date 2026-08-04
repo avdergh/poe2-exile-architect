@@ -31,6 +31,7 @@ def export_final_build_artifact(
     author: str = "",
     description: str = "",
     link: str = "",
+    _destination_path: Path | None = None,
 ) -> dict[str, Any]:
     loaded = artifacts.read_final_build_artifact_for_export(artifact_id)
     if loaded is None:
@@ -71,12 +72,17 @@ def export_final_build_artifact(
             "warnings": warnings,
         }
     build = converted["build"]
-    root = exports_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    stem = _safe_filename(str(build["name"]))
-    output = root / f"{stem}-{uuid4().hex[:8]}.build"
+    if _destination_path is not None and _destination_path.suffix.casefold() != ".build":
+        return {"status": "rejected", "errorCode": "build_export_destination_invalid"}
+    output = (
+        _destination_path.resolve()
+        if _destination_path is not None
+        else exports_dir() / f"{_safe_filename(str(build['name']))}-{uuid4().hex[:8]}.build"
+    )
+    root = output.parent
     temp = root / f".{output.name}.{uuid4().hex}.tmp"
     try:
+        root.mkdir(parents=True, exist_ok=True)
         temp.write_text(converted["serializedBuild"], encoding="utf-8")
         temp.replace(output)
     except OSError:

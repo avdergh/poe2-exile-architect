@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import artifacts, evaluation
+from server.generation import artifacts, evaluation, evaluation_snapshots, progression, run_store
 
 from tests.test_phase5_generation_evaluation import (
     BUILD_XML,
@@ -80,7 +80,15 @@ def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
 
     assert saved["status"] == "saved"
     assert saved["containsRawPob"] is False
+    assert saved["finalBuildArtifact"]["judgeFeedbackMode"] == "hard_only"
+    assert saved["finalBuildArtifact"]["judgeSubjectiveFeedbackSuppressed"] is True
+    assert "judgeQualityBand" not in saved["finalBuildArtifact"]
+    assert "judgeQualityWarnings" not in saved["finalBuildArtifact"]
     artifact_id = saved["finalBuildArtifact"]["artifactId"]
+    progression_fact = progression._trusted_artifact_fact(artifact_id)
+    assert progression_fact is not None
+    assert progression_fact["judgeFeedbackMode"] == "hard_only"
+    assert progression_fact["qualityLimited"] is False
     assert "PathOfBuilding" not in json.dumps(saved)
     artifact_dir = tmp_path / "artifacts" / run_id
     assert (artifact_dir / "build.xml").read_text(encoding="utf-8") == BUILD_XML
@@ -101,6 +109,50 @@ def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
     assert "PathOfBuilding" not in json.dumps(restored)
 
 
+def test_save_recovers_when_review_was_consumed_before_artifact(tmp_path, monkeypatch):
+    run_id, token, evaluation_result = _evaluate_passing(tmp_path, monkeypatch)
+    (tmp_path / "runs" / run_id / "review-consumed").write_text(
+        "consumed",
+        encoding="utf-8",
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluation_result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "saved"
+    assert saved["orderingRecovery"] == {
+        "reviewAlreadyConsumed": True,
+        "normalOrder": "save_artifact_before_review",
+    }
+    assert (tmp_path / "artifacts" / run_id / "build.xml").read_text(encoding="utf-8") == BUILD_XML
+
+
+def test_consumed_review_does_not_weaken_artifact_state_hash_check(tmp_path, monkeypatch):
+    run_id, token, evaluation_result = _evaluate_passing(tmp_path, monkeypatch)
+    (tmp_path / "runs" / run_id / "review-consumed").write_text(
+        "consumed",
+        encoding="utf-8",
+    )
+    changed = BUILD_XML.replace('level="68"', 'level="69"')
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(changed),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluation_result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "active_build_changed_after_evaluation"
+    assert not (tmp_path / "artifacts").exists()
+
+
 def test_save_rejects_changed_active_build(tmp_path, monkeypatch):
     run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
     changed = BUILD_XML.replace('level="68"', 'level="69"')
@@ -116,6 +168,84 @@ def test_save_rejects_changed_active_build(tmp_path, monkeypatch):
     assert saved["status"] == "rejected"
     assert saved["errorCode"] == "active_build_changed_after_evaluation"
     assert saved["caveats"] == []
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_restores_latest_passing_snapshot_after_preflight_regression(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    changed = BUILD_XML.replace('level="68"', 'level="69"')
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(changed),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+        selection_reason=(
+            "The unsaved quality-pass delta failed deterministic preflight after this baseline."
+        ),
+        later_findings_scope="candidate_delta_only",
+    )
+
+    assert saved["status"] == "saved"
+    assert saved["artifactSelection"] == {
+        "selectionRef": f"artifact-selection:{run_id}:0",
+        "selectedAttemptIndex": 0,
+        "selectionOutcome": "baseline_restored_after_regression",
+        "restoredEarlierBaseline": False,
+        "restoredPassingBaseline": True,
+    }
+    assert (tmp_path / "artifacts" / run_id / "build.xml").read_text(encoding="utf-8") == BUILD_XML
+
+
+def test_save_uses_exact_judge_snapshot_when_pob_refreshes_derived_output(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    derived_refresh = BUILD_XML.replace(
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" mainSocketGroup="1" />',
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" '
+        'mainSocketGroup="1"><PlayerStat stat="TotalDPS" value="999" /></Build>',
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(derived_refresh),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "saved"
+    assert (tmp_path / "artifacts" / run_id / "build.xml").read_text(encoding="utf-8") == BUILD_XML
+
+
+def test_save_fails_closed_when_exact_snapshot_is_gone_and_raw_xml_changed(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    evaluation_snapshots.forget(run_id=run_id)
+    derived_refresh = BUILD_XML.replace(
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" mainSocketGroup="1" />',
+        '  <Build className="Ranger" ascendClassName="Deadeye" level="68" '
+        'mainSocketGroup="1"><PlayerStat stat="TotalDPS" value="999" /></Build>',
+    )
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(derived_refresh),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "trusted_evaluation_snapshot_unavailable"
     assert not (tmp_path / "artifacts").exists()
 
 
@@ -170,6 +300,7 @@ def test_save_allows_legal_candidate_with_playability_failure(tmp_path, monkeypa
         run_token=token,
         candidate_id="candidate:test:playability-failed",
         version_context=_version_context(),
+        strict_mode=True,
         engine_factory=_JudgeEngine,
     )
 
@@ -208,6 +339,7 @@ def test_save_allows_legal_barely_playable_candidate_with_zero_offense(tmp_path,
         run_token=token,
         candidate_id="candidate:test:zero-offense",
         version_context=_version_context(),
+        strict_mode=True,
         engine_factory=_JudgeEngine,
     )
 
@@ -244,6 +376,7 @@ def test_save_allows_legal_candidate_when_score_is_unavailable(tmp_path, monkeyp
         run_token=token,
         candidate_id="candidate:test:score-unavailable",
         version_context=_version_context(),
+        strict_mode=True,
         engine_factory=_JudgeEngine,
     )
 
@@ -275,13 +408,40 @@ def test_save_rejects_second_artifact_for_same_run(tmp_path, monkeypatch):
     assert second["errorCode"] == "final_artifact_already_exists"
 
 
-def test_save_rejects_an_older_passing_attempt(tmp_path, monkeypatch):
+def test_artifact_selection_receipt_fails_closed_after_binding_tamper(tmp_path, monkeypatch):
+    run_id, token, result = _evaluate_passing(tmp_path, monkeypatch)
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(result["attemptIndex"]),
+    )
+    bound_run = run_store.load_bound_run(run_id, token, require_unconsumed=False)
+    selection_path = bound_run.artifact_selection_path
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    selection["selectedEvaluationRef"] = f"run:{run_id}:attempt:2"
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+
+    assert saved["status"] == "saved"
+    assert run_store.read_artifact_selection(bound_run) is None
+
+
+def test_save_restores_an_older_passing_attempt_after_regression(tmp_path, monkeypatch):
     run_id, token, first = _evaluate_passing(tmp_path, monkeypatch)
     second_xml = BUILD_XML.replace('level="68"', 'level="69"')
 
     def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
         factory()
-        return _judge_result(snapshot_id)
+        result = _judge_result(snapshot_id)
+        result.update(
+            {
+                "pass": False,
+                "hardFailures": ["attribute_requirement_unmet"],
+                "qualityBand": "invalid",
+            }
+        )
+        return result
 
     monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
     second = evaluation.evaluate_generation_candidate(
@@ -299,11 +459,14 @@ def test_save_rejects_an_older_passing_attempt(tmp_path, monkeypatch):
         run_token=token,
         candidate_id="candidate:test:final",
         attempt_index=int(first["attemptIndex"]),
+        selection_reason="The quality-pass item delta introduced the later legality regression.",
+        later_findings_scope="candidate_delta_only",
     )
 
     assert second["attemptIndex"] == 1
-    assert saved["errorCode"] == "final_attempt_required"
-    assert not (tmp_path / "artifacts").exists()
+    assert saved["status"] == "saved"
+    assert saved["artifactSelection"]["selectionOutcome"] == "baseline_restored_after_regression"
+    assert saved["finalBuildArtifact"]["attemptIndex"] == 0
 
 
 def test_restore_rejects_corrupt_xml(tmp_path, monkeypatch):

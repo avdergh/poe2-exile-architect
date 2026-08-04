@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | [中文](ARCHITECTURE.CN.md)
 
-Last updated: 2026-07-21
+Last updated: 2026-07-27
 
 This document describes the high-level module layout and data flow. Detailed implementation work
 belongs in `docs/phases/`. Architecture is the only document family currently maintained in both
@@ -25,6 +25,7 @@ domain routers / workflow services  (thin orchestration, no hidden LLM loop)
         +-- graph/memory: physical facts, semantic edges, Research DB, local Learning Memory
         +-- judge: build evaluation, modelability, advisory-only numeric evidence
         +-- comparative learning: quarantine cases, blind packets, comparisons, campaign state
+        +-- build progression: starter evidence, semantic checkpoints, recoverable orchestration
         +-- agent helper tools: lookup, PoB operations, candidate-state shaping, `.build` export
         +-- freshness/live: patch/tree/PoB/poe.ninja/wiki/price context
         |
@@ -67,6 +68,20 @@ Mature reference build
   -> dimension-by-dimension comparison by the Reference/Comparator Agent
   -> Research feedback / Learning Memory lesson + correction
   -> recall for the next case
+
+Complete progression request
+  -> discover up to ten mature Families from exact class/patch/tree Research
+  -> Agent compares and ranks every returned Family (2-10), retaining selected and reserve
+  -> ordinary single-stage Create builds the selected target from blank
+  -> shared pre-Judge hard-legality audit; preserve every passing baseline
+  -> TargetAnchorIdentity + ten-dimensional TargetDesignCoverage + immutable artifact/hash
+  -> external Agent performs bounded current-patch starter research for the base class
+  -> safe StarterResearchPacket cache; no page prose or full URL is persisted
+  -> independent starter selection + TransitionBridge + typed Research query receipts
+  -> selected premises and decisions checkpointed outside conversation context
+  -> recoverable Progression service serializes pre-target Phase 5 runs
+  -> final target closure reuses the same anchor without another Create
+  -> ProgressionRouteArtifact v3 + multi-stage delivery package
 ```
 
 ## Core Runtime Modules
@@ -75,13 +90,17 @@ Mature reference build
 | --- | --- | --- |
 | MCP entry | `server/main.py` | Thin public tool registration, parameter adaptation, and response shaping. |
 | Domain routing | planned router/service modules | Cross-layer workflow orchestration outside the MCP entrypoint. |
-| Agent instructions | `server/ASSISTANT_GUIDE.md`, `AGENTS.md`, `CLAUDE.md` | Human/agent-facing operating guidance. |
+| Agent instructions | `server/MCP_BOOTSTRAP.md`, `server/ASSISTANT_GUIDE.md`, `AGENTS.md`, `CLAUDE.md` | Small MCP bootstrap plus complete human/agent-facing operating guidance. |
 | Compute | `server/compute/*`, `pob/pob_headless.lua` | Headless PoB calls, import/export, build mutation, numeric evaluation helpers. |
 | Knowledge | `server/knowledge/db.py`, `mechanics.py`, `refbuilds.py` | Static corpus lookup and mechanics context. |
 | Mature intake | `server/knowledge/mature_*`, `server/live/mature_*` | Quarantine-only mature sample intake and clean fragment contracts. |
 | Copy-safety | `server/knowledge/copy_safety.py` | Guardrails against reconstructable build material. |
 | Lifecycle/eval | `server/knowledge/lifecycle*` | Existing route, verification, quality, and evaluation helpers. |
 | Comparative learning | `server/learning/*` | Phase 7 typed contracts, case quarantine, blind packets, comparison reports, Learning Memory, and recoverable campaign state. |
+| Build progression | `server/generation/progression*.py` | Phase 8 exact-version Family discovery with complete comparison of the returned 2-10 candidates; selected/reserve identities; exact-Family coverage, unexpanded indexes, premise catalogs, and deep-read usage audits; recoverable target run/failure/same-Family retry/one explicit reserve switch; one-time pending graph-snapshot resolution within the same route; immutable target anchors; StageCreatePacket memory-mode validation; stage optimization masks; state-hash merged validation; compact lifecycle responses and receipt-based retrieval deduplication without post-selection evidence caps; `starter_common` public campaign knowledge followed by transition-time `family_exact` recall; bounded semantic working checkpoints with premise decisions; audited failed-stage replans; complete target recovery packages for any unfinished anchored route; artifact-bound lifecycle receipts, CAS state, cost profiles, and multi-stage export. |
+| Hard legality / artifact selection | `server/judge/hard_legality.py`, `server/generation/artifacts.py` | Reuses one score-free deterministic legality audit across checkpoints, Judge, item candidates, and artifact saving; preflight failures do not consume Judge attempts, and a still-trusted passing baseline can be restored after a quality-pass regression. |
+| Judge feedback projection | `server/generation/evaluation.py`, `preflight.py`, `validation_checkpoint.py`, `retry.py`, `prototype.py` | Runs the same internal Judge but defaults Create to `strict_mode=false`: only hard gates and deterministic diagnostics cross the trust boundary. Explicit `strict_mode=true` restores full subjective scoring for one mode-locked run. |
+| Context telemetry | `server/runtime/tool_telemetry.py` | Records only tool name, latency, response bytes, and safe correlation ids to locate context amplification. |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context. |
 | Scripts | `scripts/*` | Verification, smoke tests, packaging, source probes. |
 
@@ -111,6 +130,21 @@ Planned modules should follow the same layering:
   create tasks or call models.
 - Research schemas own concrete build knowledge. Learning Memory accepts only cross-dimensional
   Create behavior lessons and their corrections.
+- The external Phase 8 Agent owns web research and stage design. The progression service validates
+  safe summaries, orchestration state, and trusted artifacts; it does not crawl, call models, or
+  derive early builds by downgrading a final PoB.
+- Phase 8 must not change ordinary Create semantics. Exact-version Research first returns up to ten
+  mature Families, and the Agent compares every returned candidate (2-10); a uniquely user-locked
+  Family skips discovery. Candidate comparison uses no full Judge/global optimization. Ordinary
+  single-stage Create builds the first-ranked target; only an evidence-backed Agent decision may
+  switch once to the reserve. The final stage reuses the identical artifact/source hash. Judge is
+  advisory; typed query receipts validate Family identity and every adopted Research item.
+- Conversation context is transport, not Phase 8 storage. Selected Research premises, failure
+  conditions, verification tasks and concise decisions live in a bounded local working checkpoint;
+  a resume packet rehydrates them after compaction without persisting hidden reasoning.
+- Starter and target stages share only the base class. Community guides are candidate evidence and
+  never write directly to Research or Learning Memory; current graph/corpus/mechanic evidence must
+  revalidate their premises.
 - Phase benchmark reports own claims of progress.
 
 ## Documentation Map
@@ -131,6 +165,12 @@ Planned modules should follow the same layering:
 - Mature raw payloads are quarantine-only and transient.
 - Phase 7 raw sources are isolated per case; control state, reports, and Learning Memory persist only
   safe hashes/references and summaries.
+- Phase 8 starter caches and progression manifests store only safe summaries, source hashes, typed
+  query-receipt references, stage deltas, target coverage, and artifact references. Page prose,
+  full URLs, and milestone XML remain outside them.
+- Phase 8 working checkpoints are local and bounded. They store selected evidence applications and
+  unresolved items, use an independent context revision, and never enter Research or Learning
+  Memory. MCP telemetry stores sizes and timings, never argument/result content.
 - Long-term knowledge must be clean, versioned, evidence-backed, and copy-safe.
 - User-data/runtime directories may hold local state; repository docs must describe contracts, not
   accidental local artifacts.

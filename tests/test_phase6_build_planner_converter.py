@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 
 import pytest
 
 from server.build_planner import converter
 from server.compute.pob_code import decode_code
+from server.runtime.node import resolve_node_executable
 
 
 def _provider(tmp_path: Path, runner: str) -> Path:
@@ -36,10 +36,10 @@ def _provider(tmp_path: Path, runner: str) -> Path:
 
 
 def _node_or_skip() -> str:
-    node = shutil.which("node") or shutil.which("node.cmd")
+    node = resolve_node_executable()
     if not node:
         pytest.skip("Node.js is not available")
-    return node
+    return str(node)
 
 
 def _valid_runner(extra: str = "") -> str:

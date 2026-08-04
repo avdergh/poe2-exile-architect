@@ -13,6 +13,7 @@ from . import models
 def canonicalize_agent_output(
     payload: dict[str, Any],
     trusted_receipts: list[dict[str, Any]],
+    artifact_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fill omitted trusted fields without expanding the receipt trust boundary."""
     if not trusted_receipts:
@@ -44,6 +45,8 @@ def canonicalize_agent_output(
 
     if attempts and len(attempts) != len(trusted_receipts):
         return models.rejected("trusted_attempt_count_mismatch")
+    if len(trusted_receipts) > 1 and artifact_selection is None:
+        return models.rejected("missing_artifact_selection")
 
     canonical_attempts: list[dict[str, Any]] = []
     for expected_index, (attempt, receipt) in enumerate(zip(attempts, trusted_receipts)):
@@ -96,25 +99,43 @@ def canonicalize_agent_output(
             return judge_error
         canonical_attempts.append(canonical_attempt)
 
-    final_receipt = trusted_receipts[-1]
-    final_attempt = canonical_attempts[-1] if canonical_attempts else None
+    if artifact_selection is not None:
+        selected_value = artifact_selection.get("selectedAttemptIndex")
+        if not isinstance(selected_value, int) or isinstance(selected_value, bool):
+            return models.rejected("artifact_selection_receipt_mismatch")
+        selected_index = selected_value
+    else:
+        selected_index = len(trusted_receipts) - 1
+    if selected_index < 0 or selected_index >= len(trusted_receipts):
+        return models.rejected("artifact_selection_receipt_mismatch")
+    selected_receipt = trusted_receipts[selected_index]
+    if artifact_selection is not None and (
+        artifact_selection.get("candidateId") != selected_receipt.get("candidateId")
+        or artifact_selection.get("selectedEvaluationRef")
+        != f"run:{artifact_selection.get('runId')}:attempt:{selected_index}"
+    ):
+        return models.rejected("artifact_selection_receipt_mismatch")
+    selected_attempt = canonical_attempts[selected_index] if canonical_attempts else None
     top_candidate = _alias_value(output, "prototypeBuildCandidate", "prototype_build_candidate")
     top_audit = _alias_value(output, "failureAudit", "failure_audit")
-    if final_attempt is not None:
-        final_candidate = final_attempt["prototypeBuildCandidate"]
-        final_audit = final_attempt["failureAudit"]
+    if selected_attempt is not None:
+        final_candidate = selected_attempt["prototypeBuildCandidate"]
+        final_audit = selected_attempt["failureAudit"]
         if top_candidate is None:
             top_candidate = deepcopy(final_candidate)
         elif not _models_equal(top_candidate, final_candidate, models.PrototypeBuildCandidate):
-            return models.rejected("final_attempt_mismatch")
-        if top_audit is None:
+            return models.rejected("selected_attempt_mismatch")
+        if artifact_selection is not None and selected_index != len(trusted_receipts) - 1:
+            if top_audit is None:
+                return models.rejected("baseline_acceptance_audit_required")
+        elif top_audit is None:
             top_audit = deepcopy(final_audit)
         elif not _models_equal(top_audit, final_audit, models.FailureAuditSummary):
             return models.rejected("final_attempt_mismatch")
 
     if not isinstance(top_candidate, dict):
         return models.rejected("invalid_schema", caveats=["prototypeBuildCandidate is required"])
-    if _alias_value(top_candidate, "candidateId", "candidate_id") != final_receipt.get(
+    if _alias_value(top_candidate, "candidateId", "candidate_id") != selected_receipt.get(
         "candidateId"
     ):
         return models.rejected("trusted_evaluation_mismatch")
@@ -124,13 +145,19 @@ def canonicalize_agent_output(
         _replace_alias(output, "failureAudit", "failure_audit", top_audit)
     if canonical_attempts:
         _replace_alias(output, "generationAttempts", "generation_attempts", canonical_attempts)
+    output["selectedAttemptIndex"] = selected_index
+    output["artifactSelectionOutcome"] = (
+        artifact_selection.get("selectionOutcome")
+        if artifact_selection is not None
+        else "latest_passing_attempt_selected"
+    )
 
     state_error = _fill_or_match_trusted(
         payload,
         output,
         "transientBuildState",
         "transient_build_state",
-        final_receipt.get("transientBuildState"),
+        selected_receipt.get("transientBuildState"),
         models.TransientBuildStateRef,
     )
     if state_error is not None:
@@ -140,7 +167,7 @@ def canonicalize_agent_output(
         output,
         "judgeAdvisoryReport",
         "judge_advisory_report",
-        final_receipt.get("judgeAdvisoryReport"),
+        selected_receipt.get("judgeAdvisoryReport"),
         models.JudgeAdvisoryReport,
     )
     if judge_error is not None:
