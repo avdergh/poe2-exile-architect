@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "poe2_build_mcp": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./scripts/run_plugin_server.mjs"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

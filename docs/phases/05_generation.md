@@ -139,8 +139,8 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
 2. Agent 先执行阻塞式开荒过程确认：用户选择“需要”进入 progression，选择“不需要”进入普通
    单阶段 Create；只有请求已明确写明只产出单个目标/最终 BD 时跳过。确认前不启动任何工具。
    随后再判断是否需要追问其他字段；如果信息足够，生成更具体的设计提示词或最小 `BuildBrief`。
-3. Agent 调用 `scripts/create_build.py start-run` 建立本次运行凭据和唯一产物路径；helper 同时
-   初始化已绑定 run、packet 和 prompt 的最小 `agent-output.json` 骨架。
+3. Agent 调用插件 MCP 的 `start_generation_run` 建立本次运行凭据；run 状态保存在受管用户数据
+   目录。发布插件不要求仓库 checkout、当前工作目录或 Agent 手工编辑 `agent-output.json`。
 4. Agent 按需查询研究记忆、图工具、语料库、机制说明、构筑原则和 PoB/计算工具，生成候选概要。
    精确 Family 查询的首轮 `limit` 只是展开量；Agent 必须阅读
    `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog`，为 Boss、资源、轮转等
@@ -177,7 +177,7 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
    快照和 Judge 结果；版本上下文仍来自 Agent 本次
    freshness/图/记忆查询，不因写入该凭据而自动变成程序签名事实。
 9. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
-   `validate-output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
+   `validate_generation_output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
    candidate/audit 可以从末轮推导，`memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
 10. 首个通过 Judge 且通过共享合法性审计的 attempt 成为受保护 passing baseline。Agent 随后仍
     必须执行一次完整主动质量收尾；新版本更好且合法时选择新 attempt，后续探索回归时可以选择
@@ -191,9 +191,9 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
     丢失或引用不一致，保存失败关闭。正常顺序不可颠倒；若历史运行误先消费 review，artifact
     saver 仍必须逐项核对 run token、实际选择的 candidate/attempt、精确 Judge snapshot 和
     state hash 才允许顺序恢复。Agent 不得删除 review marker、receipt 或运行锁。
-12. `review-packet --compact` 核对 Agent 文件、artifact-selection receipt 与可信凭据，原子写入
-    完整 `HumanReviewPacket`，仅把
-   stdout 缩短为最终 Judge、重试差值、生命周期证据覆盖和 `requiredUserDisclosures`。可信快照中
+12. `complete_generation_review` 核对 Agent 提交对象、artifact-selection receipt 与可信凭据，
+    原子写入完整 `HumanReviewPacket`，只返回最终 Judge、重试差值、生命周期证据覆盖和
+   `requiredUserDisclosures`。可信快照中
    每个未消失的完整度 advisory 都必须在候选中记录 `deferred` 或 `intentionally_unused` 及理由；
    缺项、候选不一致或评估结果被改写时拒绝验收。
    普通单阶段 Create 与 progression target 共用 Research 使用审计：每个关键失败 premise 都要在
@@ -241,8 +241,8 @@ P5.1 最小产物：
 - `/poe-bd-create` 的 PoB 工具顺序、同一 MCP session 状态串行约束和实际技能组记录。已完成
 - `evaluate_generation_candidate` 捕获活动 PoB、运行独立 Judge、生成无原始 XML 的可信凭据。
   已完成
-- `review-packet` 强制核对本次可信凭据，不接受 Agent 自填或改写的 Judge 结果。已完成
-- trusted receipt canonicalization、非消费 `validate-output`、compact attempt 与 compact review。
+- `complete_generation_review` 强制核对本次可信凭据，不接受 Agent 自填或改写的 Judge 结果。已完成
+- trusted receipt canonicalization、非消费 `validate_generation_output`、compact attempt 与 compact review。
   已完成
 - Judge 前活动构筑预检与同一 XML snapshot 复用。已完成
 - Judge offense 观察值/阶段 floor/delivery evidence 拆分，以及显式 reward limit reasons。已完成
@@ -694,5 +694,5 @@ freshness、运行时安装和打包，提交前已运行完整验证：
 
 完整 pytest、Ruff、格式检查、freshness 边界类型检查和 MCP bundle manifest 校验均已通过。
 后续如果只改 Phase 5 原型非计算代码，优先运行对应 `tests/test_phase5_*.py` 聚焦测试，再运行
-quick profile；修改 Judge、PoB、优化器、辅助技能排序或运行时打包时，继续使用 compute/full
-profile。
+quick profile；运行时打包和普通发布使用不含 PoB golden 的 `full`。只有直接修改 PoB 引擎、
+Lua bridge、数值计算或 optimizer 行为时才显式使用 `compute`。

@@ -48,6 +48,19 @@ def test_progression_delivery_has_fixed_multistage_inventory(tmp_path, monkeypat
                 "evidenceStatus": "supported",
                 "purpose": "Establish the starter.",
                 "playPattern": "Use the starter loop.",
+                "playerGuide": {
+                    "mechanicExplanation": "The starter uses one reliable loop while gear is scarce.",
+                    "levelingSteps": [
+                        "Take the first available main skill and keep its weapon type equipped.",
+                        "Add the boss skill once it becomes available.",
+                    ],
+                    "commonProblems": [
+                        {
+                            "symptom": "Damage falls behind during the campaign.",
+                            "solution": "Upgrade the weapon before replacing the whole skill setup.",
+                        }
+                    ],
+                },
                 "costProfileRef": "progression-cost:starter",
                 "transitionBridge": None,
                 "caveats": [],
@@ -61,6 +74,19 @@ def test_progression_delivery_has_fixed_multistage_inventory(tmp_path, monkeypat
                 "evidenceStatus": "supported",
                 "purpose": "Establish the target.",
                 "playPattern": "Use the target loop.",
+                "playerGuide": {
+                    "mechanicExplanation": "The target converts the prepared resource loop into damage.",
+                    "levelingSteps": [
+                        "Keep the starter setup until every blocking switch condition is satisfied.",
+                        "Change the weapon and main skill together, then verify the resource loop.",
+                    ],
+                    "commonProblems": [
+                        {
+                            "symptom": "The target skill stops during a long boss fight.",
+                            "solution": "Return to the setup skill and rebuild the resource before attacking.",
+                        }
+                    ],
+                },
                 "costProfileRef": "progression-cost:target",
                 "costProfile": {
                     "league": "Test League",
@@ -145,11 +171,21 @@ def test_progression_delivery_has_fixed_multistage_inventory(tmp_path, monkeypat
     assert "价格档位只用于说明获取风险" in text
     assert "未知必需依赖 1" in text
     assert "实时价格覆盖 0.5" in text
-    assert "Target Skill（替换 Starter Skill）" in text
+    assert "Target Skill**：替换 Starter Skill" in text
     assert "Secure the target weapon before switching." in text
     assert "Recovery needs manual validation." in text
-    assert "目标 Research / 机制限制" in text
+    assert "开始前先知道的限制" in text
     assert "longest boss resource loop" in text
+    assert "为什么这样搭配" in text
+    assert "这段等级怎么成长" in text
+    assert "常见问题怎么处理" in text
+    assert "什么时候可以进入下一阶段" in text
+    main_guide, appendix = text.split("## 技术验证附录", maxsplit=1)
+    assert "starter_bootstrap" not in main_guide
+    assert "[skill/replace]" not in main_guide
+    assert "平替覆盖" not in main_guide
+    assert "starter_bootstrap" in appendix
+    assert "平替覆盖" in appendix
     assert "PathOfBuilding" not in text
 
 

@@ -200,6 +200,20 @@ durable write 路径。
 `query_research_memory` 使用同一文件。仓库根的 `phase4_real_research_memory.sqlite` 仅是旧开发脚本
 历史路径，不再是 `/poe-bd-research` 默认写入目标。
 
+### 公开知识种子与本地增量
+
+开源分发不依赖中央 Research API，也不直接发布维护者的 mutable 数据库。发布流程从维护者本地库
+筛选 `creator_visible + train_context + (global_seed/local_user) + copy_safety_state=passed` 的有效知识，清空
+quarantine、来源原材料、查询回执、拒绝提案和维护事件，再生成带 schema、release version 与
+SHA-256 的只读 SQLite seed。发布前先运行 `scripts/audit_public_research_memory.py`，该审计只输出
+计数、版本覆盖和安全 ID，不输出记录正文。
+
+Git checkout 与 release bundle 都携带 `data/mature_build_learning/release.sqlite`。新用户第一次初始化
+且本地数据库不存在时，从已验证 seed 安装；已有数据库绝不覆盖。`local_user` 仍是运行时作用域，
+但维护者当前通过安全审计的内容也进入发布种子。Research 运行状态、progression、Judge 快照与最终
+artifact 始终只在用户数据目录。中央服务只用于未来明确 opt-in 的投稿、撤回或跨设备同步，不能
+成为 Create/Research 的硬依赖。
+
 ## 提取目标
 
 Phase 4.5 的 mature BD 设计观察包括：

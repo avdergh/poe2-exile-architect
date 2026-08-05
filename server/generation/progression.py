@@ -68,6 +68,29 @@ class ProgressionChange(models.StrictModel):
         return self
 
 
+class StageGuideProblem(models.StrictModel):
+    symptom: str = Field(min_length=1, max_length=240)
+    solution: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _safe(self) -> "StageGuideProblem":
+        _ensure_authored_text({"symptom": self.symptom, "solution": self.solution})
+        return self
+
+
+class StagePlayerGuide(models.StrictModel):
+    """Small player-facing teaching layer carried by a verified stage."""
+
+    mechanic_explanation: str = Field(min_length=1, max_length=900)
+    leveling_steps: list[str] = Field(min_length=1, max_length=10)
+    common_problems: list[StageGuideProblem] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def _safe(self) -> "StagePlayerGuide":
+        _ensure_authored_text(self.model_dump(mode="json", by_alias=True))
+        return self
+
+
 class ProgressionStageV2(models.StrictModel):
     stage_id: str = Field(pattern=r"^stage:[A-Za-z0-9\-]{3,100}$")
     lifecycle_stage: models.LIFECYCLE_STAGE
@@ -84,6 +107,9 @@ class ProgressionStageV2(models.StrictModel):
     transition_bridge: progression_models.TransitionBridge | None = None
     acquisition_priorities: list[str] = Field(default_factory=list, max_length=12)
     caveats: list[str] = Field(default_factory=list, max_length=12)
+    # Optional so already-running progression state and v1/v2 route manifests remain readable.
+    # The current Create skill asks new routes to provide it, while delivery has a legacy fallback.
+    player_guide: StagePlayerGuide | None = None
     cost_profile_ref: str | None = Field(default=None, max_length=240)
     cost_profile: progression_models.StageCostSummary | None = None
 
@@ -111,6 +137,11 @@ class ProgressionStageV2(models.StrictModel):
                 "playPattern": self.play_pattern,
                 "acquisitionPriorities": self.acquisition_priorities,
                 "caveats": self.caveats,
+                "playerGuide": (
+                    self.player_guide.model_dump(mode="json", by_alias=True)
+                    if self.player_guide is not None
+                    else None
+                ),
             }
         )
         return self

@@ -112,6 +112,10 @@ progression 绑定 target 时解析一次；阶段 Memory 模式以 StageCreateP
 - Copy-safety、mature sample contracts、fragment extraction contracts 和 evaluator
   boundaries。
 - Lifecycle/evaluation helpers 和小型 mature-learning store。
+- 自包含 Codex 发布构建：MCP/Create 运行入口、只读 corpus、净化 Research release seed、净化
+  Learning Memory seed、可移植 physical graph seed、PoB 子集和 Python 依赖一起进入插件包并以
+  相同种子提交到 Git。首次启动只在用户库不存在时安装种子；升级不覆盖本地 Research、Learning
+  Memory 或运行状态。
 
 已有底座不等于产品能力已经验证；能力必须通过 benchmark 证明。
 
@@ -294,12 +298,11 @@ PoB 数据版本兼容性按赛季大版本比较，精确补丁号只用于来�
 
 验证耗时也是规格的一部分：
 
-- `quick` / `noncompute` 是日常开发和非引擎回归入口，应避免运行完整 PoB compute golden
-  suite。
-- `compute` / `full` 是重型 Headless PoB 认证入口，在 Windows 本地经常运行 15 分钟以上；
-  执行这些 profile 时，外层命令超时必须至少给到 30 分钟（`1800000ms`）。
-- `scripts/verify.ps1 compute` / `full` 会把 pytest 单测试超时提升到 30 分钟。10 分钟以内的
-  调用工具超时只能说明外层预算不足，不能直接判定 compute suite 失败。
+- `quick` 是日常聚焦回归；`noncompute` 与 `full` 都排除完整 PoB compute golden，其中 `full`
+  作为发布/合并门禁继续运行全部非计算测试和静态检查。
+- `compute` 只在直接修改 PoB 引擎、Lua bridge、数值计算或 optimizer 行为，或人工明确要求时
+  单独运行，不再被 `full`、runtime packaging 或普通 release 自动触发。它在 Windows 本地经常
+  运行 15 分钟以上，执行时外层命令超时至少给到 30 分钟（`1800000ms`）。
 
 ## 文档模型
 

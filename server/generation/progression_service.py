@@ -63,6 +63,7 @@ class StageCompletionReport(models.StrictModel):
     )
     acquisition_priorities: list[str] = Field(default_factory=list, max_length=12)
     caveats: list[str] = Field(default_factory=list, max_length=12)
+    player_guide: progression.StagePlayerGuide | None = None
     source_refs: list[str] = Field(default_factory=list, max_length=12)
     transition_readiness: list[progression_models.TransitionRequirement] = Field(
         default_factory=list,
@@ -80,6 +81,11 @@ class StageCompletionReport(models.StrictModel):
             "playPattern": self.play_pattern,
             "acquisitionPriorities": self.acquisition_priorities,
             "caveats": self.caveats,
+            "playerGuide": (
+                self.player_guide.model_dump(mode="json", by_alias=True)
+                if self.player_guide is not None
+                else None
+            ),
         }
         if copy_safety.copyability_flags(authored) or copy_safety.contains_raw_url(authored):
             raise ValueError("copyable material is forbidden in stage completion text")
@@ -1949,6 +1955,7 @@ def finalize_build_progression(
                     ),
                     "acquisitionPriorities": report["acquisitionPriorities"],
                     "caveats": report["caveats"],
+                    "playerGuide": report.get("playerGuide"),
                     "costProfileRef": stage_state["costProfile"]["costProfileRef"],
                     "costProfile": {
                         key: stage_state["costProfile"][key]

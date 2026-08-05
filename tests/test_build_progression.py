@@ -290,6 +290,16 @@ def test_route_v2_allows_repeated_lifecycle_stages_but_requires_stage_id_selecto
         "routeRole": "starter_bootstrap",
         "evidenceStatus": "supported",
         "sourceRefs": ["starter-research:packet"],
+        "playerGuide": {
+            "mechanicExplanation": "Use a simple setup-and-payoff loop while gear is scarce.",
+            "levelingSteps": ["Upgrade the weapon first.", "Add the boss skill when available."],
+            "commonProblems": [
+                {
+                    "symptom": "Boss damage slows down.",
+                    "solution": "Use the setup skill before spending the payoff.",
+                }
+            ],
+        },
     }
     first_stage.pop("transitionRequirements", None)
     route.pop("targetFinalArtifactId")
@@ -298,6 +308,10 @@ def test_route_v2_allows_repeated_lifecycle_stages_but_requires_stage_id_selecto
 
     saved = progression.save_progression_route(route)
     assert saved["status"] == "saved"
+    assert saved["progressionRoute"]["stages"][0]["playerGuide"]["levelingSteps"] == [
+        "Upgrade the weapon first.",
+        "Add the boss skill when available.",
+    ]
     route_id = saved["progressionRoute"]["routeId"]
     assert (
         progression.load_progression_stage(

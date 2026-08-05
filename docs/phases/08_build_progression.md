@@ -202,6 +202,9 @@ Family identity 还必须保存 artifact 实际使用的升华/主技能名称�
   `supported`；
 - 聚合帖和评论只能发现来源；旧 patch 只能成为待复核候选；跨赛季禁止采用；
 - 组件存在性、机制前提、数值和合法性仍分别由 corpus/graph、mechanic、PoB/Judge 验证；
+- 联网研究不能只摘录主技能。还要用主技能、职业和阶段定向查找常见精魂/保留技能、独立单体或
+  setup/payoff 技能，记录它们的大致启用阶段、Spirit/资源前提与职责；来源未提及不等于已经证明
+  不需要。候选仍需由 corpus、mechanic 和 PoB 核对；
 - 技能包 claim 应结构化记录每个技能的 clear/boss/setup/payoff 等职责，以及它提供、依赖的条件
   和排除场景；不能把“多个技能共同承担职责”的模糊摘要直接固化为单一主技能；
 - 断网时允许 `limited_offline_inference`，但必须披露低证据。
@@ -219,7 +222,9 @@ URL 在 intake 时立即转换为 `safe_url_ref`。网页正文、完整 URL、P
 `StageBlueprint` 必须使用相同 Family、等级和 `routeRole=target`。
 
 开荒候选优先前期伤害、成型速度、清图/Boss 职责、资源稳定、低装备依赖和操作复杂度。与目标
-相似度和洗点量只是次要因素。
+相似度和洗点量只是次要因素。候选比较还要确认主技能之外的客观输出方案：清图、稀有怪/Boss、
+持续增益和资源分别由主技能、独立副技能、setup/payoff 组合及可用精魂/保留技能中的什么承担。
+若当前等级没有合适或已解锁的精魂技能，可以明确使用非精魂替代，不能为了形式强塞无效技能。
 
 每个非首阶段必须提交 TransitionBridge。完成阶段时，`StageCompletionReport.transitionReadiness`
 逐项回报相同 requirement；不能改写 kind、blocking 或描述。所有 blocking 机制门槛必须为
@@ -233,6 +238,8 @@ URL 在 intake 时立即转换为 `safe_url_ref`。网页正文、完整 URL、P
 `qualityGoal=complete_stage_build`。`campaign_early` 与后续阶段一样，目标是在当前等级交付完整、
 强力且可玩的阶段 BD：完整技能职责、可用装备、合理天赋、资源与实际操作必须闭环，不能用“只是
 过渡”解释空装备槽或未完成设计。这里不增加固定 DPS/EHP、装备槽数量或天赋点数等主观硬门槛；
+检查精魂/保留协同同样只是 Agent 设计软约束，不增加固定技能数量、Spirit 保留量、DPS 阈值或
+新的 Judge/Lifecycle 拒绝条件；
 79 级及以下仍为 `judgeElementalResistancePolicy=diagnostic_only`；80 级及以上改为
 `judgeElementalResistancePolicy=endgame_minimums_60_30`，要求火/冰/电各 60%、非 CI 混沌抗
 30%，CI 只豁免混沌抗。共享 checkpoint 在正式 Judge 前执行并且失败不消耗 attempt。元素 Max
@@ -417,6 +424,13 @@ craft effort 分类。不得计算虚假整套总价，也不得按价格自动�
 
 完整成长包包含路线说明、每阶段 PoB XML、每阶段 import-code 文件，以及仅目标 anchor 的官方
 单阶段 `.build`。MCP 只返回完整 inventory、路径或 errorCode，不回显内容。
+
+路线说明采用轻量玩家教学层，不新增编排阶段或独立生成流程。每个阶段优先复用 `purpose`、
+`playPattern`、`changesFromPrevious`、`acquisitionPriorities`、`caveats` 和转型门槛，再由可选
+`playerGuide` 补充搭配原理、里程碑之间的升级步骤和“症状—处理”常见问题。正文固定按“目标 →
+原理 → 操作 → 成长步骤 → 获取优先级 → 常见问题 → 下一阶段清单”组织；内部 stage/route 枚举、
+证据状态、成本覆盖率、artifact 引用和 Judge/modelability 统一移到文末技术验证附录。旧 route
+缺少 `playerGuide` 时继续降级导出，不能因此破坏兼容性或让已验证路线零交付。
 
 若路线在目标前阶段失败，但 immutable target anchor 已经绑定，
 `export_build_progression_package(progression_id)` 返回明确的恢复包：状态固定为 `partial`、

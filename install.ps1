@@ -19,6 +19,9 @@ param(
     [string]$Platform,
     [switch]$Update,
     [switch]$RegisterMcpOnly,
+    [string]$McpHost = 'codex',
+    [switch]$FromCheckout,
+    [string]$Doctor,
     [string]$Uninstall,
     [switch]$DryRun,
     [switch]$Help
@@ -30,8 +33,11 @@ $RepoUrl = if ($env:POE_BD_CREATOR_REPO_URL) { $env:POE_BD_CREATOR_REPO_URL } el
 $RepoDir = if ($env:POE_BD_CREATOR_DIR) { $env:POE_BD_CREATOR_DIR } else { Join-Path $HOME '.poe-bd-creator\repo' }
 $PluginLink = Join-Path $HOME '.poe-bd-creator-plugin'
 $ScriptRepoDir = Split-Path -Parent $PSCommandPath
+$RepoDir = if ($FromCheckout) { $ScriptRepoDir } else { $RepoDir }
 $ManagedMcpBegin = '# BEGIN poe-bd-creator managed MCP server'
 $ManagedMcpEnd = '# END poe-bd-creator managed MCP server'
+$PortableSkills = @('poe-bd-research', 'poe-bd-create')
+$PortableMcpHosts = @('claude', 'cursor', 'opencode')
 
 $Platforms = [ordered]@{
     codex    = @{ Target = (Join-Path $HOME '.codex\skills');   Style = 'per-skill' }
@@ -39,7 +45,7 @@ $Platforms = [ordered]@{
     cursor   = @{ Target = (Join-Path $HOME '.cursor\skills');  Style = 'per-skill' }
     vscode   = @{ Target = (Join-Path $HOME '.copilot\skills'); Style = 'per-skill' }
     gemini   = @{ Target = (Join-Path $HOME '.agents\skills');  Style = 'per-skill' }
-    opencode = @{ Target = (Join-Path $HOME '.agents\skills');  Style = 'per-skill' }
+    opencode = @{ Target = (Join-Path $HOME '.config\opencode\skills'); Style = 'per-skill' }
     openclaw = @{ Target = (Join-Path $HOME '.openclaw\skills'); Style = 'folder' }
     hermes   = @{ Target = (Join-Path $HOME '.hermes\skills');  Style = 'folder' }
 }
@@ -51,8 +57,10 @@ Exile Architect installer (Windows)
 Usage:
   install.ps1 [<platform>]          Install for <platform> (or prompt if omitted)
   install.ps1 -DryRun <platform>    Show actions without changing files
+  install.ps1 -FromCheckout <platform>  Install this checkout without clone/pull
   install.ps1 -Update               Pull latest changes
-  install.ps1 -RegisterMcpOnly      Register this checkout's MCP server without cloning/linking
+  install.ps1 -RegisterMcpOnly [-McpHost <host>]  Register this checkout's MCP server
+  install.ps1 -Doctor <host>        Check MCP runtime/config binding
   install.ps1 -Uninstall <platform> Remove links for <platform>
   install.ps1 -Help
 
@@ -117,10 +125,12 @@ function Clone-Or-Update {
     }
 }
 
-function Get-SkillNames {
+function Get-SkillNames([string]$Id) {
     $root = Get-SkillListRoot
     if (-not (Test-Path $root)) { Write-Error "Skills directory not found: $root" }
-    Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name
+    $all = @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
+    if ($Id -eq 'codex') { return $all }
+    return @($PortableSkills | Where-Object { $all -contains $_ })
 }
 
 function Get-SkillNamesForUninstall {
@@ -210,13 +220,18 @@ function New-SafeJunction([string]$LinkPath, [string]$TargetPath) {
     New-Item -ItemType Junction -Path $LinkPath -Target $TargetPath | Out-Null
 }
 
-function Link-Skills([string]$Target, [string]$Style) {
+function Link-Skills([string]$Target, [string]$Style, [string]$Id) {
     $root = Get-SkillsRoot
     if (-not $DryRun -and -not (Test-Path $Target)) { New-Item -ItemType Directory -Path $Target | Out-Null }
     switch ($Style) {
         'per-skill' {
-            foreach ($skill in Get-SkillNames) {
+            foreach ($skill in Get-SkillNames $Id) {
                 New-SafeJunction (Join-Path $Target $skill) (Join-Path $root $skill)
+            }
+            if ($Id -ne 'codex') {
+                foreach ($skill in @('poe-bd-research-loop', 'poe-bd-learning-loop')) {
+                    Remove-Reparse (Join-Path $Target $skill) | Out-Null
+                }
             }
         }
         'folder' {
@@ -255,9 +270,11 @@ function Get-Codex-ConfigPath { Join-Path $HOME '.codex\config.toml' }
 function Resolve-UvCommand {
     $localUv = Join-Path (Normalize-PathText $RepoDir) '.tools\uv\uv.exe'
     if (Test-Path $localUv) { return $localUv }
+    $checkoutUv = Join-Path (Normalize-PathText $ScriptRepoDir) '.tools\uv\uv.exe'
+    if (Test-Path $checkoutUv) { return $checkoutUv }
     $installed = Get-Command uv -ErrorAction SilentlyContinue
     if ($installed -and $installed.Source) { return $installed.Source }
-    Write-Error 'Codex MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer.'
+    Write-Error 'MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer.'
 }
 
 function Install-BuildConverterProvider {
@@ -339,24 +356,64 @@ function Unregister-Codex-McpServer {
     Write-Host "Removed installer-managed Codex MCP server poe2_build_mcp from $configPath"
 }
 
+function Invoke-PortableHostConfig([string]$Action, [string]$HostId) {
+    $uv = Resolve-UvCommand
+    $script = Join-Path $RepoDir 'scripts\configure_agent_host.py'
+    if (-not (Test-Path $script)) {
+        $script = Join-Path $ScriptRepoDir 'scripts\configure_agent_host.py'
+    }
+    $projectRoot = if (Test-Path (Join-Path $RepoDir 'pyproject.toml')) {
+        $RepoDir
+    } else {
+        $ScriptRepoDir
+    }
+    $uvArgs = @('run', '--project', $projectRoot, 'python', $script, $Action, '--host', $HostId)
+    if ($Action -ne 'uninstall') {
+        $uvArgs += @('--repo-root', (Normalize-PathText $RepoDir), '--uv-command', $uv)
+    }
+    if ($DryRun) { $uvArgs += '--dry-run' }
+    & $uv @uvArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to $Action MCP configuration for $HostId. Existing configuration was left unchanged."
+    }
+}
+
+function Register-McpServer([string]$Id) {
+    if ($Id -eq 'codex') { Register-Codex-McpServer; return }
+    if ($PortableMcpHosts -contains $Id) { Invoke-PortableHostConfig 'install' $Id; return }
+    Write-Warning "$Id skill links were installed, but automatic MCP registration is not available for this host."
+}
+
+function Unregister-McpServer([string]$Id) {
+    if ($Id -eq 'codex') { Unregister-Codex-McpServer; return }
+    if ($PortableMcpHosts -contains $Id) { Invoke-PortableHostConfig 'uninstall' $Id }
+}
+
 function Cmd-Install([string]$Id) {
     $cfg = Resolve-Platform $Id
-    if ($Id -eq 'codex' -and -not $DryRun) { $null = Resolve-UvCommand }
-    Clone-Or-Update
+    if (-not $FromCheckout) { Clone-Or-Update }
+    if (($Id -eq 'codex' -or $PortableMcpHosts -contains $Id) -and -not $DryRun) {
+        $null = Resolve-UvCommand
+    }
     Write-Host "Linking skills for $Id ($($cfg.Style) -> $($cfg.Target))"
-    Link-Skills $cfg.Target $cfg.Style
+    Link-Skills $cfg.Target $cfg.Style $Id
     Write-Host 'Linking universal plugin root'
     Link-Plugin-Root
     Install-BuildConverterProvider
-    if ($Id -eq 'codex') { Register-Codex-McpServer }
-    Write-Host "Installed Exile Architect skills for $Id. Restart the host to discover /poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop."
+    Register-McpServer $Id
+    $installedSkills = if ($Id -eq 'codex') {
+        '/poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop'
+    } else {
+        '/poe-bd-research and /poe-bd-create'
+    }
+    Write-Host "Installed Exile Architect for $Id. Restart the host to discover $installedSkills."
 }
 
 function Cmd-Uninstall([string]$Id) {
     $cfg = Resolve-Platform $Id
     Write-Host "Removing skill links for $Id"
     Unlink-Skills $cfg.Target $cfg.Style
-    if ($Id -eq 'codex') { Unregister-Codex-McpServer }
+    Unregister-McpServer $Id
     Remove-Reparse $PluginLink | Out-Null
     Write-Host "Checkout kept at $RepoDir."
 }
@@ -372,7 +429,19 @@ if ($Help) { Show-Usage; return }
 if ($RegisterMcpOnly) {
     $RepoDir = $ScriptRepoDir
     $null = Resolve-UvCommand
-    Register-Codex-McpServer
+    Register-McpServer $McpHost
+    return
+}
+if ($Doctor) {
+    $RepoDir = if ($FromCheckout) { $ScriptRepoDir } else { $RepoDir }
+    if ($Doctor -eq 'codex') {
+        Write-Warning 'Codex doctor remains available through a new Codex task and engine_health.'
+        return
+    }
+    if (-not ($PortableMcpHosts -contains $Doctor)) {
+        Write-Error "Doctor supports: codex, $($PortableMcpHosts -join ', ')"
+    }
+    Invoke-PortableHostConfig 'doctor' $Doctor
     return
 }
 if ($Update) { Cmd-Update; return }

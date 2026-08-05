@@ -29,6 +29,10 @@
 - Public README reconstruction。
 - Release/package documentation。
 
+已提前完成一个不依赖 Phase 9 效果声明的基础缺口：Codex 发布包可同时携带净化 Research 种子、
+可移植物理图种子、只读 corpus、MCP/Create 运行入口和运行依赖。它只解决“安装后能运行和召回”，
+不代表 Phase 9 的规模化、在线迁移或学习效果已经完成。
+
 ## 验收
 
 - Full benchmark regression 保持稳定或改善。
@@ -45,4 +49,5 @@
 .\scripts\verify.ps1 noncompute
 ```
 
-只有触及 PoB runtime、packaging 或 release gates 时才使用 `compute` 或 `full`。
+packaging 或 release gate 使用不含 PoB golden 的 `full`。只有直接修改 PoB 引擎、Lua bridge、
+数值计算或 optimizer 行为时才显式运行 `compute`。

@@ -91,13 +91,13 @@ try {
             )
         }
         "full" {
-            # Release/merge confidence gate. This is intentionally expensive and includes the
-            # compute suite, so it uses the same long per-test timeout budget.
-            Write-Host (
-                "    note: full profile includes compute; " +
-                "use outer timeout >= $ComputeMinimumOuterTimeoutMs ms"
+            # Comprehensive release/merge confidence gate without the very slow PoB golden suite.
+            # Engine certification stays available through the explicit `compute` profile only.
+            Invoke-Uv "full pytest without compute golden suite" @(
+                "pytest",
+                "-q",
+                "--ignore=tests/test_compute.py"
             )
-            Invoke-Uv "full pytest" @("pytest", "-q", "--timeout=$ComputePytestTimeoutSeconds")
             Invoke-StaticChecks
         }
         "lint" {

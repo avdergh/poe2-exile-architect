@@ -1,10 +1,12 @@
-"""Append-only, local-only Learning Memory for cross-case Create guidance."""
+"""Release-seeded, locally append-only Learning Memory for cross-case Create guidance."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -22,7 +24,77 @@ _LOCK = threading.RLock()
 
 
 def memory_path() -> Path:
-    return paths.comparative_learning_memory_path().resolve()
+    target = paths.comparative_learning_memory_path().resolve()
+    _install_bundled_release_seed_if_missing(target)
+    return target
+
+
+def _install_bundled_release_seed_if_missing(target: Path) -> bool:
+    """Install the bundled Learning Memory seed once without replacing local history."""
+
+    if target.exists():
+        return False
+    seed = paths.comparative_learning_release_seed_path().resolve()
+    if not seed.is_file():
+        return False
+    validate_release_seed(seed)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid4().hex}.installing")
+    shutil.copy2(seed, temp)
+    try:
+        os.link(temp, target)
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def validate_release_seed(path: str | Path) -> dict[str, int]:
+    """Fail closed unless a JSONL seed is a complete, copy-safe append-only event stream."""
+
+    events = _read_events_strict(Path(path).resolve())
+    lesson_ids: set[str] = set()
+    correction_ids: set[str] = set()
+    lesson_count = 0
+    correction_count = 0
+    for event in events:
+        models.ensure_safe_durable_payload(event)
+        event_type = event.get("eventType")
+        if event_type == "lesson":
+            entry = models.LearningMemoryEntry.model_validate(event.get("entry"))
+            if entry.lesson_id in lesson_ids:
+                raise ValueError("Learning Memory release seed contains duplicate lesson IDs")
+            lesson_ids.add(entry.lesson_id)
+            lesson_count += 1
+            continue
+        if event_type != "correction":
+            raise ValueError("Learning Memory release seed contains an unsupported event type")
+        target_lesson_id = str(event.get("targetLessonId") or "")
+        if target_lesson_id not in lesson_ids:
+            raise ValueError("Learning Memory release seed contains an orphan correction")
+        correction = models.LearningMemoryCorrection.model_validate(event.get("correction"))
+        if correction.correction_id in correction_ids:
+            raise ValueError("Learning Memory release seed contains duplicate correction IDs")
+        expected_status = {
+            "narrow": "narrowed",
+            "revise": "active",
+            "supersede": "superseded",
+            "deprecate": "deprecated",
+        }[correction.action]
+        if event.get("newStatus") != expected_status:
+            raise ValueError("Learning Memory correction status does not match its action")
+        if correction.replacement_lesson_id and correction.replacement_lesson_id not in lesson_ids:
+            raise ValueError("Learning Memory correction references a missing replacement lesson")
+        correction_ids.add(correction.correction_id)
+        correction_count += 1
+    if lesson_count < 1:
+        raise ValueError("Learning Memory release seed contains no lessons")
+    return {
+        "eventCount": len(events),
+        "lessonCount": lesson_count,
+        "correctionCount": correction_count,
+    }
 
 
 def propose_lesson(payload: dict[str, Any], *, path: Path | None = None) -> dict[str, Any]:
@@ -434,6 +506,27 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
             continue
         if isinstance(event, dict) and event.get("schemaVersion") == 1:
             events.append(event)
+    return events
+
+
+def _read_events_strict(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Learning Memory release seed is missing: {path}")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError) as exc:
+        raise ValueError("Learning Memory release seed is not valid UTF-8 JSONL") from exc
+    events: list[dict[str, Any]] = []
+    for index, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Learning Memory release seed line {index} is invalid JSON") from exc
+        if not isinstance(event, dict) or event.get("schemaVersion") != 1:
+            raise ValueError(f"Learning Memory release seed line {index} has an unsupported schema")
+        events.append(event)
     return events
 
 

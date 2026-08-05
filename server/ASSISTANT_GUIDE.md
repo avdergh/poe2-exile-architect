@@ -207,12 +207,14 @@ does not take over build completion.
   progression with independently built/validated stage PoBs or one target-level build with at most
   textual leveling advice. Skip this blocking question only when the request explicitly says to
   produce one fixed target/final build without progression. Do not call freshness, Research,
-  `start-run`, progression, or PoB tools until the user answers. Ask only once per request. Internal
+  `start_generation_run`, progression, or PoB tools until the user answers. Ask only once per request. Internal
   `referenceBlind=true` Create packets remain non-interactive. If invoked with no arguments, combine
   this choice with the normal goal/constraint question.
-- Generation helper flow: call `scripts/create_build.py start-run --memory-mode memory_assisted`
-  (or `--memory-mode no_memory` when the user explicitly invokes `/poe-bd-create --no-memory`);
-  fill the initialized bound `agentOutputFile`; assemble the active PoB with small
+- Generation run flow: call the plugin MCP tool
+  `start_generation_run(memory_mode="memory_assisted")` (or `memory_mode="no_memory"` when the
+  user explicitly invokes `/poe-bd-create --no-memory`). Do not search for a repository checkout,
+  run a relative helper script, or guess the current working directory. The published plugin owns
+  the run store. Assemble the active PoB with small
   `apply_build_mutation_batch` calls using one `batch_kind` at a time:
   `bootstrap`, `mechanism_shell`, `skill_loadout`, `passive_delta`, `required_gear`,
   `ordinary_gear`, then `config` as needed. Do not mix the whole build into one transaction.
@@ -226,10 +228,10 @@ does not take over build completion.
   `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`. Perform at
   most two Agent-led retries in the same conversation and same run. Each compact attempt needs only
   its index, candidate, and failure audit; trusted state and Judge fields are hydrated from the
-  run-bound receipts. Call `scripts/create_build.py validate-output --run-id "<runId>"
-  --run-token "<runToken>"` until the safe contract passes, then call
-  `scripts/create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"`.
-  The full review result is persisted even though stdout is compact.
+  run-bound receipts. Submit the safe object to
+  `validate_generation_output(run_id, run_token, agent_output)` until the contract passes, then
+  submit the same final object to `complete_generation_review(run_id, run_token, agent_output)`.
+  Both tools persist internally under managed user data; the Agent never edits a run file.
 - `optimize_build` is temporarily disabled by default and is not part of Create. Do not use global
   passive-tree resets/replans either. Use targeted support/item tools and exact passive decisions
   for identified gaps and deliberate high-impact quality exploration; a Judge warning is not
@@ -302,9 +304,9 @@ does not take over build completion.
   and clearly forbid current-patch verified claims. Stop or clarify when the current game rules,
   passive tree, or required core mechanic data is conflicted or unknown. Inspect component blockers;
   never branch only on the top-level decision name.
-- Every generation request must use the new run binding returned by `start-run`. Never read or reuse
-  a previous `agent-output.json`, `.tmp_agent_output_*`, review packet, or historical candidate as
-  the current request's output. The helper rejects files outside the current run, mismatched run
+- Every generation request must use the new run binding returned by `start_generation_run`. Never
+  read or reuse a previous review packet or historical candidate as the current request's output.
+  The managed run service rejects mismatched run
   credentials, and a second review of an already accepted run.
 - `evaluate_generation_candidate` is the only formal Phase 1 Judge entry for generated candidates.
   `evaluate_build` and `pinnacle_readiness` are local numeric gates, not substitutes for Judge.
@@ -363,7 +365,7 @@ does not take over build completion.
 - Lifecycle helpers may return only stage structure, transition gates, and design principles. Missing
   concrete skill names from a lifecycle helper is not a failure; the Agent should choose skills with
   skill, mechanic, and compute tools.
-- `review-packet` requires the trusted receipt. It rejects a missing receipt, candidate mismatch, or
+- `complete_generation_review` requires the trusted receipt. It rejects a missing receipt, candidate mismatch, or
   any Agent-side change to the returned transient state or Judge report. Acceptance means the
   packet is ready for human review, not that the human accepted the build or that Judge is an
   infallible power oracle.
@@ -565,14 +567,23 @@ does not take over build completion.
   what it provides and requires. Preserve applicability and exclusion conditions. Do not harden an
   ambiguous "skills share clear and boss duty" summary into one primary skill before checking the
   actual setup/payoff loop.
+- Starter web research must not stop at the named main skill. Search for stage-appropriate Spirit
+  or reservation skills, a separate boss/setup skill, their approximate availability, Spirit or
+  resource requirements, and the duty each adds. A guide that omits Spirit skills does not prove
+  that none are useful; verify candidates through corpus/mechanics/PoB. If no useful option is
+  available at that level, record the checked alternative and use a non-Spirit secondary/mark/
+  curse/setup package instead. This is a soft design instruction, never a fixed skill-count,
+  reservation, DPS, Judge, or Lifecycle gate.
 - `ProgressionBlueprint` normally has four real milestones, may merge unchanged milestones, and is
   capped at five. The default four artifacts are the bound target anchor plus three pre-target
   starter/bridge milestones. Every milestone has a stable `stageId`; the final target stage must
   reference `targetAnchorArtifactId`, the same target Family and target level. The base class is the
   only cross-stage lock.
 - Before locking the starter blueprint, compare at least two plausible skill packages cheaply:
-  duties, setup/payoff premises, availability, weapon compatibility, resource method and explicit
-  exclusions. This is candidate selection, not another Judge gate. Do not run the endgame-oriented
+  duties, setup/payoff premises, availability, weapon compatibility, resource method, Spirit or
+  reservation synergy and explicit exclusions. Each candidate should explain clear, rare/boss and
+  persistent-buff duties instead of presenting one main skill as the whole build. This is candidate
+  selection, not another Judge gate. Do not run the endgame-oriented
   `optimize_build` while choosing the direction; compare the route first, then build the selected
   stage completely.
 - Obey each `StageCreatePacket.optimizationPolicy`. Every stage, including `campaign_early`, uses
@@ -618,6 +629,13 @@ does not take over build completion.
   defense, required-owned item or Judge readiness. `budget` and `price` gates are advisory and
   non-blocking. At completion, submit the same requirements in
   `StageCompletionReport.transitionReadiness`; all blocking gates must be satisfied with evidence.
+- For a new progression completion, also provide the optional `StageCompletionReport.playerGuide`
+  teaching layer: explain the stage mechanism in player language, cover the actual leveling steps
+  between milestones, and pair observable common-problem symptoms with actionable solutions. The
+  first stage starts at character creation. Do not put Family keys, internal enum names, artifact
+  ids, or raw Judge fields in player prose; delivery moves verification metadata to a technical
+  appendix. A missing playerGuide remains a legacy-compatible fallback and must not invalidate a
+  trusted build stage.
 - For each pre-target stage: `claim_build_progression_stage` → start a new Phase 5 run →
   `bind_build_progression_stage_run` → assemble the real active build →
   `inspect_generation_checkpoint` (same-hash completeness/preflight/stats/defenses) →
@@ -847,7 +865,7 @@ realize it, then re-check defenses.
 - Is the active state a playable loadout rather than a scoring skeleton →
   `inspect_build_completeness` (active-gem/base requirements, rare/magic ilvl, scaffold placeholders,
   runes, jewels, flasks, and charms). Every remaining advisory must have a typed deferred or
-  intentionally-unused decision with a reason; `review-packet --compact` returns these as
+  intentionally-unused decision with a reason; `complete_generation_review` returns these as
   `requiredUserDisclosures`, which must be included in the final user response.
 - For mana sustain, compare `ManaCost × Speed` with regen, leech, and on-hit recovery. Report
   `flask_assisted_required` as mana-flask dependency with long-boss risk; do not soften a measured

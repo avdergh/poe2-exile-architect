@@ -19,6 +19,11 @@ import sys
 import zipfile
 from pathlib import Path
 
+try:
+    from .package_physical_graph_seed import package_graph_seed
+except ImportError:  # direct script execution
+    from package_physical_graph_seed import package_graph_seed
+
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = {"win32": "win-x64", "darwin": "mac-arm64", "linux": "linux-x64"}
 
@@ -55,6 +60,14 @@ def main() -> int:
     ap.add_argument("--version", default="dev", help="bundle/data version stamp")
     ap.add_argument("--platform", default=PLATFORM.get(sys.platform, "unknown"))
     ap.add_argument("--out", default=str(ROOT / "dist"))
+    ap.add_argument(
+        "--physical-graph-dir",
+        default="",
+        help=(
+            "optional validated physical-graph directory to repackage; otherwise use the "
+            "versioned seed committed under data/physical_graph"
+        ),
+    )
     args = ap.parse_args()
 
     corpus = ROOT / "data" / "corpus.sqlite"
@@ -71,6 +84,7 @@ def main() -> int:
     _copy(ROOT / "server", stage / "server")
     _copy(ROOT / "manifest.json", stage / "manifest.json")
     _copy(ROOT / "assets" / "icon.png", stage / "assets" / "icon.png")
+    _copy(ROOT / "scripts" / "create_build.py", stage / "scripts" / "create_build.py")
 
     # Official Build Planner converter source. The user prepares its pinned runtime locally so the
     # bundle stays portable and license/version checks remain explicit.
@@ -97,6 +111,35 @@ def main() -> int:
     )
     (stage / "data" / "VERSION").write_text(args.version)
 
+    research_seed = ROOT / "data" / "mature_build_learning" / "release.sqlite"
+    if research_seed.is_file():
+        _copy(
+            research_seed,
+            stage / "data" / "mature_build_learning" / "release.sqlite",
+        )
+    else:
+        print("NOTE: Research Memory release seed missing — Create Family recall will start empty.")
+
+    learning_seed = ROOT / "data" / "comparative_learning" / "learning-memory.seed.jsonl"
+    if learning_seed.is_file():
+        _copy(
+            learning_seed,
+            stage / "data" / "comparative_learning" / "learning-memory.seed.jsonl",
+        )
+    else:
+        print("NOTE: Learning Memory release seed missing — comparative lessons will start empty.")
+
+    graph_dir = Path(args.physical_graph_dir).expanduser() if args.physical_graph_dir else None
+    if graph_dir and graph_dir.is_dir():
+        package_graph_seed(
+            source_dir=graph_dir,
+            output_dir=stage / "data" / "physical_graph",
+        )
+    elif (ROOT / "data" / "physical_graph" / "seed.json").is_file():
+        _copy(ROOT / "data" / "physical_graph", stage / "data" / "physical_graph")
+    else:
+        print("NOTE: physical graph release seed missing — stable-key tools will be unavailable.")
+
     # Reference/calibration build set (committed source, small) — ships beside the corpus so
     # list_reference_builds/benchmark_build work offline. Self-update doesn't touch it; it tracks
     # the bundled code/tree version and refreshes on .mcpb reinstall.
@@ -121,8 +164,21 @@ def main() -> int:
     # Prefer uv (present in CI) for speed; fall back to pip.
     print("vendoring python deps into lib/ …")
     uv = shutil.which("uv")
+    if not uv:
+        local_uv = ROOT / ".tools" / "uv" / ("uv.exe" if sys.platform == "win32" else "uv")
+        if local_uv.is_file():
+            uv = str(local_uv)
     if uv:
-        cmd = [uv, "pip", "install", "--target", str(stage / "lib"), "mcp>=1.2"]
+        cmd = [
+            uv,
+            "pip",
+            "install",
+            "--target",
+            str(stage / "lib"),
+            "mcp>=1.2,<2",
+            "networkx>=3",
+            "pydantic>=2",
+        ]
     else:
         cmd = [
             sys.executable,
@@ -132,7 +188,9 @@ def main() -> int:
             "-q",
             "--target",
             str(stage / "lib"),
-            "mcp>=1.2",
+            "mcp>=1.2,<2",
+            "networkx>=3",
+            "pydantic>=2",
         ]
     subprocess.run(cmd, check=True)
 

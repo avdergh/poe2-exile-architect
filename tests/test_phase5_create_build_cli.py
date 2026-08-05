@@ -73,6 +73,23 @@ def test_start_run_initializes_bound_agent_output_template(tmp_path: Path):
     }
 
 
+def test_plugin_start_generation_run_manages_storage_without_exposing_paths(
+    tmp_path: Path, monkeypatch
+):
+    runs = tmp_path / "managed-runs"
+    monkeypatch.setenv("POE_BD_CREATE_RUNS_DIR", str(runs))
+
+    result = create_build.start_generation_run("memory_assisted")
+
+    assert result["status"] == "started"
+    assert result["storage"] == "managed_user_data"
+    assert "agentOutputFile" not in result
+    assert "reviewResultFile" not in result
+    run_id = result["runContext"]["runId"]
+    assert (runs / run_id / "run-manifest.json").is_file()
+    assert (runs / run_id / "agent-output.json").is_file()
+
+
 def _bind_submission_to_run(payload: dict[str, object], run: dict[str, object]) -> None:
     payload["packet_id"] = run["packetId"]
     payload["runContext"] = run["runContext"]

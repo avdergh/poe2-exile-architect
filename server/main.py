@@ -22,6 +22,8 @@ from typing import Annotated, Any, Literal
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from scripts import create_build as generation_run_helper
+
 from . import paths
 from . import scaffold
 from .compute.engine import PobEngine
@@ -50,6 +52,7 @@ from .knowledge import itemparse
 from .knowledge import lifecycle
 from .knowledge import lifecycle_eval
 from .knowledge import graph_tools
+from .knowledge import graph_seed
 from .knowledge import mechanics
 from .knowledge import refbuilds
 from .knowledge import research_memory
@@ -208,12 +211,9 @@ def _source_to_xml(source: str) -> str:
     return decode_code(src)  # otherwise assume a PoB import/share code
 
 
-def _default_graph_snapshot_index_path() -> Path:
-    return paths.user_data_dir() / "physical_graph" / "snapshot_index.sqlite"
-
-
 def _graph_query_service() -> graph_tools.GraphQueryService:
-    return graph_tools.service_from_snapshot_index(str(_default_graph_snapshot_index_path()))
+    index_path = graph_seed.ensure_installed()
+    return graph_tools.service_from_snapshot_index(str(index_path))
 
 
 def _research_memory_service() -> research_memory.ResearchMemoryService:
@@ -798,6 +798,39 @@ def evaluate_build(goals: dict[str, Any]) -> dict[str, Any]:
         all_ok = all_ok and ok
         results.append({"stat": stat, "value": value, "min": lo, "max": hi, "ok": ok})
     return {"pass": all_ok, "results": results}
+
+
+@mcp.tool()
+def start_generation_run(
+    memory_mode: Literal["standard", "no_memory", "memory_assisted"] = "memory_assisted",
+) -> dict[str, Any]:
+    """Start one isolated Phase 5 generation run without relying on a repository checkout.
+
+    The run is stored in the normal per-user data directory and is immediately usable by
+    ``evaluate_generation_candidate``.  Published plugins should call this tool instead of a
+    repository-relative ``scripts/create_build.py start-run`` command.
+    """
+    return generation_run_helper.start_generation_run(memory_mode)
+
+
+@mcp.tool()
+def validate_generation_output(
+    run_id: str,
+    run_token: str,
+    agent_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Submit and validate one safe generation summary without consuming its review binding."""
+    return generation_run_helper.validate_generation_output(run_id, run_token, agent_output)
+
+
+@mcp.tool()
+def complete_generation_review(
+    run_id: str,
+    run_token: str,
+    agent_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Submit the final safe summary and atomically consume the trusted human-review binding."""
+    return generation_run_helper.complete_generation_review(run_id, run_token, agent_output)
 
 
 @mcp.tool()

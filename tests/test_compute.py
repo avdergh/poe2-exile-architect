@@ -1298,7 +1298,7 @@ def test_optimize_build_crafting_keeps_resists_capped(engine):
     # balance plan_gear set up. The re-cap pass must restore it — a crafted build must stay capped.
     # Slow on Windows/PoB headless (about 15 min on the current pinned runtime, and slower after
     # earlier tests reuse the session engine): full crafting on a whole gear set. Match the
-    # compute/full profile's 30-minute heavy-test budget while ordinary tests remain strict.
+    # explicit compute profile's 30-minute heavy-test budget while ordinary tests remain strict.
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1")
     r = buildopt.optimize_build(

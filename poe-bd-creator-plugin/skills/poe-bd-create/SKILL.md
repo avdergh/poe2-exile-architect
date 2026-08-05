@@ -39,7 +39,7 @@ Create claim 内调用 `query_learning_memory`，并记录单独的 `learningMem
 > 是否需要同时产出完整开荒成长过程？选择“需要”会进入 progression，为多个关键等级分别生成、
 > 验证并导出独立 PoB；选择“不需要”只生成目标等级单阶段 BD，最多附带文字开荒建议。
 
-这是阻塞式确认。在用户回答前，不得调用 freshness、Research、`start-run`、progression 或任何
+这是阻塞式确认。在用户回答前，不得调用 freshness、Research、`start_generation_run`、progression 或任何
 PoB/计算工具。用户已经在当前对话中回答过本次请求时不得重复询问。`referenceBlind=true` 的内部
 Blind Create packet 继续禁止追问，直接按锁定 packet 执行。
 
@@ -81,10 +81,17 @@ PoE2 构筑通常围绕最终目标规划，但前期也要能开荒。开荒、
 门槛必须考虑后期目标。
 
 当用户在入口确认中选择产出完整开荒过程时，进入 progression 模式。开始任何构筑操作前，必须
-完整读取并遵循 [progression-mode.md](references/progression-mode.md)。该模式把
+完整读取并遵循 [progression-mode.md](references/progression-mode.md) 和
+[progression-writing.md](references/progression-writing.md)。前者约束构筑与编排，后者只约束
+玩家版成长指南的教学表达。该模式把
 “普通 Create 生成不可变目标锚点”“同职业开荒流派”和“转型桥梁”作为三个独立设计问题；开荒
 升华和技能可以与目标完全不同。普通单阶段 Create 仍按下方工作流执行，progression 的阶段等级
 门槛不能修改它的等级语义、Research recall 或质量流程。
+
+完成每个 progression 阶段时，除现有 `purpose`、`playPattern`、获取优先级和注意事项外，正常
+路线还应提交轻量 `playerGuide`，用 `mechanicExplanation`、`levelingSteps` 和 `commonProblems`
+说明阶段原理、两个里程碑之间怎么升级，以及玩家遇到具体症状时如何处理。该写作层不是构筑质量
+硬门槛；旧路线或中断中的路线缺失时继续兼容导出，不能因此丢掉已验证 artifact。
 
 progression 是长流程，聊天上下文不能充当工作数据库。取得 `progressionId` 后：
 
@@ -103,9 +110,10 @@ progression 是长流程，聊天上下文不能充当工作数据库。取得 `
 1. 将用户需求整理成结构化需求摘要。
 2. 执行强制开荒过程确认；只有用户已明确要求单个固定目标 BD 时跳过。确认完成后再判断是否还需
    追问其他构筑约束。
-3. 需求足够后，调用本地 helper 的 `start-run`，为本次请求创建独立运行目录和一次性运行凭据。
-   普通模式传入 `--memory-mode memory_assisted`；用户使用 `--no-memory` 时传入
-   `--memory-mode no_memory`。
+3. 需求足够后，调用插件 MCP 的 `start_generation_run`，为本次请求创建独立运行状态和一次性
+   凭据。普通模式传 `memory_mode="memory_assisted"`；用户使用 `--no-memory` 时传
+   `memory_mode="no_memory"`。不要搜索仓库、猜测工作目录或运行 `scripts/create_build.py`；发布
+   插件已经自带这个入口。若工具确实未注册，停止并报告插件安装不完整，不能降级成文字 BD。
 4. 先实际调用 MCP 的 `get_freshness_report`。调用成功说明 PoE2 MCP 可用；不能因为没有在界面中
    看到某个工具分组、没有搜索到工具说明或没有先找到 Python 函数，就声称 MCP 不可用。
 5. 按下面的 MCP 工具清单查询资料，基于查询结果设计候选构筑方向，不要临时猜工具名。普通模式
@@ -175,6 +183,13 @@ progression 是长流程，聊天上下文不能充当工作数据库。取得 `
    `new_build` bootstrap 显式恢复。然后把候选方向落实成当前请求所需的完整活动构筑。至少实际
    设置职业、升华、等级、主技能和辅助技能、其他技能组、装备、天赋和
    战斗配置，并检查属性、抗性、Spirit 与资源状态。不能拿只有职业和主技能的空骨架去验收。
+   对 progression 的目标前阶段，主动形成客观可执行的输出技能包：说明主技能如何清图，稀有怪/
+   Boss 由主技能、独立单体技能或 setup/payoff 组合中的哪一部分处理，并检查当前等级已可获得的
+   精魂/保留技能能否提供伤害、清图、资源或防御协同。联网开荒资料没有主动提到精魂技能时，不能
+   自动理解成“不需要”；应继续按主技能和职业定向搜索常见精魂/保留搭配，再用 corpus、机制和
+   PoB 核对可用等级、Spirit 需求和实际作用。若本阶段确实没有合适选项，可以保留 Spirit、使用
+   非精魂副技能/标记/诅咒等替代，并写清理由。这里是软设计要求，不增加固定技能数量、Spirit
+   保留量、DPS 阈值或新的 Judge/Lifecycle 硬失败。
    当前 Create 禁止调用 `optimize_build`，也禁止用 `optimize_passives(reset=true, points=0)` 做
    全局树重排；允许针对明确缺口或高影响质量探索使用局部 `optimize_supports`、单槽装备工具
    以及手工/定向天赋节点。
@@ -270,7 +285,7 @@ progression 是长流程，聊天上下文不能充当工作数据库。取得 `
     和当前需求上下文中直接修改
     活动构筑，再次以相同 `strict_mode` 调用 `evaluate_generation_candidate`。严格模式下存在
     `playabilityFailures` 且有明确可修正项时也可重试；默认 hard-only 不得因隐藏的主观评价改造
-    构筑。不要重新调用 `start-run`，也不要要求用户
+    构筑。不要重新调用 `start_generation_run`，也不要要求用户
     重复需求。最多重试两轮；程序返回 `retry_limit_reached` 后必须停止。
     如果修正改变了升华或核心主技能，必须先重新解析身份并重新调用 `query_research_memory`；新一轮
     `researchMemoryUse` 和 `versionContext.researchMemoryRef` 必须包含新的 `dedupeQueryRef`。只调整
@@ -280,7 +295,7 @@ progression 是长流程，聊天上下文不能充当工作数据库。取得 `
     停止原因的 `stop`。顶层最终 candidate、failure audit、临时状态和 Judge 报告由 helper 从末次
     compact attempt 与 receipt 规范化生成，不必重复抄写。
 16. 如果最后一轮 Judge 已评估、`passed=true`、没有 `hardFailures`，且活动快照有效，必须在
-    调用 `review-packet` 前调用
+    调用 `complete_generation_review` 前调用
     `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index)`。这个工具只保存当前
     最后一轮且语义输入仍与可信 Judge 快照一致的活动 PoB，并写入 Judge 时在当前 MCP 进程内
     短暂保留的精确 XML；`PlayerStat` / `FullDPSSkill` 等派生输出刷新不算真实变化。失败轮次和旧
@@ -294,13 +309,15 @@ progression 是长流程，聊天上下文不能充当工作数据库。取得 `
     `scoreApplicability="unavailable"` 和其他非硬性 Judge 警告不阻止保存与导出。它们仍必须原样
     出现在用户可见 Judge 结论中，并将结果称为弱原型/待验证候选，不能称为推荐方案或已验证成品。
     默认 hard-only 只说明“主观 Judge 反馈已关闭”，不要输出这些字段或据此降级路线。
-17. 只把本次生成的安全摘要写入 `start-run` 已初始化的 `agentOutputFile`。先调用
-    `validate-output`；它不会消费 run，可以根据字段路径修正后重试。通过后再用对应 `runId` 和
-    `runToken` 调用 `review-packet --compact`。完整 review 会写入 `reviewResultFile`，stdout 只返回
-    紧凑摘要。可信快照中每个仍存在的 completeness advisory，都必须在
+17. 把本次生成的安全摘要对象作为 `agent_output` 直接提交给
+    `validate_generation_output(run_id, run_token, agent_output)`；它不会消费 run，可以根据返回的
+    字段路径修正后重试。通过后把同一份最终对象提交给
+    `complete_generation_review(run_id, run_token, agent_output)`。插件在受管用户数据目录中完成
+    原子写入和可信 review，不需要也不允许 Agent 自己定位或编辑运行文件。可信快照中每个仍存在
+    的 completeness advisory，都必须在
     `completenessAdvisoryDecisions` 中记录 `deferred` 或 `intentionally_unused` 及具体理由；已真正
     处理且不再出现在最终快照中的提示不要保留陈旧决策。最终 PoB XML 由专用 artifact 工具写入
-    本地私有存储，不要写入 `agentOutputFile`。
+    本地私有存储，不要放入 `agent_output`。
     不得手工删除或改名 `review-result`、`review-consumed`、可信 Judge 回执或运行锁来修复顺序；
     使用 artifact 的受检恢复路径，或按状态机登记失败/重试。
 18. 普通单阶段 Create 在 artifact 保存成功后，只调用一次
@@ -433,6 +450,9 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
 - `evaluate_build(goals)`：做当前阶段局部数值检查，不是正式 Judge。
 - `pinnacle_readiness(...)`：只用于用户明确要求的终局攻坚/巅峰候选；不得用于剧情或普通开荒
   候选，否则会把混沌抗 75%、终局 EHP/DPS 等门槛错误套到早期构筑。
+- `start_generation_run(memory_mode)`：从插件内部创建受管 Phase 5 run，不依赖仓库工作目录。
+- `validate_generation_output(run_id, run_token, agent_output)`：非消费校验安全输出对象。
+- `complete_generation_review(run_id, run_token, agent_output)`：完成可信 review 并消费运行凭据。
 - `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context, strict_mode=false)`：构筑完成后的正式
   Judge 入口。它只捕获和评价 Agent 已搭好的活动构筑，不会替 Agent 补技能、装备或天赋。
 - `save_final_build_artifact(run_id, run_token, candidate_id, attempt_index, ...)`：保存 Agent 实际
@@ -440,7 +460,7 @@ PoE2 MCP 不可用。此时说明工具缺失并停止本次构筑生成；不�
   preflight 拦截而没有新增 Judge receipt，也可在精确快照和同 state-hash 合法性回执仍在时
   恢复 baseline，并传有界选择理由与
   `later_findings_scope="candidate_delta_only"`；后续问题影响 baseline 或进程重启丢失快照时
-  必须失败关闭。必须在 `review-packet` 前调用。
+  必须失败关闭。必须在 `complete_generation_review` 前调用。
 - `list_final_build_artifacts()`：列出最终产物的安全元数据。
 - `load_final_build_artifact(artifact_id)`：把最终产物恢复到活动 PoB，不返回原始 XML。
 - `export_final_pob_artifact(artifact_id, format="both", name="")`：把最终可信产物写成本地 PoB XML
@@ -561,11 +581,11 @@ import/save 的 XML 字节顺序可能变化，原始 artifact hash 与恢复后
 `rewardStrength="limited"`，用户输出必须明确写成“评分档位 strong，但证据/奖励强度 limited”，
 不能只写“strong”或“强力验证通过”。
 
-给 helper 的内部文件必须是 `agent-output.json`，字段名使用 schema 约定的英文 camelCase。
+提交给运行工具的内部对象字段名使用 schema 约定的英文 camelCase。
 
-每次运行都必须使用 `start-run` 返回的新路径和凭据。禁止读取、复用或改写其他运行留下的
-`agent-output.json`、`.tmp_agent_output_*`、旧 `HumanReviewPacket` 或历史候选文件。本次文件顶层
-必须原样带上 `start-run` 返回的 `runContext`；`packetId`、`agentRefinedBuildPrompt.promptId` 和
+每次运行都必须使用 `start_generation_run` 返回的新凭据。禁止读取、复用或改写其他运行留下的
+旧 `HumanReviewPacket` 或历史候选。本次对象顶层必须原样带上返回的 `runContext`；`packetId`、
+`agentRefinedBuildPrompt.promptId` 和
 `agentRefinedBuildPrompt.requestRef` 也必须使用该次返回值。
 
 顶层字段：
@@ -749,52 +769,36 @@ receipt 补入。不要自行生成 `snapshotId`、`sourceHash`、Judge 分数�
 - 本地临时状态引用；
 - Judge 摘要和注意事项。
 
-## 本地 helper
+## 插件内运行工具
 
-普通用户不需要手动运行脚本；宿主 Agent 自己调用。
+普通用户不需要仓库、Python 命令或工作目录。宿主 Agent 只调用三个随插件注册的 MCP 工具：
 
-Windows：
+- `start_generation_run(memory_mode)`：创建本次运行凭据；
+- `validate_generation_output(run_id, run_token, agent_output)`：非消费校验；
+- `complete_generation_review(run_id, run_token, agent_output)`：完成可信 review 并消费凭据。
 
-```powershell
-.\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode memory_assisted
-.\.tools\uv\uv.exe run python scripts\create_build.py start-run --memory-mode no_memory
-.\.tools\uv\uv.exe run python scripts\create_build.py validate-output --run-id "<runId>" --run-token "<runToken>"
-.\.tools\uv\uv.exe run python scripts\create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"
-```
-
-macOS / Linux：
-
-```bash
-./.tools/uv/uv run python scripts/create_build.py start-run --memory-mode memory_assisted
-./.tools/uv/uv run python scripts/create_build.py start-run --memory-mode no_memory
-./.tools/uv/uv run python scripts/create_build.py validate-output --run-id "<runId>" --run-token "<runToken>"
-./.tools/uv/uv run python scripts/create_build.py review-packet --compact --run-id "<runId>" --run-token "<runToken>"
-```
-
-`start-run` 返回：
+`start_generation_run` 返回：
 
 - `runContext`：本次运行的一次性绑定信息，原样写入内部 JSON；
 - `requestRef`、`promptId`、`packetId`：本次产物必须使用的编号；
-- `agentOutputFile`：本次唯一允许写入和验收的 Agent 产物路径；
-  helper 已在其中初始化 run binding 骨架，Agent 在该文件上补安全设计字段；
-- `reviewResultFile`：helper 成功验收后原子写入的安全结果副本；若命令输出意外中断，可以读取
-  这个文件确认本次结果。
+- `storage="managed_user_data"`：运行文件由插件内部管理，Agent 不操作路径；
 - `experimentContext`：本次是否允许使用研究记忆，以及最多两轮内部重试的运行合同。
 
-`review-packet` 根据 `runId` 自行定位本次目录，不接受调用者指定其他清单或产物路径；它只接受
-与本次运行凭据匹配的文件。运行凭据两小时后过期，成功验收后立即失效，不能再次验收。
+提交工具根据 `runId` 自行定位受管运行状态，不接受调用者指定其他路径。运行凭据两小时后过期，
+成功验收后立即失效，不能再次验收。
 
-`validate-output` 与 `review-packet` 共用同一条 fail-closed canonicalization。前者不消费 run；后者
+`validate_generation_output` 与 `complete_generation_review` 共用同一条 fail-closed
+canonicalization。前者不消费 run；后者
 成功后写完整 review 并消费运行凭据。两者都会读取本次运行目录中的可信 Judge 凭据。缺少凭据、
 候选编号不一致，或 Agent 文件中的临时状态/Judge 报告与可信结果不同，都会被拒绝。helper 通过
 只表示材料可以进入人工验收；Judge 分数仍是参考评估，不代表人已经认可这个 BD。
 
-在普通或 `--no-memory` 模式下，`review-packet` 还会逐轮核对 `generationAttempts`。普通模式缺少
+在普通或 `--no-memory` 模式下，最终 review 还会逐轮核对 `generationAttempts`。普通模式缺少
 研究记忆安全引用、无记忆模式实际调用了研究记忆、轮次不连续、超过两次重试，或任一轮状态/Judge
 与可信凭据不一致时都会拒绝。返回的 `retryComparisonReport` 只描述同一次生成内部修正前后的
 硬阻断和分数变化，不用于自动比较普通模式与无记忆模式。
 
-helper 期望的顶层结构：
+`agent_output` 期望的顶层结构：
 
 - `agentRefinedBuildPrompt`：结构化需求摘要；
 - `prototypeBuildCandidate`：候选构筑安全摘要；

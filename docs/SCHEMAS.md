@@ -1103,6 +1103,17 @@ key/name 必须成对提供并与 readback 一致。
 blocking 和 description。所有 blocking 非价格机制门槛必须为 `satisfied` 且有安全证据；
 budget/price 永远不能 blocking。
 
+`StageCompletionReport.playerGuide` 是可选的玩家教学层，避免写作字段遗漏阻断已经完成的可信阶段，
+也保证旧 route 和进行中的 progression 仍可读取。新版 progression 应填写：
+
+- `mechanicExplanation`：用玩家语言解释阶段技能职责、伤害/资源关系和选择原因；
+- `levelingSteps`：1–10 条从上一里程碑到当前等级的实际成长步骤，第一阶段从建号开始；
+- `commonProblems`：最多 6 组 `symptom + solution`，把可观察问题与处理方法配对。
+
+这些字段仍受 copy-safety、URL 和单字段长度限制，不能保存网页正文、整角色镜像或隐藏推理。Route
+v2/v3 原样保存安全 `playerGuide`；旧 route 缺少它时导出器使用现有 purpose、playPattern、变化和
+获取优先级降级生成，不迁移或拒绝旧数据。
+
 ## ProgressionRunState
 
 Phase 8 本地安全控制状态。所有 mutation 使用唯一 `operationId` 和 `expectedRevision`：
@@ -1319,6 +1330,23 @@ edge。验收报告中的 `unresolvedDeepRecordMentionCount` 统计未解析提�
 `unresolvedUniqueComponentCount` 统计去重后的组件；旧字段 `unresolvedDeepRecordComponentCount` 保持为
 mention 次数以兼容现有消费者。
 
+## 插件发布种子合同
+
+Codex 发布包携带两类只读首装种子，不把用户运行库本身当作发布资产：
+
+- `ResearchReleaseSeed` 是一个通过 SQLite `quick_check`、与运行时 schema 完全一致的净化库。
+  只允许 `creator_visible / train_context / (global_seed|local_user) / copy_safety=passed / status=valid`
+  的知识记录，
+  `source/case/candidate/query/rejected/revalidation/decay` 等运行态表必须为空；meta 只保留 schema、
+  backfill 和 `release_seed_kind/version/created_at`。种子不得包含原始 PoB/XML、完整 URL 或本机路径。
+- `PhysicalGraphSeedManifest` 保存 `schemaVersion`、`snapshotId`、相对 `snapshotFile`、SHA-256 和安全
+  数量摘要。不得保存构建机的绝对 snapshot/index 路径。
+
+首次启动时，服务把种子原子安装到用户数据目录。目标 Research 库或可用物理图已经存在时不得
+覆盖；插件升级也不自动重置用户新增知识。`LearningMemoryReleaseSeed` 是通过完整事件 schema 与
+durable copy-safety 校验的 JSONL；首次运行仅在本地 Learning Memory 不存在时安装。发布包不包含
+progression/campaign 状态、quarantine、价格缓存或完整第三方角色材料。
+
 ## Phase 7 对照学习合同
 
 ### FamilyTarget
@@ -1364,7 +1392,9 @@ Phase 7 固定七类。报告同时保存 Family/等级匹配、合法性/modela
 
 ### LearningMemoryEntry 与 LearningMemoryCorrection
 
-Learning Memory 是 Research SQLite 之外的本地 append-only store。
+Learning Memory 是 Research SQLite 之外的本地 append-only store。维护者的安全事件流可以净化为
+`data/comparative_learning/learning-memory.seed.jsonl` 并随 Git/插件发布；运行时仍复制到用户数据
+目录后追加，不能直接修改捆绑种子。
 
 Entry 必要字段：lesson id、lesson、scope、Family/等级约束、dimension、conditions、exclusions、
 recommended Create behavior、verification tasks、安全 comparison/source/candidate refs、patch/tree/PoB

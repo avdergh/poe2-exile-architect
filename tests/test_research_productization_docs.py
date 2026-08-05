@@ -313,7 +313,7 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     )
     assert codex_bundle["name"] == "poe-bd-creator"
     assert codex_bundle["version"].startswith("0.4.5")
-    assert codex_bundle["skills"] == "skills"
+    assert codex_bundle["skills"] == "./skills/"
 
 
 def test_installers_support_dry_run_and_refuse_real_directory_overwrite():

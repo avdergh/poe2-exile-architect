@@ -72,9 +72,12 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   artifact/source hash，不得重新生成一个较弱目标或用桥接形态替换。
 - 每次普通用户触发 Create 时，除非请求明确只产出单个固定目标/最终 BD 且不要开荒过程，否则
   必须先阻塞式询问是否生成完整开荒成长过程。用户回答前不能调用 freshness、Research、
-  `start-run`、progression 或 PoB/计算工具；本次请求只问一次。选择“需要”进入 progression，
+  `start_generation_run`、progression 或 PoB/计算工具；本次请求只问一次。选择“需要”进入 progression，
   选择“不需要”进入普通单阶段 Create。`referenceBlind=true` 的内部 Blind Create 禁止追问，
   继续按锁定 packet 执行。
+- 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_output /
+  complete_generation_review` 管理 Phase 5 run。不得搜索仓库工作目录或要求用户安装/执行
+  `scripts/create_build.py`；CLI 只保留为仓库开发兼容入口。
 - 新 progression 在未指定唯一目标 Family 时，必须先用基础职业、精确 patch 和天赋树版本调用
   `query_research_memory(detail_level="family")` 请求 10 个成熟 Family；不足 10 个返回全部合格
   Family，少于 2 个暂停并报告 Research 缺口。Agent 必须比较 discovery receipt 实际返回的
@@ -95,6 +98,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   且填写 `rebuildReason` 的重大转型外，后续阶段默认继承上一 artifact；确定性合法性、资源、装备、
   天赋或辅助问题必须局部修复，只有现有的一次版本化 stage replan 可以在失败后改变整体方向。
   这些执行约束不能变成固定 DPS/EHP、装备槽或天赋点等主观硬门槛。
+- progression 的目标前阶段不能默认只放一个主技能。联网开荒研究和阶段 skill loadout 都要主动
+  检查与主技能配套的精魂/保留技能、独立单体或 setup/payoff 手段，说明清图、稀有怪/Boss、持续
+  增益和资源分别由什么承担；网页未提及精魂技能不代表不需要，应定向补查并用 corpus/mechanics/
+  PoB 验证。没有合适或尚未解锁的精魂技能时允许采用非精魂替代并说明理由。此要求只作为 Agent
+  设计与写作软约束，不新增技能数量、Spirit 保留量、DPS 或 Judge/Lifecycle 硬门槛。
 - Judge 对新生成的 80 级及以上候选使用确定性终局抗性门槛：火/冰/电分别不得低于 60%，
   非 CI 构筑的混沌抗性不得低于 30%；CI 只豁免混沌抗性。该门槛由共享 preflight 与正式
   Judge 入口共同执行，预检失败返回 `attemptConsumed=false`。79 级及以下、可信第三方参考
@@ -211,11 +219,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - touched module 使用 focused tests；
 - knowledge/MCP/lifecycle/doc 改动使用 `.\scripts\verify.ps1 quick`；
 - 跨范围非 engine 改动使用 `.\scripts\verify.ps1 noncompute`；
-- engine、PoB、optimizer、runtime packaging 或 release gate 才使用 `compute` / `full`；
-- `compute` / `full` 是重型 Headless PoB 认证入口，本地 Windows 经常运行 15 分钟以上。
-  调用这些 profile 时，外层命令超时必须至少给到 30 分钟（`1800000ms`）；10 分钟工具超时
-  只能说明外层预算不足，不能直接判定 compute suite 失败。`scripts/verify.ps1` 会为这些
-  profile 传入 30 分钟 pytest 单测试超时。
+- runtime packaging、release gate 和最终合并使用 `full`；`full` 明确排除重型
+  `tests/test_compute.py`，因此不会重复消耗十几分钟跑 PoB golden；
+- `compute` 只在直接修改 PoB 引擎、Lua bridge、数值计算或 optimizer 行为，或用户明确要求时
+  手动运行，不再是普通发布/合并门禁。它在 Windows 经常运行 15 分钟以上，调用时外层超时至少
+  30 分钟（`1800000ms`）。
 
 ## 工具 / 文件地图
 
@@ -311,8 +319,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/learning/models.py`：FamilyTarget、盲测 Create packet、逐维 comparison、Memory、correction
   和 campaign state typed contracts。
 - `server/learning/case_store.py`：case-bound quarantine；原始 code/XML 只存在本地隔离目录。
-- `server/learning/memory.py`：Research SQLite 之外的本地 append-only Learning Memory、召回、修正
-  和防振荡。
+- `server/learning/memory.py`：Research SQLite 之外、由安全发布种子初始化的本地 append-only
+  Learning Memory、召回、修正和防振荡。只提交净化种子，不提交用户运行态文件。
 - `server/learning/service.py`：Phase 7 CAS、幂等、暂停、恢复、显式 phase retry、串行 case gate 和
   十案例趋势汇总。它不创建 Desktop task、不调用模型。
 - Reference/Profile 与 Comparator 使用同一可见任务；Create 必须是另一个任务。task/thread 创建与
@@ -339,6 +347,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   内容寻址回执；原始 artifact hash 与 PoB 恢复态 hash 分开记录，回执不保存 XML。
 - `server/generation/progression_costs.py`、`progression_delivery.py`：粗粒度 unique/craft effort
   成本画像和完整成长包导出。
+- 新 progression 的 `StageCompletionReport.playerGuide` 用轻量字段补充阶段原理、里程碑之间的升级
+  步骤和“症状—处理”常见问题；它只改善玩家教学，不改变 Create/Judge/状态机。路线正文不得直接
+  展示 stage/route 枚举、Family key、artifact id、成本覆盖率或 Judge/modelability 原始字段，这些
+  复核信息统一放入文末技术验证附录。旧 route 缺少该字段时必须兼容降级导出。
 - `server/MCP_BOOTSTRAP.md`：实际通过 MCP instructions 发送的短启动规则，避免延迟工具发现反复
   注入完整 `ASSISTANT_GUIDE.md`；完整指南仍是人类可读 runtime 事实源。
 - `server/runtime/tool_telemetry.py`：只记录工具名、耗时、响应字节和安全关联 ID 的上下文成本
@@ -377,6 +389,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `scripts/smoke_*.py`：按子系统划分的 focused smoke checks。
 - `scripts/install_local_validated_runtime.py`：安装已认证 runtime data 到本地。
 - `scripts/build_bundle.py`：构建 `.mcpb` bundle。
+- `scripts/build_research_release_seed.py`：从本地成熟 Research 库导出 creator-safe、无运行态和本机
+  路径的发布种子。
+- `scripts/package_physical_graph_seed.py`：把最新验证物理图转换为不含绝对路径的发布种子。
+- `scripts/build_codex_plugin.py`：把服务、helper、依赖、语料、Research/graph 种子和 PoB 子集组装为
+  自包含 Codex 插件；必要种子缺失时失败关闭。
 - `data/mature_build_learning/seed_cases.json`：只保存 sanitized seed mature cases。
 - `data/reference_builds.json`：只保存校准摘要，不是模板。
 

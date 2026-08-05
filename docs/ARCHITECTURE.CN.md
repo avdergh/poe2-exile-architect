@@ -100,6 +100,7 @@ source probe
 | Context telemetry | `server/runtime/tool_telemetry.py` | 只记录工具名、耗时、响应字节和安全关联 ID，用于定位上下文放大。 |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context。 |
 | Scripts | `scripts/*` | Verification、smoke tests、packaging、source probes。 |
+| Release packaging | `scripts/build_codex_plugin.py`, `build_research_release_seed.py`, `package_physical_graph_seed.py` | 生成自包含插件；净化 Research 与可移植物理图只作首装种子，绝不覆盖已有用户库。 |
 
 计划中的模块应遵循相同分层：
 
@@ -122,6 +123,8 @@ source probe
 - Comparator Agent 对逐维 tradeoff 和总结果负责；Judge 数值只作为 `advisoryOnly` 附件。
 - Phase 7 状态服务负责 CAS、幂等、暂停、恢复和安全 checkpoint，不创建任务或调用模型。
 - Research schema 对具体 build knowledge 负责；Learning Memory 只接收跨维 Create 行为经验及其 correction。
+- Git 与插件携带净化后的 Research（含维护者 `global_seed/local_user`）和 Learning Memory 发布种子；
+  首次运行复制到用户数据目录，运行态继续分库追加且不回写捆绑种子。
 - Phase 8 外部 Agent 负责联网研究和阶段设计；服务只校验安全摘要、编排状态和可信 artifact，不
   爬网、不调用模型，也不从终局 PoB 自动推导早期构筑。
 - Phase 8 必须保持普通 Create 行为隔离：先从 Research receipt 获取当前精确版本最多 10 个成熟

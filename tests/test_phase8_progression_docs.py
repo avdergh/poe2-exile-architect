@@ -23,6 +23,14 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
         / "references"
         / "progression-mode.md"
     ).read_text(encoding="utf-8")
+    writing_reference = (
+        ROOT
+        / "poe-bd-creator-plugin"
+        / "skills"
+        / "poe-bd-create"
+        / "references"
+        / "progression-writing.md"
+    ).read_text(encoding="utf-8")
 
     for text in (phase, schemas, guide, progression_reference):
         assert "StarterResearchPacket" in text
@@ -42,6 +50,13 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
         assert "passive_delta" in text
         assert "outputStateHash" in text
     assert "progression-mode.md" in skill
+    assert "progression-writing.md" in skill
+    for text in (phase, schemas, guide, skill, progression_reference, writing_reference):
+        assert "playerGuide" in text
+    assert "mechanicExplanation" in writing_reference
+    assert "levelingSteps" in writing_reference
+    assert "commonProblems" in writing_reference
+    assert "技术验证附录" in phase
     assert "默认 4" in phase or "默认四" in progression_reference
     assert "最多 5" in progression_reference or "最多五" in progression_reference
     assert "limited_offline_inference" in guide
@@ -82,12 +97,19 @@ def test_phase8_docs_and_runtime_guide_define_progression_mode():
     assert "阻塞式入口确认" in progression_reference
     assert "附带开荒策略" in progression_reference
     assert "调用任何工具前必须先确认" in phase
+    for text in (phase, guide, progression_reference, skill):
+        assert "精魂" in text or "Spirit" in text
+        assert "保留" in text or "reservation" in text
+        assert "软" in text or "soft design" in text
+    assert "来源未提及不等于" in phase
+    assert "不应只列一个主技能" in progression_reference
+    assert "不增加固定技能数量" in skill
 
 
 def test_manifest_advertises_phase8_tool_surface_and_release_version():
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     names = {item["name"] for item in manifest["tools"]}
-    assert manifest["version"] == "0.1.53"
+    assert manifest["version"] == "0.1.56"
     assert {
         "start_build_progression",
         "submit_build_progression_target_selection",

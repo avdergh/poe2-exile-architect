@@ -103,6 +103,7 @@ Complete progression request
 | Context telemetry | `server/runtime/tool_telemetry.py` | Records only tool name, latency, response bytes, and safe correlation ids to locate context amplification. |
 | Freshness/live | `server/freshness/*`, `server/live/*` | Patch/tree/PoB/poe.ninja/wiki/price context. |
 | Scripts | `scripts/*` | Verification, smoke tests, packaging, source probes. |
+| Release packaging | `scripts/build_codex_plugin.py`, `build_research_release_seed.py`, `package_physical_graph_seed.py` | Builds a self-contained plugin. Sanitized Research and portable physical-graph assets are first-install seeds and never overwrite an existing user store. |
 
 Planned modules should follow the same layering:
 
@@ -130,6 +131,9 @@ Planned modules should follow the same layering:
   create tasks or call models.
 - Research schemas own concrete build knowledge. Learning Memory accepts only cross-dimensional
   Create behavior lessons and their corrections.
+- Git and plugin releases carry sanitized Research (maintainer `global_seed/local_user`) and
+  Learning Memory seeds. First use copies them into user data; runtime stores remain separate and
+  never write back into bundled seeds.
 - The external Phase 8 Agent owns web research and stage design. The progression service validates
   safe summaries, orchestration state, and trusted artifacts; it does not crawl, call models, or
   derive early builds by downgrading a final PoB.

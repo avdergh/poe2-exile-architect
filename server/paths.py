@@ -67,13 +67,28 @@ def mature_learning_path() -> Path:
     return user_data_dir() / "mature_build_learning.sqlite"
 
 
+def mature_learning_release_seed_path() -> Path:
+    """Creator-safe Research Memory seed shipped with a release."""
+    return BUNDLE_ROOT / "data" / "mature_build_learning" / "release.sqlite"
+
+
+def comparative_learning_release_seed_path() -> Path:
+    """Copy-safe Phase 7 Learning Memory seed shipped with a release."""
+    return BUNDLE_ROOT / "data" / "comparative_learning" / "learning-memory.seed.jsonl"
+
+
+def physical_graph_seed_manifest_path() -> Path:
+    """Portable physical-graph seed manifest shipped with a release."""
+    return BUNDLE_ROOT / "data" / "physical_graph" / "seed.json"
+
+
 def comparative_learning_dir() -> Path:
     """Writable, local-only root for Phase 7 campaign and quarantine state."""
     return user_data_dir() / "comparative-learning"
 
 
 def comparative_learning_memory_path() -> Path:
-    """Append-only Phase 7 Learning Memory, separate from Research SQLite and Git."""
+    """Writable append-only Phase 7 Learning Memory, initialized from the release seed."""
     return comparative_learning_dir() / "learning-memory.jsonl"
 
 

@@ -10,11 +10,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .. import paths
 
@@ -22,6 +25,7 @@ SCHEMA_VERSION = 4
 SANITIZER_VERSION = "phase3n1-v1"
 EXTRACTOR_VERSION = "phase3n2-v1"
 EXTRACTION_METHOD = "deterministic_mature_case_summary"
+RELEASE_SEED_KIND = "creator_safe_research_seed_v1"
 
 FORBIDDEN_COPYABLE_FIELDS = {
     "pobCode",
@@ -68,6 +72,7 @@ VALID_VISIBILITY_SPLITS = {
     ("quarantined", "quarantine"),
 }
 VALID_KNOWLEDGE_SCOPES = {"global_seed", "local_user", "eval_ephemeral"}
+RELEASE_SEED_KNOWLEDGE_SCOPES = {"global_seed", "local_user"}
 VALID_MODELABILITY = {"full", "partial", "not_modelable", "unknown"}
 VALID_LIFECYCLE_STAGES = {
     "campaign_early",
@@ -685,6 +690,8 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def initialize_store(db_path: Path | None = None) -> Path:
     path = db_path or mature_learning_path()
+    if db_path is None:
+        _install_bundled_release_seed_if_missing(path)
     con = connect(path)
     try:
         existing = schema_version(con)
@@ -706,6 +713,105 @@ def initialize_store(db_path: Path | None = None) -> Path:
     finally:
         con.close()
     return path
+
+
+def _install_bundled_release_seed_if_missing(target: Path) -> bool:
+    """Install a release seed once without replacing an existing local Research store."""
+
+    if target.exists():
+        return False
+    seed = paths.mature_learning_release_seed_path()
+    if not seed.is_file():
+        return False
+    validate_release_seed(seed)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid4().hex}.installing")
+    shutil.copy2(seed, temp)
+    try:
+        # A hard link is atomic and refuses to replace a database another MCP process may have
+        # created while this seed was being copied.  The temporary copy lives beside the target,
+        # so both paths are guaranteed to be on the same filesystem.
+        os.link(temp, target)
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def validate_release_seed(seed: Path) -> None:
+    """Fail closed if a bundled Research seed contains mutable or non-creator-safe state."""
+
+    uri = f"file:{seed.as_posix()}?mode=ro"
+    con = sqlite3.connect(uri, uri=True)
+    try:
+        integrity = con.execute("PRAGMA quick_check").fetchone()
+        if not integrity or str(integrity[0]).casefold() != "ok":
+            raise ValueError("research release seed failed SQLite integrity check")
+        if schema_version(con) != SCHEMA_VERSION:
+            raise ValueError("research release seed schema version mismatch")
+        meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+        if meta.get("release_seed_kind") != RELEASE_SEED_KIND:
+            raise ValueError("research release seed kind is missing or unsupported")
+        for table in (
+            "source_groups",
+            "source_snapshots",
+            "mature_build_cases",
+            "technique_candidates",
+            "candidate_evidence",
+            "technique_edges",
+            "research_rejected_proposals",
+            "research_dedupe_queries",
+            "research_revalidation_events",
+            "research_decay_events",
+        ):
+            if con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:
+                raise ValueError(f"research release seed contains forbidden table rows: {table}")
+        scoped_tables = (
+            "research_fragments",
+            "research_semantic_edges",
+            "research_build_design_observations",
+            "research_build_patterns",
+            "deep_research_records",
+        )
+        for table in scoped_tables:
+            where = (
+                "visibility <> 'creator_visible' OR split <> 'train_context' "
+                "OR knowledge_scope NOT IN ('global_seed', 'local_user') "
+                "OR copy_safety_state <> 'passed'"
+            )
+            if table != "research_build_design_observations":
+                where += " OR status <> 'valid'"
+            if con.execute(f"SELECT count(*) FROM {table} WHERE {where}").fetchone()[0]:
+                raise ValueError(f"research release seed contains non-creator-safe rows: {table}")
+        orphan_family_count = con.execute(
+            """
+            SELECT count(*)
+            FROM research_build_families AS family
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM deep_research_records AS record
+                WHERE record.build_family_key = family.build_family_key
+            )
+            """
+        ).fetchone()[0]
+        if orphan_family_count:
+            raise ValueError("research release seed contains Family rows without public records")
+        orphan_evidence_count = con.execute(
+            """
+            SELECT count(*)
+            FROM research_build_family_evidence AS evidence
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM research_build_families AS family
+                WHERE family.build_family_key = evidence.build_family_key
+            )
+            """
+        ).fetchone()[0]
+        if orphan_evidence_count:
+            raise ValueError("research release seed contains orphaned Family evidence")
+    finally:
+        con.close()
 
 
 def schema_version(con: sqlite3.Connection) -> int:

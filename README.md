@@ -43,7 +43,7 @@ patch-scoped 候选证据，不自动写入 Research/Memory。在真实四阶段
 
 ## 安装
 
-Codex 本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会注册统一的
+本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会注册统一的
 `poe2_build_mcp`，并优先使用仓库内
 `.tools/uv`，其次使用 `PATH` 中的 `uv`。两者都不存在时会明确停止，不会写入一个无法启动的
 MCP 配置。
@@ -52,55 +52,96 @@ MCP 配置。
 `POE_BD_NODE_EXECUTABLE` 显式配置或系统 `PATH`，也会自动发现 Codex Desktop 随附的 Node
 运行时；不要求用户额外安装全局 `npx`。转换 provider 仍要求 Node 20 或更高版本。
 
+### OpenCode 快速体验
+
+已有 checkout 时，Windows PowerShell：
+
+```powershell
+.\install.ps1 -FromCheckout opencode
+.\install.ps1 -FromCheckout -Doctor opencode
+```
+
+macOS / Linux：
+
+```bash
+./install.sh --from-checkout opencode
+./install.sh --doctor opencode
+```
+
+安装后重启 OpenCode，再运行 `opencode mcp list`；列表中应出现 `poe2_build_mcp`。然后直接要求
+Agent“使用 `poe-bd-create` skill 创建一个 PoE2 BD”或“使用 `poe-bd-research` skill 做成熟 BD
+研究”。有些宿主会把 skill 暴露为斜杠命令，有些通过内置 skill tool 加载，因此不把
+`/poe-bd-create` 是否出现在命令面板作为唯一验收标准。
+
+OpenCode 安装器只链接 `poe-bd-research` 和 `poe-bd-create`，并安全合并
+`~/.config/opencode/opencode.json` 的 `mcp.poe2_build_mcp`。它不会迁移依赖 Codex Desktop 任务
+编排能力的 `poe-bd-research-loop` / `poe-bd-learning-loop`。
+
+### 从开源仓库安装
+
 Windows PowerShell：
 
 ```powershell
 .\install.ps1 codex
+.\install.ps1 opencode
+.\install.ps1 claude
+.\install.ps1 cursor
 ```
 
 macOS / Linux：
 
 ```bash
 ./install.sh codex
+./install.sh opencode
+./install.sh claude
+./install.sh cursor
 ```
+
+如果尚未 clone，可以先把安装脚本下载到临时文件、检查内容，再运行。安装器会把仓库放到
+`~/.poe-bd-creator/repo`；也可以用 `POE_BD_CREATOR_DIR` 改位置。不要把远程脚本直接 pipe 给
+shell。
 
 常用选项：
 
 ```powershell
 .\install.ps1 -DryRun codex
-.\install.ps1 -RegisterMcpOnly
+.\install.ps1 -FromCheckout opencode
+.\install.ps1 -RegisterMcpOnly -McpHost opencode
+.\install.ps1 -Doctor opencode
 .\install.ps1 -Update
-.\install.ps1 -Uninstall codex
+.\install.ps1 -Uninstall opencode
 ```
 
 ```bash
 ./install.sh --dry-run codex
-./install.sh --register-mcp-only
+./install.sh --from-checkout opencode
+./install.sh --register-mcp-only opencode
+./install.sh --doctor opencode
 ./install.sh --update
-./install.sh --uninstall codex
+./install.sh --uninstall opencode
 ```
 
-安装器会链接 `poe-bd-creator-plugin/skills/poe-bd-research`、
-`poe-bd-creator-plugin/skills/poe-bd-create`、
-`poe-bd-creator-plugin/skills/poe-bd-research-loop` 和
-`poe-bd-creator-plugin/skills/poe-bd-learning-loop`，不会覆盖已有真实目录；卸载只删除自己
-创建的 symlink/junction。
+Codex 安装全部四个 skill；Claude Code、Cursor 和 OpenCode 当前只安装可移植的 Research/Create
+两个 skill。安装器不会覆盖已有真实目录或同名非托管 MCP 配置；JSON 客户端首次修改前会保留
+`.poe-bd-creator.bak`，并用本地指纹回执确保卸载只删除自己写入且未被用户修改的条目。
 
-安装器还会为 Codex 注册本项目 MCP 服务 `poe2_build_mcp`，这样 `/poe-bd-create` 运行时才能
-看到 `query_research_memory`、`find_skills`、`new_build`、`evaluate_generation_candidate` 等工具。修改会写入
-`~/.codex/config.toml` 中带有 `poe-bd-creator managed MCP server` 标记的配置块；卸载 Codex
-目标时只删除这个托管配置块，不会改动其他 MCP 服务。
+安装器会为 Codex、Claude Code、Cursor 和 OpenCode 注册本项目 MCP 服务
+`poe2_build_mcp`，这样 Create/Research 运行时才能看到 `query_research_memory`、`find_skills`、
+`new_build`、`evaluate_generation_candidate` 等工具。Codex 修改
+`~/.codex/config.toml` 中带托管标记的块；其他三个宿主只合并各自 JSON 中的一个命名条目。
 已有本地 checkout 和 skills、只缺 MCP 工具时，可使用 `-RegisterMcpOnly` / `--register-mcp-only`；
-该模式不会 pull、clone 或重新链接 skill。注册后需要新建 Codex 任务以重新发现工具。
+该模式不会 pull、clone 或重新链接 skill。注册后需要重启宿主或新建任务以重新发现工具。完整
+客户端路径、配置形状和故障排查见 [多 Agent 安装指南](docs/MULTI_AGENT_INSTALL.md)。
 
 ## 使用 `/poe-bd-create`
 
 当前 `/poe-bd-create` 是 Phase 5 原型入口：Agent 负责把“我想要一个适合新手开荒的 BD”这类
 自然语言需求转成更具体的设计提示词或最小 BuildBrief 摘要，自己按需查询项目工具，并在活动
-PoB 中搭建候选 BD。程序先通过 `scripts/create_build.py start-run` 创建本次独立运行，再由
+PoB 中搭建候选 BD。程序先通过插件自带的 `start_generation_run` 创建本次独立运行，再由
 `evaluate_generation_candidate` 捕获构筑并运行 Phase 1 Judge，最后由
-`inspect_generation_preflight` 先检查活动构筑，再由 `scripts/create_build.py validate-output` 做
-非消费校验、`scripts/create_build.py review-packet --compact` 核对可信评估结果并整理人工验收包。
+`inspect_generation_checkpoint` 检查活动构筑，再由 `validate_generation_output` 做非消费校验、
+`complete_generation_review` 核对可信评估结果并整理人工验收包。正式插件不依赖仓库 checkout、
+当前工作目录或用户手工执行 Python helper。
 程序不接管 BD 补全，
 Judge 结果也仍需人工判断。默认 Create 以 `strict_mode=false` 运行 Judge，只返回硬合法性和
 确定性诊断，避免不可靠的主观评分驱动 Agent 重做构筑；需要查看旧版完整评分、质量档位和警告时，
@@ -198,6 +239,29 @@ skill 内部使用这个产品化脚本。普通 Codex 桌面用户不需要手�
 .\.tools\uv\uv.exe run python scripts\create_build.py review-packet --compact --run-id <runId> --run-token <runToken>
 ```
 
+最后三条 `create_build.py` 命令只保留为仓库开发兼容入口。发布后的 Codex 插件使用
+`start_generation_run / validate_generation_output / complete_generation_review` MCP 工具，不会去当前
+工作目录寻找这些脚本。
+
+## 插件发布数据
+
+`scripts/build_codex_plugin.py` 生成自包含 Codex 插件包。发布包同时包含：
+
+- MCP 服务、Create 运行入口和所需 Python 依赖；
+- 当前版本只读 corpus；
+- 从维护者本机成熟 Research 库导出的 `creator_visible + train_context + (global_seed/local_user) + passed` 净化种子；
+- 经过同一 durable copy-safety 合同验证的 Phase 7 Learning Memory JSONL 种子；
+- 可移植的物理图快照种子；
+- Headless PoB 所需的源码子集和可选平台运行时。
+
+原始 Research 案例、查询回执、隔离材料、progression/campaign 状态和完整角色材料不进入发布包。
+已通过安全合同的维护者 `local_user` Research 与 Learning Memory 会进入版本化发布种子。首次启动
+时，Research、Learning Memory 与物理图种子安装到用户数据目录；如果用户已经有本地数据库，插件
+升级不会覆盖它。发布构建前先运行 `scripts/build_research_release_seed.py` 和
+`scripts/build_learning_memory_release_seed.py`，再运行
+`scripts/build_codex_plugin.py`；构建器会在任一必要种子缺失时失败，避免发布一个只能显示 skill、
+却无法召回知识的空插件。
+
 macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 
 非 dry-run 的默认 `queue` 会返回唯一的 `runDir`，后续命令必须原样使用。每个研究会话拥有独立
@@ -220,11 +284,14 @@ macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 
 ## 平台能力
 
-| 平台 | Skill 发现 | MCP 工具 | 串行逐案研究 | 本地 uv / PoB |
+| 平台 | 安装器 | 可用 skill | MCP 自动配置 | 当前结论 |
 | --- | --- | --- | --- | --- |
-| Codex | 支持 | 支持 | 支持 | 支持 |
-| Claude Code | 支持 | 取决于本地配置 | 支持 | 支持 |
-| Cursor / VS Code Copilot | 取决于宿主 skill/plugin 支持 | 取决于本地配置 | 支持 | 支持 |
-| Gemini / OpenCode / OpenClaw / Hermes | 取决于宿主 | 取决于本地配置 | 支持 | 支持 |
+| Codex | 支持 | 四个 | 支持 | 完整支持 |
+| Claude Code | 支持 | Research、Create | 支持 | 可测试 |
+| Cursor | 支持 | Research、Create | 支持 | 可测试 |
+| OpenCode | 支持 | Research、Create | 支持 | 当前优先测试目标 |
+| VS Code Copilot / Gemini / OpenClaw / Hermes | 仅 skill 链接 | Research、Create | 不支持 | 需手工接 MCP，暂不宣称完整可用 |
+| Pi | 未接入 | 未接入 | Pi 需要扩展层 | 暂不支持 |
 
-多平台兼容的目标是让同一套 skill、脚本和安全合同可被不同 agent 宿主串行执行。
+多平台共享同一套 skill、MCP server、用户数据目录和安全合同；宿主适配层只负责 skill 发现与 MCP
+配置。两个 Desktop loop 仍保持 Codex 专属，不通过复制 prompt 的方式伪装成跨平台能力。

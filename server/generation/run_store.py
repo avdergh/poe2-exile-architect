@@ -13,10 +13,11 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from server import paths
+
 from . import models
 
 
-ROOT = Path(__file__).resolve().parents[2]
 RUN_TTL = timedelta(hours=2)
 
 
@@ -47,7 +48,11 @@ class BoundRun:
 
 def runs_dir() -> Path:
     override = os.environ.get("POE_BD_CREATE_RUNS_DIR")
-    return Path(override).resolve() if override else (ROOT / ".poe-bd-create" / "runs").resolve()
+    return (
+        Path(override).resolve()
+        if override
+        else (paths.user_data_dir() / "generation-runs").resolve()
+    )
 
 
 def load_bound_run(

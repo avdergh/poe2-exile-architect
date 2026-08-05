@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "poe2-build-mcp",
   "display_name": "Exile Architect",
-  "version": "0.1.53",
+  "version": "0.1.56",
   "description": "Your AI build companion for Path of Exile 2. Import a build for real Path of Building numbers, theorycraft and optimize upgrades, search items, gems, and uniques, and check live prices — every stat computed by the engine, never guessed.",
   "icon": "assets/icon.png",
   "author": {
@@ -85,6 +85,9 @@
     { "name": "query_research_memory", "description": "Query sanitized build-design memory and return safe evidence references." },
     { "name": "graph_tool_query", "description": "Run a bounded typed graph query without exposing raw graph query languages." },
     { "name": "suggest_build_lifecycle", "description": "Suggest a lifecycle route and transition gates for a build goal." },
+    { "name": "start_generation_run", "description": "Start one isolated Phase 5 Create run in per-user storage without a repository-relative helper command." },
+    { "name": "validate_generation_output", "description": "Submit and validate a safe Create summary without consuming its review binding." },
+    { "name": "complete_generation_review", "description": "Submit the final safe Create summary and atomically consume its trusted review binding." },
     { "name": "inspect_generation_preflight", "description": "Preflight the active generated build; subjective advisories require explicit strict_mode=true." },
     { "name": "inspect_generation_checkpoint", "description": "Merge hard checks and numeric readback by state hash; subjective advisories require strict_mode=true." },
     { "name": "evaluate_generation_candidate", "description": "Snapshot and Judge a generated build; defaults to hard-only feedback, with explicit strict_mode=true for full scoring." },

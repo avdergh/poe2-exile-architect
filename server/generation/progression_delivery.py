@@ -435,13 +435,12 @@ def _route_guide(route: dict[str, Any]) -> str:
         "",
         route["routeSummary"],
         "",
-        f"- 基础职业：{route['classShell']}",
-        f"- 路线质量：{route['qualityStatus']}",
-        f"- 目标 artifact：{route['targetArtifactId']}",
+        f"- 职业起点：{route['classShell']}",
+        f"- 最终目标等级：{route['stages'][-1]['targetLevel']}",
         "",
         *(
             [
-                "## 目标 Research / 机制限制",
+                "## 开始前先知道的限制",
                 "",
                 *[f"- {item}" for item in target_caveats],
                 "",
@@ -449,21 +448,106 @@ def _route_guide(route: dict[str, Any]) -> str:
             if target_caveats
             else []
         ),
-        "## 阶段",
+        "## 从建号到成型",
         "",
     ]
+    for stage in route["stages"]:
+        player_guide = stage.get("playerGuide") or {}
+        lines.extend(
+            [
+                f"### 等级 {stage['targetLevel']}：这一阶段怎么打",
+                "",
+                "#### 这一阶段要完成什么",
+                "",
+                stage["purpose"],
+                "",
+            ]
+        )
+        mechanic_explanation = player_guide.get("mechanicExplanation")
+        if mechanic_explanation:
+            lines.extend(["#### 为什么这样搭配", "", mechanic_explanation, ""])
+        lines.extend(["#### 实战怎么操作", "", stage["playPattern"], ""])
+        leveling_steps = player_guide.get("levelingSteps") or []
+        if leveling_steps:
+            lines.extend(
+                [
+                    "#### 这段等级怎么成长",
+                    "",
+                    *[f"{index}. {item}" for index, item in enumerate(leveling_steps, start=1)],
+                    "",
+                ]
+            )
+        changes = stage.get("changesFromPrevious") or []
+        if changes:
+            lines.extend(["#### 相比上一阶段，主要变了什么", ""])
+            for change in changes:
+                if change.get("replaces"):
+                    lines.append(
+                        f"- **{change['subject']}**：替换 {change['replaces']}。{change['reason']}"
+                    )
+                else:
+                    lines.append(f"- **{change['subject']}**：{change['reason']}")
+            lines.append("")
+        priorities = stage.get("acquisitionPriorities") or []
+        if priorities:
+            lines.extend(
+                [
+                    "#### 装备、技能和天赋先做什么",
+                    "",
+                    *[f"- {item}" for item in priorities],
+                    "",
+                ]
+            )
+        common_problems = player_guide.get("commonProblems") or []
+        if common_problems:
+            lines.extend(["#### 常见问题怎么处理", ""])
+            for problem in common_problems:
+                lines.append(f"- **{problem['symptom']}**：{problem['solution']}")
+            lines.append("")
+        bridge = stage.get("transitionBridge")
+        if isinstance(bridge, dict):
+            lines.extend(
+                [
+                    "#### 什么时候可以进入下一阶段",
+                    "",
+                    bridge["summary"],
+                    "",
+                    *[
+                        (
+                            f"- [{'x' if requirement['status'] == 'satisfied' else ' '}] "
+                            f"{requirement['description']}"
+                        )
+                        for requirement in bridge["requirements"]
+                    ],
+                    "",
+                ]
+            )
+        caveats = stage.get("caveats") or []
+        if caveats:
+            lines.extend(["#### 容易踩坑的地方", "", *[f"- {item}" for item in caveats], ""])
+
+    lines.extend(
+        [
+            "## 技术验证附录",
+            "",
+            "下面是给复核者看的内部验证与成本元数据；正常游玩只需阅读前面的成长说明。",
+            "",
+            f"- 路线质量：{route['qualityStatus']}",
+            f"- 目标 artifact：{route['targetArtifactId']}",
+            "",
+        ]
+    )
     for stage in route["stages"]:
         fact = facts.get(stage["artifactId"], {})
         cost = stage.get("costProfile") or {}
         lines.extend(
             [
-                f"### {stage['stageId']} · 等级 {stage['targetLevel']}",
+                f"### 等级 {stage['targetLevel']} 验证记录",
                 "",
+                f"- stageId：{stage['stageId']}",
                 f"- 路线角色：{stage['routeRole']}",
                 f"- 生命周期：{stage['lifecycleStage']}",
                 f"- 证据状态：{stage['evidenceStatus']}",
-                f"- 目的：{stage['purpose']}",
-                f"- 操作循环：{stage['playPattern']}",
                 (
                     "- 成本画像："
                     f"最高必需档位 {cost.get('highestRequiredBand', 'unknown')}"
@@ -485,40 +569,11 @@ def _route_guide(route: dict[str, Any]) -> str:
                 "",
             ]
         )
-        changes = stage.get("changesFromPrevious") or []
-        if changes:
-            lines.extend(["阶段变化：", ""])
-            for change in changes:
-                replacement = f"（替换 {change['replaces']}）" if change.get("replaces") else ""
-                lines.append(
-                    f"- [{change['category']}/{change['action']}] "
-                    f"{change['subject']}{replacement}：{change['reason']}"
-                )
-            lines.append("")
-        priorities = stage.get("acquisitionPriorities") or []
-        if priorities:
-            lines.extend(["获取优先级：", "", *[f"- {item}" for item in priorities], ""])
-        bridge = stage.get("transitionBridge")
-        if isinstance(bridge, dict):
-            lines.extend(
-                [
-                    f"转型桥梁：{bridge['summary']}",
-                    "",
-                    *[
-                        f"- [{requirement['status']}] {requirement['description']}"
-                        for requirement in bridge["requirements"]
-                    ],
-                    "",
-                ]
-            )
-        caveats = stage.get("caveats") or []
         judge_disclosures = [
             *fact.get("judgePlayabilityFailures", []),
             *fact.get("judgeQualityWarnings", []),
             *fact.get("judgeCaveats", []),
         ]
-        if caveats:
-            lines.extend(["注意事项：", "", *[f"- {item}" for item in caveats], ""])
         if judge_disclosures:
             lines.extend(
                 [

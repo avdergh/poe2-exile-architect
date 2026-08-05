@@ -28,7 +28,7 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "只填写原始版本号或 commit" in skill
     assert 'qualityBand="strong"' in skill
     assert 'rewardStrength="limited"' in skill
-    assert "start-run" in skill
+    assert "start_generation_run" in skill
     assert "runContext" in skill
     assert "禁止读取、复用或改写其他运行留下的" in skill
     assert "query_research_memory" in skill
@@ -92,11 +92,10 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "judgeAdvisoryReport" in skill
     assert "toolFeedbackEvents" in skill
     assert "给用户看的内容" in skill
-    assert "给 helper 的内部文件" in skill
+    assert "提交给运行工具的内部对象" in skill
     assert "不能换职业" in skill
-    assert "review-packet" in skill
-    assert "validate-output" in skill
-    assert "review-packet --compact" in skill
+    assert "complete_generation_review" in skill
+    assert "validate_generation_output" in skill
     assert "lifecycleEvidenceCoverage" in skill
     assert "HumanReviewPacket" in skill
     assert "无参数" in skill
@@ -107,10 +106,9 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "不得调用 freshness" in skill
     assert "用户已经在当前对话中回答过" in skill
     assert "referenceBlind=true" in skill
-    assert "普通用户不需要手动运行脚本" in skill
-    assert "scripts\\create_build.py review-packet" in skill
-    assert "--run-id" in skill
-    assert "--run-token" in skill
+    assert "普通用户不需要仓库" in skill
+    assert "不要搜索仓库" in skill
+    assert "managed_user_data" in skill
     assert "模型隐藏思维链" in skill
     assert "完整对话记录" in skill
     assert "技能组合、辅助组合、装备槽位摘要、天赋锚点或转型路线" in skill
@@ -136,8 +134,8 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "/poe-bd-create" in phase5
     assert "P5.1 第一阶段原型" in phase5
     assert "HumanReviewPacket" in phase5
-    assert "review-packet" in phase5
-    assert "scripts/create_build.py start-run" in phase5
+    assert "complete_generation_review" in phase5
+    assert "start_generation_run" in phase5
     assert "不因为 Agent 自己生成了具体" in phase5
     assert "生命周期工具只保证阶段路线" in phase5
     assert "testedSkillGroups" in phase5
@@ -153,7 +151,7 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "保存 artifact" in phase5
     assert "review marker" in phase5
     assert "diagnostic_only" in phase5
-    assert "validate-output" in phase5
+    assert "validate_generation_output" in phase5
     assert "LifecycleEvidenceCoverage" in phase5
     assert "设计判断和工具验证结论" in phase5
     assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
@@ -165,8 +163,8 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "no_matching_memory" in phase5
     assert "/poe-bd-create" in guide
     assert "Agent-led prototype" in guide
-    assert "scripts/create_build.py review-packet" in guide
-    assert "scripts/create_build.py start-run" in guide
+    assert "complete_generation_review" in guide
+    assert "start_generation_run" in guide
     assert "must not reject them merely because" in guide
     assert "every PoB/compute tool sequentially" in guide
     assert "testedSkillGroups" in guide
@@ -179,7 +177,7 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "`rolledBack=true`" in guide
     assert "inspect_generation_checkpoint" in guide
     assert "diagnostic_only" in guide
-    assert "validate-output" in guide
+    assert "validate_generation_output" in guide
     assert "lifecycleEvidenceCoverage" in guide
     assert "trusted receipt" in guide
     assert "progressive research recall" in guide
@@ -193,8 +191,9 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "physical graph, and corpus override patch-sensitive prose" in guide
     assert "/poe-bd-create" in readme
     assert "Phase 5 Agent 主导生成原型" in readme
-    assert "review-packet" in readme
-    assert "start-run" in readme
+    assert "complete_generation_review" in readme
+    assert "start_generation_run" in readme
+    assert "不依赖仓库 checkout" in readme
     assert "strict_mode=false" in readme
     assert "evaluate_generation_candidate" in readme
 
@@ -225,28 +224,38 @@ def test_installers_fallback_uninstall_knows_all_product_skills():
     )
 
 
-def test_codex_installer_registers_poe2_mcp_server():
+def test_installers_register_poe2_mcp_server_for_supported_hosts():
     ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
     sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "Register-Codex-McpServer" in ps1
     assert "Resolve-UvCommand" in ps1
-    assert "Codex MCP installation requires uv" in ps1
+    assert "MCP installation requires uv" in ps1
     assert "[mcp_servers.poe2_build_mcp]" in ps1
     assert 'args = @("run", "python", "-m", "server.main")' in ps1
     assert "-RegisterMcpOnly" in ps1
     assert "$RepoDir = $ScriptRepoDir" in ps1
     assert "register_codex_mcp_server" in sh
     assert "resolve_uv_command" in sh
-    assert "Codex MCP installation requires uv" in sh
+    assert "MCP installation requires uv" in sh
     assert "[mcp_servers.poe2_build_mcp]" in sh
     assert 'args = ["run", "python", "-m", "server.main"]' in sh
     assert "--register-mcp-only" in sh
     assert 'REPO_DIR="$SCRIPT_DIR"' in sh
-    assert "安装器还会为 Codex 注册本项目 MCP 服务" in readme
+    assert "Codex、Claude Code、Cursor 和 OpenCode" in readme
     assert "两者都不存在时会明确停止" in readme
     assert "poe2_build_mcp" in readme
+
+    for marker in ("claude", "cursor", "opencode"):
+        assert marker in ps1
+        assert marker in sh
+    assert "configure_agent_host.py" in ps1
+    assert "configure_agent_host.py" in sh
+    assert "poe-bd-research-loop" in ps1
+    assert "poe-bd-learning-loop" in ps1
+    assert "$PortableSkills = @('poe-bd-research', 'poe-bd-create')" in ps1
+    assert 'PORTABLE_SKILLS="poe-bd-research poe-bd-create"' in sh
 
 
 def test_phase5_distribution_includes_generation_runtime_contracts():

@@ -84,7 +84,7 @@ progression 的聊天记录不是事实数据库。MCP 只把控制状态和安�
    技能时，它是 discovery 硬过滤条件；不能借候选步骤改写用户约束。
 6. 启动普通单阶段 Phase 5 run，并立即调用 `bind_build_progression_target_run`。再按普通 Create
    工作流生成所选目标：
-   - `scripts/create_build.py start-run --memory-mode memory_assisted`；
+   - `start_generation_run(memory_mode="memory_assisted")`；
    - `new_build` 后从空状态搭建，不读取 starter packet/cache；
    - 解析目标 ascendancy 与玩家 `active_skill` 的 `skill:` stable key；`gem:` key 只作查询别名；
    - 正常渐进查询 Research，调用时传 `response_profile="create_compact"`，记录真实
@@ -157,6 +157,10 @@ anchor 只有在 artifact、artifact-bound lifecycle 和 acceptance decision 全
 Web/Browser 做最多六来源的有界研究：
 
 - 优先当前精确 patch、明确等级分段的结构化/官方论坛/可信作者攻略；
+- 除主技能和升华外，主动检索同职业开荒中与主技能配套的精魂/保留技能、独立单体或 setup 技能、
+  它们的大致启用阶段、Spirit/资源前提和实际职责。来源只写主技能不等于“没有配套技能”；应使用
+  “主技能 + leveling/spirit/reservation/buff/boss setup”等定向查询补足候选，再由 corpus、机制
+  和 PoB 验证，而不是照抄网页；
 - 两个独立来源收敛，或一个当前精确 patch 且明确分级的完整来源，才能 `supported`；
 - 聚合帖/评论只发现来源；旧 patch 只作待复核，跨赛季禁用；
 - 断网时提交 `limited_offline_inference` 并披露低证据。
@@ -167,6 +171,8 @@ Web/Browser 做最多六来源的有界研究：
 
 `skill_package` claim 必须提交结构化 `skillRoles` 及其 provides/requires；旧 cache v1 会以
 `starter_role_schema_revalidation_required` 返回，只能重新检索/复核后提交 v2，不能直接采用。
+精魂/保留技能按它实际提供的 damage、clear、defense、recovery 或 resource 职责进入同一个技能包，
+不新增平行 schema；若研究后不采用，保留简短拒绝原因或替代方案。
 
 ## 3. 分阶段知识路由与 Blueprint
 
@@ -224,7 +230,9 @@ gem/active-skill 等价 key 集合；因此真实 gem 查询可以授权对应 a
 - `family_exact` 的 Family 改变时使用新的精确 query receipt。
 
 蓝图锁定前再做一次便宜的开荒候选选择。这与目标 Family discovery 不同，也不是额外 Judge gate：对至少两个合理技能包核对职责、
-setup/payoff 前提、技能可用等级、武器兼容、资源方式和明确 exclusion，记录选择与拒绝理由。
+setup/payoff 前提、技能可用等级、武器兼容、资源方式、精魂/保留协同和明确 exclusion，记录选择与
+拒绝理由。候选不应只列一个主技能；应能解释清图、稀有怪/Boss 和持续增益分别由什么承担。没有
+合适精魂技能时允许明确采用非精魂方案，不能为了满足形式强塞无效或尚未解锁的保留技能。
 候选阶段不要调用面向终局的 `optimize_build` 或提前制作整套装备；先用 corpus/mechanics 与
 必要的技能、武器兼容证据排除方向错误，选中后再完整构筑该阶段。
 
@@ -235,6 +243,8 @@ setup/payoff 前提、技能可用等级、武器兼容、资源方式和明确 
   操作方案，不能以“只是过渡”为理由留下未完成构筑；
 - 不为低等级阶段增加固定 DPS/EHP、装备槽数量或天赋点数等主观硬门槛；阶段强度由路线职责、
   当前等级可获得条件、Research/开荒证据和 Agent 的主动质量收尾共同保证；
+- “检查精魂/保留协同并给出完整输出技能包”同样是 Agent 的软设计职责，不新增固定技能数量、
+  Spirit 保留量、DPS 或服务端拒绝条件；
 - 所有阶段仍禁止 `optimize_build` 与全局树重排，只能做 Agent 指定的局部优化；
 - policy 固定 `mutationStrategy=single_initialization_then_function_scoped_deltas`：阶段只初始化一次，
   后续按职能提交局部变化；
@@ -256,7 +266,8 @@ setup/payoff 前提、技能可用等级、武器兼容、资源方式和明确 
 对每个 `requiresPhase5Run=true` 的 stage：
 
 1. `claim_build_progression_stage`；
-2. `create_build.py start-run`，再 `bind_build_progression_stage_run`；
+2. 用 claim 的 `generationMemoryMode` 调用 `start_generation_run`，再
+   `bind_build_progression_stage_run`；不要搜索仓库脚本或依赖当前工作目录；
 3. 第一阶段用 `apply_build_mutation_batch(batch_kind="bootstrap", ...)` 从 `new_build`、职业和
    等级开始；后续按 `mechanism_shell / skill_loadout / passive_delta / required_gear /
    ordinary_gear / config` 拆成职能小事务。后续阶段优先加载上一 artifact 后正向修改，大
@@ -266,7 +277,9 @@ setup/payoff 前提、技能可用等级、武器兼容、资源方式和明确 
    optimizer；失败只回滚当前批，`recoveryRequired=true` 时暂停恢复；
 4. 按 `StageCreatePacket` 的知识模式工作：`starter_common` 不进行成品 Family 召回；
    `family_exact` 按当前实际 Family 渐进查询 Research。所有阶段随后完整搭建技能组、装备、天赋、
-   升华、配置、属性、Spirit、药剂/护符和资源，并执行符合当前等级的主动质量收尾；
+   升华、配置、属性、Spirit、药剂/护符和资源，并执行符合当前等级的主动质量收尾。目标前阶段在
+   skill loadout 提交前还要复核：主技能清图职责、稀有怪/Boss 手段、可用精魂/保留技能及其辅助
+   关系是否形成客观输出方案；不采用精魂技能时记录已检查的候选、原因和替代职责；
    查询取舍完成后更新 context checkpoint，再开始大量 PoB mutation；
 5. 先调用 `inspect_generation_checkpoint(strict_mode=<本次反馈模式>)`，按同一 build-state hash 一次取得 completeness、
    preflight、stats 和 defenses；修复后状态 hash 改变则重新检查。随后每个正式 attempt 最多
@@ -279,10 +292,15 @@ setup/payoff 前提、技能可用等级、武器兼容、资源方式和明确 
 8. 确认回执的 `evaluatedSourceHash` 与最终 Judge/artifact hash 一致；
 9. `classify_build_progression_costs`；
 10. 在 `StageCompletionReport.transitionReadiness` 中逐项提交 entry bridge requirement。id、kind、
-   blocking、description 不能改写；所有 blocking gate 必须 `satisfied` 且有安全 evidence ref；
-11. `complete_build_progression_stage` 只提交 `verificationRef` 作为 lifecycle 授权；其他复制字段
+    blocking、description 不能改写；所有 blocking gate 必须 `satisfied` 且有安全 evidence ref；
+11. 按主 skill 直接列出的 `progression-writing.md` 填写玩家教学内容：`purpose` 讲目标，
+    `playPattern` 讲实际操作，`playerGuide.mechanicExplanation` 讲原理，`levelingSteps` 覆盖两个
+    里程碑之间的成长过程，`commonProblems` 给出可观察症状和处理方法。第一阶段必须从建号讲起；
+    后续阶段讲清改了什么、为什么现在改和未满足转型条件时继续使用什么。不要把内部枚举、Family
+    key、artifact id 或 Judge 字段写进玩家正文；
+12. `complete_build_progression_stage` 只提交 `verificationRef` 作为 lifecycle 授权；其他复制字段
     不会覆盖可信回执。
-12. 完成阶段前最后更新 checkpoint：记录本阶段 artifact、已解决/未解决条件和下一阶段动作；随后
+13. 完成阶段前最后更新 checkpoint：记录本阶段 artifact、已解决/未解决条件和下一阶段动作；随后
     下一阶段只需 compact status 或 resume packet，不回放本阶段全部工具结果。
 
 `endgame_budget` progression stage 最低 82，`endgame_final` 最低 92；这是 progression lifecycle
@@ -300,7 +318,7 @@ lifecycle/route role、基础职业、目标或版本。暂停/恢复始终使�
 
 1. 确认 `StageCreatePacket.requiresPhase5Run=false` 且
    `targetAnchorArtifactId` 与最初 anchor 相同；
-2. 不调用 `start-run`，不调用 `bind_build_progression_stage_run`；
+2. 不调用 `start_generation_run`，不调用 `bind_build_progression_stage_run`；
 3. 从 progression 状态读取绑定时已经通过的 target `verificationRef`；完成阶段会重新校验它所
    指向的 immutable artifact 和 source hash，不重新序列化 XML，也不生成另一份身份；
 4. 如需检查构筑或成本，可以只读加载 `targetAnchorArtifactId`，不得修改后冒充同一 anchor；
@@ -320,6 +338,10 @@ lifecycle/route role、基础职业、目标或版本。暂停/恢复始终使�
 3. `export_build_progression_package` 一次导出；
 4. 向用户逐项报告 inventory：每阶段 XML、每阶段 import-code、路线说明，以及只属于 target
    anchor 的官方 `.build`；失败项报告 errorCode，不展示内容。
+
+路线说明正文按玩家学习顺序展示阶段目标、搭配原理、实战操作、等级成长、获取优先级、常见问题
+和转型清单。stage id、route role、evidence status、成本覆盖率和 Judge/modelability 等内部复核
+字段统一放在文末“技术验证附录”，不能打断正文教学。
 
 若目标前阶段最终失败，或失败登记/暂停/本地审批超时使状态仍停在 `stage_running`，但 target
 anchor 已经可信绑定，仍立即调用

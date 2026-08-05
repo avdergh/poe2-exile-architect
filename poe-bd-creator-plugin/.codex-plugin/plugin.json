@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.4.5+codex.20260804060737",
+  "version": "0.4.5+codex.20260805081015",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -15,7 +15,8 @@
     "knowledge-graph",
     "mcp"
   ],
-  "skills": "skills",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Exile Architect",
     "shortDescription": "Research and create PoE2 builds with verification gates.",

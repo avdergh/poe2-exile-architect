@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from server import paths  # noqa: E402
 from server.generation import (  # noqa: E402
     canonicalize,
     models,
@@ -28,6 +29,48 @@ from server.knowledge import research_memory  # noqa: E402
 
 
 RUN_TTL = timedelta(hours=2)
+
+
+def start_generation_run(memory_mode: str = "memory_assisted") -> dict[str, Any]:
+    """MCP-safe wrapper for the CLI ``start-run`` operation."""
+
+    if memory_mode not in {"standard", "no_memory", "memory_assisted"}:
+        return models.rejected("invalid_memory_mode")
+    payload = _start_run(argparse.Namespace(memory_mode=memory_mode))
+    payload.pop("agentOutputFile", None)
+    payload.pop("reviewResultFile", None)
+    payload["storage"] = "managed_user_data"
+    return payload
+
+
+def validate_generation_output(
+    run_id: str,
+    run_token: str,
+    agent_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one bound safe submission and validate it without consuming the run."""
+
+    return _submit_generation_output(
+        run_id=run_id,
+        run_token=run_token,
+        agent_output=agent_output,
+        consume=False,
+    )
+
+
+def complete_generation_review(
+    run_id: str,
+    run_token: str,
+    agent_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one bound safe submission and consume the run after trusted review."""
+
+    return _submit_generation_output(
+        run_id=run_id,
+        run_token=run_token,
+        agent_output=agent_output,
+        consume=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,6 +282,41 @@ def _run_review_packet(
     return result
 
 
+def _submit_generation_output(
+    *,
+    run_id: str,
+    run_token: str,
+    agent_output: dict[str, Any],
+    consume: bool,
+) -> dict[str, Any]:
+    canonical = _canonical_run_id(run_id)
+    if canonical is None:
+        return models.rejected("invalid_run_manifest")
+    run_dir = _runs_dir() / canonical
+    output_path = run_dir / "agent-output.json"
+    if (run_dir / "review-consumed").exists():
+        return models.rejected("run_already_consumed")
+    manifest = _read_run_manifest(run_dir / "run-manifest.json", canonical, output_path)
+    if manifest is None:
+        return models.rejected("invalid_run_manifest")
+    if manifest["runContext"]["runToken"] != run_token:
+        return models.rejected("run_binding_mismatch")
+    if _run_expired(manifest["startedAt"]):
+        return models.rejected("run_expired")
+    if not isinstance(agent_output, dict):
+        return models.rejected("invalid_input")
+    raw_safety = models.validate_no_raw_or_hidden_reasoning(agent_output)
+    if raw_safety.get("status") != "accepted":
+        return raw_safety
+    binding_error = _run_binding_error(agent_output, manifest)
+    if binding_error is not None:
+        return binding_error
+    if not _write_json_atomic(output_path, agent_output):
+        return models.rejected("run_state_write_failed")
+    args = argparse.Namespace(run_id=canonical, run_token=run_token)
+    return _run_review_packet(args, consume=consume, compact=True)
+
+
 def _validate_candidate_research_use(
     canonical_payload: dict[str, Any],
     *,
@@ -302,7 +380,11 @@ def _compact_review_result(
 
 def _runs_dir() -> Path:
     override = os.environ.get("POE_BD_CREATE_RUNS_DIR")
-    return Path(override).resolve() if override else (ROOT / ".poe-bd-create" / "runs").resolve()
+    return (
+        Path(override).resolve()
+        if override
+        else (paths.user_data_dir() / "generation-runs").resolve()
+    )
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> bool:
@@ -313,7 +395,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> bool:
             encoding="utf-8",
         )
         temp_path.replace(path)
-    except OSError:
+    except (OSError, TypeError, ValueError):
         try:
             temp_path.unlink(missing_ok=True)
         except OSError:
