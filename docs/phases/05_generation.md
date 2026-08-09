@@ -56,41 +56,22 @@ Phase 5 仍遵守项目硬边界：
 
 Judge 反馈采用显式开关：普通 Create 默认 `strict_mode=false`，底层正式 Judge 仍完整计算，但仅把
 确定性硬失败、`passed`、快照绑定和安全事实诊断交给 Agent；评分、质量档位、可玩性/质量警告、
-reward 和主观 caveat 不进入 attempt、retry、Review、artifact 或 progression。用户明确要求
+reward 和主观 caveat 不进入 attempt、retry、Review 或 artifact。用户明确要求
 “严格模式”时，调用方才在 checkpoint、Judge 和 lifecycle 调用中一致传
 `strict_mode=true`；同一 run 首轮 Judge 后不能改模式。默认模式不替代主动质量收尾：Agent 仍须
 基于 Research、机制、PoB 原始数值和构筑职责主动比较高影响方案，而不能把“没有质量警告”等同于
 质量已经验证。
 
-完整成长请求由 Phase 8 progression 编排，但它不能改写普通 Phase 5。目标 BD 首先按本章普通
-单阶段 Create 从空状态生成；在既有 retry 内解决目标 lifecycle 的真实资源/机制失败，review
-并保存为 immutable anchor，再对私有 artifact 生成可信 lifecycle receipt。之后每个目标前真实
-里程碑各有一个完整 Phase 5 run，最后 target closure 复用同一个 anchor/receipt，不再重复
-Create。开荒阶段可以使用与目标完全不同的技能包；首个升华前或尚未形成成熟流派时，它不是
-Research Family，Phase 8 应使用 `starter_common` 的 Starter/Web + corpus/mechanics 公共知识，
-不能伪造升华来查询成品数据。只有转型后升华和主技能稳定的 `family_exact` run 才按当前实际
-Family 查询 Research，且不能拿目标 Family 记忆冒充开荒知识。
-
-Phase 8 的生命周期验证预算（例如 `endgame_budget >= 82`）不得用于修改普通 Create 的生命周期
-摘要等级映射。普通 80 级目标的 Research recall、技能组、升华、优化、Judge、保存和导出行为
-必须保持 Phase 5 基线。
-
-Phase 8 可以让外部 Agent 在 run 外先做有界联网开荒研究。网页结论只是 patch-scoped 候选：
-
-- 原始网页、攻略正文和完整 URL 不能进入 Phase 5 output；
-- Starter evidence 必须是安全 source ref 和短 claim，并记录 adopted/caveated/rejected；
-- graph/corpus/mechanic 负责复核组件与机制，PoB/Judge 负责数值和合法性；
-- 联网失败可以按 limited evidence 继续，但不能声称开荒体验已经由成熟样本证明；
-- 价格只作获取风险说明，不能自动决定何时换升华、技能或天赋。
+普通 Create 只交付用户请求的目标等级单阶段终局 BD；目标 BD 按本章流程从空状态生成，在既有
+retry 内解决目标 lifecycle 的真实资源/机制失败，review 并保存为 immutable artifact，再对私有
+artifact 生成可信 lifecycle receipt。
 
 ## Agent 与程序分工
 
 Agent 负责：
 
 - 理解模糊用户需求；
-- 每次普通 Create 先确认是否产出完整开荒过程；只有用户明确要求单个固定目标 BD 时跳过，确认前
-  不调用 freshness、Research、run helper 或 PoB 工具；
-- 完成入口确认后判断是否还需要向用户追问其他约束；
+- 判断是否还需要向用户追问其他约束；
 - 将用户需求改写成更具体的生成提示词或最小 `BuildBrief`；
 - 选择要查询的数据库、Phase 4 记忆、图工具、机制资料和 PoB/计算工具；
 - 设计候选职业壳、阶段路线、主技能、机制轴、防御层、资源/Spirit 思路、转型门槛；
@@ -115,9 +96,8 @@ Agent 负责：
 - 在没有 PoB/Judge 证据时替 Agent 声称候选已验证；
 - 判断候选是否“像不像别人”。Phase 5 只关心是否安全、可解释、可验证和有设计价值。
 
-目标 anchor 的普通 Create 在 progression 中只保存 artifact，不立即单独交付；目标前
-progression-bound run 同样只保存 artifact。控制流程完成路线后统一导出每阶段 PoB 文件和 anchor
-目标 `.build`。非 progression 的普通单阶段 Create 保存与导出行为保持不变。
+普通单阶段 Create 保存 artifact 后，由 `export_final_build_package` 统一导出 PoB 文件、
+导入码和官方 `.build`。
 
 ## 原型阶段拆分
 
@@ -136,9 +116,9 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
 流程：
 
 1. 用户输入自然语言需求。
-2. Agent 先执行阻塞式开荒过程确认：用户选择“需要”进入 progression，选择“不需要”进入普通
-   单阶段 Create；只有请求已明确写明只产出单个目标/最终 BD 时跳过。确认前不启动任何工具。
-   随后再判断是否需要追问其他字段；如果信息足够，生成更具体的设计提示词或最小 `BuildBrief`。
+2. Agent 直接把需求整理为结构化摘要；如果信息不足，简短追问目标阶段、职业/升华/技能、重视
+   清图/Boss/生存/造价/上限等约束，然后生成更具体的设计提示词或最小 `BuildBrief`。不需要
+   开荒过程确认；本工具只产出目标等级单阶段终局 BD。
 3. Agent 调用插件 MCP 的 `start_generation_run` 建立本次运行凭据；run 状态保存在受管用户数据
    目录。发布插件不要求仓库 checkout、当前工作目录或 Agent 手工编辑 `agent-output.json`。
 4. Agent 按需查询研究记忆、图工具、语料库、机制说明、构筑原则和 PoB/计算工具，生成候选概要。
@@ -162,7 +142,8 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
    completeness、preflight、有界 stats 和 defenses，并分别返回
    `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
    `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/
-   武器组天赋预算和来源感知黄装合法性；制作、写入、checkpoint、Judge 和 artifact 保存共用
+   武器组天赋预算、来源感知黄装合法性、遗留 `Scaffold ...` 占位装备，以及 rare/magic 装备是否
+   缺少 `Item Level`；制作、写入、checkpoint、Judge 和 artifact 保存共用
    同一物品审计，普通前后缀、Perfect Essence、符文和腐化不会再由两套检查器分别判断。同一状态
    不重复执行，状态修改后自动形成新检查。主动宝石
    检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
@@ -176,9 +157,10 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
    本次 `runId` 与候选编号，同时记录不含原始材料的 `semanticStateHash`。该凭据的可信范围是
    快照和 Judge 结果；版本上下文仍来自 Agent 本次
    freshness/图/记忆查询，不因写入该凭据而自动变成程序签名事实。
-9. Agent 的每轮 `generationAttempts` 只需保存 attempt index、candidate 和 failure audit；
-   `validate_generation_output` 从本 run 的连续可信 receipts 补全 state/Judge 并做非消费校验。顶层最终
-   candidate/audit 可以从末轮推导，`memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
+9. Agent 在顶层只保存一次完整最终 candidate；每轮 `generationAttempts` 只需保存 attempt index、
+   `{candidateId}` candidate 引用和 failure audit。`validate_generation_output` 以 candidateId 核对
+   本 run 的连续可信 receipts，并补全 state/Judge 做非消费校验，不再要求每轮重复同一份完整候选。
+   `memoryReferences` 可以从 typed `ResearchMemoryUse` 归一化。
 10. 首个通过 Judge 且通过共享合法性审计的 attempt 成为受保护 passing baseline。Agent 随后仍
     必须执行一次完整主动质量收尾；新版本更好且合法时选择新 attempt，后续探索回归时可以选择
     旧 baseline。Judge 分数只作 advisory，Agent 还要结合机制闭环、配置真实性、多技能职责和
@@ -196,12 +178,13 @@ progression-bound run 同样只保存 artifact。控制流程完成路线后统�
    `requiredUserDisclosures`。可信快照中
    每个未消失的完整度 advisory 都必须在候选中记录 `deferred` 或 `intentionally_unused` 及理由；
    缺项、候选不一致或评估结果被改写时拒绝验收。
-   普通单阶段 Create 与 progression target 共用 Research 使用审计：每个关键失败 premise 都要在
+   普通单阶段 Create 使用 Research 使用审计：每个关键失败 premise 都要在
    `ResearchMemoryUse.premiseDecisions` 中标为 `resolved / caveated / not_applicable`；resolved
    必须引用本轮 `detail_level="record"` 回执实际深读的解决记录。只在摘要中看到记录 ID、伪造
    receipt 或遗漏 premise decision 都会拒绝 review。该校验只检查引用和处理记录完整，不替
    Agent 判断机制结论是否正确。
-   多 attempt 时 `selectedAttemptIndex / artifactSelectionOutcome` 必须来自可信
+    多 attempt 时，顶层完整 candidate、选中 attempt 的 candidateId 与可信 receipt 必须一致；
+    `selectedAttemptIndex / artifactSelectionOutcome` 必须来自可信
    artifact-selection receipt，并同时进入 Human Review 与 retry report；不得用空值回退到
    最后一轮。单 attempt 与旧版包保持兼容。
 13. 人工判断候选是否值得继续推进。
@@ -622,7 +605,9 @@ Agent 不能用解释覆盖硬阻断；只能给出复核证据、修正候选�
   和 Judge 也会拦截导入构筑或降级角色后遗留的超等级主动宝石。已完成
 - `inspect_build_completeness` 在正式 Judge 前报告占位装备、缺失物品等级、符文/灵魂核心决策、
   天赋珠宝、生命/魔力药剂和腰带护符容量。已完成
-- `scaffold_gear` 仍可用于中途计算，但所有 `Scaffold ...` 物品必须在最终验收前替换。已完成
+- `scaffold_gear` 仍可用于中途计算，但所有 `Scaffold ...` 物品，以及 rare/magic 装备缺少
+  `Item Level`，现在由共享 `HardLegalityAudit` 在 Judge 前阻断并返回
+  `attemptConsumed=false`；它们不再只是保存前 advisory。已完成
 - 药剂、护符、珠宝和符文由 Agent 根据阶段、预算和构筑机制选择；程序只诊断遗漏，不机械塞入
   固定方案。已完成
 - `optimize_item` 和 `rank_upgrades` 返回候选前复用同一个全角色 `HardLegalityAudit`；换装造成
@@ -679,7 +664,7 @@ Judge 临时堆出的计算骨架。
 - 不做“Agent 只给高层 plan，程序完全自动补完整 BD”的旧方向；
 - 不做 Phase 6 `.build` export；
 - 不做 Phase 7 reference Profile、盲测 Create、独立 Compare 或跨案例 Learning Memory；
-- 不做 Phase 8 奖励记忆；
+- 不做全链路开荒成长流程（仅交付目标等级单阶段终局 BD）；
 - 不把 Judge 分数当成机制真值；
 - 不把 Phase 4 成熟 BD 研究模式当作硬性合法性证据。
 

@@ -69,12 +69,13 @@ def canonicalize_agent_output(
         audit = _alias_value(attempt, "failureAudit", "failure_audit")
         if not isinstance(candidate, dict) or not isinstance(audit, dict):
             return models.rejected("invalid_schema", caveats=["compact attempt fields missing"])
-        if _alias_value(candidate, "candidateId", "candidate_id") != receipt.get("candidateId"):
+        candidate_id = _alias_value(candidate, "candidateId", "candidate_id")
+        if candidate_id != receipt.get("candidateId"):
             return models.rejected("trusted_evaluation_mismatch")
 
         canonical_attempt = {
             "attemptIndex": expected_index,
-            "prototypeBuildCandidate": deepcopy(candidate),
+            "prototypeBuildCandidate": _canonical_attempt_candidate(candidate, candidate_id),
             "failureAudit": deepcopy(audit),
         }
         state_error = _fill_or_match_trusted(
@@ -123,7 +124,11 @@ def canonicalize_agent_output(
         final_audit = selected_attempt["failureAudit"]
         if top_candidate is None:
             top_candidate = deepcopy(final_candidate)
-        elif not _models_equal(top_candidate, final_candidate, models.PrototypeBuildCandidate):
+        elif _alias_value(top_candidate, "candidateId", "candidate_id") != _alias_value(
+            final_candidate,
+            "candidateId",
+            "candidate_id",
+        ):
             return models.rejected("selected_attempt_mismatch")
         if artifact_selection is not None and selected_index != len(trusted_receipts) - 1:
             if top_audit is None:
@@ -174,6 +179,16 @@ def canonicalize_agent_output(
         return judge_error
 
     return {"status": "accepted", "payload": output}
+
+
+def _canonical_attempt_candidate(candidate: dict[str, Any], candidate_id: Any) -> dict[str, Any]:
+    """Keep complete legacy candidates, otherwise reduce an attempt to its trusted identity."""
+
+    try:
+        models.PrototypeBuildCandidate.model_validate(candidate)
+    except ValidationError:
+        return {"candidateId": candidate_id}
+    return deepcopy(candidate)
 
 
 def _fill_or_match_trusted(

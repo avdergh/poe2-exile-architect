@@ -11,10 +11,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -68,7 +71,7 @@ def queue_cases(
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
     temp_root: str | Path | None = None,
-    ttl_seconds: int = 3600,
+    ttl_seconds: int = 7200,
     current_patch: str | None = None,
     passive_tree_version: str | None = None,
     pob_version_or_commit: str | None = None,
@@ -247,7 +250,7 @@ def claim_case(
     *,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
-    lease_seconds: int = 1800,
+    lease_seconds: int = 7200,
     lease_owner: str = "current_researcher_agent",
 ) -> dict[str, Any]:
     """Atomically lease one case while preventing concurrent active research."""
@@ -393,6 +396,7 @@ def read_case_section(
     section: str,
     cursor: int = 0,
     limit: int = research_packet.DEFAULT_PAGE_SIZE,
+    node_type: str | None = None,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
     temp_root: str | Path | None = None,
@@ -410,6 +414,7 @@ def read_case_section(
         section=section,
         cursor=cursor,
         limit=limit,
+        node_type=node_type,
     )
     result["sampleId"] = str(row["sample_id"])
     _assert_transient_view_payload(result, enforce_size=True)
@@ -550,6 +555,46 @@ def render_review_contract(
             role: list(node_types)
             for role, node_types in sorted(acceptance.ROLE_NODE_TYPES.items())
         },
+        "typedPayloadSchema": {
+            "knowledgeShape": {
+                "mechanic_chain": "state_causal_chain",
+                "rotation": "player_action_sequence",
+                "others": "optional; do not invent shapes outside allowedValues.knowledgeShape",
+            },
+            "familyCoreSkillKeys": {
+                "type": "list[str]",
+                "rule": "resolved skill stable keys (skill:...) that are not already inferred from clear/boss/triggered_payload roles; identity-defining trigger hosts must be declared here explicitly; no duplicates; do not put generator/consumer skills here unless they define Family identity",
+            },
+            "resourceMechanisms": {
+                "type": "list[str]",
+                "rule": "lower_snake_case tags (e.g. mana_leech, mana_flask) for resource methods without physical graph nodes; each matches ^[a-z][a-z0-9_]{0,63}$; no duplicates",
+            },
+            "supportPackages": {
+                "type": "list[object]",
+                "entry": 'exactly {"skillKey": str, "supportKeys": [str, ...]}',
+                "rule": "skillKey must be a resolved skill mentioned in the same record; supportKeys non-empty unique, all support: prefix, all resolved in the same record; <=12 entries; a skill_package record must assign EVERY resolved support gem in the record; meta-host skills (e.g. Hand of Chayula) must NOT own the supports of their socketed skill - package the socketed skill instead",
+            },
+            "supportCoverageExceptions": {
+                "type": "list[object]",
+                "entry": 'exactly {"skillKey": str, "reason": "source_coverage_gap"|"not_applicable", "detail": str}',
+                "rule": "skillKey resolved and mentioned in the same record; one entry per skillKey; detail <=240 chars; use only for a real gap or a single-support skill, never to dodge packaging",
+            },
+            "availability": {"type": "str", "values": ["standard", "source_specific_random"]},
+            "sourceSpecificComponentKeys": {
+                "type": "list[str]",
+                "rule": "requires availability=source_specific_random; references resolved components in the same record; <=12",
+            },
+            "ascendancyResponsibilities": {
+                "type": "list[object]",
+                "entry": 'exactly {"componentKey": str, "responsibility": str}',
+                "rule": "componentKey resolved and mentioned in the same record with an ascendancy-eligible role; responsibility <=240 chars; <=12 entries",
+            },
+            "gearResponsibilities": {
+                "type": "list[object]",
+                "entry": 'exactly {"componentKey": str, "responsibilityType": str, "responsibility": str}',
+                "rule": "only on gear_synergy records; componentKey resolved and mentioned in the same record with role unique_enabler/gear_base/weapon_base; responsibilityType in allowedValues.gearResponsibilityType; responsibility <=240 chars; <=12 entries; componentKey unique; rare/magic items without a graph node cannot be listed here - describe them in content instead",
+            },
+        },
         "mechanicAuditTemplate": {
             "claim": "需要外部机制复核的具体事实结论",
             "claimType": "behavior_or_trigger",
@@ -608,14 +653,21 @@ def render_review_contract(
             "applicabilityRequirements": [],
             "exclusionConditions": [],
         },
+        "mandatoryChecks": [
+            "lineage/unique support gems must be labeled with their unique identity (unique_enabler role or an open_question/modelability_caveat record)",
+            "allocated jewel sockets without socketed jewels require an explicit jewel-state declaration in the review",
+            "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
+            "every enabled skill group's supports must be fully packaged in supportPackages or declared via supportCoverageExceptions",
+            "support mechanism claims require typed pairing evidence or a verification task; never infer from the support name",
+        ],
         "rules": [
             "只能使用 allowedValues 中的枚举；不得自造 role、axis 或 patternType。",
             "artifactIdentity、sampleId、researchGroupId、caseRef、safeEvidenceRef 和版本字段由当前 lease 注入；不要在记录或候选中重复抄写。",
             "role 表达组件在 BD 中的功能；节点类型由 resolver 证明，并按 componentRoleNodeTypeCompatibility 检查。",
             "同一 researchGroupId 的记录必须使用同一个 ascendancyKey，并且只把一个核心主技能标为 primary_damage。",
-            "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 身份。clear_skill、boss_skill、triggered_payload，以及负责投送 triggered_payload 或 primary_damage 的 trigger_host 由程序自动参与 Family；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会参与 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
+            "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 身份。clear_skill、boss_skill、triggered_payload 由程序自动参与 Family；trigger_host 不自动参与身份（换宿主视为变体），身份级 trigger host 必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会参与 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
-            "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口，但不会要求把所有工具技能和辅助都持久化。",
+            "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
             "gearRoles covered 必须有 gear_synergy，并在 typedPayload.gearResponsibilities 说明已解析武器/暗金的具体职责；只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
             "gearRoles 为 evidence_missing 时，accept 会暂缓 mechanic_chain 和 component transfer，避免遗漏身份装备后把实例机制写成通用知识；补齐装备职责或确认 not_applicable 后再提交。",
@@ -623,6 +675,7 @@ def render_review_contract(
             "依赖随机实例的 candidateReview 也写 availability=source_specific_random，并在 sourceSpecificComponentNames 精确指出对应组件。accept 只用这些组件建立 observation 索引；组件无法解析时保留无组件索引的案例备注，不生成 planner pattern。",
             "resource_engine 若依赖法力偷取、普通药剂或装备词缀等无物理图节点机制，必须在 typedPayload.resourceMechanisms 写 lower_snake_case 标签，例如 mana_leech、mana_flask；否则无法生成 knowledge key。",
             "组件已被 resolve_graph_component 唯一解析时，将返回的 stable key 写入 componentKey。宿主没有 resolver 时，supportPackages 可用 skillName/supportNames，升华和装备职责可用 componentName；accept 只对同一记录中唯一解析的精确名称做 stable-key 替换。",
+            "classKey 和 ascendancyKey 必须是图节点 stable key（例如 class:monk、ascendancy:monk:martial_artist），不能写显示名（Monk / Martial Artist）；显示名会导致端点校验失败。",
             "更细的轮转、窗口和证据语义写入 content、typedPayload、conditions 或 summary。",
             "只在独立重建完成后，用 explain_mechanic/search_mechanics 和 lookup_mechanic 复核触发、前置条件、资源流、转换或变形等高风险结论，并把结果写入 mechanicAudit。lookup_mechanic 命中时必须使用其 revision-pinned sourceRef。",
             "每条 mechanic_chain 和 resource_engine 都必须被至少一个 mechanicAudit.affectedRecords 精确引用；claim 必须写该对象实际依赖的最强因果结论，不能只审计一个更弱的前提。",
@@ -734,6 +787,11 @@ def accept_case(
         output_root=output_root,
         temp_root=temp_root,
     )
+    jewel_counts = _optional_jewel_counts(
+        row=row,
+        output_root=output_root,
+        temp_root=temp_root,
+    )
     if validation_only:
         report = acceptance.accept_deep_review_candidates(
             db_path=Path(memory_db_path),
@@ -742,6 +800,7 @@ def accept_case(
             review_file=safe_review_file,
             version_context=version_context,
             source_skill_manifest=source_skill_manifest,
+            jewel_counts=jewel_counts,
             review_payload=review_payload,
             require_deep_records=True,
             validation_only=True,
@@ -764,6 +823,7 @@ def accept_case(
             review_file=safe_review_file,
             version_context=version_context,
             source_skill_manifest=source_skill_manifest,
+            jewel_counts=jewel_counts,
             review_payload=review_payload,
             require_deep_records=True,
         )
@@ -837,6 +897,70 @@ def accept_case(
     return result
 
 
+def review_budget(*, review_file: str | Path) -> dict[str, Any]:
+    """Report per-record content length against the durable budget.
+
+    Matches server.knowledge.research_models._content_budget: zh-CN counts
+    whitespace-stripped characters (<=400), en counts words (<=250). A record is
+    within budget when its length fits or it carries a lengthExceptionReason.
+    """
+    payload = json.loads(Path(review_file).read_text(encoding="utf-8"))
+    records = payload.get("deepResearchRecords") or []
+    if not isinstance(records, list):
+        raise ValueError("deep review deepResearchRecords must be a list")
+    items: list[dict[str, Any]] = []
+    over_budget: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(f"deep research record at index {index} must be an object")
+        content = str(record.get("content") or "")
+        lang = str(record.get("contentLanguage") or "zh-CN")
+        if lang == "zh-CN":
+            length = len(re.sub(r"\s+", "", content))
+            budget = 400
+            unit = "chars (whitespace-stripped)"
+        else:
+            length = len(re.findall(r"\b[\w'-]+\b", content, flags=re.UNICODE))
+            budget = 250
+            unit = "words"
+        reason = str(record.get("lengthExceptionReason") or "") or None
+        within = length <= budget or bool(reason and reason.strip())
+        item = {
+            "index": index,
+            "recordKind": str(record.get("recordKind") or ""),
+            "title": str(record.get("title") or ""),
+            "contentLanguage": lang,
+            "length": length,
+            "budget": budget,
+            "unit": unit,
+            "withinBudget": within,
+            "lengthExceptionReason": reason,
+        }
+        items.append(item)
+        if not within:
+            over_budget.append(
+                {
+                    "index": index,
+                    "title": str(record.get("title") or ""),
+                    "length": length,
+                    "budget": budget,
+                }
+            )
+    return {
+        "status": "ok" if not over_budget else "over_budget",
+        "recordCount": len(items),
+        "overBudgetCount": len(over_budget),
+        "items": items,
+        "overBudget": over_budget,
+        "note": (
+            "Budget matches research_models._content_budget: zh-CN counts whitespace-stripped "
+            "characters (<=400), en counts words (<=250); lengthExceptionReason exempts only an "
+            "indivisible mechanism chain."
+        ),
+        "noRawMatureBuildMaterial": True,
+    }
+
+
 def retry_accept_case(
     *,
     sample_id: str,
@@ -853,6 +977,11 @@ def retry_accept_case(
     row = _case_for_rejected_sample(db_path, sample_id)
     version_context = _queue_version_context(db_path)
     source_skill_manifest = _optional_acceptance_skill_manifest(
+        row=row,
+        output_root=output_root,
+        temp_root=temp_root,
+    )
+    jewel_counts = _optional_jewel_counts(
         row=row,
         output_root=output_root,
         temp_root=temp_root,
@@ -878,6 +1007,7 @@ def retry_accept_case(
             review_file=safe_review_file,
             version_context=version_context,
             source_skill_manifest=source_skill_manifest,
+            jewel_counts=jewel_counts,
             review_payload=review_payload,
             require_deep_records=True,
         )
@@ -1117,6 +1247,95 @@ def queue_status(
         dry_run=False,
         source_input_summary=source_input_summary,
     )
+
+
+def cleanup_completed_run(
+    *,
+    run_id: str,
+    temp_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Delete one fully accepted Research run while preserving its durable Research Memory."""
+
+    if not isinstance(run_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
+        return {"status": "rejected", "errorCode": "invalid_research_run_id"}
+    runs_root = (DEFAULT_OUTPUT_DIR / RUNS_DIRNAME).resolve()
+    output_root = (runs_root / run_id).resolve()
+    if not _is_relative_to(output_root, runs_root) or output_root.parent != runs_root:
+        return {"status": "rejected", "errorCode": "invalid_research_run_id"}
+    db_path = output_root / QUEUE_DB_FILENAME
+    if not db_path.is_file():
+        return {"status": "rejected", "errorCode": "research_run_not_found"}
+    rows = _fetch_cases(db_path)
+    if not rows or any(str(row.get("status") or "") != "accepted" for row in rows):
+        return {"status": "rejected", "errorCode": "completed_research_run_required"}
+    if not any(
+        int(row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0) > 0
+        for row in rows
+    ):
+        return {"status": "rejected", "errorCode": "completed_research_run_required"}
+    packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
+    effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+    packet_cleanup = research_packet.cleanup_packets_by_safe_hashes(
+        packet_hashes,
+        temp_root=effective_temp_root,
+    )
+    # Atomic delete: rename the whole run directory aside first, then remove the staging
+    # directory. A failure rolls the original directory back so a partial cleanup can never
+    # leave the run (queue, reviews, acceptance reports) half-deleted and un-auditable.
+    staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
+    for attempt in (1, 2):
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+            output_root.rename(staging)
+            break
+        except OSError as exc:
+            if attempt == 1:
+                time.sleep(0.4)
+                continue
+            return {
+                "status": "partial",
+                "errorCode": "research_run_cleanup_failed",
+                "detail": {
+                    "reason": "directory_rename_failed",
+                    "osError": _safe_os_error(exc),
+                    "retried": True,
+                    "hint": (
+                        "another process may hold a handle inside the run directory; "
+                        "re-run cleanup once the handle is released"
+                    ),
+                },
+            }
+    try:
+        shutil.rmtree(staging)
+    except OSError as exc:
+        try:
+            staging.rename(output_root)
+        except OSError:
+            pass
+        return {
+            "status": "partial",
+            "errorCode": "research_run_cleanup_failed",
+            "detail": {
+                "reason": "staging_removal_failed",
+                "osError": _safe_os_error(exc),
+                "retried": True,
+                "hint": (
+                    "the run directory was moved to staging (run dir may no longer exist under "
+                    "its original name); re-running cleanup reports research_run_not_found — "
+                    "contact a maintainer to restore the staging directory manually"
+                ),
+            },
+        }
+    return {
+        "status": "cleaned",
+        "taskKind": "research",
+        "taskId": run_id,
+        "removedTransientPacketCount": packet_cleanup["removed"],
+        "memoriesPreserved": True,
+        "userExportsPreserved": True,
+        "containsRawMaterial": False,
+    }
 
 
 def _init_db(db_path: Path) -> None:
@@ -1388,6 +1607,23 @@ def _optional_acceptance_skill_manifest(
     except FileNotFoundError:
         return None
     return research_packet.build_skill_evidence_manifest(packet)
+
+
+def _optional_jewel_counts(
+    *,
+    row: sqlite3.Row,
+    output_root: Path,
+    temp_root: str | Path | None,
+) -> dict[str, Any] | None:
+    try:
+        packet = _packet_for_valid_lease(
+            row=row,
+            output_dir=output_root,
+            temp_root=temp_root,
+        )
+    except FileNotFoundError:
+        return None
+    return research_packet.jewel_counts(packet)
 
 
 def _safe_case_row_from_case(
@@ -1666,6 +1902,66 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
     }
 
 
+_COMPACT_MECHANIC_AUDIT_KEYS = (
+    "entryCount",
+    "highRiskRecordCount",
+    "liveEvidenceCoverage",
+    "liveEvidenceStatus",
+    "pinnedRevisionCount",
+    "provided",
+    "schemaIssueCount",
+    "statusCounts",
+    "decisionCounts",
+    "advisories",
+    "deferredObjectCount",
+    "compoundWikiQueryCount",
+    "unauditedHighRiskRecordCount",
+    "unauditedHighRiskRecordTitles",
+)
+
+
+def _should_compact_report(result: dict[str, Any]) -> bool:
+    if result.get("status") not in ("accepted", "validation_passed"):
+        return False
+    if int(result.get("deferredCandidateCount") or 0) > 0:
+        return False
+    if (
+        int(
+            result.get("unresolvedDeepRecordMentionCount")
+            or result.get("unresolvedDeepRecordComponentCount")
+            or 0
+        )
+        > 0
+    ):
+        return False
+    if int(result.get("unresolvedUniqueComponentCount") or 0) > 0:
+        return False
+    if int(result.get("caseCoverageGapCount") or 0) > 0:
+        return False
+    return True
+
+
+def _compact_accept_result(result: dict[str, Any]) -> dict[str, Any]:
+    out = dict(result)
+    audit = out.get("mechanicAudit")
+    if isinstance(audit, dict):
+        out["mechanicAudit"] = {
+            key: audit[key] for key in _COMPACT_MECHANIC_AUDIT_KEYS if key in audit
+        }
+    else:
+        out.pop("mechanicAudit", None)
+    for key in (
+        "sourceEvidenceDiagnostics",
+        "patternWrite",
+        "deepRecordWrite",
+        "patternValidation",
+        "deepRecordValidation",
+        "deferredCandidates",
+    ):
+        out.pop(key, None)
+    return out
+
+
 def _claim_payload(
     row: dict[str, Any],
     *,
@@ -1897,6 +2193,22 @@ lookup_mechanic 返回的 revision-pinned sourceRef。Wiki 只作校对证据，
 兼容性、武器状态、Family 身份或数值 Judge；每项结论仍需注明 source artifact、PoB static、typed
 graph 等独立佐证。
 
+## Mandatory Checks
+以下五项是提交前的强制自检，缺一不可：
+1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
+   lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 用 unique_enabler，或在
+   open_question/modelability_caveat 记录中说明）；不能当普通 support 处理。
+2. 珠宝槽闭环：inspect 的 jewelCounts 显示已分配珠宝槽且无珠宝物品时，必须在 review 中显式声明
+   珠宝状态（空置，或已插宝石及 radius/Time-Lost 位置化词缀的覆盖范围）。
+3. Spirit/reservation 预算：评估所有 persistent buff（光环/战旗/常驻技能）的 Spirit 预留总量与
+   来源（装备/升华），写入资源闭环记录。
+4. support 打包：每个启用技能组的 supports 必须完整打包进 skill_package/mechanic_chain 的
+   supportPackages，或经 supportCoverageExceptions 声明；被 evidence 记录提及的组不得遗留
+   ≥2 个未打包辅助。
+5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，必须用
+   support_skill_candidate 或等价 typed 复核配对，机制细节以 corpus/wiki/来源文本为准，不得
+   凭名字推断。
+
 ## Research Goal
 重建并分别记录：
 - 主/副伤害技能、supports、触发或生成-兑现关系；
@@ -2080,6 +2392,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _safe_os_error(exc: OSError) -> dict[str, Any]:
+    """Safe numeric OSError detail without leaking filesystem paths."""
+    return {
+        "errno": exc.errno,
+        "winerror": exc.winerror if getattr(exc, "winerror", None) is not None else None,
+        "strerror": str(exc.strerror or ""),
+    }
+
+
 def _now_iso() -> str:
     return _iso(_now())
 
@@ -2189,14 +2510,14 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument("--sample-start-index", type=int, default=1)
     queue_parser.add_argument("--resume", action="store_true")
     queue_parser.add_argument("--dry-run", action="store_true")
-    queue_parser.add_argument("--ttl-seconds", type=int, default=3600)
+    queue_parser.add_argument("--ttl-seconds", type=int, default=7200)
     queue_parser.add_argument("--current-patch")
     queue_parser.add_argument("--passive-tree-version")
     queue_parser.add_argument("--pob-version-or-commit")
 
     claim_parser = subparsers.add_parser("claim")
     _add_queue_location_args(claim_parser)
-    claim_parser.add_argument("--lease-seconds", type=int, default=1800)
+    claim_parser.add_argument("--lease-seconds", type=int, default=7200)
     claim_parser.add_argument("--lease-owner", default="external_researcher_worker")
 
     prompt_parser = subparsers.add_parser("prompt")
@@ -2216,6 +2537,11 @@ def main(argv: list[str] | None = None) -> int:
     read_parser.add_argument("--section", required=True, choices=research_packet.RESEARCH_SECTIONS)
     read_parser.add_argument("--cursor", type=int, default=0)
     read_parser.add_argument("--limit", type=int, default=research_packet.DEFAULT_PAGE_SIZE)
+    read_parser.add_argument(
+        "--node-type",
+        default=None,
+        help="passives only: keystone|notable|jewel_socket|ascendancy|mastery|normal",
+    )
 
     search_parser = subparsers.add_parser("search")
     _add_queue_location_args(search_parser)
@@ -2243,6 +2569,12 @@ def main(argv: list[str] | None = None) -> int:
     accept_parser.add_argument("--memory-db-path", default=str(DEFAULT_MEMORY_DB_PATH))
     accept_parser.add_argument("--acceptance-output-dir")
     accept_parser.add_argument("--validate-only", action="store_true")
+    accept_parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Return a compact acceptance summary; automatically falls back to the full report "
+        "when any candidate is deferred or validation failed.",
+    )
 
     retry_accept_parser = subparsers.add_parser("retry-accept")
     _add_queue_location_args(retry_accept_parser)
@@ -2250,6 +2582,10 @@ def main(argv: list[str] | None = None) -> int:
     retry_accept_parser.add_argument("--review-file", required=True)
     retry_accept_parser.add_argument("--memory-db-path", default=str(DEFAULT_MEMORY_DB_PATH))
     retry_accept_parser.add_argument("--acceptance-output-dir")
+    retry_accept_parser.add_argument("--compact", action="store_true")
+
+    review_budget_parser = subparsers.add_parser("review-budget")
+    review_budget_parser.add_argument("--review-file", required=True)
 
     status_parser = subparsers.add_parser("status")
     _add_queue_location_args(status_parser)
@@ -2331,6 +2667,7 @@ def main(argv: list[str] | None = None) -> int:
                     section=args.section,
                     cursor=args.cursor,
                     limit=args.limit,
+                    node_type=args.node_type,
                 )
             )
             return 0
@@ -2375,31 +2712,36 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "accept":
-            _print_json(
-                accept_case(
-                    output_dir=args.output_dir,
-                    queue_db_path=args.queue_db_path,
-                    lease_token=args.lease_token,
-                    review_file=args.review_file,
-                    memory_db_path=args.memory_db_path,
-                    acceptance_output_dir=args.acceptance_output_dir,
-                    temp_root=args.temp_root,
-                    validation_only=args.validate_only,
-                )
+            result = accept_case(
+                output_dir=args.output_dir,
+                queue_db_path=args.queue_db_path,
+                lease_token=args.lease_token,
+                review_file=args.review_file,
+                memory_db_path=args.memory_db_path,
+                acceptance_output_dir=args.acceptance_output_dir,
+                temp_root=args.temp_root,
+                validation_only=args.validate_only,
             )
+            if getattr(args, "compact", False) and _should_compact_report(result):
+                result = _compact_accept_result(result)
+            _print_json(result)
             return 0
         if args.command == "retry-accept":
-            _print_json(
-                retry_accept_case(
-                    output_dir=args.output_dir,
-                    queue_db_path=args.queue_db_path,
-                    sample_id=args.sample_id,
-                    review_file=args.review_file,
-                    memory_db_path=args.memory_db_path,
-                    acceptance_output_dir=args.acceptance_output_dir,
-                    temp_root=args.temp_root,
-                )
+            result = retry_accept_case(
+                output_dir=args.output_dir,
+                queue_db_path=args.queue_db_path,
+                sample_id=args.sample_id,
+                review_file=args.review_file,
+                memory_db_path=args.memory_db_path,
+                acceptance_output_dir=args.acceptance_output_dir,
+                temp_root=args.temp_root,
             )
+            if getattr(args, "compact", False) and _should_compact_report(result):
+                result = _compact_accept_result(result)
+            _print_json(result)
+            return 0
+        if args.command == "review-budget":
+            _print_json(review_budget(review_file=args.review_file))
             return 0
         if args.command == "status":
             _print_json(queue_status(output_dir=args.output_dir, queue_db_path=args.queue_db_path))

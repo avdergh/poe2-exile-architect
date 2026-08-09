@@ -1,8 +1,13 @@
 # 多 Agent 安装与验证
 
-本项目采用“一个规范 skill 源 + 一个本地 MCP server + 薄宿主适配器”的结构。业务规则只维护在
-`poe-bd-creator-plugin/skills/` 和 `server/`；安装器只负责把可移植 skill 链接到宿主发现目录，
-并安全写入该宿主的 `poe2_build_mcp` 配置。
+本项目采用“一个规范 skill 源 + 四个按域拆分的 MCP server + 薄宿主适配器”的结构。业务规则只维护在
+`poe-bd-creator-plugin/skills/` 和 `server/`；安装器负责把可移植 skill 链接到宿主发现目录，
+并安全写入该宿主的 MCP 配置（`poe_knowledge_mcp` / `poe_build_mcp` / `poe_research_mcp` /
+`poe_learning_mcp`）。
+
+`poe-bd-research` 运行内部 CLI 时复用安装器管理的 MCP `cwd` 和 `uv` 命令，并冻结为绝对
+`repoRoot` / `uvCommand`；宿主不暴露启动配置时，才从已加载 Skill 的真实链接目标和安装器同序
+规则恢复。它不依赖用户当前打开的项目目录，也不要求仓库一定包含 `.tools/uv`。
 
 ## 支持范围
 
@@ -12,6 +17,13 @@
 - OpenCode：安装上述两个 skill 到原生目录 `~/.config/opencode/skills`，并写入
   `~/.config/opencode/opencode.json`；可用 `OPENCODE_CONFIG` 覆盖配置路径。
 - `poe-bd-research-loop`、`poe-bd-learning-loop` 依赖 Codex Desktop 的可见任务编排，本阶段不迁移。
+- Codex Desktop 的 `poe-bd-research-loop` 还依赖独立的
+  `poe-research-orchestrator` checkout，但不绑定任何盘符或固定目录。优先通过
+  `POE_RESEARCH_ORCHESTRATOR_DIR` 指向它；未设置时只检查 `poe-bd-creator` 的同级目录。
+  `poe-bd-creator` 根目录优先使用现有 `POE_BD_CREATOR_DIR`，否则由已加载 Skill 的真实路径解析。
+  两个目录都必须通过标记文件校验，缺失时在领取任务前停止，不会全盘搜索或猜测路径。
+  源码布局和发布 bundle 布局都可自动发现；若 Skill 位于插件缓存，而缓存目录不是 Desktop 中
+  可唯一识别的项目，必须把 `POE_BD_CREATOR_DIR` 指向本机真实源码 checkout。
 - Pi 能读取 Agent Skills，但完整 Create/Research 还需要 MCP 扩展层；在有一等、可维护的适配器前，
   不把 Pi 标为支持。
 
@@ -34,12 +46,13 @@
 
 ## 安全写配置
 
-JSON 配置适配器只管理 `poe2_build_mcp` 一个条目：
+JSON 配置适配器管理四个域 server 条目（`poe_knowledge_mcp`、`poe_build_mcp`、
+`poe_research_mcp`、`poe_learning_mcp`），并自动迁移旧的单入口 `poe2_build_mcp`：
 
 - 保留其他顶层字段和其他 MCP server；
 - 遇到同名但非本安装器管理的条目时失败关闭；
 - 首次修改已有配置时创建一次 `.poe-bd-creator.bak`；
-- 在 `~/.poe-bd-creator/host-config-state.json` 保存条目指纹；
+- 在 `~/.poe-bd-creator/host-config-state.json` 保存每个条目的指纹；
 - 卸载时只有“路径、条目和指纹仍完全匹配”才删除；
 - 配置含注释或尾随逗号时不擅自重写，要求用户先转换为严格 JSON。
 
@@ -49,12 +62,12 @@ skill 使用 symlink/junction 指向同一 checkout，因此更新仓库后不�
 ## OpenCode 验收
 
 1. 运行 doctor，确认 repo、uv、server 入口、配置条目和托管回执均为 `true`。
-2. 重启 OpenCode，运行 `opencode mcp list`，确认 `poe2_build_mcp` 已连接。
+2. 重启 OpenCode，运行 `opencode mcp list`，确认 `poe_knowledge_mcp` 与 `poe_build_mcp`
+   已连接（Research/Learning 域两个 server 按需出现）。
 3. 新建会话，要求 Agent“加载 `poe-bd-create` skill，并列出开始 Create 前必须确认的问题”。此步只
    验证 skill 发现，不应直接启动 Build run。
 4. 再要求 Agent 调用 `get_freshness_report` 或 `engine_health`，验证 MCP tool discovery。
-5. 最后用一个明确的单阶段 BD 请求做 smoke test；如果请求没有明确表示只要固定最终 BD，Agent
-   应依项目合同先询问是否需要完整成长流程。
+5. 最后用一个明确的单阶段终局 BD 请求做 smoke test，验证普通 Create 直接按目标等级生成。
 
 当前机器上的 Codex、Claude Code、Cursor 和 OpenCode MCP 配置若未设置 `POE2_MCP_DATA`，会落到
 同一 OS 用户数据目录，因此可共享已有 Research Memory；不会复制数据库，也不会把本地学习状态
@@ -85,8 +98,9 @@ skill 使用 symlink/junction 指向同一 checkout，因此更新仓库后不�
   开源数据产品，需要独立的数据许可与来源声明，不能自动沿用代码的 MIT 许可。
 - Phase 7 Learning Memory：经过 durable copy-safety 与事件链校验后，构建独立 JSONL 种子并提交
   到 Git；它仍不进入 Research SQLite。
-- quarantine、Research query receipts、progression/campaign、Judge 快照和最终 artifact 始终只
-  留在用户本地。
+- quarantine、Research query receipts、campaign、Judge 快照和最终 artifact 只在任务
+  运行期间留在本地；完整交付成功后由 `cleanup_completed_task_runtime` 删除。Research Memory、
+  Learning Memory 和用户导出的 XML/import-code/`.build` 文件不删除。
 - 首次启动只在本地数据库不存在时安装种子，不能覆盖已有用户库。后续种子更新应采用版本化合并或
   独立只读 seed + 可写 local overlay，不能整库替换。
 - 中央服务器不是运行必需项。只有将来需要用户明确 opt-in 的社区投稿、快速撤回或跨设备同步时，

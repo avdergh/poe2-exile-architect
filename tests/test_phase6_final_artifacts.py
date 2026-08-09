@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from server.generation import artifacts, evaluation, evaluation_snapshots, progression, run_store
+import pytest
+
+from server.generation import artifacts, evaluation, evaluation_snapshots, run_store
+from server.knowledge import research_memory
 
 from tests.test_phase5_generation_evaluation import (
     BUILD_XML,
@@ -14,6 +17,20 @@ from tests.test_phase5_generation_evaluation import (
     _judge_result,
     _version_context,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_research_receipts(monkeypatch):
+    """Evaluate fail-fasts on run-fresh dq- receipts; default every test to a fresh one."""
+
+    def fake_reader(_self, _ref: str) -> dict[str, object]:
+        return {"lastSeenAt": datetime.now(timezone.utc).isoformat()}
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        fake_reader,
+    )
 
 
 def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
@@ -85,10 +102,12 @@ def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
     assert "judgeQualityBand" not in saved["finalBuildArtifact"]
     assert "judgeQualityWarnings" not in saved["finalBuildArtifact"]
     artifact_id = saved["finalBuildArtifact"]["artifactId"]
-    progression_fact = progression._trusted_artifact_fact(artifact_id)
-    assert progression_fact is not None
-    assert progression_fact["judgeFeedbackMode"] == "hard_only"
-    assert progression_fact["qualityLimited"] is False
+    verified = artifacts.read_final_build_artifact_for_export(artifact_id)
+    assert verified is not None
+    manifest, _xml = verified
+    judge = getattr(manifest, "judge_report", None)
+    assert getattr(judge, "feedback_mode", None) == "hard_only"
+    assert getattr(judge, "subjective_feedback_suppressed", False) is True
     assert "PathOfBuilding" not in json.dumps(saved)
     artifact_dir = tmp_path / "artifacts" / run_id
     assert (artifact_dir / "build.xml").read_text(encoding="utf-8") == BUILD_XML
@@ -486,7 +505,10 @@ def test_restore_rejects_corrupt_xml(tmp_path, monkeypatch):
     assert restored["errorCode"] == "final_artifact_corrupt"
 
 
-def test_save_rejects_scaffold_gear_even_after_passing_judge(tmp_path, monkeypatch):
+def test_scaffold_gear_is_rejected_before_judge_and_cannot_reach_artifact_save(
+    tmp_path,
+    monkeypatch,
+):
     scaffold_xml = BUILD_XML.replace(
         '  <Items activeItemSet="1">',
         '  <Items activeItemSet="1">\n'
@@ -509,12 +531,7 @@ def test_save_rejects_scaffold_gear_even_after_passing_judge(tmp_path, monkeypat
         engine_factory=_JudgeEngine,
     )
 
-    saved = artifacts.save_final_build_artifact(
-        _ActiveEngine(scaffold_xml),
-        run_id=run_id,
-        run_token=token,
-        candidate_id="candidate:test:scaffold",
-        attempt_index=int(evaluated["attemptIndex"]),
-    )
-
-    assert saved["errorCode"] == "final_artifact_contains_scaffold_gear"
+    assert evaluated["errorCode"] == "generation_preflight_failed"
+    assert evaluated["attemptConsumed"] is False
+    assert evaluated["attemptCount"] == 0
+    assert "scaffold_gear_must_be_replaced" in evaluated["preflight"]["blockingIssues"]

@@ -148,6 +148,27 @@ def test_public_batch_equip_rolls_back_unverified_special_source_item(engine):
     assert build_state_hash(engine.get_xml()) == before_hash
 
 
+def test_quiver_equip_is_rejected_in_batches():
+    quiver_item = (
+        "Rarity: Rare\nBatch Quiver\nVerdant Quiver\n"
+        "Item Level: 82\nItem Class: Quiver\n+40 to maximum Life"
+    )
+    result = mutation_batch.apply_build_mutation_batch(
+        engine=None,
+        batch_kind="required_gear",
+        operations=[
+            mutation_batch.BuildMutationOperation(
+                operation="equip_item",
+                raw=quiver_item,
+                slot="Weapon 2",
+            )
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "mutation_batch_quiver_requires_direct_equip"
+
+
 def test_skill_group_replace_remove_and_stale_selector_fail_closed(engine):
     _monk_with_two_groups(engine)
     before = skillgroups.list_skill_groups(engine)

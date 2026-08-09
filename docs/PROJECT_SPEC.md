@@ -48,8 +48,7 @@ PoE2 BD Creator 的最终目标不是“研究 BD 的流程”本身，而是成
 
 Create 当前默认不把这些主观评价交给生成 Agent：`strict_mode=false` 只投影硬失败、合法性、
 快照绑定和安全事实诊断；完整评分仍在内部计算，但 aggregate、quality band、
-playability/quality warning、reward 和主观 caveat 不进入 attempt、artifact、retry、Review 或
-progression。只有用户明确要求严格模式并手动使用 `strict_mode=true` 时才返回完整评价，而且
+playability/quality warning、reward 和主观 caveat 不进入 attempt、artifact、retry、Review。只有用户明确要求严格模式并手动使用 `strict_mode=true` 时才返回完整评价，而且
 同一生成 run 不能中途切换。这个开关不减少 Research 深读、主动质量收尾或 PoB 原始数值验证。
 
 ## 系统闭环
@@ -78,24 +77,15 @@ progression。只有用户明确要求严格模式并手动使用 `strict_mode=t
 
 Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产物写入 semantic graph
 和 vector memory；Phase 7 另外维护不适合进入 Research DB 的本地轻量 Learning Memory。
-Phase 8 交付可验证的完整 BD 成长流程：先比较两个实质不同的轻量目标设计（用户锁定 Family 时
-比较该 Family 内变体），再用未被 progression 改写的普通单阶段 Create 生成并绑定不可变目标
-anchor，之后用有界联网资料选择同职业开荒流派，并用真实阶段 PoB 求解转型桥梁。
-默认四个 artifact 是一个目标 anchor 加三个前置里程碑；最后阶段复用完全相同的 anchor，不重复
-生成目标 BD。联网证据不能替代任何真实阶段 PoB，Judge 对 anchor 只作 advisory，目标设计由
-Research provenance、机制验证与十维覆盖合同约束。长流程把选中的 Research 条件、失败场景、
-验证任务、机制结论和下一步保存为有界临时 working checkpoint；自动上下文压缩或重启后使用
-resume packet 恢复，不依赖聊天历史重新猜测。相同 Family 的 Research 与组件搜索不设固定条数
-上限；working checkpoint 只阻止相同 query/receipt 在压缩后原样重放，不能截断新证据与候选。
+普通 Create 交付可信的单阶段终局 BD：以 Research Family 为身份与设计权威，artifact 保存后
+绑定不可变快照。
+相同 Family 的 Research 与组件搜索不设固定条数上限；working checkpoint 只阻止相同
+query/receipt 在压缩后原样重放，不能截断新证据与候选。
 精确 Family 查询用 coverage、未展开索引和稳定 premise catalog 显示知识全貌；Boss、资源、
 轮转等失败条件必须被明确解决、采用替代方案、判定不适用或保留 caveat，解决记录必须实际深读。
-这些处理决定随 working checkpoint 恢复，不能在上下文压缩中消失。
-lifecycle 调参使用 state-hash checkpoint，正式 attempt 边界才执行 compact gate。路线未完成但
-target anchor 已可信绑定时，即使失败登记或
-审批层阻断，也能立即导出明确标记不完整的 target 恢复包。Graph pending 占位只在同一
-progression 绑定 target 时解析一次；阶段 Memory 模式以 StageCreatePacket 为准，错误 run 在绑定
-前拒绝且不消耗 retry。
-`Phase 8 多可信阶段 artifact` 指上述目标 anchor 与各前置里程碑，不代表把终局 BD 自动删点降配。
+lifecycle 调参使用 state-hash checkpoint，正式 attempt 边界才执行 compact gate。
+`Phase 5 可信 artifact` 指通过正式 Judge 与共享硬合法性审计的最终候选，不代表把终局 BD
+自动删点降配。
 
 ## 已有底座
 
@@ -169,15 +159,13 @@ Phase 0 文档与边界
   -> Phase 5 Agent 主导的生成原型
   -> Phase 6 官方 .build 导出
   -> Phase 7 同 Family / 同等级对照学习循环
-  -> Phase 8 普通 Create 目标锚点 + 联网开荒研究 + 多可信 artifact 成长流程
   -> Phase 9 scale / revalidation / productization
 ```
 
 其中 Phase 1 是所有“好坏判断”的前置门槛；Phase 2 和 Phase 3 是图记忆可用性的前置
 门槛；Phase 4 负责把成熟 BD 研究变成可复用长期知识；Phase 5 之后才开始验证生成能
-力；Phase 7 只有在生成、Research 和 Judge 可用后才有意义；Phase 8 必须先保持普通 Phase 5
-目标 Create 不退化，再复用 Phase 5/6 的可信 artifact，把独立开荒流派与转型桥梁连接到同一个
-不可变目标 anchor。
+力；Phase 7 只有在生成、Research 和 Judge 可用后才有意义；Phase 5/6 的可信 artifact 是
+普通 Create 交付与导出的基础。
 
 ### 待优化提示：复合输出与多场景评估
 
@@ -196,14 +184,11 @@ PoE2 BD 通常不是单一技能、单一面板和单一战斗场景。清图、
 - Phase 7：对成熟原 BD 做安全 Profile，形成唯一 `FamilyTarget`，只给独立 Create 任务相同 Family 和等级，再由独立
   Comparator 逐维比较。Judge 只作为 advisory evidence，不能按 aggregate 自动选赢家；具体
   build knowledge 回到 Research，不适合 Research schema 的跨维生成经验才进入 Learning Memory。
-- Phase 8：不扩写全知评分器。未指定唯一目标流派时，先从精确版本 Research 数据中召回
+- 普通 Create：不扩写全知评分器。未指定唯一目标流派时，先从精确版本 Research 数据中召回
   全部合格的 2–10 个成熟 Family，做轻量机制/证据比较并保留第一名与备用；选中后由普通
-  Create 独立生成并保存 immutable anchor。
-  外部 Agent 再有界搜索 patch-scoped 开荒资料。开荒和目标只锁基础职业、允许完全不同的升华与
-  技能；目标前里程碑各有独立可信 PoB，最后阶段复用同一 anchor。Judge 只作 advisory，typed
-  Research receipt、设计覆盖和机制 gate 防止 Family/知识漂移。早期阶段只优化技能可用、武器
-  兼容和资源闭环；全局 optimizer/全局树重排禁用，重复检查按 build-state hash 合并。价格只作
-  获取风险说明。
+  Create 独立生成并保存 immutable artifact。Judge 只作 advisory，typed
+  Research receipt、设计覆盖和机制 gate 防止 Family/知识漂移。全局 optimizer/全局树重排禁用，
+  重复检查按 build-state hash 合并。价格只作获取风险说明。
 
 这是一项跨阶段待优化能力，不因 Phase 1 基线状态为“已完成”而视为已经解决。后续优先由
 Phase 5 真实失败样例驱动，不提前手写一套脱离 PoB 和游戏机制的全知评分器。
@@ -222,8 +207,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
 | Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 功能实现完成、首轮实跑暂停于 6/10、学习效果未评估 | Phase 1、4、5，按需依赖 Phase 6 | 建立成熟原 BD Profile、同 Family/同等级盲测 Create、独立逐维比较和面向后续案例的 Research/轻量 Learning Memory 回流；首轮计划 10 个串行案例，恢复后再执行固定趋势验收。 | `docs/phases/07_critic_loop.md` |
-| Phase 8 | 锚点优先、上下文恢复与 Create 快路径已实现，目标 Family 与可恢复 Anchor 修复验收中 | Phase 4、5、6 | 未指定唯一流派时从精确版本 Research 数据召回全部合格的 2–10 个 Family，轻量排序后保留目标与备用；普通单阶段 Create 生成不可变目标 anchor，确定性合法性错误在 Judge 前阻断且不消耗尝试，质量收尾回归时可恢复已通过的精确 baseline。随后研究同职业开荒并创建目标前里程碑。首个升华前使用 `starter_common`，转型后启用 `family_exact`；早期优化只保留技能/武器/资源闭环，全局 optimizer 与全局树重排禁用，重复验证按语义状态哈希合并；最后阶段复用同一 artifact/hash/lifecycle receipt。价格只作 advisory。完成真实目标锚点任务、新插件进程复验和 full 门禁后再标记完成。 | `docs/phases/08_build_progression.md` |
-| Phase 9 | 未开始 | Phase 1-8 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
+| Phase 9 | 未开始 | Phase 1-7 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
 
 ## 硬边界
 

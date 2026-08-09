@@ -337,28 +337,58 @@ register_codex_mcp_server() {
   command="$(resolve_uv_command)"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    say "[dry-run] register Codex MCP server poe2_build_mcp in $config_path"
+    say "[dry-run] register Codex MCP servers (poe_knowledge_mcp, poe_build_mcp, poe_research_mcp, poe_learning_mcp) in $config_path"
     return 0
   fi
 
   mkdir -p "$(dirname "$config_path")"
   local existing=""
   [[ -f "$config_path" ]] && existing="$(cat "$config_path")"
-  if grep -q '^\[mcp_servers\.poe2_build_mcp\]$' <<<"$existing" && ! grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing"; then
-    say "Codex MCP server poe2_build_mcp already exists but is not installer-managed; leaving it unchanged."
-    return 0
-  fi
+  local name
+  for name in poe_knowledge_mcp poe_build_mcp poe_research_mcp poe_learning_mcp; do
+    if grep -q "^\[mcp_servers\.${name}\]$" <<<"$existing" && ! grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing"; then
+      say "Codex MCP server $name already exists but is not installer-managed; leaving it unchanged."
+      return 0
+    fi
+  done
 
   clean="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
   block="$(cat <<EOF
 $MANAGED_MCP_BEGIN
-[mcp_servers.poe2_build_mcp]
+[mcp_servers.poe_knowledge_mcp]
 command = $(toml_string "$command")
-args = ["run", "python", "-m", "server.main"]
+args = ["run", "python", "-m", "server.mcp.knowledge_server"]
 cwd = $(toml_string "$repo_root")
 startup_timeout_sec = 120
 
-[mcp_servers.poe2_build_mcp.env]
+[mcp_servers.poe_knowledge_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_build_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.build_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_build_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_research_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.research_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_research_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_learning_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.learning_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_learning_mcp.env]
 PYTHONPATH = $(toml_string "$repo_root")
 $MANAGED_MCP_END
 EOF
@@ -374,7 +404,7 @@ $block
 "
   fi
   printf '%s' "$next" > "$config_path"
-  say "Registered Codex MCP server poe2_build_mcp in $config_path"
+  say "Registered Codex MCP servers (poe_knowledge_mcp, poe_build_mcp, poe_research_mcp, poe_learning_mcp) in $config_path"
 }
 
 unregister_codex_mcp_server() {
@@ -384,12 +414,12 @@ unregister_codex_mcp_server() {
   existing="$(cat "$config_path")"
   grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing" || return 0
   if [[ "$DRY_RUN" == "1" ]]; then
-    say "[dry-run] remove Codex MCP server poe2_build_mcp from $config_path"
+    say "[dry-run] remove Codex MCP servers from $config_path"
     return 0
   fi
   next="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
   printf '%s\n' "$next" > "$config_path"
-  say "Removed installer-managed Codex MCP server poe2_build_mcp from $config_path"
+  say "Removed installer-managed Codex MCP servers from $config_path"
 }
 
 is_portable_mcp_host() {

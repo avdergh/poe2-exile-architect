@@ -78,9 +78,10 @@ core multiplier**, not more small increases. Work in this order:
    becomes both damage *and* EHP). Mana-stacking is ONE layer, **not automatically the master
    lever** — `rank_levers` tells you which actually moves *this* build.
 5. **Don't skip jewels — or build-defining UNIQUES.** Real endgame builds run **8–10 jewels**,
-   including unique/timeless ones (Voices, Megalomaniac, From Nothing, Time-Lost) that supply huge
-   passive/notable density — that's often why a meta tree reads "over budget". Craft rare jewels with
-   `optimize_jewel`; socket via `equip_jewel` (`list_jewel_sockets`). More broadly, a pile of
+   including unique/radius jewels (e.g. Time-Lost series) that supply passive/notable density —
+   that's often why a meta tree reads "over budget". Craft rare jewels with
+   `optimize_jewel`; socket via `equip_jewel` (`list_jewel_sockets`) and rank radius jewels by
+   socket with `evaluate_jewel_socket`. More broadly, a pile of
    self-crafted RARES is the **from-scratch ceiling** (~100k) — the leap to pinnacle usually comes
    from a **build-defining unique** (extra projectiles, "+levels to skills", a converted/enabled
    mechanic) that rares simply can't roll. Use **`relevant_uniques`** to surface the uniques + unique

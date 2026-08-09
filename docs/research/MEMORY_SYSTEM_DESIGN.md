@@ -28,7 +28,7 @@ MVP 只验证：在现有 memory 基线上增加深度核心机制包和高层�
 - deep research record：一次或一组成熟 BD 的完整安全分析档案；
 - mature-build case / fragment：档案引用的案例证据和可检索结论；
 - design memory card：跨一个或多个案例形成的高层设计经验；
-- Phase 7/8 episode：未来的生成、修复和结果经验。
+- Phase 7 episode：未来的生成、修复和结果经验。
 
 一次案例可以产生观察，但不能自动成为职业通用规律。
 
@@ -490,7 +490,7 @@ prompt-only 修正若不改变持久合同，回放通过后可以直接生效�
 以下只保留方向，不在 MVP 中预先固定表结构：
 
 - Phase 7 repair/rollback episodes；
-- Phase 8 经验反思、效果统计和 scoped utility；
+- 后续跨阶段经验反思、效果统计和 scoped utility；
 - retrieval/use/outcome 审计；
 - embedding、graph expansion 和复杂 rerank；
 - 动态职业设计档案；

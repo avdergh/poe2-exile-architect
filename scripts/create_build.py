@@ -234,13 +234,33 @@ def _run_review_packet(
         return canonical
 
     canonical_payload = canonical["payload"]
-    premise_error = _validate_candidate_research_use(
+    premise_error, premise_caveats = _validate_candidate_research_use(
         canonical_payload,
         receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
         not_before=manifest["startedAt"],
     )
     if premise_error:
-        return models.rejected(premise_error)
+        detail_hints = {
+            "progression_research_receipt_not_current_run": (
+                "researchMemoryUse receipts must be queried after this run started; re-query "
+                "Research inside the current run and pass the new dedupeQueryRefs"
+            ),
+            "progression_research_receipt_missing": (
+                "a dedupeQueryRef does not resolve to a recorded research receipt"
+            ),
+            "progression_research_resolution_not_deep_read": (
+                "resolved premise resolutionRefs must be deep-read in this run's receipts "
+                "(detail_level='record')"
+            ),
+            "progression_research_premise_decision_incomplete": (
+                "every failure_condition premise in the selected Family's catalog needs a "
+                "premiseDecisions entry"
+            ),
+        }
+        caveats = list(premise_caveats or [])
+        if premise_error in detail_hints:
+            caveats.append(detail_hints[premise_error])
+        return models.rejected(premise_error, caveats=caveats)
     result = prototype.validate_and_build_human_review_packet(
         canonical_payload,
         trusted_evaluation=True,
@@ -322,18 +342,28 @@ def _validate_candidate_research_use(
     *,
     receipt_reader: Any,
     not_before: str | None = None,
-) -> str | None:
-    """Apply the shared receipt/premise audit to ordinary single-stage Create."""
+) -> tuple[str | None, list[str]]:
+    """Apply the shared receipt/premise audit to ordinary single-stage Create.
 
-    research_use = canonical_payload.get("prototypeBuildCandidate", {}).get("researchMemoryUse")
+    The canonical payload keeps the submission's field casing (snake_case from the Agent), so
+    both alias shapes must be read here — otherwise a snake_case researchMemoryUse silently
+    skips the receipt/premise audit.
+    """
+
+    candidate = canonical_payload.get("prototypeBuildCandidate") or {}
+    research_use = candidate.get("researchMemoryUse")
     if not isinstance(research_use, dict):
-        return None
-    premise_error, _premise_summary = progression_provenance.validate_research_use_receipts(
-        research_memory_use=research_use,
-        receipt_reader=receipt_reader,
-        not_before=not_before,
+        research_use = candidate.get("research_memory_use")
+    if not isinstance(research_use, dict):
+        return None, []
+    premise_error, _premise_summary, premise_caveats = (
+        progression_provenance.validate_research_use_receipts(
+            research_memory_use=research_use,
+            receipt_reader=receipt_reader,
+            not_before=not_before,
+        )
     )
-    return premise_error
+    return premise_error, premise_caveats
 
 
 def _compact_review_result(

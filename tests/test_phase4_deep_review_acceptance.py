@@ -986,7 +986,65 @@ def test_wrong_ascendancy_relationship_does_not_satisfy_coverage():
     assert coverage["passiveAscendancy"] == "evidence_missing"
 
 
-def test_support_coverage_checks_trigger_host_and_payload_across_group():
+def test_duplicate_record_titles_are_deferred_as_invalid_schema():
+    records = [
+        {
+            "research_group_id": "research:fixture",
+            "record_kind": "skill_package",
+            "title": "重复标题",
+            "component_mentions": [
+                {
+                    "role": "primary_damage",
+                    "component_key": "skill:SparkPlayer",
+                    "resolution_status": "resolved",
+                }
+            ],
+            "typed_payload": {},
+        },
+        {
+            "research_group_id": "research:fixture",
+            "record_kind": "skill_package",
+            "title": " 重复标题 ",
+            "component_mentions": [
+                {
+                    "role": "clear_skill",
+                    "component_key": "skill:ArcPlayer",
+                    "resolution_status": "resolved",
+                }
+            ],
+            "typed_payload": {},
+        },
+    ]
+    accepted = [
+        {
+            "titleZh": "重复标题",
+            "recordKind": "skill_package",
+            "sampleId": "case:fixture",
+            "componentKeys": ["skill:SparkPlayer"],
+        },
+        {
+            "titleZh": "重复标题",
+            "recordKind": "skill_package",
+            "sampleId": "case:fixture",
+            "componentKeys": ["skill:ArcPlayer"],
+        },
+    ]
+
+    kept, kept_summaries, deferred = (
+        run_phase4_deep_review_acceptance._filter_deep_records_with_identity(
+            records=records,
+            accepted=accepted,
+        )
+    )
+
+    assert kept == []
+    assert kept_summaries == []
+    assert len(deferred) == 2
+    assert {item["reason"] for item in deferred} == {"invalid_schema"}
+    assert "duplicate" in deferred[0]["validationIssues"][0]["msg"].lower()
+
+
+def test_support_coverage_checks_triggered_payload_and_declared_host_across_group():
     records = [
         {
             "researchGroupId": "research:fixture",
@@ -1014,6 +1072,8 @@ def test_support_coverage_checks_trigger_host_and_payload_across_group():
         },
     ]
 
+    # The automatic core is SparkPlayer + the triggered payload CometPlayer; the trigger host
+    # is NOT automatic identity anymore.
     assert not run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
 
     records[1]["typedPayload"] = {
@@ -1024,6 +1084,11 @@ def test_support_coverage_checks_trigger_host_and_payload_across_group():
             }
         ],
     }
+
+    assert run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
+
+    # A trigger host declared as Family identity must be packaged (or excepted) like any core skill.
+    records[0]["typedPayload"]["familyCoreSkillKeys"] = ["skill:MetaCastOnCritPlayer"]
 
     assert not run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
 
@@ -1343,10 +1408,434 @@ def test_source_skill_named_in_rotation_requires_structured_review_before_suppor
         source_evidence_diagnostics=diagnostics,
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
     assert diagnostics["unstructuredSourceSkillMentions"][0]["name"] == "Spark"
-    assert coverage["supports"] == "evidence_missing"
+    assert coverage["supports"] == "covered"
     assert any("Spark" in item for item in advisories)
+
+
+def test_source_support_diagnostics_block_evidence_group_with_unpackaged_supports(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="evidence-unpackaged-supports-review.json",
+        components=[
+            {
+                "candidateName": "Flash Grenade",
+                "componentKey": "skill:FlashGrenadePlayer",
+                "role": "control_skill",
+                "resolverQuery": "Flash Grenade",
+            },
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    record = review["deepResearchRecords"][0]
+    record["recordKind"] = "rotation"
+    record["content"] = "先投 Flash Grenade 控制，再以 Explosive Grenade 输出。"
+    record["typedPayload"] = {"knowledgeShape": "player_action_sequence"}
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:4",
+                    "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                    "supports": [
+                        {"name": "Freeze", "gemId": "SupportGemGlaciation"},
+                        {"name": "Frost Nexus", "gemId": "SupportGemFrostNexus"},
+                        {"name": "Defy II", "gemId": "SupportGemDefyTwo"},
+                        {"name": "Cooldown Recovery II", "gemId": "SupportGemIngenuityTwo"},
+                        {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
+
+
+def test_source_support_diagnostics_allow_shared_support_in_evidence_group(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="evidence-shared-support-review.json",
+        components=[
+            {
+                "candidateName": "Cluster Grenade",
+                "componentKey": "skill:ClusterGrenadePlayer",
+                "role": "clear_skill",
+                "resolverQuery": "Cluster Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+            {
+                "candidateName": "Short Fuse I",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemExpedite",
+                "role": "support_modifier",
+                "resolverQuery": "Short Fuse I",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    record = review["deepResearchRecords"][0]
+    record["recordKind"] = "skill_package"
+    record["typedPayload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:ClusterGrenadePlayer",
+                "supportKeys": [
+                    "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                    "support:Metadata/Items/Gem/SupportGemExpedite",
+                    "support:Metadata/Items/Gems/SupportGemFirePenetrationTwo",
+                    "support:Metadata/Items/Gems/SupportGemPrimalArmamentTwo",
+                ],
+            }
+        ]
+    }
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:2",
+                    "activeSkills": [
+                        {"name": "Cluster Grenade", "skillId": "ClusterGrenadePlayer"}
+                    ],
+                    "supports": [
+                        {"name": "Short Fuse I", "gemId": "SupportGemExpedite"},
+                        {"name": "Defy II", "gemId": "SupportGemDefyTwo"},
+                        {"name": "Fire Penetration II", "gemId": "SupportGemFirePenetrationTwo"},
+                        {"name": "Elemental Armament II", "gemId": "SupportGemPrimalArmamentTwo"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
+
+
+def test_unresolved_jewel_sockets_deferral_requires_explicit_review_declaration():
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-001"},
+        "deepResearchRecords": [
+            {
+                "title": "Main skill package",
+                "recordKind": "skill_package",
+                "summary": "no sockets discussed",
+                "content": "main skill only",
+                "components": [],
+            }
+        ],
+    }
+    counts = {
+        "allocatedJewelSocketCount": 2,
+        "socketedJewelCount": 0,
+        "status": "ok",
+    }
+    deferred = run_phase4_deep_review_acceptance._unresolved_jewel_sockets_deferred(review, counts)
+
+    assert len(deferred) == 1
+    assert deferred[0]["reason"] == "unresolved_jewel_sockets"
+    assert deferred[0]["candidateKind"] == "research_case"
+    assert deferred[0]["sampleId"] == "case:fix-001"
+
+
+def test_unresolved_jewel_sockets_deferral_skips_declared_or_filled_or_unknown():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    base_review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-002"},
+        "deepResearchRecords": [],
+    }
+    declared = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-003"},
+        "deepResearchRecords": [
+            {
+                "title": "Jewel state",
+                "recordKind": "open_question",
+                "summary": "socketed Jewel evaluation",
+                "content": "jewel sockets are empty by design",
+                "components": [],
+            }
+        ],
+    }
+    counts = {"allocatedJewelSocketCount": 2, "socketedJewelCount": 0, "status": "ok"}
+
+    assert acceptance._unresolved_jewel_sockets_deferred(declared, counts) == []
+    assert (
+        acceptance._unresolved_jewel_sockets_deferred(
+            base_review, {**counts, "socketedJewelCount": 2}
+        )
+        == []
+    )
+    assert (
+        acceptance._unresolved_jewel_sockets_deferred(
+            base_review, {**counts, "allocatedJewelSocketCount": 0}
+        )
+        == []
+    )
+    assert (
+        acceptance._unresolved_jewel_sockets_deferred(
+            base_review, {**counts, "status": "tree_data_missing"}
+        )
+        == []
+    )
+    assert acceptance._unresolved_jewel_sockets_deferred(base_review, None) == []
+
+
+def test_unresolved_jewel_sockets_deferral_ignores_jewel_in_identity_fields():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:jewel-samples-001"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:jewel-samples-001",
+                "researchGroupId": "research:case:jewel-samples-001",
+                "caseRef": "source-hash:jewel-samples-001",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Main skill package",
+                "recordKind": "skill_package",
+                "summary": "no sockets discussed",
+                "content": "main skill only",
+                "components": [],
+            }
+        ],
+    }
+    counts = {"allocatedJewelSocketCount": 2, "socketedJewelCount": 0, "status": "ok"}
+    deferred = acceptance._unresolved_jewel_sockets_deferred(review, counts)
+
+    assert len(deferred) == 1
+    assert deferred[0]["reason"] == "unresolved_jewel_sockets"
+
+    declared = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:jewel-samples-001"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:jewel-samples-001",
+                "researchGroupId": "research:case:jewel-samples-001",
+                "caseRef": "source-hash:jewel-samples-001",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Jewel state",
+                "recordKind": "open_question",
+                "summary": "jewel sockets are empty by design",
+                "content": "declared",
+                "components": [],
+            }
+        ],
+    }
+    assert acceptance._unresolved_jewel_sockets_deferred(declared, counts) == []
+
+
+def test_unique_gem_diagnostics_labels_lineage_support_identity():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                "supports": [
+                    {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"},
+                    {"name": "Freeze", "gemId": "SupportGemGlaciation"},
+                ],
+            }
+        ]
+    }
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-010"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-010",
+                "researchGroupId": "research:case:fix-010",
+                "caseRef": "source-hash:fix-010",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Flash CC rotation",
+                "recordKind": "rotation",
+                "summary": "Bhatair's Vengeance support pair",
+                "content": "Flash Grenade controls with Freeze",
+                "components": [
+                    {
+                        "candidateName": "Flash Grenade",
+                        "componentKey": "skill:FlashGrenadePlayer",
+                        "role": "control_skill",
+                    }
+                ],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(review, manifest)
+
+    assert diagnostics["available"] is True
+    assert "Bhatair's Vengeance" in diagnostics["uniqueGemCandidates"]
+    assert "Bhatair's Vengeance" in diagnostics["unlabeledUniqueGemNames"]
+
+
+def test_unique_gem_diagnostics_exempts_open_question_and_unique_enabler():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                "supports": [
+                    {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"}
+                ],
+            }
+        ]
+    }
+    open_question = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-011"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-011",
+                "researchGroupId": "research:case:fix-011",
+                "caseRef": "source-hash:fix-011",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Bhatair lineage open",
+                "recordKind": "open_question",
+                "summary": "Bhatair's Vengeance lineage support mechanism unverified",
+                "content": "mechanism details pending",
+                "components": [],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(open_question, manifest)
+    assert "Bhatair's Vengeance" in diagnostics["uniqueGemCandidates"]
+    assert diagnostics["unlabeledUniqueGemNames"] == []
+
+    enabler_review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-012"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-012",
+                "researchGroupId": "research:case:fix-012",
+                "caseRef": "source-hash:fix-012",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Unique support labeled",
+                "recordKind": "skill_package",
+                "summary": "labeled",
+                "content": "pair",
+                "components": [
+                    {
+                        "candidateName": "Bhatair's Vengeance",
+                        "componentKey": "support:Metadata/Items/Gems/SupportGemBhatairsVengeance",
+                        "role": "unique_enabler",
+                    }
+                ],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(enabler_review, manifest)
+    assert diagnostics["unlabeledUniqueGemNames"] == []
+
+
+def test_unique_gem_diagnostics_handles_missing_manifest():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    diagnostics = acceptance._unique_gem_diagnostics({"safeArtifactOnly": True}, None)
+    assert diagnostics["available"] is False
+    assert diagnostics["uniqueGemCandidates"] == []
+    assert diagnostics["unlabeledUniqueGemNames"] == []
+
+
+def test_unique_gem_diagnostics_accepts_prose_lineage_label_with_support_role():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                "supports": [
+                    {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"}
+                ],
+            }
+        ]
+    }
+    prose_labeled = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-013"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-013",
+                "researchGroupId": "research:case:fix-013",
+                "caseRef": "source-hash:fix-013",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Flash CC package",
+                "recordKind": "skill_package",
+                "summary": "Bhatair's Vengeance is a lineage support gem with fixed affixes",
+                "content": "pair with Flash Grenade",
+                "components": [
+                    {
+                        "candidateName": "Flash Grenade",
+                        "componentKey": "skill:FlashGrenadePlayer",
+                        "role": "control_skill",
+                    },
+                    {
+                        "candidateName": "Bhatair's Vengeance",
+                        "componentKey": "support:Metadata/Items/Gems/SupportGemBhatairsVengeance",
+                        "role": "support_modifier",
+                    },
+                ],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(prose_labeled, manifest)
+    assert "Bhatair's Vengeance" in diagnostics["uniqueGemCandidates"]
+    assert diagnostics["unlabeledUniqueGemNames"] == []
+
+
+def test_unique_gem_diagnostics_gem_name_with_unique_word_does_not_self_label():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    assert (
+        acceptance._mentions_unique_identity(
+            "Bhatair's Vengeance is a lineage support gem with fixed affixes",
+            "Bhatair's Vengeance",
+        )
+        is True
+    )
+    assert (
+        acceptance._mentions_unique_identity(
+            "uses Unique Breach Lightning Bolt as the main skill", "Unique Breach Lightning Bolt"
+        )
+        is False
+    )
+    assert (
+        acceptance._mentions_unique_identity("pair with Flash Grenade", "Bhatair's Vengeance")
+        is False
+    )
+    assert acceptance._mentions_unique_identity("", "Bhatair's Vengeance") is False
 
 
 def test_source_support_diagnostics_use_resolved_physical_type_not_functional_role(tmp_path):

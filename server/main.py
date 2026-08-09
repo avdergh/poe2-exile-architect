@@ -66,24 +66,21 @@ from .live import version as live_version
 from .live import wiki as live_wiki
 from .freshness import service as freshness_service
 from .generation import artifacts as generation_artifacts
+from .generation import progression_lifecycle as generation_progression_lifecycle
 from .generation import evaluation as generation_evaluation
-from .generation import models as generation_models
 from .generation import delivery as generation_delivery
+from .generation import leveled_build as generation_leveled_build
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
-from .generation import progression as generation_progression
-from .generation import progression_context as generation_progression_context
-from .generation import progression_costs as generation_progression_costs
-from .generation import progression_lifecycle as generation_progression_lifecycle
-from .generation import progression_models as generation_progression_models
-from .generation import progression_research as generation_progression_research
-from .generation import progression_service as generation_progression_service
 from .generation import validation_checkpoint as generation_validation_checkpoint
 from .judge import evaluator as judge_evaluator
+from .learning import memory as learning_memory
+from .learning import models as learning_models
 from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
 from .runtime import tool_telemetry
+from .runtime import task_cleanup
 
 # Keep MCP bootstrap instructions intentionally small.  The complete runtime guide remains the
 # human-maintained source of truth, while skills load only the workflow references they need.
@@ -576,18 +573,17 @@ def equip_item(
 ) -> dict[str, Any]:
     """Equip an item on the active build from raw Path of Building item text.
 
-    Replaces whatever is currently in the target slot. `slot` optionally forces the slot; otherwise
-    the item's primary slot is used — which for a PAIRED slot is the first one, so pass an explicit
-    `slot` for "Ring 2"/"Weapon 2" or it silently overwrites Ring 1/Weapon 1. Returns updated stats.
+    Replaces the target slot item. `slot` optionally forces the slot; for PAIRED slots the
+    item's primary slot is the first one — pass an explicit `slot` ("Ring 2"/"Weapon 2") or it
+    silently overwrites Ring 1/Weapon 1. Returns updated stats.
 
-    Items returned by `craft_item` can contain Perfect-Essence, rune, or corrupted effects outside
-    the ordinary affix pool. Pass that result's `craftReceiptRef` unchanged so the same source-aware
-    legality receipt can be verified after PoB normalizes the item text.
+    `craft_item` results can carry Perfect-Essence/rune/corrupted effects outside the ordinary
+    affix pool: pass its `craftReceiptRef` unchanged so the same source-aware legality receipt
+    verifies after PoB normalizes the item text.
 
-    Hand-written items are checked against the real mod pool: if an affix can't roll on the base
-    type (e.g. flat/`%` maximum Mana on a body armour), the result carries `illegalAffixes` + a
-    `legalityWarning` — the computed stats then include invented mods and aren't achievable. Ground
-    gear in real mods (`optimize_item`, `parse_item`, `search_mods`) to avoid this.
+    Hand-written items are checked against the real mod pool; unrollable affixes return
+    `illegalAffixes` + `legalityWarning` and the computed stats include invented mods (not
+    achievable). Ground gear in real mods (`optimize_item`/`parse_item`/`search_mods`).
     """
     legality = item_legality.audit_item(
         raw,
@@ -772,6 +768,29 @@ def equip_jewel(raw: str, socket: int | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
+def evaluate_jewel_socket(
+    socket: int,
+    raw: str,
+    keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """Read-only: measure ONE candidate jewel (raw PoB item text) placed in ONE tree socket.
+
+    This is the positional-evaluation path unique/radius jewels need: the candidate is placed in
+    `socket` (an id from `list_jewel_sockets`), and radius/Time-Lost grants are computed by the
+    engine over the socket radius' ALLOCATED passives. Returns per-key deltas vs the current
+    build; the build is restored afterwards. Use it to rank sockets for a Time-Lost Jewel or to
+    value a unique jewel's real effect before `equip_jewel` commits it. Ground the raw text in
+    `get_unique` (knowledge server) or a real drop; the engine owns every number.
+    """
+    return itemopt.evaluate_jewel_socket(
+        get_engine(),
+        socket=socket,
+        raw=raw,
+        keys=keys,
+    )
+
+
+@mcp.tool()
 def evaluate_build(goals: dict[str, Any]) -> dict[str, Any]:
     """Check the active build against named numeric goals.
 
@@ -953,454 +972,6 @@ def export_final_build_package(
 
 
 # --------------------------------------------------------------------------------------
-# Verified multi-stage build progression (trusted artifacts, not prose-only stages)
-# --------------------------------------------------------------------------------------
-@mcp.tool()
-def save_build_progression_route(route: dict[str, Any]) -> dict[str, Any]:
-    """Save a compatibility Route v2 whose every milestone is a trusted FinalBuildArtifact.
-
-    The route records typed deltas and transition requirements, but never derives early stages by
-    downgrading the final PoB and never exposes raw XML. Anchor-first Route v3 must be finalized
-    through `finalize_build_progression`; this compatibility entry cannot bypass that state service.
-    """
-    return generation_progression.save_progression_route(route)
-
-
-@mcp.tool()
-def list_build_progression_routes() -> dict[str, Any]:
-    """List local verified progression routes without exposing their private PoB XML."""
-    return generation_progression.list_progression_routes()
-
-
-@mcp.tool()
-def load_build_progression_stage(
-    route_id: str,
-    stage_id: str = "",
-    lifecycle_stage: (
-        Literal[
-            "campaign_early",
-            "campaign_mid",
-            "campaign_late",
-            "maps_entry",
-            "endgame_budget",
-            "endgame_final",
-            "budget_endgame",
-            "final_endgame",
-        ]
-        | None
-    ) = None,
-) -> dict[str, Any]:
-    """Load one trusted milestone by stable stage id or a uniquely matching lifecycle stage."""
-    return generation_progression.load_progression_stage(
-        get_engine(),
-        route_id=route_id,
-        stage_id=stage_id or None,
-        lifecycle_stage=lifecycle_stage,
-    )
-
-
-# --------------------------------------------------------------------------------------
-# Phase 8 Agent-led progression orchestration (safe state only; no model or web crawler)
-# --------------------------------------------------------------------------------------
-def _typed_payload(value: Any) -> dict[str, Any]:
-    """Normalize FastMCP Pydantic inputs while preserving direct-call test compatibility."""
-    if isinstance(value, dict):
-        return value
-    dump = getattr(value, "model_dump", None)
-    if not callable(dump):
-        raise TypeError("typed MCP payload must be a mapping or Pydantic model")
-    return dump(mode="json", by_alias=True)
-
-
-@mcp.tool()
-def start_build_progression(
-    operation_id: str,
-    base_class: str,
-    target_level: int,
-    goal: str,
-    version_context: generation_models.VersionContext,
-    class_key: str | None = None,
-    target_family_constraint: generation_progression_models.TargetFamilyConstraint | None = None,
-) -> dict[str, Any]:
-    """Start a recoverable progression; a fresh exact-version starter packet may be reused."""
-    return generation_progression_service.start_build_progression(
-        operation_id=operation_id,
-        base_class=base_class,
-        target_level=target_level,
-        goal=goal,
-        version_context=_typed_payload(version_context),
-        class_key=class_key,
-        target_family_constraint=(
-            _typed_payload(target_family_constraint)
-            if target_family_constraint is not None
-            else None
-        ),
-    )
-
-
-@mcp.tool()
-def submit_build_progression_target_selection(
-    progression_id: str,
-    selection: generation_progression_models.TargetCandidateSelection,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Rank every Family in one exact-version discovery receipt before target Create."""
-    return generation_progression_service.submit_build_progression_target_selection(
-        progression_id=progression_id,
-        selection=_typed_payload(selection),
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def bind_build_progression_target_run(
-    progression_id: str,
-    run_id: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Bind the selected target Family to one fresh ordinary Phase 5 run."""
-    return generation_progression_service.bind_build_progression_target_run(
-        progression_id=progression_id,
-        run_id=run_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def fail_build_progression_target_anchor(
-    progression_id: str,
-    failure_code: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Record a target-anchor failure without automatically switching Family."""
-    return generation_progression_service.fail_build_progression_target_anchor(
-        progression_id=progression_id,
-        failure_code=failure_code,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def retry_build_progression_target_anchor(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Open the one same-Family retry reserved for tool or control interruption."""
-    return generation_progression_service.retry_build_progression_target_anchor(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def reselect_build_progression_target_candidate(
-    progression_id: str,
-    decision_summary: str,
-    evidence_refs: list[str],
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Explicitly switch once to the recorded reserve Family after an audited failure."""
-    return generation_progression_service.reselect_build_progression_target_candidate(
-        progression_id=progression_id,
-        decision_summary=decision_summary,
-        evidence_refs=evidence_refs,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def bind_build_progression_target_anchor(
-    progression_id: str,
-    artifact_id: str,
-    target_identity: generation_progression_models.TargetAnchorIdentity,
-    design_coverage: generation_progression_models.TargetDesignCoverage,
-    lifecycle_verification_ref: str,
-    expected_revision: int,
-    operation_id: str,
-    acceptance_decision: Literal["accepted", "limited_accepted"] = "accepted",
-) -> dict[str, Any]:
-    """Bind an accepted target only after artifact-bound lifecycle verification passes."""
-    return generation_progression_service.bind_build_progression_target_anchor(
-        progression_id=progression_id,
-        artifact_id=artifact_id,
-        target_identity=_typed_payload(target_identity),
-        design_coverage=_typed_payload(design_coverage),
-        lifecycle_verification_ref=lifecycle_verification_ref,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        acceptance_decision=acceptance_decision,
-    )
-
-
-@mcp.tool()
-def intake_starter_research_packet(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-    packet: generation_progression_research.StarterResearchSubmission,
-) -> dict[str, Any]:
-    """Sanitize bounded external-Agent starter research and bind it to one progression.
-
-    Source URLs are converted to hashes before persistence. Raw pages, copied guide prose, PoB
-    material and whole-character mirrors are rejected.
-    """
-    return generation_progression_service.intake_starter_research_packet(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        packet=_typed_payload(packet),
-    )
-
-
-@mcp.tool()
-def submit_build_progression_blueprint(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-    blueprint: generation_progression_models.ProgressionBlueprint,
-) -> dict[str, Any]:
-    """Submit two to five milestones whose target is the already-bound immutable anchor."""
-    return generation_progression_service.submit_build_progression_blueprint(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        blueprint=_typed_payload(blueprint),
-    )
-
-
-@mcp.tool()
-def revise_future_build_progression_stages(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-    blueprint: generation_progression_models.ProgressionBlueprint,
-) -> dict[str, Any]:
-    """Version only not-yet-started future milestones; completed stages remain immutable."""
-    return generation_progression_service.revise_future_build_progression_stages(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        blueprint=_typed_payload(blueprint),
-    )
-
-
-@mcp.tool()
-def claim_build_progression_stage(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Claim the next stage; the target closure reuses its anchor without another Create run."""
-    return generation_progression_service.claim_build_progression_stage(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def bind_build_progression_stage_run(
-    progression_id: str,
-    stage_id: str,
-    claim_id: str,
-    run_id: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Bind the newly started Phase 5 run to the claimed progression stage."""
-    return generation_progression_service.bind_build_progression_stage_run(
-        progression_id=progression_id,
-        stage_id=stage_id,
-        claim_id=claim_id,
-        run_id=run_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def complete_build_progression_stage(
-    progression_id: str,
-    stage_id: str,
-    claim_id: str,
-    artifact_id: str,
-    lifecycle_verification: dict[str, Any],
-    cost_profile: dict[str, Any],
-    completion_report: generation_progression_service.StageCompletionReport,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Accept one stage after trusted artifact/lifecycle, provenance and transition checks."""
-    return generation_progression_service.complete_build_progression_stage(
-        progression_id=progression_id,
-        stage_id=stage_id,
-        claim_id=claim_id,
-        artifact_id=artifact_id,
-        lifecycle_verification=lifecycle_verification,
-        cost_profile=cost_profile,
-        completion_report=_typed_payload(completion_report),
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def fail_build_progression_stage(
-    progression_id: str,
-    stage_id: str,
-    claim_id: str,
-    failure_code: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Pause a failed stage for review without automatically restarting the route."""
-    return generation_progression_service.fail_build_progression_stage(
-        progression_id=progression_id,
-        stage_id=stage_id,
-        claim_id=claim_id,
-        failure_code=failure_code,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def retry_build_progression_stage(
-    progression_id: str,
-    stage_id: str,
-    expected_revision: int,
-    operation_id: str,
-    revised_stage: generation_progression_models.StageBlueprint | None = None,
-    revised_blueprint_id: str | None = None,
-    replan_summary: str | None = None,
-) -> dict[str, Any]:
-    """Retry once, optionally replacing an unsaved failed stage with a versioned new direction."""
-    return generation_progression_service.retry_build_progression_stage(
-        progression_id=progression_id,
-        stage_id=stage_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        revised_stage=_typed_payload(revised_stage) if revised_stage is not None else None,
-        revised_blueprint_id=revised_blueprint_id,
-        replan_summary=replan_summary,
-    )
-
-
-@mcp.tool()
-def pause_build_progression(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-    reason: str,
-) -> dict[str, Any]:
-    """Pause a progression while preserving the current stage/run binding."""
-    return generation_progression_service.pause_build_progression(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        reason=reason,
-    )
-
-
-@mcp.tool()
-def resume_build_progression(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Resume the exact state captured by pause."""
-    return generation_progression_service.resume_build_progression(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-    )
-
-
-@mcp.tool()
-def checkpoint_build_progression_context(
-    progression_id: str,
-    expected_context_revision: int,
-    operation_id: str,
-    checkpoint: generation_progression_context.ProgressionWorkingCheckpoint,
-) -> dict[str, Any]:
-    """Persist selected recall premises and concise build decisions for context recovery."""
-    return generation_progression_service.checkpoint_build_progression_context(
-        progression_id=progression_id,
-        expected_context_revision=expected_context_revision,
-        operation_id=operation_id,
-        checkpoint=_typed_payload(checkpoint),
-    )
-
-
-@mcp.tool()
-def get_build_progression_status(
-    progression_id: str,
-    detail: Literal["compact", "resume", "full"] = "compact",
-) -> dict[str, Any]:
-    """Inspect compact state, a bounded resume packet, or the legacy full safe state."""
-    return generation_progression_service.get_build_progression_status(
-        progression_id,
-        detail=detail,
-    )
-
-
-@mcp.tool()
-def classify_build_progression_costs(
-    cost_request: generation_progression_costs.CostRequest,
-) -> dict[str, Any]:
-    """Classify named uniques by live Divine value and rares by craft effort.
-
-    The response reports risk bands and coverage, never a fabricated total build price. Price
-    failure lowers evidence quality but does not block or trigger a transition.
-    """
-    return generation_progression_costs.classify_build_progression_costs(
-        _typed_payload(cost_request)
-    )
-
-
-@mcp.tool()
-def finalize_build_progression(
-    progression_id: str,
-    expected_revision: int,
-    operation_id: str,
-    route_summary: str,
-) -> dict[str, Any]:
-    """Bind all completed stages into an anchored Route v3 after the final milestone."""
-    return generation_progression_service.finalize_build_progression(
-        progression_id=progression_id,
-        expected_revision=expected_revision,
-        operation_id=operation_id,
-        route_summary=route_summary,
-    )
-
-
-@mcp.tool()
-def export_build_progression_package(
-    route_id: str,
-    name: str = "",
-    author: str = "",
-    description: str = "",
-) -> dict[str, Any]:
-    """Export a complete route, or a target recovery package for an unfinished anchored run."""
-    return generation_progression_service.export_build_progression_package(
-        route_id,
-        name=name,
-        author=author,
-        description=description,
-    )
-
-
-# --------------------------------------------------------------------------------------
 # Phase 7 comparative-learning tools (safe state only; Desktop skill owns task creation)
 # --------------------------------------------------------------------------------------
 @mcp.tool()
@@ -1551,6 +1122,46 @@ def query_learning_memory(
         dimensions=dimensions,
         limit=limit,
     )
+
+
+@mcp.tool()
+def query_public_learning_memory(
+    family_key: str,
+    target_level: int,
+    version_context: learning_models.LearningVersionContext,
+    dimensions: list[str] | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Recall copy-safe public/local Learning Memory for an ordinary Create.
+
+    Unlike ``query_learning_memory``, this read-only entry is not tied to a Phase 7 blind-create
+    claim and does not write a campaign receipt.  It returns only the release-seeded plus local
+    append-only lesson projection; raw cases, campaign state, and source material are never read.
+    """
+    return learning_memory.query_memory(
+        family_key=family_key,
+        target_level=target_level,
+        version_context=(
+            version_context.model_dump(mode="json", by_alias=True)
+            if isinstance(version_context, learning_models.LearningVersionContext)
+            else version_context
+        ),
+        dimensions=dimensions,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def cleanup_completed_task_runtime(
+    task_kind: Literal["generation", "research", "learning_campaign"],
+    task_id: str,
+) -> dict[str, Any]:
+    """Delete one completed task's private runtime state after its durable result is safe.
+
+    Learning Memory, Research Memory, release seeds, and user-exported files are never deleted.
+    Active, unreviewed, unexported, paused, or still-referenced tasks fail closed.
+    """
+    return task_cleanup.cleanup_completed_task_runtime(task_kind=task_kind, task_id=task_id)
 
 
 @mcp.tool()
@@ -2016,29 +1627,24 @@ def optimize_passives(
 ) -> dict[str, Any]:
     """Reproducibly optimize passive points from an immutable snapshot.
 
-    Normal Create/progression may use bounded non-reset requests both for an identified local gap
-    and for a deliberate high-impact quality pass. The `reset=True, points=0` whole-tree replan is
-    outside the current Create policy; use explicit passive nodes or a bounded non-reset request
-    instead.
+    Normal Create may use bounded non-reset requests for an identified local gap or a
+    deliberate high-impact quality pass. The `reset=True, points=0` whole-tree replan is outside
+    the current Create policy; use explicit passive nodes or a bounded non-reset request instead.
 
-    Three goal modes:
-    - single `metric` (e.g. "TotalDPS", "Life", "TotalEHP") — maximizes that stat;
-    - `metric="balanced"` — raises offense AND defense (relative TotalDPS + TotalEHP);
-    - `goals={"TotalDPS":0.5,"Life":0.3,"CritChance":0.2}` — a WEIGHTED mix (relative gains, so
-      stats on different scales combine). A goal whose base is ~0 (e.g. crit on a non-crit build)
-      contributes nothing — fix the base first.
+    Goal modes: single `metric` ("TotalDPS"/"Life"/"TotalEHP"...); `metric="balanced"` (offense
+    AND defense); or weighted `goals` like {"TotalDPS":0.5,"Life":0.3,"CritChance":0.2} (relative
+    gains). A goal whose base is ~0 (e.g. crit on a non-crit build) contributes nothing — fix the
+    base first.
 
     `require=[node ids/names]` allocates those nodes (+ shortest path) first, then optimizes the
-    rest — but only as far as the budget allows (it never over-allocates; skipped requires are
-    reported in `requireSkipped`). `reset=True` first deallocates the current tree (keeping
-    ascendancy) so you can RE-PLAN from scratch — e.g. `reset=True, require=[jewel socket ids]` to
-    rebuild the tree around jewel sockets instead of piling onto a full tree. `points` defaults to
-    0 = the FULL remaining passive budget (the usual intent — allocate the whole tree); pass a
-    positive number only to CAP allocation. Ascendancy is a SEPARATE 8-point pool, auto-allocated on
-    top regardless of `points`. `preview=True` returns the exact plan without changing the active
-    build. A commit runs on an isolated PoB snapshot and succeeds only if the active state still
-    matches `expected_state_hash` (when supplied) and the captured input hash. The response binds the
-    plan to optimizer/request/input/output hashes and returns exact allocated/path node ids.
+    rest within budget (never over-allocates; skipped requires in `requireSkipped`).
+    `reset=True` deallocates the tree (keeping ascendancy) to re-plan from scratch. `points`
+    defaults to 0 = the FULL remaining passive budget; pass a positive number only to CAP
+    allocation. Ascendancy is a SEPARATE 8-point pool, auto-allocated regardless of `points`.
+    `preview=True` returns the exact plan without changing the build. A commit runs on an isolated
+    snapshot and succeeds only if the active state still matches `expected_state_hash` (when
+    supplied) and the captured input hash; the response binds optimizer/request/input/output
+    hashes and returns exact allocated/path node ids.
 
     Bounded greedy search, not a global optimum.
     """
@@ -2084,26 +1690,31 @@ def optimize_item(
     thorough: bool = False,
     keep_resists_capped: bool = True,
     goals: dict[str, float] | None = None,
+    planning: bool = False,
 ) -> dict[str, Any]:
-    """Craft the best-in-slot rare for a `slot` — one `metric`, or a weighted blend via `goals`.
+    """Craft the best-in-slot rare for a `slot` — one `metric`, or a weighted `goals` blend.
 
-    Searches the slot's REAL craftable affix pool (from the base's mod restrictions) and greedily
-    fills prefixes/suffixes — respecting the 3/3 limits and mod-group exclusivity. Every candidate is
-    engine-computed. `base` defaults to the currently-equipped base in that slot (so a wand build
-    stays a wand); pass it to try a different base. `rolls`: "realistic" (default) or "max"
-    (idealized T1). `thorough=true` adds a swap pass. Returns the crafted item (equip with
-    equip_item), the before/after numbers, and a warning if it breaks a resistance cap.
+    Searches the slot's REAL craftable affix pool (base mod restrictions) and greedily fills
+    prefixes/suffixes respecting the 3/3 limits and mod-group exclusivity; every candidate is
+    engine-computed. `base` defaults to the currently-equipped base (so a wand build stays a
+    wand); pass it to try another base. `rolls`: "realistic" (default) or "max" (idealized T1).
+    `thorough=true` adds a swap pass. Returns the crafted item (equip with equip_item), the
+    before/after numbers, and a warning if it breaks a resistance cap.
 
-    **For realistic gear, pass `goals`** — a weight map like {"TotalDPS": 0.6, "TotalEHP": 0.4} —
-    and the craft balances offense AND defense in one piece (real endgame gear is blended). Without
-    `goals` it maximizes the single `metric`, which strips the other axis (a TotalDPS craft carries
-    no life/resists). A blended craft returns `metricsBefore`/`metricsAfter` per goal. Either way,
-    re-check `get_defenses` after equipping.
+    `planning=true` keeps an otherwise-legal candidate when the CURRENT character only lacks
+    attributes to equip it: instead of discarding, it returns `projectedShortfalls` plus real
+    `bridgeAffixSuggestions` so gear assembly can be ordered (equip a bridge piece first, then
+    re-run). Formal Judge/artifact paths still require the fully-legal build.
 
-    Each result also reports `attainability` (per chosen affix: required ilvl + tier depth, e.g. top
-    tier of 8) and a coarse `craft` effort rating — a realism check from tier depth, NOT a market
-    price (the data has no spawn-weights). The crafted item is a *theoretical best-in-slot target*;
-    verify price with get_prices. Bounded greedy search, not a global optimum.
+    For realistic endgame gear pass `goals` (e.g. {"TotalDPS": 0.6, "TotalEHP": 0.4}) so the
+    craft balances offense AND defense in one piece; a single `metric` craft strips the other
+    axis (no life/resists). A blended craft returns `metricsBefore`/`metricsAfter` per goal.
+    Re-check `get_defenses` after equipping.
+
+    Each result reports `attainability` (per affix: required ilvl + tier depth) and a coarse
+    `craft` effort rating — a realism check from tier depth, NOT a market price (no spawn-weight
+    data). The crafted item is a *theoretical best-in-slot target*; verify price with
+    get_prices. Bounded greedy search, not a global optimum.
     """
     return itemopt.optimize_item(
         get_engine(),
@@ -2115,6 +1726,7 @@ def optimize_item(
         thorough=thorough,
         keep_resists_capped=keep_resists_capped,
         goals=goals,
+        planning=planning,
     )
 
 
@@ -2194,19 +1806,20 @@ def plan_gear(
 ) -> dict[str, Any]:
     """Plan a whole gear set that maximizes damage while capping resistances (budget allocation).
 
-    The cross-slot trade-off: limited suffix slots for resistances, so put them where they cost the
-    least damage. This crafts OFFENSE slots damage-leaning and DEFENSE slots EHP-leaning (which pulls
-    the missing resists onto the defensive pieces), building each slot on the previous so the plan is
-    coherent. `dps_weight` (0..1) tilts the offense slots. `auto_base` (default on) fills EMPTY
-    armour/jewellery slots with a sensible attribute-appropriate base, so it builds a WHOLE set from
-    scratch (weapons stay yours — they define the archetype). `min_ehp` sets a survivability floor:
-    defensive slots are re-crafted toward pure EHP until TotalEHP reaches it (reports `ehpFloorMet`).
-    `stage` defaults from character level and controls defense/offense trade-offs plus a non-CI chaos
-    resistance target: campaign 0%, maps entry 30%, endgame 60%. Once that target is reached, chaos
-    resistance stops competing for suffixes. Use `chaos_resist_target=75` only for a deliberate
-    pinnacle/content requirement, not as a universal starter baseline.
-    Returns the per-slot plan + projected whole-build DPS/EHP/resists; equip the items with
-    equip_item. A heavier call (~10-20s); greedy heuristic — refine individual slots with optimize_item.
+    Cross-slot trade-off: limited suffix slots for resistances, so the plan crafts OFFENSE slots
+    damage-leaning and DEFENSE slots EHP-leaning (pulling missing resists onto defensive pieces),
+    building each slot on the previous so the set is coherent. `dps_weight` (0..1) tilts the
+    offense slots. `auto_base` (default on) fills EMPTY armour/jewellery slots with a sensible
+    attribute-appropriate base so it builds a WHOLE set from scratch (weapons stay yours — they
+    define the archetype). `min_ehp` sets a survivability floor: defensive slots re-craft toward
+    pure EHP until TotalEHP reaches it (reports `ehpFloorMet`). `stage` defaults from character
+    level and controls defense/offense trade-offs plus the non-CI chaos resistance target:
+    campaign 0%, maps entry 30%, endgame 60% — once reached, chaos stops competing for suffixes.
+    Use `chaos_resist_target=75` only for a deliberate pinnacle/content requirement, not a
+    universal starter baseline.
+
+    Returns the per-slot plan + projected whole-build DPS/EHP/resists; equip with equip_item.
+    A heavier call (~10-20s); greedy heuristic — refine individual slots with optimize_item.
     """
     return itemopt.plan_gear(
         get_engine(),
@@ -2234,16 +1847,16 @@ def craft_item(
 ) -> dict[str, Any]:
     """Craft the best-in-slot item using the FULL crafting system — beyond a plain rare.
 
-    Where `optimize_item` crafts the best rare from the standard affix pool, this adds the three real
-    PoE2 power sources, each valued on the engine (PoB owns the crafting data — nothing is invented):
-    **runes / soul cores** (mods socketed on top of the affixes), **essences** (force a mod — *Perfect*
-    essences grant mods the normal pool can't roll, e.g. % Life on body armour, "damage as extra" on
-    weapons), and **corruptions** (a corrupted implicit, e.g. +1 to all skills on an amulet). Pass a
-    single `metric` or a weighted `goals` blend; `rune_sockets` is how many the base is assumed to
-    support (Artificer's Orb — martial weapons/armour typically allow up to 2). Returns the item + the
-    `craftSteps` to make it (the corruption is a Vaal gamble — do it last). A theoretical best-in-slot
-    target with idealized rolls; price the steps. The active build is restored, while a raw-free
-    `craftReceiptRef` is persisted so later equip/checkpoint/Judge calls can verify special sources.
+    Where `optimize_item` crafts the best rare from the standard affix pool, this adds the three
+    real PoE2 power sources, each valued on the engine (PoB owns the crafting data — nothing is
+    invented): **runes / soul cores** (mods socketed on top of affixes), **essences** (force a
+    mod; *Perfect* essences grant mods the normal pool can't roll), and **corruptions** (a
+    corrupted implicit). Pass a single `metric` or a weighted `goals` blend; `rune_sockets` is
+    how many the base is assumed to support (Artificer's Orb; martial weapons/armour typically
+    allow up to 2). Returns the item + `craftSteps` (the corruption is a Vaal gamble — do it
+    last). A theoretical best-in-slot target with idealized rolls; price the steps. The active
+    build is restored, while a raw-free `craftReceiptRef` is persisted so later
+    equip/checkpoint/Judge calls can verify special sources.
     """
     return craftopt.craft_item(
         get_engine(),
@@ -2275,7 +1888,7 @@ def optimize_build(
 ) -> dict[str, Any]:
     """Maintenance-only holistic optimizer, temporarily disabled by default.
 
-    Normal Create and progression runs must use Agent-selected exact mutations and focused component
+    Normal Create runs must use Agent-selected exact mutations and focused component
     tools.  This retained entry only supports explicit optimizer maintenance experiments when the
     process owner opts in with ``POE2_ENABLE_GLOBAL_BUILD_OPTIMIZER=1``; otherwise it returns a typed
     disabled result without reading or changing the active build.
@@ -2348,12 +1961,23 @@ def search_items(
     query: str = "",
     item_class: str | None = None,
     limit: int = 20,
+    max_drop_level: int | None = None,
+    order: str = "drop_desc",
 ) -> list[dict[str, Any]]:
     """Search Path of Exile 2 item bases by name/tags, optionally filtered by item class.
 
-    Returns matching bases (name, item_class, drop_level, tags). Use `get_item` for full detail.
+    `max_drop_level` filters to bases obtainable by a character level (e.g. 18 for a campaign
+    snapshot); `order` is "drop_desc" (highest tier first, default) or "drop_asc"
+    (campaign-friendly). Returns matching bases (name, item_class, drop_level, tags). Use
+    `get_item` for full detail.
     """
-    return corpus.search_items(query=query, item_class=item_class, limit=limit)
+    return corpus.search_items(
+        query=query,
+        item_class=item_class,
+        limit=limit,
+        max_drop_level=max_drop_level,
+        order=order,
+    )
 
 
 @mcp.tool()
@@ -2382,6 +2006,44 @@ def find_skills(
 def get_gem(name_or_id: str) -> dict[str, Any] | None:
     """Return full data for a single gem by name or id (tags, granted skills, supports, types)."""
     return corpus.get_gem(name_or_id)
+
+
+@mcp.tool()
+def list_skills_for_level(
+    level: int,
+    gem_type: str | None = None,
+    class_key: str | None = None,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """List gems usable as ACQUISITION references at `level`, optionally class/type-filtered.
+
+    NOTE the level semantics: the corpus has no reliable character-level gem requirement — this
+    filter is SOFT (crafting-level ≤ level, plus unknown) and every entry carries
+    ``craftingLevelIsReference``. TRUE level availability must be verified on the engine
+    (``validate_level_availability`` / PoB readback); treat this as a candidate pool, not a gate.
+    `class_key` filters by the base class's dominant attribute (e.g. "Ranger" → dexterity gems).
+    """
+    return corpus.list_gems_for_level(
+        level=level, gem_type=gem_type, class_key=class_key, limit=limit
+    )
+
+
+@mcp.tool()
+def validate_level_availability(
+    skill_keys: list[str],
+    level: int,
+    class_key: str | None = None,
+) -> dict[str, Any]:
+    """Verify candidate skills at a target level (constraint-layer reference, not a hard gate).
+
+    Uses the PoB engine's real per-level gem requirements plus the corpus' attribute weights to
+    report each skill as ok / partial / unavailable. This is the constraint layer for directions
+    proposed by the Agent (web research + model knowledge); it never picks a direction, and the
+    final legality and numbers always come from PoB readback / Judge.
+    """
+    return generation_leveled_build.validate_level_availability(
+        get_engine(), skill_keys=skill_keys, level=level, class_key=class_key
+    )
 
 
 @mcp.tool()
@@ -2635,6 +2297,16 @@ def plan_lifecycle_stage_verification(
     return result
 
 
+def _typed_payload(value: Any) -> dict[str, Any]:
+    """Normalize FastMCP Pydantic inputs while preserving direct-call test compatibility."""
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if not callable(dump):
+        raise TypeError("typed MCP payload must be a mapping or Pydantic model")
+    return dump(mode="json", by_alias=True)
+
+
 @mcp.tool()
 def verify_lifecycle_stage(
     stage: str,
@@ -2646,16 +2318,14 @@ def verify_lifecycle_stage(
 ) -> dict[str, Any]:
     """Execute lifecycle verification against the active build or one immutable artifact.
 
-    This is the computed counterpart to `plan_lifecycle_stage_verification`: it pulls the active
-    build's PoB stats/defenses, evaluates the stage target checks, and returns pass/fail/unknown
-    without mutating gear, passives, level, or config. When `artifact_id` is supplied, the tool
-    restores that private artifact itself and writes a trusted artifact-bound verification receipt.
-    The receipt keeps the original artifact hash even when PoB's import/save XML is byte-unstable.
-    ``detail="compact"`` is the Create default: it returns all blocking checks and the bounded
-    numeric evidence needed for the next decision. Artifact-bound trust fields are still derived
-    from the unprojected verification result and persisted in the existing safe bounded receipt.
-    Use ``detail="full"`` only for focused diagnosis. Recommendations and advisory caveats are
-    hidden unless ``strict_mode=true`` is supplied; computed checks and metrics still run.
+    Pulls the active build's PoB stats/defenses and evaluates the stage target checks, returning
+    pass/fail/unknown without mutating gear, passives, level, or config. With `artifact_id`, the
+    tool restores that private artifact itself and writes a trusted artifact-bound verification
+    receipt (keeping the original artifact hash even when PoB's import/save XML is byte-unstable).
+    ``detail="compact"`` (Create default) returns all blocking checks plus the bounded numeric
+    evidence needed for the next decision; ``detail="full"`` only for focused diagnosis.
+    Recommendations and advisory caveats are hidden unless ``strict_mode=true`` is supplied;
+    computed checks and metrics still run.
     """
     state_payload = _typed_payload(state) if state is not None else {}
     plan = lifecycle.lifecycle_verification.plan_stage_verification(stage, state=state_payload)
@@ -2766,6 +2436,12 @@ def verify_lifecycle_stage(
         defenses=defenses if isinstance(defenses, dict) else {},
         state=effective_state,
         engine_warning=engine_warning,
+        unmodelled_mana_mechanisms=(
+            generation_preflight.inspect_resource_model_gap(evidence_xml, gear).get(
+                "mechanismNames"
+            )
+            or []
+        ),
     )
     try:
         source_after = eng.get_xml()
@@ -3090,10 +2766,11 @@ def relevant_uniques(limit: int = 15) -> dict[str, Any]:
     Matches the active main skill's scaling — its damage type, skill type (spell/attack/projectile/…)
     and the skill name — against unique mod text, ranked by how many match. Uniques often DEFINE or
     ENABLE a build (extra projectiles, "+levels to skills", a converted mechanic), and unique JEWELS
-    (Voices, Megalomaniac, …) supply the passive/notable density meta trees lean on — exactly the
-    power a from-scratch, rare-only build misses. These are CANDIDATES, not verified: a unique often
-    enables a mechanic, so read full text with `get_unique`, then `equip_item` / `equip_jewel` and
-    measure the real delta — every number still comes from the engine.
+    supply the passive/notable density meta trees lean on — exactly the power a from-scratch,
+    rare-only build misses. These are CANDIDATES, not verified: a unique often enables a mechanic,
+    so read full text with `get_unique`, then `equip_item` / `equip_jewel` and measure the real
+    delta — every number still comes from the engine. Radius/Time-Lost jewels are positional: rank
+    sockets with `evaluate_jewel_socket` before committing.
     """
     b = get_engine().get_build()
     skill = str(b.get("mainSkill") or "")
@@ -3104,16 +2781,28 @@ def relevant_uniques(limit: int = 15) -> dict[str, Any]:
     keywords = sorted((tags & damage) | (tags & types))
     if skill:
         keywords.append(skill)
+    unique_jewels = [
+        u
+        for u in corpus.relevant_uniques(keywords, limit=40)
+        if u["item_type"] == "jewel" and u["base"] != "Timeless Jewel"
+    ][:10]
     return {
         "skill": skill,
         "keywords": keywords,
         "uniques": corpus.relevant_uniques(keywords, limit=limit) if keywords else [],
-        "uniqueJewels": corpus.search_uniques(item_type="jewel", limit=10),
+        "uniqueJewels": unique_jewels,
         "note": (
-            "Corpus suggestions matched to your build's scaling — NOT engine-verified. A unique often "
-            "ENABLES a mechanic, so read its full text (get_unique) before judging; then equip_item / "
-            "equip_jewel and measure the real delta. Unique jewels (e.g. Voices) are common "
-            "build-definers a rare-only build misses. Every number must come from the engine."
+            "Corpus suggestions matched to your build's scaling — NOT engine-verified. A unique "
+            "often ENABLES a mechanic, so read its full text (get_unique) before judging; then "
+            "equip_item / equip_jewel and measure the real delta. Unique jewels are common "
+            "build-definers a rare-only build misses — and radius/Time-Lost jewels are "
+            "positional: rank sockets with evaluate_jewel_socket before committing. Data "
+            "caveat: the bundled unique-jewel table is missing the PoE2 Time-Lost series "
+            "(those uniques live in Uniques/Special/Generated.lua, which the corpus extractor "
+            "does not ingest), and Historic timeless jewels (base 'Timeless Jewel', e.g. Heroic "
+            "Tragedy/Undying Hate) are excluded from candidates because the pinned engine's "
+            "conquered rule is a no-op. Verify any jewel text against the engine. Every number "
+            "must come from the engine."
         ),
     }
 
@@ -3252,6 +2941,12 @@ def query_research_memory(
 
 def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]:
     """Keep Create-critical semantics while dropping repeated retrieval plumbing."""
+
+    if payload.get("status") == "error":
+        # Pass through the full structured error: errorCode / caveats / suggestedRepair / facts
+        # are exactly what the Agent needs to repair the call; compacting them away hides the
+        # reason a query failed.
+        return payload
 
     detail_level = payload.get("detailLevel")
     record_keys = (
@@ -3404,6 +3099,22 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
                     "verificationTasks": tasks,
                 }
             )
+    requested_build_family_keys = {
+        str(key) for key in (payload.get("requestedBuildFamilyKeys") or []) if str(key).strip()
+    }
+
+    def family_scoped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # Premise catalog / record index / coverage are retrieval plumbing for a targeted query:
+        # when the caller narrowed to explicit Families, only those catalogs belong in the compact
+        # response (the full result set is never truncated — these are auxiliary metadata only).
+        if not requested_build_family_keys:
+            return items
+        return [
+            item
+            for item in items
+            if str(item.get("buildFamilyKey") or "") in requested_build_family_keys
+        ]
+
     compact = {
         "status": payload.get("status"),
         "dedupeQueryRef": payload.get("dedupeQueryRef"),
@@ -3417,9 +3128,9 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
         "semanticEdges": semantic_edges,
         "buildPatterns": patterns,
         "transferablePatterns": transferable,
-        "familyRecordCoverage": payload.get("familyRecordCoverage") or [],
-        "familyRecordIndex": payload.get("familyRecordIndex") or [],
-        "familyPremiseCatalog": payload.get("familyPremiseCatalog") or [],
+        "familyRecordCoverage": family_scoped(payload.get("familyRecordCoverage") or []),
+        "familyRecordIndex": family_scoped(payload.get("familyRecordIndex") or []),
+        "familyPremiseCatalog": family_scoped(payload.get("familyPremiseCatalog") or []),
         "premiseAuditVersion": payload.get("premiseAuditVersion"),
         "criticalPremiseDigest": premise_digest,
         "requestedComponentKeys": payload.get("requestedComponentKeys") or [],

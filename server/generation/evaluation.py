@@ -13,8 +13,9 @@ from pydantic import ValidationError
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
 from server.judge import evaluator, runner, sample_audit
+from server.knowledge import research_memory
 
-from . import evaluation_snapshots, models, preflight, run_store
+from . import evaluation_snapshots, models, preflight, progression_provenance, run_store
 
 
 def evaluate_generation_candidate(
@@ -27,6 +28,7 @@ def evaluate_generation_candidate(
     strict_mode: bool = False,
     engine_factory: Callable[[], Any] = PobEngine,
     timeout_seconds: float | None = 900.0,
+    receipt_reader: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Snapshot the active Agent-built PoB and evaluate the immutable snapshot."""
     if not _valid_candidate_id(candidate_id):
@@ -39,6 +41,49 @@ def evaluate_generation_candidate(
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
         return _rejected(exc.code)
+
+    # Fail fast on research-receipt provenance before any attempt is consumed: the receipt is
+    # bound into the trusted evaluation and cannot be replaced later, while validate/review only
+    # enforce the run-freshness rule after the fact. A stale or missing ref would otherwise
+    # strand the whole run. Only the exact ``disabled:no_memory_baseline`` sentinel (--no-memory)
+    # skips receipt lookup; any other ``disabled:*`` prefix is a typo or an unsupported mode and
+    # must not silently consume a Judge attempt.
+    research_ref = version.research_memory_ref
+    if research_ref == "disabled:no_memory_baseline":
+        research_receipt = None
+    elif research_ref.startswith("disabled:"):
+        return {
+            **_rejected("invalid_research_memory_ref"),
+            "attemptConsumed": False,
+            "detail": (
+                "only the exact 'disabled:no_memory_baseline' sentinel disables receipt lookup; "
+                "other disabled:* refs are rejected without consuming an attempt"
+            ),
+        }
+    else:
+        if not research_ref.startswith("dq-"):
+            return {
+                **_rejected("invalid_research_memory_ref"),
+                "attemptConsumed": False,
+            }
+        reader = receipt_reader or research_memory.ResearchMemoryService().read_query_receipt
+        research_receipt = reader(research_ref)
+        started_at = str((bound_run.manifest or {}).get("startedAt") or "")
+        if research_receipt is None:
+            return {
+                **_rejected("research_memory_receipt_missing"),
+                "attemptConsumed": False,
+            }
+        if not progression_provenance.receipt_was_seen_at_or_after(research_receipt, started_at):
+            return {
+                **_rejected("research_memory_receipt_not_current_run"),
+                "attemptConsumed": False,
+                "detail": (
+                    "the version_context.researchMemoryRef must identify a query receipt created "
+                    "after this Phase 5 run started; re-query Research inside the current run and "
+                    "pass the new dedupeQueryRef"
+                ),
+            }
 
     lock_path = bound_run.run_dir / "evaluation-lock"
     if not _acquire_evaluation_lock(lock_path, timeout_seconds=timeout_seconds):
@@ -558,19 +603,40 @@ def _attribute_shortfalls(build: dict[str, Any]) -> list[dict[str, Any]]:
         "dexterity": ("dexterity", "dex", "Dex"),
         "intelligence": ("intelligence", "int", "Int"),
     }
+    contributors_by_attribute: dict[str, list[dict[str, Any]]] = {}
+    for source in build.get("attributeRequirementSources") or []:
+        if not isinstance(source, dict):
+            continue
+        source_name = str(source.get("source") or "")
+        kind = str(source.get("kind") or "item")
+        if not source_name:
+            continue
+        for attribute, keys in aliases.items():
+            required = _first_number(source, keys)
+            if required <= 0:
+                continue
+            contributors_by_attribute.setdefault(attribute, []).append(
+                {"source": source_name, "kind": kind, "required": required}
+            )
     output: list[dict[str, Any]] = []
     for attribute, keys in aliases.items():
         current = _first_number(attributes, keys)
         required = _first_number(requirements, keys)
         if required > current:
-            output.append(
-                {
-                    "attribute": attribute,
-                    "current": current,
-                    "required": required,
-                    "shortfall": required - current,
-                }
-            )
+            entry: dict[str, Any] = {
+                "attribute": attribute,
+                "current": current,
+                "required": required,
+                "shortfall": required - current,
+            }
+            contributors = contributors_by_attribute.get(attribute)
+            if contributors:
+                entry["contributors"] = sorted(
+                    contributors,
+                    key=lambda item: item["required"],
+                    reverse=True,
+                )[:8]
+            output.append(entry)
     return output
 
 

@@ -90,10 +90,8 @@ class VersionContext(StrictModel):
     )
     research_memory_ref: str = Field(
         min_length=1,
-        description=(
-            "Research query provenance for this exact candidate. In progression mode copy the "
-            "current StageCreatePacket value verbatim; each stage may use a different ref."
-        ),
+        description="Research query provenance for this exact candidate. "
+        "Use a run-fresh Research query receipt from the current run.",
     )
 
 
@@ -244,16 +242,28 @@ class ResearchMemoryUse(StrictModel):
                 raise ValueError("premise decision resolution refs must be recalled Research items")
         if self.retrieval_outcome == "matched":
             if not source_refs:
-                raise ValueError("matched research memory requires at least one recalled item")
+                raise ValueError(
+                    "matched research memory requires at least one recalled item — register the "
+                    "recalled IDs in buildFamilyKeys / deepRecordIds / patternIds / "
+                    "semanticEdgeIds / memoryItemIds"
+                )
             if not self.insight_decisions:
-                raise ValueError("matched research memory requires an adoption decision")
+                raise ValueError(
+                    "matched research memory requires at least one insightDecisions entry "
+                    "(each decision must be adopted, caveated, or rejected)"
+                )
             if self.no_match_reason is not None:
                 raise ValueError("matched research memory cannot carry no_match_reason")
             for decision in self.insight_decisions:
                 unknown = sorted(set(decision.source_refs) - source_refs)
                 if unknown:
                     raise ValueError(
-                        "insight decision references memory items absent from research_memory_use"
+                        "insight decision references memory items absent from research_memory_use: "
+                        + ", ".join(unknown)
+                        + " — every decision sourceRef must also be registered in "
+                        "buildFamilyKeys / deepRecordIds / patternIds / semanticEdgeIds / "
+                        "memoryItemIds (records listed in familyRecordIndex but not actually "
+                        "returned by a record-detail query cannot be referenced)"
                     )
         else:
             if source_refs or self.insight_decisions or self.premise_decisions:
@@ -659,9 +669,15 @@ class FailureAuditSummary(VersionedSafeModel):
         return self
 
 
+class GenerationAttemptCandidateRef(StrictModel):
+    """Compact identity for a historical attempt whose trusted state lives in the run receipt."""
+
+    candidate_id: str = Field(min_length=1)
+
+
 class GenerationAttemptRecord(StrictModel):
     attempt_index: int = Field(ge=0, le=2)
-    prototype_build_candidate: PrototypeBuildCandidate
+    prototype_build_candidate: PrototypeBuildCandidate | GenerationAttemptCandidateRef
     transient_build_state: TransientBuildStateRef
     judge_advisory_report: JudgeAdvisoryReport
     failure_audit: FailureAuditSummary
@@ -680,7 +696,8 @@ class GenerationAttemptRecord(StrictModel):
             raise ValueError("failure audit snapshot_id must match attempt snapshot")
         if state.status != "available":
             raise ValueError("generation attempt requires an available transient state")
-        _require_completeness_advisory_decisions(candidate, state)
+        if isinstance(candidate, PrototypeBuildCandidate):
+            _require_completeness_advisory_decisions(candidate, state)
         if judge.status == "evaluated":
             if judge.evaluated_snapshot_id != state.snapshot_id:
                 raise ValueError("attempt Judge snapshot must match transient state")
@@ -691,7 +708,11 @@ class GenerationAttemptRecord(StrictModel):
         ):
             raise ValueError("attempt accept decision requires a passing Judge report")
         contexts = (
-            candidate.version_context,
+            *(
+                (candidate.version_context,)
+                if isinstance(candidate, PrototypeBuildCandidate)
+                else ()
+            ),
             state.version_context,
             judge.version_context,
             audit.version_context,
@@ -812,22 +833,21 @@ class HumanReviewPacket(StrictModel):
                     if attempt.failure_audit.retry_decision != "retry":
                         raise ValueError("non-final generation attempt must choose retry")
             for attempt in self.generation_attempts:
-                if not same_version(
-                    self.version_context,
-                    attempt.prototype_build_candidate.version_context,
-                ):
-                    raise ValueError("generation attempt version_context must match packet")
-                if (
-                    attempt.prototype_build_candidate.prompt_ref
-                    != self.agent_refined_build_prompt.prompt_id
-                ):
-                    raise ValueError("generation attempt prompt_ref must match prompt_id")
+                attempt_candidate = attempt.prototype_build_candidate
+                if isinstance(attempt_candidate, PrototypeBuildCandidate):
+                    if not same_version(
+                        self.version_context,
+                        attempt_candidate.version_context,
+                    ):
+                        raise ValueError("generation attempt version_context must match packet")
+                    if attempt_candidate.prompt_ref != self.agent_refined_build_prompt.prompt_id:
+                        raise ValueError("generation attempt prompt_ref must match prompt_id")
             selected_attempt = self.generation_attempts[selected_index]
             if not restoring_baseline and selected_attempt.failure_audit.retry_decision == "retry":
                 raise ValueError("final generation attempt cannot choose retry")
             if (
-                selected_attempt.prototype_build_candidate.model_dump()
-                != self.prototype_build_candidate.model_dump()
+                selected_attempt.prototype_build_candidate.candidate_id
+                != self.prototype_build_candidate.candidate_id
                 or selected_attempt.transient_build_state.model_dump()
                 != self.transient_build_state.model_dump()
                 or selected_attempt.judge_advisory_report.model_dump()
@@ -948,11 +968,20 @@ def scan_payload(payload: Any) -> Any:
     return payload
 
 
-def schema_error(exc: ValidationError) -> dict[str, Any]:
-    first = exc.errors()[0] if exc.errors() else {}
-    loc = ".".join(str(part) for part in first.get("loc", ())) or "input"
-    message = " ".join(str(first.get("msg") or "validation failed").split())[:160]
-    return rejected("invalid_schema", caveats=[f"{loc}: {message}"])
+def schema_error(exc: ValidationError, *, max_errors: int = 5) -> dict[str, Any]:
+    """Return the top validation errors with field paths so callers can fix them in one pass.
+
+    Only the first error is fixed per submission when a single caveat is returned; surfacing the
+    leading batch avoids several round trips on large agent_output payloads.
+    """
+    caveats: list[str] = []
+    for error in exc.errors()[:max_errors]:
+        loc = ".".join(str(part) for part in error.get("loc", ())) or "input"
+        message = " ".join(str(error.get("msg") or "validation failed").split())[:160]
+        caveats.append(f"{loc}: {message}")
+    if len(exc.errors()) > max_errors:
+        caveats.append(f"... and {len(exc.errors()) - max_errors} more validation error(s)")
+    return rejected("invalid_schema", caveats=caveats)
 
 
 def rejected(error_code: str, caveats: list[str] | None = None) -> dict[str, Any]:

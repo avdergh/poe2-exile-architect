@@ -241,6 +241,58 @@ local function activeGemLevelViolations()
 	return violations
 end
 
+-- Per-source attribute requirements (equipped items + enabled gems), so a hard-legality
+-- shortfall can name WHO asks for the missing attribute instead of a single aggregated total.
+local function attributeRequirementSources()
+	local sources = {}
+	local function push(source, kind, str, dex, int)
+		local s, d, i = asNumber(str), asNumber(dex), asNumber(int)
+		if s > 0 or d > 0 or i > 0 then
+			sources[#sources + 1] = {
+				source = source,
+				kind = kind,
+				strength = s,
+				dexterity = d,
+				intelligence = i,
+			}
+		end
+	end
+	for slotName, slot in pairs(build.itemsTab.slots) do
+		local id = slot.selItemId
+		if id and id ~= 0 and build.itemsTab.items[id] then
+			local it = build.itemsTab.items[id]
+			local req = it.requirements or {}
+			push(
+				"item:" .. slotName .. " (" .. (it.baseName or it.title or "?") .. ")",
+				"item",
+				req.str,
+				req.dex,
+				req.int
+			)
+		end
+	end
+	for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+		if group and group.enabled ~= false then
+			for _, gem in ipairs(group.gemList or {}) do
+				local nm = gem.nameSpec
+				if (not nm or nm == "") and gem.gemData and gem.gemData.grantedEffect then
+					nm = gem.gemData.grantedEffect.name
+				end
+				if nm and nm ~= "" and gem.enabled ~= false then
+					push(
+						"gem:" .. nm .. " lvl" .. asNumber(gem.level),
+						"gem",
+						gem.reqStr,
+						gem.reqDex,
+						gem.reqInt
+					)
+				end
+			end
+		end
+	end
+	return sources
+end
+
 local function defaultGemLevelForCharacter(name)
 	local lookupName = tostring(name or ""):lower()
 	local gemId = build.data and build.data.gemForBaseName
@@ -1624,11 +1676,12 @@ function methods.list_jewel_sockets()
 	return { sockets = out }
 end
 
--- equipItemRaw only places a jewel in its socket slot; it does NOT register it in the passive
--- spec's socket->jewel map (which is otherwise built only on build load), and nothing rebuilds the
--- tree paths afterwards. So a socketed jewel's TREE-modifying effects (alternate class starts,
--- radius/cluster/timeless grants) silently never apply, and optimize_passives/alloc_passive don't
--- see the pathing it opens. Sync the map from the slot for `socket`, then rebuild paths.
+-- SetSelItemId's nodeId branch does register the jewel in spec.jewels (and, when the selected id
+-- actually changes, triggers BuildClusterJewelGraphs, which itself rebuilds tree paths). What it
+-- does NOT do is rebuild paths when the id is set to the SAME value or when the slot is cleared,
+-- so a freshly placed jewel's TREE-modifying effects (alternate class starts, radius/cluster/
+-- timeless grants) can silently stay stale. Sync the map from the slot for `socket`, then rebuild
+-- paths unconditionally, so both placement and removal are deterministic.
 local function syncJewelSocket(socket)
 	local sc = build.itemsTab.slots["Jewel " .. tostring(socket)]
 	local jid = sc and sc.selItemId
@@ -1710,6 +1763,12 @@ function methods.eval_items(p)
 	for i, raw in ipairs(p.items) do
 		local ok = equipItemRaw(raw, p.slot)
 		if ok then
+			local _, slotId = p.slot:match("^Jewel (%d+)$")
+			if slotId then
+				-- register a jewel candidate in the tree so radius/Time-Lost grants are
+				-- actually computed (SetSelItemId alone may skip the path rebuild)
+				syncJewelSocket(tonumber(slotId))
+			end
 			runCallback("OnFrame")
 			out[i] = collectStats(keys)
 		else
@@ -1719,6 +1778,47 @@ function methods.eval_items(p)
 	loadBuildFromXML(snapshot)
 	runCallback("OnFrame")
 	return { results = out }
+end
+
+-- Read-only: return a gem's per-level requirements (levelRequirement + attribute weights) so the
+-- leveled-build kernel can decide whether a skill is usable at a given character level. The
+-- corpus has no reliable gem level data; PoB owns the real levelRequirement curve. Never mutates
+-- the build.
+function methods.gem_level_requirements(p)
+	p = p or {}
+	local name = tostring(p.gem_name or "")
+	local lookupName = name:lower()
+	local gemId = build.data and build.data.gemForBaseName
+		and (build.data.gemForBaseName[lookupName] or build.data.gemForBaseName[lookupName .. " support"])
+	local gemData = gemId and build.data.gems and build.data.gems[gemId] or nil
+	if not gemData or not gemData.grantedEffect then
+		return { found = false, gemName = name }
+	end
+	local ge = gemData.grantedEffect
+	if not ge.levels then
+		return { found = false, gemName = name }
+	end
+	local out = {}
+	-- Numeric loop instead of ipairs: a hole in the level table must not truncate the curve
+	-- (ipairs stops at the first nil), and a missing/zero requirement must not read as "usable
+	-- at any level" (asNumber(nil) is 0).
+	local n = #ge.levels
+	for level = 1, n do
+		local levelData = ge.levels[level]
+		if levelData and levelData.levelRequirement then
+			out[#out + 1] = {
+				level = level,
+				levelRequirement = asNumber(levelData.levelRequirement),
+			}
+		end
+	end
+	return {
+		found = true,
+		gemName = ge.name or name,
+		isSupport = ge.support and true or false,
+		naturalMaxLevel = asNumber(gemData.naturalMaxLevel),
+		levels = out,
+	}
 end
 
 -- Clear an equipment slot (e.g. "Ring 2", "Body Armour").
@@ -1818,6 +1918,7 @@ function methods.get_build()
 			dexterity = asNumber(mainOutput.ReqDex),
 			intelligence = asNumber(mainOutput.ReqInt),
 		},
+		attributeRequirementSources = attributeRequirementSources(),
 		spiritUsed = asNumber(mainOutput.SpiritReserved),
 		spiritAvailable = asNumber(mainOutput.Spirit),
 		spiritUnreserved = asNumber(mainOutput.SpiritUnreserved),

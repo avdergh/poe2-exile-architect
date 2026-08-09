@@ -143,7 +143,7 @@ def test_solve_for_reaches_target(fireball):
     assert r["ok"] and r.get("reachable")
     assert r["requiredMagnitude"] > 0
     assert r["achievedValue"] >= base * 2 * 0.98  # within bisection tolerance
-    # the build must be restored — no lingering custom mod from probing
+    # the build must be restored —no lingering custom mod from probing
     assert fireball.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(base, rel=1e-6)
 
 
@@ -262,6 +262,24 @@ def test_eval_items_batches_and_restores(engine):
     res = engine.eval_items("Weapon 1", cands, keys=["TotalDPS"])["results"]
     assert all(r and r["TotalDPS"] > 0 for r in res)
     # build restored to the original item, not the last candidate
+    assert engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(base, rel=1e-6)
+
+
+def test_eval_items_jewel_socket_computes_radius_grants_and_restores(engine):
+    engine.new_build()
+    engine.set_class("Witch", "Blood Mage")
+    engine.set_level(85)
+    engine.paste_skill("Spark 19/0  1")
+    engine.alloc_passive(2491)
+    engine.alloc_passive(18157)  # Notable inside socket 2491's Large radius
+    base = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
+    time_lost = (
+        "Rarity: Unique\nTest Time-Lost Emerald\nTime-Lost Emerald\nItem Level: 84\nRadius: Large\n"
+        "Small Passive Skills in Radius also grant 10% increased Spell Damage\n"
+        "Notable Passive Skills in Radius also grant 8% increased Cast Speed"
+    )
+    res = engine.eval_items("Jewel 2491", [time_lost], keys=["TotalDPS"])["results"]
+    assert res and res[0] and res[0]["TotalDPS"] > base * 1.05  # radius grants were computed
     assert engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(base, rel=1e-6)
 
 
@@ -398,7 +416,7 @@ def test_optimize_item_warns_when_it_breaks_resist_cap(engine):
 
 
 def test_optimize_item_blended_goals_balances_offense_and_defense(engine):
-    # Weighted `goals` craft ONE piece carrying both damage and defense — the realistic-gear path,
+    # Weighted `goals` craft ONE piece carrying both damage and defense —the realistic-gear path,
     # vs a single-metric craft that strips the other axis.
     from server.compute import itemopt
 
@@ -639,7 +657,7 @@ def test_attack_rate_binds_to_weapon(engine):
 
 
 def test_multiprojectile_note_frames_shotgun_as_per_skill(engine):
-    # The dpsNote must NOT claim PoE2 "has no shotgunning" (false — overlap is per-skill) and must
+    # The dpsNote must NOT claim PoE2 "has no shotgunning" (false —overlap is per-skill) and must
     # NOT tell users to multiply TotalDPS by projectile count. It should frame overlap as per-skill
     # and tell the reader to verify. (#4-5 wrong-advice regression guard.)
     _spark_caster(engine)
@@ -672,7 +690,7 @@ def test_solver_levers(engine):
 
 def test_crit_chance_lever_registers_on_engine(engine):
     # Regression: "increased Critical Hit Chance" (PoE2) must raise crit chance; the PoE1 wording
-    # "Critical Strike Chance" is silently ignored by the engine — which had made the crit lever
+    # "Critical Strike Chance" is silently ignored by the engine —which had made the crit lever
     # invisible to rank_levers/solve_for and steered builds away from the crit (pinnacle) archetype.
     engine.new_build()
     engine.set_class("Huntress", "Amazon")
@@ -688,7 +706,7 @@ def test_crit_chance_lever_registers_on_engine(engine):
     ignored = engine.get_stats(["CritChance"])["stats"]["CritChance"]
     engine.set_config(custom_mods="")
     assert raised > base  # PoE2 wording registers
-    assert ignored == base  # PoE1 wording does nothing — documents the rename
+    assert ignored == base  # PoE1 wording does nothing —documents the rename
 
 
 def test_default_damage_levers_register_on_engine(engine):
@@ -723,9 +741,9 @@ def test_default_damage_levers_register_on_engine(engine):
 
 
 def test_meta_trigger_guardrail_flags_unmodellable_triggers():
-    # Gap C guardrail: the engine does NOT model energy-based meta triggers (Cast on Critical → a
+    # Gap C guardrail: the engine does NOT model energy-based meta triggers (Cast on Critical →a
     # socketed spell computes as a weak self-cast), so the tools must surface `engineLimitation` when
-    # such a gem is present — and must NOT false-flag ordinary skills/supports.
+    # such a gem is present —and must NOT false-flag ordinary skills/supports.
     from server import main
     from server.knowledge import db
 
@@ -753,7 +771,7 @@ def test_pick_base_prefers_attribute():
 
 def test_relevant_uniques_ranks_by_keyword_match():
     # (b) build-aware unique discovery: ranks uniques by how many of the build's scaling keywords
-    # their mods/name match (corpus relevance — the engine still verifies actual value).
+    # their mods/name match (corpus relevance —the engine still verifies actual value).
     from server.knowledge import db
 
     rel = db.relevant_uniques(["lightning", "spell", "projectile"], limit=12)
@@ -836,7 +854,7 @@ def test_optimize_passives_respects_separate_ascendancy_budget(engine):
 
 def test_optimize_passives_default_full_and_honest_remaining(engine):
     # Footgun fix: the MCP tool defaults points=0 (allocate the WHOLE tree, the usual intent), and a
-    # CAPPED `points` call reports the build's TRUE unspent passive points — not a budget-relative 0
+    # CAPPED `points` call reports the build's TRUE unspent passive points —not a budget-relative 0
     # that misreads as "tree fully allocated" (which had a bare call ship a 3-point tree).
     import inspect
 
@@ -861,8 +879,8 @@ def test_optimize_passives_default_full_and_honest_remaining(engine):
 
 def test_optimize_passives_require_respects_budget_and_reset(engine):
     # Footgun fix: requiring nodes on an already-full tree must NOT over-allocate into an illegal
-    # (>budget) tree — it skips + reports them. reset=True re-plans from scratch so the required
-    # nodes (e.g. jewel sockets) fit within budget — the clean way to add sockets to a full tree.
+    # (>budget) tree —it skips + reports them. reset=True re-plans from scratch so the required
+    # nodes (e.g. jewel sockets) fit within budget —the clean way to add sockets to a full tree.
     engine.new_build()
     engine.set_class("Huntress", "Amazon")
     engine.set_level(100)
@@ -1030,7 +1048,7 @@ def test_solve_for_noop_lever_detected(fireball):
     from server.compute import solver
 
     base = fireball.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
-    # cold damage does nothing for a pure-fire Fireball — must be flagged, not "unreachable"
+    # cold damage does nothing for a pure-fire Fireball —must be flagged, not "unreachable"
     r = solver.solve_for(fireball, "TotalDPS", base * 2, "increased cold damage")
     assert r["ok"] is False and "does not move" in r["error"]
 
@@ -1089,7 +1107,7 @@ def test_set_skill_replaces_main_group(engine):
 
 
 def test_set_skill_unknown_gem_leaves_build_unchanged(engine):
-    # A bogus gem name must not silently corrupt the main skill — roll back + report (#set_skill).
+    # A bogus gem name must not silently corrupt the main skill —roll back + report (#set_skill).
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20 1")
     before = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
@@ -1101,7 +1119,7 @@ def test_set_skill_unknown_gem_leaves_build_unchanged(engine):
 
 
 def test_set_skill_recovers_after_bad_input(engine):
-    # The exact failure path from the test session: a bad paste must not wedge set_skill — a
+    # The exact failure path from the test session: a bad paste must not wedge set_skill —a
     # subsequent good paste recovers the main skill with all supports.
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20 1")
@@ -1160,7 +1178,7 @@ def test_add_skill_group_in_full_dps_aggregates(engine):
 
 def test_set_skill_computes_full_dps(engine):
     # FullDPS is off by default in PoB (only summed for groups flagged "include in Full DPS").
-    # set_skill now flags the main group, so FullDPS is computed — equal to TotalDPS for a single
+    # set_skill now flags the main group, so FullDPS is computed —equal to TotalDPS for a single
     # skill, and the basis for an apples-to-apples comparison against imported multi-skill builds.
     _spark_caster(engine)
     s = engine.paste_skill("Spark 20/20  1")["stats"]
@@ -1197,7 +1215,7 @@ def test_blank_luajit_override_is_ignored(monkeypatch):
 
 def test_buildopt_lever_mapping():
     # Reference topLever names map to the right tree-cluster query (the seed commitment); a
-    # gear/gem-driven lever (+levels) maps to None (≈ the balanced pass).
+    # gear/gem-driven lever (+levels) maps to None (≈the balanced pass).
     assert buildopt._lever_tree_query("+N% to Critical Damage Bonus", ["lightning"]) == "critical"
     assert buildopt._lever_tree_query("N% increased Attack Speed", []) == "attack speed"
     assert (
@@ -1279,7 +1297,7 @@ def test_craft_item_text_format():
 
 def test_crafting_options_surfaces_pob_data(engine):
     # The shim surfaces PoB's own crafting data for a base: runes, corrupted implicits, and essences
-    # (including the beyond-pool Perfect essences) — all as ready item-text lines.
+    # (including the beyond-pool Perfect essences) —all as ready item-text lines.
     engine.new_build()
     engine.set_class("Sorceress")
     engine.set_level(92)
@@ -1295,7 +1313,7 @@ def test_crafting_options_surfaces_pob_data(engine):
 @pytest.mark.timeout(1800)
 def test_optimize_build_crafting_keeps_resists_capped(engine):
     # The crafting post-pass re-crafts every slot independently, which can strip the cross-slot resist
-    # balance plan_gear set up. The re-cap pass must restore it — a crafted build must stay capped.
+    # balance plan_gear set up. The re-cap pass must restore it —a crafted build must stay capped.
     # Slow on Windows/PoB headless (about 15 min on the current pinned runtime, and slower after
     # earlier tests reuse the session engine): full crafting on a whole gear set. Match the
     # explicit compute profile's 30-minute heavy-test budget while ordinary tests remain strict.

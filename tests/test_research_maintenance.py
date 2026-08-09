@@ -481,3 +481,176 @@ def _mention(name: str, role: str, key: str, node_type: str) -> dict[str, object
         "component_key": key,
         "resolution_status": "resolved",
     }
+
+
+def _keyed_deep_payload() -> dict[str, object]:
+    payload = _deep_payload()
+    record = payload["deep_research_records"][0]
+    record.update(
+        {
+            "record_kind": "skill_package",
+            "ascendancy_key": "ascendancy:sorceress:stormweaver",
+            "component_keys": [
+                "skill:SparkPlayer",
+                "skill:MetaCastOnCritPlayer",
+                "skill:CometPlayer",
+                "support:Metadata/Items/Gem/SupportGemFluke",
+            ],
+            "component_mentions": [
+                _mention("Spark", "primary_damage", "skill:SparkPlayer", "active_skill"),
+                _mention(
+                    "Cast on Critical",
+                    "trigger_host",
+                    "skill:MetaCastOnCritPlayer",
+                    "active_skill",
+                ),
+                _mention("Comet", "triggered_payload", "skill:CometPlayer", "active_skill"),
+                _mention(
+                    "Fluke",
+                    "support_modifier",
+                    "support:Metadata/Items/Gem/SupportGemFluke",
+                    "support_gem",
+                ),
+            ],
+            "typed_payload": {
+                "supportPackages": [
+                    {
+                        "skillKey": "skill:SparkPlayer",
+                        "supportKeys": ["support:Metadata/Items/Gem/SupportGemFluke"],
+                    }
+                ]
+            },
+        }
+    )
+    return payload
+
+
+def test_reconcile_deep_record_ids_plan_apply_and_idempotent(tmp_path: Path):
+    db_path = tmp_path / "mature.sqlite"
+    backup_path = tmp_path / "mature.reconcile.backup.sqlite"
+    service = research_memory.ResearchMemoryService(
+        db_path=db_path,
+        graph_service=_graph_service(),
+    )
+    first = service.propose_deep_research_records(_keyed_deep_payload())
+    record_id = first["recordIds"][0]
+    drifted_key = "ku-" + "f" * 20
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE deep_research_records SET knowledge_key = ? WHERE record_id = ?",
+            (drifted_key, record_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    plan = research_maintenance.reconcile_deep_record_ids(db_path=db_path)
+    assert plan["status"] == "planned"
+    assert plan["relocationCount"] == 1
+    assert plan["relocations"][0]["recordId"] == record_id
+    assert plan["conflictCount"] == 0
+
+    applied = research_maintenance.reconcile_deep_record_ids(
+        db_path=db_path, apply=True, backup_path=backup_path
+    )
+    assert applied["status"] == "applied"
+    assert applied["relocationCount"] == 1
+    assert applied["databaseIntegrity"] == "ok"
+    assert applied["foreignKeyViolationCount"] == 0
+    assert backup_path.exists()
+
+    target_id = "drr-" + research_memory._stable_hash({"knowledge_key": drifted_key})[:16]
+    con = mature_learning.connect(db_path)
+    try:
+        active = con.execute(
+            "SELECT record_id, knowledge_key, status, superseded_by_id "
+            "FROM deep_research_records WHERE status IN ('valid', 'needs_revalidation')"
+        ).fetchall()
+        assert len(active) == 1
+        assert active[0]["record_id"] == target_id
+        assert active[0]["knowledge_key"] == drifted_key
+        tombstone = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()
+        assert tombstone is not None
+        assert tombstone["status"] == "deprecated"
+        assert tombstone["superseded_by_id"] == target_id
+    finally:
+        con.close()
+
+    again = research_maintenance.reconcile_deep_record_ids(db_path=db_path)
+    assert again["status"] == "already_applied"
+
+
+def test_reconcile_deep_record_ids_replaces_husk_at_anchor(tmp_path: Path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(
+        db_path=db_path,
+        graph_service=_graph_service(),
+    )
+    first = service.propose_deep_research_records(_keyed_deep_payload())
+    record_id = first["recordIds"][0]
+    drifted_key = "ku-" + "c" * 20
+    target_id = "drr-" + research_memory._stable_hash({"knowledge_key": drifted_key})[:16]
+    husk_head_id = "drr-" + "1" * 16
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE deep_research_records SET knowledge_key = ? WHERE record_id = ?",
+            (drifted_key, record_id),
+        )
+        husk = dict(
+            con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?", (record_id,)
+            ).fetchone()
+        )
+        husk["record_id"] = target_id
+        husk["knowledge_key"] = "ku-" + "b" * 20
+        husk["status"] = "deprecated"
+        husk["superseded_by_id"] = husk_head_id
+        columns = tuple(husk)
+        con.execute(
+            f"INSERT INTO deep_research_records({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(husk[column] for column in columns),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    plan = research_maintenance.reconcile_deep_record_ids(db_path=db_path)
+    assert plan["status"] == "planned"
+    assert plan["huskReplacementCount"] == 1
+    assert plan["relocationCount"] == 1
+
+    applied = research_maintenance.reconcile_deep_record_ids(db_path=db_path, apply=True)
+    assert applied["status"] == "applied"
+    assert applied["relocationCount"] == 1
+    assert applied["huskReplacementCount"] == 1
+    assert applied["physicalDeleteCount"] == 1
+
+    con = mature_learning.connect(db_path)
+    try:
+        active = con.execute(
+            "SELECT record_id, knowledge_key FROM deep_research_records "
+            "WHERE status IN ('valid', 'needs_revalidation')"
+        ).fetchall()
+        assert len(active) == 1
+        assert active[0]["record_id"] == target_id
+        assert active[0]["knowledge_key"] == drifted_key
+        husk_gone = con.execute(
+            "SELECT status FROM deep_research_records WHERE record_id = ?", (target_id,)
+        ).fetchone()
+        assert husk_gone is not None
+        assert husk_gone["status"] == "valid"
+        tombstone = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()
+        assert tombstone is not None
+        assert tombstone["status"] == "deprecated"
+        assert tombstone["superseded_by_id"] == target_id
+    finally:
+        con.close()

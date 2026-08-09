@@ -32,6 +32,10 @@ data/mature_build_learning/research_memory.sqlite
 /phase45_*.json
 /phase45_*.md
 /.poe-bd-create/
+/.poe-bd-research-*/
+/.test-tmp/
+/poe-bd-creator.test-tmpverify-*/
+/.npm-cache/
 /final-build-artifacts/
 /pob-exports/
 /.tmp_agent_output_*

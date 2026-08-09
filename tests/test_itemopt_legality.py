@@ -151,3 +151,70 @@ def test_rank_upgrades_keeps_rejected_illegal_candidates_in_the_response(monkeyp
             },
         }
     ]
+
+
+class _JewelProbeEngine:
+    """Minimal engine double for itemopt.evaluate_jewel_socket branches."""
+
+    def __init__(self, results):
+        self.results = results
+        self.eval_calls = []
+
+    def get_stats(self, keys):
+        return {"stats": {key: 100.0 for key in keys}}
+
+    def eval_items(self, slot, items, keys):
+        self.eval_calls.append((slot, items, keys))
+        return {"results": self.results}
+
+
+def test_evaluate_jewel_socket_reports_deltas_and_build_restored_note():
+    engine = _JewelProbeEngine([{"TotalDPS": 140.0, "TotalEHP": 110.0, "Life": 120.0}])
+    out = itemopt.evaluate_jewel_socket(
+        engine,
+        socket=2491,
+        raw="Rarity: Unique\nTest Time-Lost Emerald\nTime-Lost Emerald\nItem Level: 84\nRadius: Large\nSmall Passive Skills in Radius also grant 10% increased Spell Damage",
+        keys=["TotalDPS", "TotalEHP", "Life", "EnergyShield"],
+    )
+    assert out["ok"] is True
+    assert out["socket"] == 2491
+    assert out["deltas"] == {"TotalDPS": 40.0, "TotalEHP": 10.0, "Life": 20.0}
+    assert out["baseStats"]["TotalDPS"] == 100.0
+    assert out["candidateStats"]["TotalDPS"] == 140.0
+    assert engine.eval_calls == [
+        (
+            "Jewel 2491",
+            [
+                "Rarity: Unique\nTest Time-Lost Emerald\nTime-Lost Emerald\nItem Level: 84\nRadius: Large\nSmall Passive Skills in Radius also grant 10% increased Spell Damage"
+            ],
+            ["TotalDPS", "TotalEHP", "Life", "EnergyShield"],
+        )
+    ]
+    assert "restored" in out["note"]
+
+
+def test_evaluate_jewel_socket_skips_non_numeric_keys_in_deltas():
+    engine = _JewelProbeEngine([{"TotalDPS": 150.0, "HitChance": "low"}])
+    out = itemopt.evaluate_jewel_socket(
+        engine,
+        socket=3367,
+        raw="Rarity: Magic\nTest Emerald\nEmerald\nItem Level: 84\n10% increased Spell Damage",
+        keys=["TotalDPS", "HitChance"],
+    )
+    assert out["ok"] is True
+    assert out["deltas"] == {"TotalDPS": 50.0}
+    assert "HitChance" not in out["deltas"]
+
+
+def test_evaluate_jewel_socket_reports_failed_candidate():
+    engine = _JewelProbeEngine([False])
+    out = itemopt.evaluate_jewel_socket(engine, socket=2491, raw="garbage")
+    assert out["ok"] is False
+    assert "failed to parse or equip" in out["error"]
+
+
+def test_evaluate_jewel_socket_reports_empty_results():
+    engine = _JewelProbeEngine([])
+    out = itemopt.evaluate_jewel_socket(engine, socket=2491, raw="anything")
+    assert out["ok"] is False
+    assert "failed to parse or equip" in out["error"]

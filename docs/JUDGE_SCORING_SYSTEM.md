@@ -64,7 +64,7 @@ Create 对这套评估提供两种反馈投影，底层 PoB/Judge 计算本身�
 - 默认 `strict_mode=false` / `feedbackMode=hard_only`：只向 Create 暴露确定性硬失败、是否合法、
   快照/版本绑定和安全事实诊断；aggregate、score vector、quality band、playability/quality
   warning、reward、modelability/score caveat 不写入可信 attempt，也不能进入 retry、Review、
-  artifact 或 progression 结论。
+  artifact 结论。
 - 手动 `strict_mode=true` / `feedbackMode=strict`：返回本文档下面描述的完整四层评价，供明确要求
   诊断 Judge 本身或查看旧版评分的用户使用。同一 Phase 5 run 的全部 attempt 必须使用同一模式。
 

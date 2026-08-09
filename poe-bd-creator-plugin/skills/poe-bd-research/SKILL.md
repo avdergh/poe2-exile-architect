@@ -13,6 +13,10 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 - 禁止使用 subagent、子代理或独立 agent lane 研究案例。研究 MCP 工具只保证在触发本 skill 的当前
   主会话可用，因此当前 Agent 必须亲自读取 prompt、调用研究工具、生成 safe review 并执行 accept。
+- 一案一轮并串行处理：一个 Researcher prompt 只包含一个完整 BD；
+  当前案例完成正式 accept 前不得再领取下一案。`active_case_in_progress` 表示继续当前案例，
+  `no_pending_cases` 表示停止领取；默认
+  不把上一案的 transient evidence 带入下一案。
 - 工具未直接列在当前上下文时，先使用宿主提供的标准 tool discovery / tool search，按精确名称
   查找 `query_research_memory` 和 `graph_tool_query`；不要仅凭首屏工具列表断言 MCP 不可用。
 - 用户在 Codex 会话框输入 `/poe-bd-research` / `$poe-bd-research` 是在请求 agent 执行 workflow，不是在执行 shell 命令。agent 必须自己用可用工具运行内部脚本；不要要求用户把 PowerShell/Python 命令复制到会话框或终端。
@@ -20,6 +24,11 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - 不得调用调试/TDD/代码修改类 skill，不得新增测试或现场修脚本。唯一允许的文件编辑是使用
   文件编辑工具或 `apply_patch` 编辑当前 lease 的 `reviewFile`；不得编辑其他 artifact 或仓库文件。
 - 只允许写入 `--output-dir` 下的队列/验收 artifact，以及 OS temp 下的 transient packet。
+- queue/status/claim/review-contract/init-review/validate-only/accept 必须保持 safe-only；inspect/read/search
+  必须绑定当前有效 lease，并保持有界响应。missing/ambiguous endpoint 不得自动选择，最多进行 2 次
+  bounded repair，失败后记录 manual mapping / source refresh。
+- `prompt` 仅保留兼容入口，只能返回 safe manifest 和迁移提示，不得输出 raw-rich material。
+- 单样本只能形成 `case_observation`，不能宣称 common、usually 或“通常”。
 - 如果 queue、collector、claim、prompt 或 accept 失败，只报告 safe error 并停止。典型状态是 `collector_failed`、`source_unavailable` 或 `runtime_failed`。
 - 如果用户需要修复失败原因，明确告诉用户这需要另开普通开发请求；不要在本次 research runtime 中临场改代码。
 
@@ -55,23 +64,8 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 如果宿主没有选择控件，退化为普通文字选项，等待用户回复。不要在用户选择前联网采样。
 
-```text
-请选择运行方式：
-1. 预检 5 个样本（推荐，不入库）
-2. 小批量提取：20 个样本，逐案处理
-3. 大批量提取：50 个样本，逐案处理
-4. 恢复已有队列：请给出原 runDir 和 limit
-```
-
-如果给示例，只给 skill 命令：
-
-```text
-/poe-bd-research --limit 5 --dry-run
-/poe-bd-research --limit 20
-/poe-bd-research --limit 50
-/poe-bd-research --limit 10 --class "Blood Mage" --level-min 95 --level-max 95
-/poe-bd-research --limit 20 --resume --output-dir .poe-bd-research/runs/<runId>
-```
+用户明确要求示例时，只展示与所选模式对应的一条 skill 命令，例如
+`/poe-bd-research --limit 5 --dry-run` 或 `/poe-bd-research --limit 20`，不要同时罗列所有组合。
 
 底层 `scripts/research_mature_builds.py` 命令是 agent 内部实现步骤，只在用户明确要求 CLI/debug 信息时展示。
 
@@ -102,16 +96,32 @@ POE_RESEARCH_SUCCEEDED: no
 
 下面的脚本命令是 agent 内部执行步骤。Codex 桌面用户不需要、也通常不能在会话框中执行这些命令。
 
-1. 在项目根目录运行 queue：
+### 运行绑定
+
+开始第一次 queue 前，一次性解析并冻结运行前缀；后续所有命令复用它，不得依赖调用时 cwd：
+
+1. `repoRoot` 优先使用当前宿主由安装器管理的 `poe_knowledge_mcp`（或任一 `poe_*_mcp`）条目中的
+   `cwd`；若宿主不暴露启动
+   配置，则使用 `POE_BD_CREATOR_DIR`，再否则解析当前已加载 `SKILL.md` 的真实路径（跟随 symlink /
+   junction）并向上查找仓库根。候选必须同时包含 `pyproject.toml`、`server/main.py` 和
+   `scripts/research_mature_builds.py`，且必须能规范化为绝对路径；MCP `cwd` 为相对值或不可见时改走
+   后续发现方式。缺失或歧义时停止，不得使用当前 cwd、按目录名猜测或全盘搜索。
+2. `uvCommand` 优先使用同一 MCP 条目中的 `command`；OpenCode 使用 `command[0]`，但仅在可执行文件名
+   为 `uv` / `uv.exe` 时采用，不能把 Codex bundle 的 `node` launcher 当成 uv。相对 command 必须
+   以已验证的 `repoRoot` 解析为绝对路径。宿主未暴露适用条目时，严格复用安装器的选择顺序：
+   `repoRoot/.tools/uv/uv.exe`、`repoRoot/.tools/uv/uv`、PATH 中的 `uv`；PATH 命中后也解析为绝对路径。
+   没有可执行的 `uvCommand` 时停止并提示重新运行 installer/doctor，不得假定仓库一定附带 `.tools/uv`。
+3. 冻结 `<research-cli>` 为
+   `<uvCommand> run --project <repoRoot> python <repoRoot>/scripts/research_mature_builds.py`。尖括号表示已
+   验证的绝对参数，不是字面量；路径含空格时保持为独立且正确引用的参数。不得把解析结果写回
+   Skill、仓库或 review artifact。
+
+### 逐案流程
+
+1. 运行 queue：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py queue $ARGUMENTS
-   ```
-
-   Windows 可用：
-
-   ```powershell
-   .\.tools\uv\uv.exe run python scripts\research_mature_builds.py queue $ARGUMENTS
+   <research-cli> queue $ARGUMENTS
    ```
 
    live poe.ninja collector 可能需要数分钟；宿主命令的外层超时必须至少为 10 分钟
@@ -128,7 +138,7 @@ POE_RESEARCH_SUCCEEDED: no
 2. 当前 Agent 领取一个 case；在该案例完成 accept 前，不得再领取下一案：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py claim --output-dir <runDir>
+   <research-cli> claim --output-dir <runDir>
    ```
 
    `claim` 会在同一次原子操作中返回 `workerPrompt` 和 `reviewFile`。当前 Agent 必须直接遵守
@@ -147,28 +157,27 @@ POE_RESEARCH_SUCCEEDED: no
 3. 当前 Agent 根据 `workerPrompt` 先检查分区清单：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py inspect --output-dir <runDir> --lease-token <leaseToken>
+   <research-cli> inspect --output-dir <runDir> --lease-token <leaseToken>
    ```
 
    再按 `skills -> gear -> passives -> config -> build` 顺序读取；若 `complete=false`，使用返回的
    `nextCursor` 继续读取同一分区：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py read --output-dir <runDir> --lease-token <leaseToken> --section skills
+   <research-cli> read --output-dir <runDir> --lease-token <leaseToken> --section skills
    ```
 
    需要定位某个具体名称时使用有界搜索；search 不能替代完整分区读取：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py search --output-dir <runDir> --lease-token <leaseToken> --query "Bonestorm" --section skills
+   <research-cli> search --output-dir <runDir> --lease-token <leaseToken> --query "Bonestorm" --section skills
    ```
 
-   这些接口只输出结构化 transient evidence，不输出 raw XML、PoB code 或临时路径。当前 Agent
-   必须先独立重建技能职责、轮转、机制链、装备/天赋职责、取舍和工具盲点；形成初步判断后，再用
-   `query_research_memory(detail_level="summary")` 查重和对照，必要时只按 `record_ids` 深读少量记录。
-   随后使用 `search_graph_components` / `resolve_graph_component` 解析组件。`propose_*` 只做候选
-   schema、resolver 和 copy-safety 校验，不代表入库完成；所有候选仍必须写入 `workerPrompt` 指定的
-   safe review artifact，由 accept 作为唯一 durable writer。
+   这些接口只输出结构化 transient evidence，不输出 raw XML、PoB code 或临时路径。完整研究方法以
+   本次 `claim` 返回的 `workerPrompt` 为准；不得跳过其中的关键顺序：先读完全部分区并独立重建案例，
+   再查询 Research Memory，随后以 `search_graph_components` 发现候选并用
+   `resolve_graph_component` 确认 stable key。`propose_*` 只校验候选，不代表入库；accept 仍是唯一
+   durable writer。
 
    独立重建和组件解析完成后，只针对会改变结论因果链的高风险机制做轻量校对。先用
    `explain_mechanic` / `search_mechanics` 查看当前本地静态机制资料，再用 `lookup_mechanic` 查询实时
@@ -185,22 +194,17 @@ POE_RESEARCH_SUCCEEDED: no
 4. 初步研究、memory 对照和组件解析完成后，读取当前 lease 的精确 review 合同：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py review-contract --output-dir <runDir> --lease-token <leaseToken>
+   <research-cli> review-contract --output-dir <runDir> --lease-token <leaseToken>
    ```
 
-   只使用该合同返回的 canonical role、axis 和 pattern 枚举，不得自造值。`role` 描述组件在 BD 中
-   承担的功能，不等于唯一物理节点类型；以合同中的 `componentRoleNodeTypeCompatibility` 和 resolver
-   证据为准。成功解析的组件应把 resolver 返回的 stable key 写入 `componentKey`。更细的轮转阶段、
-   爆发窗口、证据身份或机制说明写入 `content`、`typedPayload`、`conditions` 或 `summary`。
-   `artifactIdentity` 及记录中的 `sampleId`、`researchGroupId`、`caseRef`、`safeEvidenceRef`
-   由 lease 注入，不要重复抄写。宿主没有 resolver 时，`supportPackages` 使用精确
-   `skillName` / `supportNames`，升华和装备职责使用精确 `componentName`；accept 只做同一记录内
-   唯一解析名称的 stable-key 替换，不替 Agent 推断职责或技能归属。
+   该响应中的模板、`allowedValues`、`componentRoleNodeTypeCompatibility` 和 `rules` 是本次 lease 的
+   精确事实源，必须全部遵守，不得在 Skill 中另行推断或自造枚举。身份字段由 lease 注入；组件解析、
+   resolver 不可用时的精确名称回退，以及各类 typed payload 的填写方式均按该合同执行。
 
    随后让程序原子创建当前 lease 的 safe review 骨架：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py init-review --output-dir <runDir> --lease-token <leaseToken>
+   <research-cli> init-review --output-dir <runDir> --lease-token <leaseToken>
    ```
 
    只使用文件编辑工具或 `apply_patch` 编辑命令返回的 `reviewFile`。不得用 PowerShell here-string、
@@ -211,7 +215,7 @@ POE_RESEARCH_SUCCEEDED: no
 5. 写出 safe review 后，先运行正式验收逻辑的无副作用校验：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
+   <research-cli> accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
    ```
 
    `validation_failed` 时按 `validationIssues` 自行 review 和修正，不得要求程序猜测或自动映射自造
@@ -223,26 +227,48 @@ POE_RESEARCH_SUCCEEDED: no
    暂缓。确认这些边界后，才去掉 `--validate-only` 正式运行：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
+   <research-cli> accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
    ```
+
+   正式 accept 前必须逐项核对提交前自检（与 `review-contract` 的 `mandatoryChecks` 一一对应）：
+   1) 暗金/lineage 宝石已标注 unique 身份（`uniqueGemDiagnostics.unlabeledUniqueGemNames` 为空，
+   或非空时已补 unique_enabler role / open_question / modelability_caveat 声明）；
+   2) `jewelCounts` 中已分配珠宝槽无珠宝物品时，review 已显式声明珠宝状态（无 `unresolved_jewel_sockets`
+   暂缓）；
+   3) Spirit/reservation 预算已写入资源记录；
+   4) 每个启用技能组的 supports 已完整打包或经 `supportCoverageExceptions` 声明（无
+   `supportCoverageBlockedByStructuredOmission`）；
+   5) support 机制语义均有证据链，无凭名字推断的表述。
 
 6. 完成当前案例的 accept 后，才循环 claim/research/accept 处理下一案，直到 status 无 queued case：
 
    ```bash
-   ./.tools/uv/uv run python scripts/research_mature_builds.py status --output-dir <runDir>
+   <research-cli> status --output-dir <runDir>
    ```
+
+7. 只有最终 status 显示全部请求案例均为 `accepted` 后，调用
+   `cleanup_completed_task_runtime(task_kind="research", task_id=<queue 返回的 runId>)`。它删除 queue、
+   safe review、acceptance 报告和对应 transient packet，但保留已经写入的 Research Memory。若任务
+   尚未全部 accepted，工具会拒绝清理，不能手工删目录绕过。
 
 `accept` 返回的 `deferredReasonCounts` 是最终汇报的事实源。分别如实报告
 `invalid_schema`、`ambiguous_endpoint_requires_reviewed_mapping`、`component_type_mismatch`、
 `source_coverage_gap`、
-`insufficient_research_depth` / `insufficient_case_research_depth`、`missing_deep_research_records`
+`insufficient_research_depth` / `insufficient_case_research_depth`、`missing_deep_research_records`、
+`unresolved_jewel_sockets`
 等原因；不要把 schema 或深度失败改写成“等待 Judge/resolver 验证”。只有实际 reason 指向 Judge
-时才可以这样描述。
+时才可以这样描述。`unresolved_jewel_sockets` 的处置：inspect 的 `jewelCounts.status` 为 `ok` 且
+存在已分配珠宝槽无珠宝物品时，review 必须显式声明珠宝状态（空置或已插宝石及 radius 条件）；
+`tree_data_missing` 表示无法计数，允许保留暂缓但须在报告中说明；packet 缺失时需重新 queue。
 
 每案还必须报告 `mechanicAuditEntryCount`、`mechanicAuditPinnedRevisionCount`、
 `mechanicAuditLiveEvidenceStatus` 和 `mechanicAuditUnauditedHighRiskRecordCount`。只要提交了审计但
 固定 Wiki 修订数为 0，就必须明确写“Wiki 审计未实际取得 live evidence”，不能把结构化
 `mechanicAudit` 存在或 `acceptanceMode=clean` 描述成 Wiki 校对成功。
+
+每案还必须报告 `uniqueGemDiagnostics`：`uniqueGemCandidates`（来源中的 lineage/暗金宝石）、
+`unlabeledUniqueGemNames`（被提及但未标注 unique 身份）与 `uniqueGemStatusUnknownNames`（语料无法
+确认，不阻塞）。`unlabeledUniqueGemNames` 非空时，不得把该案描述为暗金身份已全部标注。
 
 `deferredCandidateCount=0` 只表示 pattern/candidate 没有暂缓，不代表所有深度记录组件都已解析。
 最终汇报必须区分 `unresolvedDeepRecordMentionCount` 与 `unresolvedUniqueComponentCount`。兼容字段
@@ -253,52 +279,25 @@ POE_RESEARCH_SUCCEEDED: no
 正式 accept 后还应区分 `createdDeepRecordCount`、`updatedDeepRecordCount` 和
 `addedDeepRecordEvidenceCount`；同一 Family 的既有知识增加来源证据时，不得误报为新建知识。
 
-## Case Rules
-
-- 一案一轮：一个 Researcher prompt 只能包含一个完整 BD。
-- 串行处理：当前案例完成 accept 前，不得 claim 下一案。
-- 默认不把上一案的 transient evidence 带入下一案；复用的是 queue、skill、脚本、工具和已验收记忆。
-- 若 claim 返回 `active_case_in_progress`，继续当前案例，不得另领新案例。
-- 若 claim 返回 `no_pending_cases`，停止领取。
-
 ## Researcher Checklist
 
-- 一次案例生成多条共享 `research_group_id` 的 `DeepResearchRecord`；单条只回答一个主要问题。
-- 同一研究组使用同一个已解析 `ascendancyKey`，并只把一个核心主技能标为 `primary_damage`；
-  `clear_skill`、`boss_skill`、`triggered_payload`，以及投送 `triggered_payload` 或主伤载荷的 `trigger_host` 由程序自动
-  参与 Family，不得重复写入 `typedPayload.familyCoreSkillKeys`。普通 `secondary_skill` 是 Family 内
-  工具/变体；只有 generator、control 等其他副技能确实决定流派身份时，才把 stable key 写入该字段。
-  support、装备、防御和资源方案不参与 `BuildFamily` 身份。
-- 必须在整个 research group 中为每个已确认 Family 核心技能组填写 `typedPayload.supportPackages`；
-  CoC/触发宿主和 triggered payload 也分别检查。每组至少两个已解析辅助；来源确实缺失或技能不接受
-  普通辅助时，用 `supportCoverageExceptions` 写明 `source_coverage_gap` / `not_applicable` 和原因。
+`workerPrompt` 与当前 lease 的 `review-contract` 已覆盖研究顺序、Family 身份、案例覆盖、迁移范围和
+结构化字段合同。这里仅保留二者未完整表达的补充检查；冲突时以运行时合同为准。
+
+- 补充研究（对同一 source 案例的追加 run，例如补录珠宝、暗金或 Spirit 维度）必须**复刻首轮
+  identity 记录结构**：Family 核心技能组件（primary_damage，以及自动参与身份的
+  clear_skill / boss_skill / triggered_payload 组件和 typedPayload.familyCoreSkillKeys）必须与首轮
+  完全一致。Family key 由 (ascendancy, primary, secondary) 确定性推导，遗漏任一 secondary 身份
+  组件就会产生 sibling family 分裂——同一个 BD 的知识会分散到多个档案夹，系统只有提示不会自动
+  合并。无法确认首轮身份结构时，先用 `query_research_memory` 的 familyRecordCoverage 核对既有
+  Family 的 secondary 集合，再写 identity 记录。
 - 辅助与主动技能即使都已解析，也不代表二者机制兼容。凡声称某辅助为具体技能生成、转换、保留或放大
   某项机制，必须用 `support_skill_candidate` 或等价 typed graph helper 复核该精确配对；结果未知时保留
   caveat / verification task，不得写成已成立事实。
-- `passiveAscendancy` 只有在记录包含 `ascendancy_shell`，并通过
-  `typedPayload.ascendancyResponsibilities` 把具体升华 passive/notable/keystone 与职责对应时才算 covered；
-  验收会核验节点确实属于当前升华，任意普通 notable 或 keystone 不足以证明升华职责已还原。
-- `gearRoles` 只有在 `gear_synergy` 用 `typedPayload.gearResponsibilities` 关联已解析装备与具体职责时才算
-  covered；至少要还原主技能来源、身份装备或主要缩放装备之一，只有防御/便利装备不能代表完整装备职责。
-  若该维度为 `evidence_missing`，验收会暂缓 `mechanic_chain` 和 component transfer，避免把漏读身份装备
-  后的错误机制写入 durable memory。
 - 每项 `gearResponsibilities` 必须区分组件静态文本直接提供的固有职责，以及来源实例词缀、插入物、
   mutation / transform 或其他组件间接提供的职责。只有前者可以直接归因给该装备组件；后者必须把真实
   来源组件或转换前提写入结构化字段和条件，证据无法唯一归属时降为 caveat / open question，不能因为
   装备名称成功解析就把整份来源实例的效果归给该装备。
-- 只有已确认的 `skill_package` / `mechanic_chain` 授权 Family 身份。`modelability_caveat`、`failure_mode`
-  或 `open_question` 中未证实的技能不参与 Family，也不得在这些记录中填写 `familyCoreSkillKeys`。
-- 装备读取若显示 `itemStates=["mutated"]`，依赖该随机实例的记录必须写
-  `typedPayload.availability="source_specific_random"` 和 `sourceSpecificComponentKeys`。它可解释本案，
-  但默认不进入 Create 召回；依赖该实例的 candidateReview 同样写
-  `availability="source_specific_random"`，并在 `sourceSpecificComponentNames` 精确指出 candidate
-  `components` 中对应的来源组件。accept 只用这些组件建立 observation 索引；组件没有稳定节点时保留
-  无组件索引的案例备注，不生成 planner Pattern。
-- `resource_engine` 若依赖法力偷取、普通药剂、装备词缀等没有物理图节点的机制，必须在
-  `typedPayload.resourceMechanisms` 写精确的 lower_snake_case 标签（如 `mana_leech`、`mana_flask`）。
-  正文提到但结构化身份缺失的记录会以 `missing_knowledge_identity` 暂缓，不能报告 clean。
-- safe review 顶层必须填写 `caseCoverage`，分别审计 supports、rotation、passiveAscendancy、
-  gearRoles、resourceDefense；状态只能是 `covered`、`evidence_missing`、`not_applicable`。
 - safe review 顶层 `mechanicAudit` 只记录高风险事实声明，精确关联受影响的 record/candidate 标题，并
   使用 `supports`、`contradicts`、`silent`、`unavailable` 和 `keep`、`revise`、`defer`。Wiki 冲突却
   仍 keep、主动 defer、或没有独立 corroboration 的 wiki-only 对象会被最小范围暂缓；Wiki 不可用
@@ -308,24 +307,36 @@ POE_RESEARCH_SUCCEEDED: no
   mechanicAudit 引用会作为显式 advisory 报告，但不会由程序按技能名硬拒绝。
 - 中文 `content` 原则上不超过 400 字，英文不超过 250 个单词。独立结论必须拆分；不可拆分的核心
   机制链才允许填写 `lengthExceptionReason` 后少量超出。
-- 优先分别记录 skill package、mechanic chain、rotation、gear synergy、passive package、资源/防御
-  引擎、设计取舍、失败模式和 modelability caveat；不要把整个案例分析塞进一条记录。
-- 当前 Agent 必须重建具体技能职责、机制因果链、装备/天赋职责和可执行轮转，不能只输出属性共现与
-  通用复验提醒。
 - `rotation` 必须描述玩家操作顺序并写
   `typedPayload.knowledgeShape="player_action_sequence"`；`mechanic_chain` 必须描述状态因果链并写
   `typedPayload.knowledgeShape="state_causal_chain"`。
 - pattern 至少关联两个不同的已解析组件；单组件候选只作为 observation，不得包装成可复用 pattern。
-- 每个 pattern 明确填写 `transferScope`。`family` 表示仅限来源 Family；`component` 表示该 Family
-  知识同时获得跨 Family 条件迁移资格，不会降低它在来源 Family 内的召回权重。只有候选解决可重复
-  设计问题、具有明确因果链，并写出最低适用条件、排除条件、迁移理由和验证任务时，才能使用
-  `component`。去掉当前职业、升华和流派名称后，该条件性结论仍须有意义；不确定时保持 `family`。
-- 单案例不得使用 `global`，也不得自行提高置信等级。首次发现始终是 `case_observation`；后端只在
-  结构相同的候选获得独立跨 Family 证据后晋升，公用知识最高为 `likely_pattern`。
-- 没有 resolver 工具时仍提交组件名称、角色和 resolver 查询词，由 accept gate 统一补稳定 ID；不要
-  因此删掉具体组件，也不要猜 ID。
-- resolver 可见时先用 `search_graph_components` 按具体名称和类型发现候选，再用
-  `resolve_graph_component` 确认稳定 ID。描述性短语不是组件名；模糊候选不能直接写 semantic edge。
+- 机制签名词缀驱动记录因果结论时，必须独立成记录（gear_synergy/mechanic_chain）或至少进入
+  `mechanicAudit`，不得只出现在 content 字符串。签名词缀家族包括：极端掷骰
+  （"Rolls only the minimum or maximum Damage value"）、最低抗性伤害
+  （"based on their Lowest Resistance"）、元素地面交互（Wind Skills / Elemental Ground）、
+  implicit "Allocates <passive>"、"Grants Skill: Level N <skill>"、Surpassing 额外投射、
+  "X% chance to not remove Charges but still count as consuming them"。签名词缀驱动的审计必须带
+  revision-pinned `lookup_mechanic` sourceRef 和至少一项独立佐证。
+- 暗金宝石（unique skill/support gem、unique jewel）与普通宝石不同：unique support gem 自带固定
+  词缀（如 Ailith's Chimes / Uhtred's 系列），unique jewel 常带位置化效果。凡案例使用暗金宝石，
+  必须在记录中标注其 unique 身份（组件 role 保持 support_modifier/unique_enabler），radius/Time-Lost
+  jewel 的"Small/Notable Passive Skills in Radius also grant X"词缀必须原样保留在
+  conditions/verificationTasks 中，并把半径覆盖的已分配天赋类型写入 conditions；不得把 radius
+  增益当作全局增益。数据缺口：语料 unique jewel 表缺 PoE2 Time-Lost 系列（其 unique 在
+  Uniques/Special/Generated.lua，提取器未摄入），Historic timeless jewels（base "Timeless
+  Jewel"）因引擎 conquered 规则为空而排除出候选；来源实例中出现的 radius jewel 若无法从语料取
+  文本，以 PoB 引擎读回为准并在 modelability_caveat 记录数据缺口。
+- 跨组件异常组合（如混沌伤害节点、荆棘与中毒机会、低血分支并存）无法闭环时，建 `open_question`
+  记录结构化疑点（异常组件、可能机制、已排除项、验证任务），不得塞进 modelability caveat；
+  `modelability_caveat` 只用于"机制存在但 PoB 无法建模/未证实数值"。`read` 输出中的
+  cross-axis advisory 是提示不是 gate。
+- mechanicAudit 除 `mechanic_chain` / `resource_engine` 强制项外，凡记录因果结论依赖签名词缀、
+  或主输出链接存在未验证辅助时，也必须审计或写验证任务。
+- 宽召回 memory 查询使用 `query_research_memory(detail_level="summary",
+  response_profile="create_compact")`；只有深读指定记录时才 `detail_level="record"`。
+  被动分区读取可用 `read --section passives --node-type notable|keystone|jewel_socket|normal`
+  过滤，减少全量分页开销。
 - 在 validate-only 和正式 accept 前对每个最终对象做全对象语义闭环复核。组件、角色、因果或职责发生
   变化时，必须逐项重查 title、summary、content、conditions、failureConditions、typedPayload、
   applicability / exclusions、contextRequirements、plannerHint 和 verificationTasks；未逐项复核的旧字段
@@ -350,11 +361,3 @@ Boss 时的续接风险，以及装备与局部天赋如何支撑资源。应拆
 
 浅层反例：“该案例堆叠投射物、暴击、元素伤害和能量护盾，建议在 PoB 中继续验证。”这类文字没有
 具体组件、因果、操作顺序或职责分工，只能作为 open question，不能成为主要 durable output。
-
-## Safety
-
-- queue/status/claim/review-contract/init-review/validate-only/accept 输出必须是 safe-only。
-- `prompt` 仅保留兼容入口，返回 safe manifest 和迁移提示；不得再输出 raw-rich material。
-- `inspect/read/search` 必须绑定当前有效 lease，且所有 read/search 响应都有数量和字符上限。
-- missing/ambiguous endpoint 不得自动选择；最多 2 次 bounded repair，失败后写 manual mapping / source refresh。
-- 单样本只能写 `case_observation`，不能宣称 common/usually/通常。

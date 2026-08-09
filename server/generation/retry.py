@@ -38,6 +38,10 @@ def validate_and_build_retry_report(
     if len(attempts) != len(trusted_receipts):
         return models.rejected("trusted_attempt_count_mismatch")
 
+    memory_error = _memory_mode_error(packet.prototype_build_candidate, experiment.memory_mode)
+    if memory_error is not None:
+        return memory_error
+
     for attempt, receipt in zip(attempts, trusted_receipts, strict=True):
         if attempt.attempt_index != receipt.get("attemptIndex"):
             return models.rejected("trusted_evaluation_mismatch")
@@ -56,12 +60,13 @@ def validate_and_build_retry_report(
             return models.rejected("trusted_evaluation_mismatch")
         if attempt.judge_advisory_report.model_dump() != trusted_judge.model_dump():
             return models.rejected("trusted_evaluation_mismatch")
-        memory_error = _memory_mode_error(
-            attempt.prototype_build_candidate,
-            experiment.memory_mode,
-        )
-        if memory_error is not None:
-            return memory_error
+        if isinstance(attempt.prototype_build_candidate, models.PrototypeBuildCandidate):
+            memory_error = _memory_mode_error(
+                attempt.prototype_build_candidate,
+                experiment.memory_mode,
+            )
+            if memory_error is not None:
+                return memory_error
 
     if experiment.memory_mode == "memory_assisted":
         requery_error = _memory_requery_error(attempts)
@@ -120,6 +125,20 @@ def _memory_requery_error(
         changed_fields = _changed_research_identity_fields(previous, current)
         if not changed_fields:
             continue
+        if not isinstance(
+            previous.prototype_build_candidate,
+            models.PrototypeBuildCandidate,
+        ) or not isinstance(
+            current.prototype_build_candidate,
+            models.PrototypeBuildCandidate,
+        ):
+            return models.rejected(
+                "research_memory_requery_required",
+                caveats=[
+                    "Changed identity fields cannot be audited from compact attempt references: "
+                    f"{', '.join(changed_fields)}."
+                ],
+            )
         previous_usage = previous.prototype_build_candidate.research_memory_use
         current_usage = current.prototype_build_candidate.research_memory_use
         if previous_usage is None or current_usage is None:

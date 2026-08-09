@@ -17,20 +17,20 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "当前功能" in skill
     assert "结构化需求摘要" in skill
     assert "构筑经验记忆" in skill
-    assert "MCP tool 名称" in skill
-    assert "通过宿主提供的 MCP 工具调用" in skill
-    assert "不是 Python 函数调用" in skill
+    assert "常用 MCP 工具清单" in skill
+    assert "必须通过 MCP 工具调用" in skill
+    assert "不能用 PowerShell 搜索仓库文件代替" in skill
     assert "get_freshness_report" in skill
     assert "不能因为没有在界面中" in skill
     assert 'decision="blocked_stale"' in skill
-    assert "不能因此停止生成" in skill
+    assert "不等于停止生成" in skill
     assert "过期 PoB 有限证据" in skill
-    assert "只填写原始版本号或 commit" in skill
+    assert "只填原始版本号/commit" in skill
     assert 'qualityBand="strong"' in skill
     assert 'rewardStrength="limited"' in skill
     assert "start_generation_run" in skill
     assert "runContext" in skill
-    assert "禁止读取、复用或改写其他运行留下的" in skill
+    assert "禁止复用/改写其他运行的旧" in skill
     assert "query_research_memory" in skill
     assert 'detail_level="summary"' in skill
     assert 'detail_level="record"' in skill
@@ -60,7 +60,6 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "build_advice" in skill
     assert "补丁敏感事实以当前 pinned PoB" in skill
     assert "suggest_build_lifecycle" in skill
-    assert "不一定给具体技能名" in skill
     assert "new_build" in skill
     assert "set_class" in skill
     assert "set_skill" in skill
@@ -72,7 +71,6 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "passive_delta" in skill
     assert "recoveryRequired=true" in skill
     assert "inspect_generation_checkpoint" in skill
-    assert "diagnostic_only" in skill
     assert "evaluate_generation_candidate" in skill
     assert "strict_mode=false" in skill
     assert "strict_mode=true" in skill
@@ -80,10 +78,13 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "hard_only" in skill
     assert "不要用" in skill
     assert "冒充正式 Judge" in skill
-    assert "人工验收包" in skill
+    assert "材料可进入人工验收" in skill
     assert "agent-output.json" in skill
     assert "agentRefinedBuildPrompt" in skill
     assert "prototypeBuildCandidate" in skill
+    assert "Agent 提交的顶层字段" in skill
+    assert "最终选中 attempt 的完整候选摘要" in skill
+    assert "baseline_acceptance_audit_required" in skill
     assert "currentOutputStages" in skill
     assert "targetLifecycleStages" in skill
     assert "crossStageLockedDimensions" in skill
@@ -99,26 +100,16 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "lifecycleEvidenceCoverage" in skill
     assert "HumanReviewPacket" in skill
     assert "无参数" in skill
-    assert "否则必须先问" in skill
-    assert "是否产出开荒过程 BD" in skill
-    assert "只产出一个固定目标 BD" in skill
-    assert "在用户回答前" in skill
-    assert "不得调用 freshness" in skill
-    assert "用户已经在当前对话中回答过" in skill
     assert "referenceBlind=true" in skill
-    assert "普通用户不需要仓库" in skill
     assert "不要搜索仓库" in skill
-    assert "managed_user_data" in skill
-    assert "模型隐藏思维链" in skill
+    assert "隐藏思维链" in skill
     assert "完整对话记录" in skill
     assert "技能组合、辅助组合、装备槽位摘要、天赋锚点或转型路线" in skill
-    assert "不会因为一个候选和常见强机制相似就判定失败" in skill
-    assert "所有 PoB/计算工具都必须串行调用" in skill
-    assert "不接触共享临时构筑状态" in skill
+    assert "必须串行调用" in skill
+    assert "不接触活动构筑的" in skill
     assert "设计判断" in skill
     assert "工具验证结论" in skill
     assert "完整技能连接" not in skill
-    assert "bind_build_progression_target_run" in skill
     assert "P5" not in skill
     assert "程序化解释器" not in skill
     assert "旧的" not in skill
@@ -154,6 +145,14 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "validate_generation_output" in phase5
     assert "LifecycleEvidenceCoverage" in phase5
     assert "设计判断和工具验证结论" in phase5
+    assert "## Canonical build (create → optimize → validate → cost → present)" not in guide
+    assert "`points=0` fills the budget" not in guide
+    assert "optimize_passives(points<=0)" not in guide
+    assert 'Open-ended "strong build" / "beginner-friendly endgame"' not in guide
+    assert "run the **lifecycle workflow first**" not in guide
+    assert "start with `suggest_build_lifecycle`" not in guide
+    assert "Route user-triggered Create through `/poe-bd-create`" in guide
+    assert not (REPO_ROOT / "docs" / "phases" / "05_create_judge_optimization.md").exists()
     assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
     assert "familyRecordCoverage" in phase5
     assert "familyRecordIndex" in phase5
@@ -176,26 +175,32 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "recoveryRequired=true" in guide
     assert "`rolledBack=true`" in guide
     assert "inspect_generation_checkpoint" in guide
-    assert "diagnostic_only" in guide
+    assert "read back for diagnostics" in guide
     assert "validate_generation_output" in guide
     assert "lifecycleEvidenceCoverage" in guide
     assert "trusted receipt" in guide
     assert "progressive research recall" in guide
-    assert "Before any ordinary `/poe-bd-create` tool call" in guide
-    assert "one fixed target/final build without progression" in guide
-    assert "Do not call freshness, Research" in guide
+    assert "directly generates the requested target-level endgame build" in guide
+    assert "no blocking leveling-progression question" in guide
     assert "recordKindCounts" in guide
     assert "successful component resolution proves existence" in guide
     assert 'response_profile="create_compact"' in guide
     assert "researchMemoryUse" in guide
     assert "physical graph, and corpus override patch-sensitive prose" in guide
     assert "/poe-bd-create" in readme
-    assert "Phase 5 Agent 主导生成原型" in readme
-    assert "complete_generation_review" in readme
-    assert "start_generation_run" in readme
-    assert "不依赖仓库 checkout" in readme
-    assert "strict_mode=false" in readme
-    assert "evaluate_generation_candidate" in readme
+    assert "poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md" in readme
+    for internal_contract in (
+        "complete_generation_review",
+        "start_generation_run",
+        "strict_mode=false",
+        "evaluate_generation_candidate",
+    ):
+        assert internal_contract not in readme
+    assert "## 脚本入口" not in readme
+    assert "## 插件发布数据" not in readme
+    assert "docs/PROJECT_SPEC.md" in readme
+    assert "docs/SCHEMAS.md" in readme
+    assert "docs/phases/" in readme
 
     for manifest in (
         ".codex-plugin/plugin.json",
@@ -232,20 +237,24 @@ def test_installers_register_poe2_mcp_server_for_supported_hosts():
     assert "Register-Codex-McpServer" in ps1
     assert "Resolve-UvCommand" in ps1
     assert "MCP installation requires uv" in ps1
-    assert "[mcp_servers.poe2_build_mcp]" in ps1
-    assert 'args = @("run", "python", "-m", "server.main")' in ps1
+    assert '"[mcp_servers.$($server.Name)]"' in ps1
+    assert 'args = @("run", "python", "-m", "server.main")' not in ps1
+    assert "$server.Module" in ps1
+    assert "@('run', 'python', '-m', $server.Module)" in ps1
     assert "-RegisterMcpOnly" in ps1
     assert "$RepoDir = $ScriptRepoDir" in ps1
     assert "register_codex_mcp_server" in sh
     assert "resolve_uv_command" in sh
     assert "MCP installation requires uv" in sh
-    assert "[mcp_servers.poe2_build_mcp]" in sh
-    assert 'args = ["run", "python", "-m", "server.main"]' in sh
+    assert "[mcp_servers.poe_build_mcp]" in sh
+    assert 'args = ["run", "python", "-m", "server.main"]' not in sh
+    assert '"run", "python", "-m", "server.mcp.knowledge_server"' in sh
     assert "--register-mcp-only" in sh
     assert 'REPO_DIR="$SCRIPT_DIR"' in sh
     assert "Codex、Claude Code、Cursor 和 OpenCode" in readme
     assert "两者都不存在时会明确停止" in readme
-    assert "poe2_build_mcp" in readme
+    assert "poe_knowledge_mcp" in readme
+    assert "poe_build_mcp" in readme
 
     for marker in ("claude", "cursor", "opencode"):
         assert marker in ps1

@@ -166,12 +166,21 @@ def test_validate_fragment_extraction_rejects_raw_copyable_fields():
 
 def test_validate_fragment_extraction_rejects_recipe_like_output():
     payload = _valid_output()
-    payload["fragments"][0]["summary"] = "Supports: A, B, C, D, E"
+    payload["fragments"][0]["summary"] = "Full build: <PathOfBuilding>raw material</PathOfBuilding>"
 
     result = mature_fragment_extraction.validate_fragment_extraction_output(payload)
 
     assert result["ok"] is False
     assert result["error"] == "copyability_guard_failed"
+
+
+def test_validate_fragment_extraction_allows_complete_mechanism_packages():
+    payload = _valid_output()
+    payload["fragments"][0]["content"] = "电球 -> 连锁 -> 聚焦 -> 传导 -> 增幅"
+
+    result = mature_fragment_extraction.validate_fragment_extraction_output(payload)
+
+    assert result["ok"] is True
 
 
 def test_validate_fragment_extraction_rejects_missing_required_fields():
@@ -196,11 +205,37 @@ def test_validate_fragment_extraction_rejects_high_copyability_risk():
 
 def test_validate_report_markdown_rejects_recipe_like_content():
     result = mature_fragment_extraction.validate_fragment_report_markdown(
-        "Main build\nSupports: A, B, C, D, E"
+        "Main build\nFull build: <PathOfBuilding>raw material</PathOfBuilding>"
     )
 
     assert result["ok"] is False
     assert result["error"] == "copyability_guard_failed"
+
+
+def test_validate_report_markdown_allows_chinese_mechanism_chain():
+    result = mature_fragment_extraction.validate_fragment_report_markdown(
+        "核心链路：电球 -> 连锁 -> 聚焦 -> 传导 -> 增幅"
+    )
+
+    assert result == {"ok": True}
+
+
+def test_copy_safety_flags_chinese_and_snake_case_gem_links():
+    flags = mature_fragment_extraction.copy_safety.copyability_flags(
+        "电球 -> 连锁 -> 聚焦 -> 传导 -> 增幅"
+    )
+    assert "full_gem_link_like" in flags
+
+    flags = mature_fragment_extraction.copy_safety.copyability_flags(
+        "cold_snap -> frost_bomb -> frost_wall -> ice_nova -> glacial_cascade"
+    )
+    assert "full_gem_link_like" in flags
+
+    # The durable projection permits complete mechanism packages for clean knowledge.
+    durable = mature_fragment_extraction.copy_safety.durable_knowledge_flags(
+        "电球 -> 连锁 -> 聚焦 -> 传导 -> 增幅"
+    )
+    assert "full_gem_link_like" not in durable
 
 
 def test_validate_report_markdown_accepts_mechanism_level_exact_names():

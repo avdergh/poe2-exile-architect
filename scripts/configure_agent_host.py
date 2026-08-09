@@ -16,8 +16,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-SERVER_NAME = "poe2_build_mcp"
-STATE_VERSION = 1
+SERVER_ENTRIES = (
+    ("poe_knowledge_mcp", "server.mcp.knowledge_server"),
+    ("poe_build_mcp", "server.mcp.build_server"),
+    ("poe_research_mcp", "server.mcp.research_server"),
+    ("poe_learning_mcp", "server.mcp.learning_server"),
+)
+SERVER_NAMES = tuple(name for name, _ in SERVER_ENTRIES)
+STATE_VERSION = 2
 SUPPORTED_HOSTS = ("claude", "cursor", "opencode")
 
 
@@ -41,10 +47,10 @@ def _container_key(host: str) -> str:
     return "mcp" if host == "opencode" else "mcpServers"
 
 
-def _desired_entry(host: str, repo_root: Path, uv_command: Path) -> dict[str, Any]:
+def _desired_entry(host: str, repo_root: Path, uv_command: Path, module: str) -> dict[str, Any]:
     repo = str(repo_root.resolve())
     uv = str(uv_command.resolve())
-    args = ["run", "python", "-m", "server.main"]
+    args = ["run", "python", "-m", module]
     if host == "opencode":
         return {
             "type": "local",
@@ -101,6 +107,22 @@ def _read_state(path: Path) -> dict[str, Any]:
     state = _load_object(path)
     if not state:
         return {"version": STATE_VERSION, "hosts": {}}
+    if state.get("version") == 1:
+        # v1 tracked one legacy "poe2_build_mcp" entry per host.  The split replaces it with
+        # four domain servers; keep the old receipt so install can verify and remove the stale
+        # entry, then write fresh receipts.
+        hosts = state.get("hosts")
+        migrated: dict[str, Any] = {}
+        if isinstance(hosts, dict):
+            for h, receipt in hosts.items():
+                migrated[h] = {"servers": {}}
+                if isinstance(receipt, dict):
+                    migrated[h]["legacy"] = {
+                        "configPath": receipt.get("configPath"),
+                        "fingerprint": receipt.get("fingerprint"),
+                        "name": "poe2_build_mcp",
+                    }
+        return {"version": STATE_VERSION, "hosts": migrated}
     if state.get("version") != STATE_VERSION or not isinstance(state.get("hosts"), dict):
         raise ValueError(f"unsupported installer state in {path}")
     return state
@@ -119,10 +141,33 @@ def _result(status: str, host: str, config_path: Path, **extra: Any) -> dict[str
     return {
         "status": status,
         "host": host,
-        "server": SERVER_NAME,
+        "server": list(SERVER_NAMES),
         "configPath": str(config_path),
         **extra,
     }
+
+
+def _entry_owned(
+    host: str,
+    server_name: str,
+    *,
+    config: dict[str, Any],
+    state: dict[str, Any],
+    config_path: Path,
+) -> bool:
+    """True when the current config entry matches the installer receipt for this server."""
+    container = config.get(_container_key(host))
+    current = container.get(server_name) if isinstance(container, dict) else None
+    if current is None:
+        return False
+    host_state = state.get("hosts", {}).get(host, {})
+    receipt = host_state.get("servers", {}).get(server_name)
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("managed") is True
+        and receipt.get("configPath") == str(config_path)
+        and receipt.get("fingerprint") == _json_fingerprint(current)
+    )
 
 
 def install_host(
@@ -147,43 +192,70 @@ def install_host(
     if not isinstance(container, dict):
         return _result("conflict", host, config_path, errorCode=f"{key}_must_be_object")
 
-    desired = _desired_entry(host, repo_root, uv_command)
-    desired_fingerprint = _json_fingerprint(desired)
-    current = container.get(SERVER_NAME)
-    receipt = state["hosts"].get(host)
-    receipt_matches_current = bool(
-        isinstance(receipt, dict)
-        and receipt.get("managed") is True
-        and receipt.get("configPath") == str(config_path)
-        and current is not None
-        and receipt.get("fingerprint") == _json_fingerprint(current)
-    )
-
-    if current == desired:
-        return _result(
-            "already_configured",
-            host,
-            config_path,
-            managed=bool(receipt_matches_current),
-        )
-    if current is not None and not receipt_matches_current:
+    results: list[dict[str, Any]] = []
+    installed = 0
+    # Migrate away from the legacy single "poe2_build_mcp" entry when we own it.
+    legacy = state.get("hosts", {}).get(host, {}).get("legacy")
+    legacy_current = container.get("poe2_build_mcp") if isinstance(container, dict) else None
+    if (
+        legacy_current is not None
+        and isinstance(legacy, dict)
+        and legacy.get("configPath") == str(config_path)
+        and legacy.get("fingerprint") == _json_fingerprint(legacy_current)
+    ):
+        del container["poe2_build_mcp"]
+        results.append({"server": "poe2_build_mcp", "status": "removed_legacy"})
+    elif legacy_current is not None:
         return _result(
             "conflict",
             host,
             config_path,
-            errorCode="unmanaged_server_entry_exists",
+            errorCode="unmanaged_server_entry_exists:poe2_build_mcp",
+            entries=results,
         )
+    for server_name, module in SERVER_ENTRIES:
+        desired = _desired_entry(host, repo_root, uv_command, module)
+        desired_fingerprint = _json_fingerprint(desired)
+        current = container.get(server_name)
+        if current == desired:
+            results.append({"server": server_name, "status": "already_configured"})
+            continue
+        if current is not None and not _entry_owned(
+            host, server_name, config=config, state=state, config_path=config_path
+        ):
+            return _result(
+                "conflict",
+                host,
+                config_path,
+                errorCode=f"unmanaged_server_entry_exists:{server_name}",
+                entries=results,
+            )
+        container[server_name] = desired
+        state.setdefault("hosts", {}).setdefault(host, {}).setdefault("servers", {})[
+            server_name
+        ] = {
+            "managed": True,
+            "configPath": str(config_path),
+            "fingerprint": desired_fingerprint,
+        }
+        results.append({"server": server_name, "status": "configured"})
+        installed += 1
 
-    container[SERVER_NAME] = desired
     if host == "opencode" and was_empty:
         config["$schema"] = "https://opencode.ai/config.json"
-    state["hosts"][host] = {
-        "managed": True,
-        "configPath": str(config_path),
-        "fingerprint": desired_fingerprint,
-    }
+    host_state = state.setdefault("hosts", {}).setdefault(host, {})
+    host_state.pop("legacy", None)
     if dry_run:
-        return _result("would_configure", host, config_path, managed=True)
+        return _result("would_configure", host, config_path, managed=True, entries=results)
+    removed_legacy = any(r.get("status") == "removed_legacy" for r in results)
+    if installed == 0 and not removed_legacy:
+        return _result(
+            "already_configured",
+            host,
+            config_path,
+            managed=all(r.get("status") == "already_configured" for r in results),
+            entries=results,
+        )
     backup = _backup_once(config_path)
     _atomic_write_json(config_path, config)
     _atomic_write_json(state_path, state)
@@ -192,6 +264,8 @@ def install_host(
         host,
         config_path,
         managed=True,
+        installed=installed,
+        entries=results,
         backupPath=str(backup) if backup else None,
     )
 
@@ -211,27 +285,54 @@ def uninstall_host(
     config = _load_object(config_path)
     state = _read_state(state_path)
     container = config.get(_container_key(host))
-    current = container.get(SERVER_NAME) if isinstance(container, dict) else None
-    receipt = state["hosts"].get(host)
-    owned = bool(
-        isinstance(receipt, dict)
-        and receipt.get("managed") is True
-        and receipt.get("configPath") == str(config_path)
-        and current is not None
-        and receipt.get("fingerprint") == _json_fingerprint(current)
-    )
-    if not owned:
-        return _result("not_managed", host, config_path)
+    removed: list[str] = []
+    legacy = state.get("hosts", {}).get(host, {}).get("legacy")
+    legacy_current = container.get("poe2_build_mcp") if isinstance(container, dict) else None
+    if legacy_current is not None:
+        if not (
+            isinstance(legacy, dict)
+            and legacy.get("configPath") == str(config_path)
+            and legacy.get("fingerprint") == _json_fingerprint(legacy_current)
+        ):
+            return _result(
+                "not_managed",
+                host,
+                config_path,
+                errorCode="unmanaged_server_entry_exists:poe2_build_mcp",
+            )
+        del container["poe2_build_mcp"]
+        removed.append("poe2_build_mcp")
+    for server_name, _ in SERVER_ENTRIES:
+        current = container.get(server_name) if isinstance(container, dict) else None
+        if current is None:
+            continue
+        if not _entry_owned(host, server_name, config=config, state=state, config_path=config_path):
+            return _result(
+                "not_managed",
+                host,
+                config_path,
+                errorCode=f"unmanaged_server_entry_exists:{server_name}",
+            )
+        if dry_run:
+            removed.append(server_name)
+            continue
+        del container[server_name]
+        removed.append(server_name)
+        host_state = state.get("hosts", {}).get(host)
+        if isinstance(host_state, dict):
+            host_state.get("servers", {}).pop(server_name, None)
     if dry_run:
-        return _result("would_remove", host, config_path)
-
-    del container[SERVER_NAME]
-    if not container:
+        return _result("would_remove", host, config_path, removed=removed)
+    if not removed:
+        return _result("not_managed", host, config_path)
+    if isinstance(container, dict) and not container:
         del config[_container_key(host)]
-    del state["hosts"][host]
+    host_state = state.get("hosts", {}).get(host)
+    if isinstance(host_state, dict) and not host_state.get("servers"):
+        state.get("hosts", {}).pop(host, None)
     _atomic_write_json(config_path, config)
     _atomic_write_json(state_path, state)
-    return _result("removed", host, config_path)
+    return _result("removed", host, config_path, removed=removed)
 
 
 def doctor_host(
@@ -249,22 +350,30 @@ def doctor_host(
     state_path = _state_path(home, state_path)
     checks: dict[str, bool] = {
         "repoRoot": repo_root.is_dir(),
-        "serverEntryPoint": (repo_root / "server/main.py").is_file(),
+        "serverEntryPoints": all(
+            (repo_root / f"server/mcp/{module.rsplit('.', 1)[1]}.py").is_file()
+            for _, module in SERVER_ENTRIES
+        ),
         "uvCommand": uv_command.is_file(),
         "configFile": config_path.is_file(),
     }
     try:
         config = _load_object(config_path)
         container = config.get(_container_key(host))
-        current = container.get(SERVER_NAME) if isinstance(container, dict) else None
-        checks["serverEntry"] = current == _desired_entry(host, repo_root, uv_command)
+        checks["serverEntry"] = bool(
+            isinstance(container, dict)
+            and all(
+                container.get(name) == _desired_entry(host, repo_root, uv_command, module)
+                for name, module in SERVER_ENTRIES
+            )
+        )
         state = _read_state(state_path)
-        receipt = state["hosts"].get(host)
         checks["managedReceipt"] = bool(
-            isinstance(receipt, dict)
-            and receipt.get("managed") is True
-            and current is not None
-            and receipt.get("fingerprint") == _json_fingerprint(current)
+            isinstance(container, dict)
+            and all(
+                _entry_owned(host, name, config=config, state=state, config_path=config_path)
+                for name, _ in SERVER_ENTRIES
+            )
         )
     except (OSError, ValueError):
         checks["serverEntry"] = False
@@ -323,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {
             "status": "error",
             "host": args.host,
-            "server": SERVER_NAME,
+            "server": list(SERVER_NAMES),
             "errorCode": type(exc).__name__,
             "message": str(exc),
         }

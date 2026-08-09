@@ -84,7 +84,16 @@ def main() -> int:
     _copy(ROOT / "server", stage / "server")
     _copy(ROOT / "manifest.json", stage / "manifest.json")
     _copy(ROOT / "assets" / "icon.png", stage / "assets" / "icon.png")
-    _copy(ROOT / "scripts" / "create_build.py", stage / "scripts" / "create_build.py")
+    # scripts/ helpers reachable by server modules (scripts is a namespace package at runtime).
+    for name in (
+        "create_build.py",
+        "research_mature_builds.py",
+        "run_phase45_researcher_batch.py",
+        "run_phase4_deep_review_acceptance.py",
+        "run_judge_ninja_samples.py",
+        "run_judge_user_samples.py",
+    ):
+        _copy(ROOT / "scripts" / name, stage / "scripts" / name)
 
     # Official Build Planner converter source. The user prepares its pinned runtime locally so the
     # bundle stays portable and license/version checks remain explicit.

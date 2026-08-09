@@ -109,6 +109,116 @@ def cleanup_expired_packets(
     return {"removed": removed}
 
 
+def cleanup_packets_by_safe_hashes(
+    safe_hashes: set[str],
+    *,
+    temp_root: Path | None = None,
+) -> dict[str, int]:
+    """Immediately remove the exact transient packets owned by a completed Research run."""
+
+    requested = {str(value) for value in safe_hashes if str(value)}
+    root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
+    removed = 0
+    if not requested or not root.exists():
+        return {"removed": 0}
+    for child in root.iterdir():
+        if not child.is_dir() or not child.name.startswith(PACKET_PREFIX):
+            continue
+        try:
+            payload = json.loads((child / "packet.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if str(payload.get("safeHash") or "") in requested:
+            shutil.rmtree(child, ignore_errors=True)
+            if not child.exists():
+                removed += 1
+    return {"removed": removed}
+
+
+def _tree_metadata_status(root: ET.Element) -> str:
+    """Return whether passive-node metadata (tree.json) is available for the active spec.
+
+    ``ok`` means the tree version resolved and node metadata parsed; ``tree_data_missing``
+    means the packet cannot tell allocated jewel sockets apart, so a zero count is not
+    trustworthy. A packet without Tree/Spec has no socket concept and returns ``ok``.
+    """
+    tree = root.find("Tree")
+    if tree is None:
+        return "ok"
+    active_spec = str(tree.get("activeSpec") or "1")
+    spec = next(
+        (s for s in tree.findall("Spec") if str(s.get("id") or "") == active_spec),
+        None,
+    )
+    if spec is None:
+        spec = next(iter(tree.findall("Spec")), None)
+    if spec is None:
+        return "ok"
+    tree_version = str(spec.get("treeVersion") or "")
+    if not tree_version:
+        return "tree_data_missing"
+    return "ok" if _passive_node_metadata(tree_version) else "tree_data_missing"
+
+
+def jewel_counts(
+    packet: dict[str, Any],
+    sections: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Count allocated jewel sockets vs socketed jewels in the packet's active spec.
+
+    Derived view, never persisted: computed from the same raw XML ``_packet_sections``
+    parses, so safeHash is unaffected and old packets compute it identically. Callers
+    that already parsed ``_packet_sections`` may pass ``sections`` to avoid re-parsing.
+    """
+    normalized = _unwrap_packet(packet)
+    if sections is None:
+        sections = _packet_sections(normalized)
+    allocated = sum(
+        1
+        for item in sections["passives"]
+        if item.get("kind") == "allocated_node" and "jewel_socket" in (item.get("nodeTypes") or [])
+    )
+    socketed = sum(
+        1 for item in sections["gear"] if str(item.get("slot") or "").startswith("Jewel")
+    )
+    raw_context = normalized.get("rawContext")
+    raw_context = raw_context if isinstance(raw_context, dict) else {}
+    xml = str(raw_context.get("rawXml") or "")
+    status = "ok"
+    if xml:
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            status = _tree_metadata_status(root)
+    return {
+        "allocatedJewelSocketCount": allocated,
+        "socketedJewelCount": socketed,
+        "status": status,
+    }
+
+
+def jewel_advisories(
+    packet: dict[str, Any],
+    sections: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[str]:
+    counts = jewel_counts(packet, sections=sections)
+    if counts["status"] == "tree_data_missing":
+        return [
+            "passive-tree node metadata is unavailable for this packet, so allocated jewel "
+            "sockets cannot be counted; state the jewel situation explicitly in the review"
+        ]
+    allocated = int(counts["allocatedJewelSocketCount"] or 0)
+    socketed = int(counts["socketedJewelCount"] or 0)
+    if allocated > 0 and socketed == 0:
+        return [
+            f"{allocated} allocated jewel socket(s) carry no socketed jewel (empty or extraction "
+            "gap); the review must declare the jewel state explicitly"
+        ]
+    return []
+
+
 def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
     """Return a bounded manifest for a transient packet without exposing raw transport data."""
     normalized = _unwrap_packet(packet)
@@ -130,6 +240,8 @@ def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
             for name in RESEARCH_SECTIONS
         },
         "activeSets": _active_sets(normalized),
+        "jewelCounts": jewel_counts(packet, sections=sections),
+        "jewelAdvisories": jewel_advisories(packet, sections=sections),
         "recommendedReadOrder": list(RESEARCH_SECTIONS),
         "requiredCoverage": [
             "supports",
@@ -185,16 +297,23 @@ def read_packet_section(
     section: str,
     cursor: int = 0,
     limit: int = DEFAULT_PAGE_SIZE,
+    node_type: str | None = None,
 ) -> dict[str, Any]:
-    """Read one structured packet section with stable, character-bounded pagination."""
+    """Read one structured packet section with stable, character-bounded pagination.
+
+    ``node_type`` filters the passives section by node kind (keystone/notable/jewel_socket/
+    ascendancy/mastery, or ``normal`` for small nodes); it is ignored for other sections.
+    """
     normalized_section = str(section or "").strip().lower()
     if normalized_section not in RESEARCH_SECTIONS:
         raise ValueError("section must be one of: " + ", ".join(RESEARCH_SECTIONS))
     start = max(0, int(cursor or 0))
     page_size = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     items = _packet_sections(_unwrap_packet(packet))[normalized_section]
+    if normalized_section == "passives" and str(node_type or "").strip():
+        items = _filter_passive_items(items, str(node_type).strip())
     page, next_cursor = _bounded_page(items, start=start, limit=page_size)
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "section": normalized_section,
         "cursor": start,
@@ -206,6 +325,66 @@ def read_packet_section(
         "complete": next_cursor is None,
         "noRawMatureBuildMaterial": True,
     }
+    if normalized_section in {"passives", "gear", "skills"}:
+        result["advisories"] = [*_cross_axis_advisories(packet), *jewel_advisories(packet)]
+    return result
+
+
+def _filter_passive_items(items: list[dict[str, Any]], node_type: str) -> list[dict[str, Any]]:
+    wanted = node_type.strip().casefold()
+    if wanted == "normal":
+        return [
+            item
+            for item in items
+            if item.get("kind") in {"allocated_node", "weapon_set_node"}
+            and not (item.get("nodeTypes") or [])
+        ]
+    return [
+        item
+        for item in items
+        if any(str(label).strip().casefold() == wanted for label in item.get("nodeTypes") or [])
+    ]
+
+
+_RARE_DESIGN_AXES: dict[str, tuple[str, ...]] = {
+    "chaos": ("chaos damage", "chaos resistance", "poison"),
+    "thorns": ("thorns",),
+    "low_life": ("low life",),
+    "minion": ("minions", "companion"),
+    "totem": ("totem",),
+    "runic_ward": ("runic ward",),
+    "trap": ("trapped", "trap damage", "trap skills"),
+    "mark": ("marks enemies", "mark on hit", "voltaic mark", "freezing mark"),
+}
+
+
+def _cross_axis_advisories(packet: dict[str, Any]) -> list[str]:
+    """Advisory-only hint for rare design-axis co-occurrences (chaos+thorns+low-life etc.).
+
+    The heuristic is deliberately generic: it counts independent rare axes visible across the
+    case's passives/gear/skills and flags when several co-occur, so the Researcher checks whether
+    they form a designed layer or leftover components. It never gates acceptance.
+    """
+    sections = _packet_sections(_unwrap_packet(packet))
+    corpus: list[str] = []
+    for section_name in ("passives", "gear", "skills"):
+        for item in sections[section_name]:
+            searchable = json.dumps(item, ensure_ascii=False, sort_keys=True).casefold()
+            corpus.append(searchable)
+    joined = " ".join(corpus).casefold()
+    present = sorted(
+        axis
+        for axis, keywords in _RARE_DESIGN_AXES.items()
+        if any(keyword in joined for keyword in keywords)
+    )
+    if len(present) < 2:
+        return []
+    return [
+        "rare design axes co-occur: "
+        + ", ".join(present)
+        + "; verify whether this is a designed layer or leftover components, and close it with "
+        "an open_question record when it cannot be resolved"
+    ]
 
 
 def search_packet(

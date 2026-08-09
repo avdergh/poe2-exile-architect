@@ -6,8 +6,11 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from server.compute.state import build_state_hash
 from server.generation import evaluation, evaluation_snapshots, run_store
+from server.knowledge import research_memory
 
 
 BUILD_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -39,8 +42,22 @@ def _version_context() -> dict[str, str]:
         "passive_tree_version": "0_5",
         "pob_version_or_commit": "test",
         "graph_snapshot_id": "graph:test",
-        "research_memory_ref": "memory:test",
+        "research_memory_ref": "dq-0123456789abcdef",
     }
+
+
+@pytest.fixture(autouse=True)
+def _fresh_research_receipts(monkeypatch):
+    """Evaluate now fail-fasts on run-fresh dq- receipts; default every test to a fresh one."""
+
+    def fake_reader(_self, _ref: str) -> dict[str, object]:
+        return {"lastSeenAt": datetime.now(timezone.utc).isoformat()}
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        fake_reader,
+    )
 
 
 def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
@@ -492,6 +509,54 @@ def test_attribute_shortfall_is_blocked_without_consuming_a_judge_attempt(
     assert not (run_dir / "trusted-evaluations").exists()
 
 
+def test_generated_delivery_omissions_are_blocked_before_judge_without_consuming_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    cases = [
+        (
+            "scaffold",
+            "Rarity: RARE\nScaffold Weapon 1\nAdvanced Dualstring Bow\n"
+            "Item Level: 68\nLevelReq: 60",
+            "scaffold_gear_must_be_replaced",
+        ),
+        (
+            "missing-item-level",
+            "Rarity: RARE\nGenerated Weapon\nAdvanced Dualstring Bow\nLevelReq: 60",
+            "rare_or_magic_item_level_missing",
+        ),
+    ]
+    for suffix, item_text, expected_failure in cases:
+        run_id, token, run_dir = _bound_run(tmp_path / suffix, monkeypatch)
+        xml = BUILD_XML.replace(
+            '  <Items activeItemSet="1">',
+            f'  <Items activeItemSet="1">\n    <Item id="1">{item_text}</Item>',
+        )
+        factory_called = False
+
+        def factory():
+            nonlocal factory_called
+            factory_called = True
+            return _JudgeEngine()
+
+        result = evaluation.evaluate_generation_candidate(
+            _ActiveEngine(xml),
+            run_id=run_id,
+            run_token=token,
+            candidate_id=f"candidate:test:{suffix}",
+            version_context=_version_context(),
+            engine_factory=factory,
+        )
+
+        assert result["errorCode"] == "generation_preflight_failed"
+        assert result["attemptConsumed"] is False
+        assert result["attemptCount"] == 0
+        assert expected_failure in result["preflight"]["blockingIssues"]
+        assert expected_failure in result["preflight"]["hardLegality"]["hardFailures"]
+        assert factory_called is False
+        assert not (run_dir / "trusted-evaluations").exists()
+
+
 def test_endgame_resistance_shortfall_is_blocked_without_consuming_a_judge_attempt(
     tmp_path,
     monkeypatch,
@@ -731,3 +796,104 @@ def test_evaluate_generation_candidate_reports_attribute_shortfall(tmp_path, mon
             "shortfall": 15.0,
         },
     ]
+
+
+def test_evaluate_rejects_missing_research_receipt_before_consuming_attempt(tmp_path, monkeypatch):
+    run_id, token, _run_dir = _bound_run(tmp_path, monkeypatch)
+
+    def missing_reader(_self, _ref: str) -> dict[str, object] | None:
+        return None
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        missing_reader,
+    )
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:missing-receipt",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "research_memory_receipt_missing"
+    assert result["attemptConsumed"] is False
+
+
+def test_evaluate_rejects_stale_research_receipt_before_consuming_attempt(tmp_path, monkeypatch):
+    run_id, token, _run_dir = _bound_run(tmp_path, monkeypatch)
+
+    def stale_reader(_self, _ref: str) -> dict[str, object]:
+        return {"lastSeenAt": "2000-01-01T00:00:00+00:00"}
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        stale_reader,
+    )
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:stale-receipt",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "research_memory_receipt_not_current_run"
+    assert result["attemptConsumed"] is False
+
+
+def test_evaluate_rejects_non_dq_research_ref(tmp_path, monkeypatch):
+    run_id, token, _run_dir = _bound_run(tmp_path, monkeypatch)
+    context = _version_context()
+    context["research_memory_ref"] = "memory:test"
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:bad-ref",
+        version_context=context,
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "invalid_research_memory_ref"
+    assert result["attemptConsumed"] is False
+
+
+def test_evaluate_allows_disabled_no_memory_ref(tmp_path, monkeypatch):
+    run_id, token, _run_dir = _bound_run(tmp_path, monkeypatch)
+    context = _version_context()
+    context["research_memory_ref"] = "disabled:no_memory_baseline"
+
+    def fail_if_called(_self, _ref: str) -> dict[str, object]:
+        raise AssertionError("no_memory baseline must skip receipt lookup")
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        fail_if_called,
+    )
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        factory()
+        return _judge_result(snapshot_id)
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:no-memory",
+        version_context=context,
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["status"] == "evaluated"
+    assert result["attemptIndex"] == 0

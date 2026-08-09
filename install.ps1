@@ -309,10 +309,15 @@ function Register-Codex-McpServer {
     $configPath = Get-Codex-ConfigPath
     $repoRoot = Normalize-PathText $RepoDir
     $command = Resolve-UvCommand
-    $args = @("run", "python", "-m", "server.main")
+    $servers = @(
+        @{ Name = 'poe_knowledge_mcp'; Module = 'server.mcp.knowledge_server' },
+        @{ Name = 'poe_build_mcp';    Module = 'server.mcp.build_server' },
+        @{ Name = 'poe_research_mcp'; Module = 'server.mcp.research_server' },
+        @{ Name = 'poe_learning_mcp'; Module = 'server.mcp.learning_server' }
+    )
 
     if ($DryRun) {
-        Write-Host "[dry-run] register Codex MCP server poe2_build_mcp in $configPath"
+        Write-Host "[dry-run] register Codex MCP servers ($($servers.Name -join ', ')) in $configPath"
         return
     }
 
@@ -320,29 +325,34 @@ function Register-Codex-McpServer {
     if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
 
     $existing = if (Test-Path $configPath) { Get-Content -LiteralPath $configPath -Raw } else { '' }
-    if ($existing -match '(?m)^\[mcp_servers\.poe2_build_mcp\]\s*$' -and $existing -notlike "*$ManagedMcpBegin*") {
-        Write-Warning "Codex MCP server poe2_build_mcp already exists but is not installer-managed; leaving it unchanged."
-        return
+    foreach ($server in $servers) {
+        if ($existing -match ('(?m)^\[mcp_servers\.' + [regex]::Escape($server.Name) + '\]\s*$') -and $existing -notlike "*$ManagedMcpBegin*") {
+            Write-Warning "Codex MCP server $($server.Name) already exists but is not installer-managed; leaving it unchanged."
+            return
+        }
     }
 
     $clean = (Remove-Managed-McpBlock $existing).TrimEnd()
-    $tomlArgs = '["' + (($args | ForEach-Object { $_.Replace('"', '\"') }) -join '", "') + '"]'
-    $block = @(
-        $ManagedMcpBegin,
-        '[mcp_servers.poe2_build_mcp]',
-        ('command = {0}' -f (Format-TomlString $command)),
-        ('args = {0}' -f $tomlArgs),
-        ('cwd = {0}' -f (Format-TomlString $repoRoot)),
-        'startup_timeout_sec = 120',
-        '',
-        '[mcp_servers.poe2_build_mcp.env]',
-        ('PYTHONPATH = {0}' -f (Format-TomlString $repoRoot)),
-        $ManagedMcpEnd
-    ) -join [Environment]::NewLine
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add($ManagedMcpBegin)
+    foreach ($server in $servers) {
+        $tomlArgs = '["' + ((@('run', 'python', '-m', $server.Module) | ForEach-Object { $_.Replace('"', '\"') }) -join '", "') + '"]'
+        $lines.Add("[mcp_servers.$($server.Name)]")
+        $lines.Add(('command = {0}' -f (Format-TomlString $command)))
+        $lines.Add(('args = {0}' -f $tomlArgs))
+        $lines.Add(('cwd = {0}' -f (Format-TomlString $repoRoot)))
+        $lines.Add('startup_timeout_sec = 120')
+        $lines.Add('')
+        $lines.Add("[mcp_servers.$($server.Name).env]")
+        $lines.Add(('PYTHONPATH = {0}' -f (Format-TomlString $repoRoot)))
+        $lines.Add('')
+    }
+    $lines.Add($ManagedMcpEnd)
+    $block = $lines -join [Environment]::NewLine
 
     $next = if ($clean) { $clean + [Environment]::NewLine + [Environment]::NewLine + $block + [Environment]::NewLine } else { $block + [Environment]::NewLine }
     Set-Content -LiteralPath $configPath -Value $next -Encoding UTF8
-    Write-Host "Registered Codex MCP server poe2_build_mcp in $configPath"
+    Write-Host "Registered Codex MCP servers ($($servers.Name -join ', ')) in $configPath"
 }
 
 function Unregister-Codex-McpServer {
@@ -350,10 +360,10 @@ function Unregister-Codex-McpServer {
     if (-not (Test-Path $configPath)) { return }
     $existing = Get-Content -LiteralPath $configPath -Raw
     if ($existing -notlike "*$ManagedMcpBegin*") { return }
-    if ($DryRun) { Write-Host "[dry-run] remove Codex MCP server poe2_build_mcp from $configPath"; return }
+    if ($DryRun) { Write-Host "[dry-run] remove Codex MCP servers from $configPath"; return }
     $next = (Remove-Managed-McpBlock $existing).TrimEnd() + [Environment]::NewLine
     Set-Content -LiteralPath $configPath -Value $next -Encoding UTF8
-    Write-Host "Removed installer-managed Codex MCP server poe2_build_mcp from $configPath"
+    Write-Host "Removed installer-managed Codex MCP servers from $configPath"
 }
 
 function Invoke-PortableHostConfig([string]$Action, [string]$HostId) {

@@ -6,7 +6,7 @@ from typing import Any
 
 from server.build_planner import exporter as build_planner_exporter
 
-from . import pob_exports
+from . import artifacts, pob_exports
 
 
 def export_final_build_package(
@@ -62,11 +62,16 @@ def export_final_build_package(
         }
     )
     exported_count = sum(item["status"] == "exported" for item in inventory)
+    status = "exported" if exported_count == len(inventory) else "partial"
+    cleanup_ready = (
+        artifacts.mark_final_build_delivery_complete(artifact_id) if status == "exported" else False
+    )
     return {
-        "status": "exported" if exported_count == len(inventory) else "partial",
+        "status": status,
         "artifactId": artifact_id,
         "artifacts": inventory,
         "exportedCount": exported_count,
         "expectedCount": len(inventory),
+        "runtimeCleanupReady": cleanup_ready,
         "responseContainsRawPob": False,
     }

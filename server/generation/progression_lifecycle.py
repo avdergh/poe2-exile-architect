@@ -1,4 +1,4 @@
-"""Trusted artifact-bound lifecycle receipts for Phase 8 progression.
+"""Trusted artifact-bound lifecycle receipts for verified final artifacts.
 
 PoB does not guarantee byte-identical XML after an import/save round trip and refreshes derived
 output nodes during otherwise read-only calls. A receipt therefore binds the lifecycle computation

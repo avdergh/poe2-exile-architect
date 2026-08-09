@@ -16,6 +16,7 @@ from . import research_models
 
 LEGACY_CLEANUP_MARKER = "phase4_legacy_memory_cleanup_v1"
 RESEARCH_CONTRACT_CALIBRATION_MARKER = "phase4_research_contract_calibration_v1"
+RECONCILE_RECORD_IDS_MARKER = "phase4_deep_record_id_reconcile_v1"
 
 STORMWEAVER_CALIBRATION_SPECS: dict[str, dict[str, Any]] = {
     "source-hash:9dcc40c506855f93": {
@@ -543,6 +544,266 @@ def calibrate_research_contract_v1(
                 "backupPath": str(resolved_backup_path),
                 "appliedAt": now,
                 "backfill": backfill,
+            }
+        )
+        return report
+    finally:
+        con.close()
+
+
+def reconcile_deep_record_ids(
+    *,
+    db_path: Path | None = None,
+    apply: bool = False,
+    backup_path: Path | None = None,
+) -> dict[str, Any]:
+    """Relocate active deep records whose record_id no longer hashes to their
+    knowledge_key, restoring the id = hash(knowledge_key) invariant that historical
+    backfill key rewrites broke (the source of UNIQUE record_id collisions on re-accept).
+
+    Only active rows are relocated. Deprecated husks are never relocated: their decoupled
+    ids are the stable tombstones the write-path adoption in _persist_deep_record and the
+    query redirect rely on. The one exception is a husk occupying an active row's anchor
+    id: it is removed (dependents re-pointed to the husk's final chain head) so the active
+    unit can reclaim its canonical id. Targets occupied by a different active unit (drift
+    cycles) are reported and left alone; the write-path adoption keeps future accepts safe.
+    """
+    path = Path(db_path or mature_learning.mature_learning_path()).resolve()
+    mature_learning.initialize_store(path)
+    con = mature_learning.connect(path)
+    try:
+        marker = con.execute(
+            "SELECT value FROM meta WHERE key = ?", (RECONCILE_RECORD_IDS_MARKER,)
+        ).fetchone()
+        if marker is not None:
+            return {
+                "status": "already_applied",
+                "marker": RECONCILE_RECORD_IDS_MARKER,
+                "details": _loads(marker[0], {}),
+            }
+
+        active_rows = list(
+            con.execute(
+                """
+                SELECT record_id, knowledge_key, title
+                FROM deep_research_records
+                WHERE knowledge_key IS NOT NULL
+                  AND status IN ('valid', 'needs_revalidation')
+                  AND superseded_by_id IS NULL
+                ORDER BY record_id
+                """
+            ).fetchall()
+        )
+        relocations: list[dict[str, str]] = []
+        husk_replacements: list[dict[str, str]] = []
+        superseded_duplicates: list[dict[str, str]] = []
+        conflicts: list[dict[str, str]] = []
+        already_consistent_count = 0
+        for row in active_rows:
+            key = str(row["knowledge_key"])
+            record_id = str(row["record_id"])
+            target_id = "drr-" + research_memory._stable_hash({"knowledge_key": key})[:16]
+            if target_id == record_id:
+                already_consistent_count += 1
+                continue
+            occupant = con.execute(
+                """
+                SELECT record_id, knowledge_key, status, superseded_by_id
+                FROM deep_research_records
+                WHERE record_id = ?
+                """,
+                (target_id,),
+            ).fetchone()
+            base = {
+                "recordId": record_id,
+                "targetRecordId": target_id,
+                "knowledgeKey": key,
+                "title": str(row["title"] or ""),
+            }
+            if occupant is None:
+                relocations.append(base)
+            elif str(occupant["knowledge_key"] or "") == key and str(occupant["status"] or "") in (
+                "valid",
+                "needs_revalidation",
+            ):
+                # The anchor id already holds this unit's canonical row; the drifted row
+                # is a duplicate that only needs supersession.
+                superseded_duplicates.append(base)
+            elif occupant["superseded_by_id"] is not None:
+                husk_replacements.append(
+                    {
+                        **base,
+                        "huskId": str(occupant["record_id"]),
+                        "huskHeadId": str(occupant["superseded_by_id"] or ""),
+                    }
+                )
+            else:
+                conflicts.append(
+                    {
+                        **base,
+                        "targetOccupiedBy": str(occupant["record_id"]),
+                    }
+                )
+        report: dict[str, Any] = {
+            "status": "planned" if not apply else "pending",
+            "marker": RECONCILE_RECORD_IDS_MARKER,
+            "databasePath": str(path),
+            "activeKeyedRecordCount": len(active_rows),
+            "alreadyConsistentCount": already_consistent_count,
+            "relocationCount": len(relocations) + len(husk_replacements),
+            "relocations": relocations,
+            "huskReplacementCount": len(husk_replacements),
+            "huskReplacements": husk_replacements,
+            "supersededDuplicateCount": len(superseded_duplicates),
+            "supersededDuplicates": superseded_duplicates,
+            "conflictCount": len(conflicts),
+            "conflicts": conflicts,
+            "physicalDeleteCount": 0,
+        }
+        if not apply:
+            return report
+
+        resolved_backup_path = _backup_database(
+            con, path, backup_path, marker=RECONCILE_RECORD_IDS_MARKER
+        )
+        now = _now()
+        physical_delete_count = 0
+        try:
+            con.execute("BEGIN IMMEDIATE")
+
+            def _insert_relocated_copy(old_id: str, target_id: str, key: str) -> None:
+                # The moving row already carries `key`, so blank it until the copy is in
+                # place and the old row is deprecated; otherwise the canonical
+                # knowledge-key index would see two active holders.
+                con.execute(
+                    "UPDATE deep_research_records SET knowledge_key = NULL WHERE record_id = ?",
+                    (old_id,),
+                )
+                con.execute(
+                    """
+                    INSERT INTO deep_research_records(
+                        record_id, research_group_id, build_family_key, knowledge_key,
+                        evidence_count, record_kind, title, summary, content,
+                        content_language, length_exception_reason, component_keys,
+                        component_mentions, source_case_refs, safe_evidence_refs,
+                        conditions, failure_conditions, typed_payload, class_key,
+                        ascendancy_key, extraction_method_version, record_schema_version,
+                        game_patch, passive_tree_version, pob_version_or_commit,
+                        visibility, split, knowledge_scope, status, copy_safety_state,
+                        current_version_context, created_at, last_seen_at,
+                        last_validated_at, superseded_by_id
+                    )
+                    SELECT
+                        ?, research_group_id, build_family_key, ?,
+                        evidence_count, record_kind, title, summary, content,
+                        content_language, length_exception_reason, component_keys,
+                        component_mentions, source_case_refs, safe_evidence_refs,
+                        conditions, failure_conditions, typed_payload, class_key,
+                        ascendancy_key, extraction_method_version, record_schema_version,
+                        game_patch, passive_tree_version, pob_version_or_commit,
+                        visibility, split, knowledge_scope, status, copy_safety_state,
+                        current_version_context, created_at, last_seen_at,
+                        last_validated_at, NULL
+                    FROM deep_research_records WHERE record_id = ?
+                    """,
+                    (target_id, key, old_id),
+                )
+
+            scheduled_husk_ids = {action["huskId"] for action in husk_replacements}
+            for action in husk_replacements:
+                husk_id = action["huskId"]
+                # Re-point dependents to the husk's final chain head (skipping other
+                # husks that are themselves scheduled for deletion in this run).
+                head_id = action["huskHeadId"] or None
+                seen = {husk_id}
+                while head_id is not None and head_id not in seen:
+                    seen.add(head_id)
+                    if head_id not in scheduled_husk_ids:
+                        break
+                    head = con.execute(
+                        "SELECT superseded_by_id FROM deep_research_records WHERE record_id = ?",
+                        (head_id,),
+                    ).fetchone()
+                    head_id = head["superseded_by_id"] if head is not None else None
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET superseded_by_id = ?
+                    WHERE superseded_by_id = ?
+                    """,
+                    (head_id, husk_id),
+                )
+                con.execute("DELETE FROM deep_research_records WHERE record_id = ?", (husk_id,))
+                physical_delete_count += 1
+                _insert_relocated_copy(
+                    action["recordId"], action["targetRecordId"], action["knowledgeKey"]
+                )
+            for action in relocations:
+                _insert_relocated_copy(
+                    action["recordId"], action["targetRecordId"], action["knowledgeKey"]
+                )
+
+            # Phase 2: deprecate displaced old ids only after every insert is complete,
+            # and re-point any husk chains that referenced the displaced ids.
+            for action in [*relocations, *husk_replacements]:
+                old_id = action["recordId"]
+                target_id = action["targetRecordId"]
+                key = action["knowledgeKey"]
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET status = 'deprecated', superseded_by_id = ?, knowledge_key = ?,
+                        last_seen_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (target_id, key, now, old_id),
+                )
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET superseded_by_id = ?
+                    WHERE superseded_by_id = ? AND record_id != ?
+                    """,
+                    (target_id, old_id, old_id),
+                )
+            for action in superseded_duplicates:
+                con.execute(
+                    """
+                    UPDATE deep_research_records
+                    SET status = 'deprecated', superseded_by_id = ?, last_seen_at = ?
+                    WHERE record_id = ?
+                    """,
+                    (action["targetRecordId"], now, action["recordId"]),
+                )
+
+            integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
+            foreign_keys = list(con.execute("PRAGMA foreign_key_check").fetchall())
+            if integrity != "ok" or foreign_keys:
+                raise RuntimeError("deep record id reconciliation failed integrity checks")
+            marker_details = {
+                "appliedAt": now,
+                "backupPath": str(resolved_backup_path),
+                "relocationCount": len(relocations) + len(husk_replacements),
+                "huskReplacementCount": len(husk_replacements),
+                "supersededDuplicateCount": len(superseded_duplicates),
+                "conflictCount": len(conflicts),
+                "physicalDeleteCount": physical_delete_count,
+            }
+            con.execute(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                (RECONCILE_RECORD_IDS_MARKER, _json(marker_details)),
+            )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        report.update(
+            {
+                "status": "applied",
+                "backupPath": str(resolved_backup_path),
+                "databaseIntegrity": integrity,
+                "foreignKeyViolationCount": len(foreign_keys),
+                "physicalDeleteCount": physical_delete_count,
             }
         )
         return report

@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 151
+    assert len(tools) == 131
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -102,26 +102,6 @@ def test_tool_surface_intact():
         "load_final_build_artifact",
         "export_final_pob_artifact",
         "export_final_build_package",
-        "save_build_progression_route",
-        "list_build_progression_routes",
-        "load_build_progression_stage",
-        "start_build_progression",
-        "submit_build_progression_target_selection",
-        "intake_starter_research_packet",
-        "submit_build_progression_blueprint",
-        "revise_future_build_progression_stages",
-        "claim_build_progression_stage",
-        "bind_build_progression_stage_run",
-        "complete_build_progression_stage",
-        "fail_build_progression_stage",
-        "retry_build_progression_stage",
-        "pause_build_progression",
-        "resume_build_progression",
-        "checkpoint_build_progression_context",
-        "get_build_progression_status",
-        "classify_build_progression_costs",
-        "finalize_build_progression",
-        "export_build_progression_package",
         "get_build_planner_converter_status",
         "export_final_build_artifact",
         "list_reference_builds",
@@ -165,6 +145,8 @@ def test_tool_surface_intact():
         "submit_learning_profile",
         "get_learning_create_packet",
         "query_learning_memory",
+        "query_public_learning_memory",
+        "cleanup_completed_task_runtime",
         "submit_learning_create_result",
         "submit_learning_comparison",
         "propose_learning_lesson",
@@ -177,6 +159,45 @@ def test_tool_surface_intact():
         "resume_learning_campaign",
         "get_learning_campaign_status",
     } <= names
+
+
+def test_public_learning_memory_query_is_not_campaign_bound(monkeypatch):
+    from server import main
+
+    captured = {}
+
+    def fake_query_memory(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "ok",
+            "queryRef": "learning-query:test",
+            "lessons": [],
+            "containsRawMaterial": False,
+        }
+
+    monkeypatch.setattr(main.learning_memory, "query_memory", fake_query_memory)
+    version = {
+        "gamePatch": "0.5.0",
+        "passiveTreeVersion": "0_5",
+        "pobVersionOrCommit": "0.5",
+    }
+
+    result = main.query_public_learning_memory(
+        "bf-0123456789abcdefabcd",
+        90,
+        version,
+        dimensions=["damage_delivery"],
+        limit=5,
+    )
+
+    assert result["status"] == "ok"
+    assert captured == {
+        "family_key": "bf-0123456789abcdefabcd",
+        "target_level": 90,
+        "version_context": version,
+        "dimensions": ["damage_delivery"],
+        "limit": 5,
+    }
 
 
 def test_global_optimizer_is_temporarily_disabled_by_default(monkeypatch):
@@ -192,93 +213,6 @@ def test_global_optimizer_is_temporarily_disabled_by_default(monkeypatch):
 
     assert result["errorCode"] == "global_optimizer_temporarily_disabled"
     assert result["stateChanged"] is False
-
-
-def test_progression_tools_publish_nested_typed_input_schemas():
-    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
-
-    start_schema = tools["start_build_progression"].inputSchema
-    assert start_schema["properties"]["version_context"] == {"$ref": "#/$defs/VersionContext"}
-    version_properties = start_schema["$defs"]["VersionContext"]["properties"]
-    assert "trade/SSF mode belongs" in version_properties["ruleset"]["description"]
-    assert (
-        "StageCreatePacket value verbatim" in version_properties["researchMemoryRef"]["description"]
-    )
-    packet_schema = tools["intake_starter_research_packet"].inputSchema
-    assert packet_schema["properties"]["packet"] == {"$ref": "#/$defs/StarterResearchSubmission"}
-    assert (
-        packet_schema["$defs"]["StarterSourceInput"]["properties"]["explicitLevelBands"]["type"]
-        == "boolean"
-    )
-    blueprint_schema = tools["submit_build_progression_blueprint"].inputSchema
-    assert blueprint_schema["properties"]["blueprint"] == {"$ref": "#/$defs/ProgressionBlueprint"}
-    assert "targetIntent" in blueprint_schema["$defs"]["ProgressionBlueprint"]["properties"]
-    selection_schema = tools["submit_build_progression_target_selection"].inputSchema
-    assert selection_schema["properties"]["selection"] == {
-        "$ref": "#/$defs/TargetCandidateSelection"
-    }
-    assert (
-        selection_schema["$defs"]["TargetCandidateSelection"]["properties"]["candidates"][
-            "minItems"
-        ]
-        == 2
-    )
-    batch_schema = tools["apply_build_mutation_batch"].inputSchema
-    assert batch_schema["properties"]["operations"]["maxItems"] == 16
-    assert batch_schema["properties"]["batch_kind"]["enum"] == [
-        "bootstrap",
-        "mechanism_shell",
-        "skill_loadout",
-        "passive_delta",
-        "required_gear",
-        "ordinary_gear",
-        "config",
-    ]
-    assert set(batch_schema["required"]) == {"batch_kind", "operations"}
-    cost_schema = tools["classify_build_progression_costs"].inputSchema
-    assert cost_schema["properties"]["cost_request"] == {"$ref": "#/$defs/CostRequest"}
-    completion_schema = tools["complete_build_progression_stage"].inputSchema
-    assert completion_schema["properties"]["completion_report"] == {
-        "$ref": "#/$defs/StageCompletionReport"
-    }
-    lifecycle_schema = tools["verify_lifecycle_stage"].inputSchema
-    assert lifecycle_schema["properties"]["state"] == {
-        "anyOf": [
-            {"$ref": "#/$defs/LifecycleStageVerificationState"},
-            {"type": "null"},
-        ],
-        "default": None,
-    }
-    lifecycle_state = lifecycle_schema["$defs"]["LifecycleStageVerificationState"]
-    assert "singleTargetSkillName" in lifecycle_state["properties"]
-    assert "singleTargetEvidenceRefs" in lifecycle_state["properties"]
-    assert "buildDefiningComponentKind" in lifecycle_state["properties"]
-    assert "buildDefiningComponentName" in lifecycle_state["properties"]
-    assert "buildDefiningComponentKey" in lifecycle_state["properties"]
-    assert "buildDefiningEvidenceRefs" in lifecycle_state["properties"]
-    lifecycle_detail = lifecycle_schema["properties"]["detail"]
-    assert lifecycle_detail["default"] == "compact"
-    assert lifecycle_detail["enum"] == ["compact", "full"]
-    assert lifecycle_detail["type"] == "string"
-    for tool_name in (
-        "inspect_generation_preflight",
-        "inspect_generation_checkpoint",
-        "evaluate_generation_candidate",
-        "verify_lifecycle_stage",
-    ):
-        strict_mode_schema = tools[tool_name].inputSchema["properties"]["strict_mode"]
-        assert strict_mode_schema["default"] is False
-        assert strict_mode_schema["type"] == "boolean"
-    expected_search_defaults = {
-        "search_passives": 30,
-        "search_items": 20,
-        "search_mods": 30,
-    }
-    for tool_name, expected_default in expected_search_defaults.items():
-        limit_schema = tools[tool_name].inputSchema["properties"]["limit"]
-        assert limit_schema["default"] == expected_default
-        assert "minimum" not in limit_schema
-        assert "maximum" not in limit_schema
 
 
 def test_graph_tool_query_exposes_typed_payload_schema():

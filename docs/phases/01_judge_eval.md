@@ -104,7 +104,7 @@ unsolved modelability gap。
 - 明确 Phase 边界：
   - Phase 1 只建立 legality / score / modelability / confidence 基线；
   - 复杂技能与 archetype 的“结构正确性”“语义契合度”“参考族 placement”由 Phase 4
-    semantic graph、Phase 5 生成约束和 Phase 8 reward memory 逐步接管；
+    semantic graph、Phase 5 生成约束和后续跨阶段 reward memory 逐步接管；
   - Phase 1 不通过发明新的数值引擎来替代这些后续阶段。
 - 为每次 benchmark report 保存 reproducibility context：
   - fixture set id；

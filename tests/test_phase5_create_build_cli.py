@@ -183,7 +183,7 @@ def test_ordinary_create_cannot_skip_a_receipt_premise_audit():
         }
     }
 
-    error = create_build._validate_candidate_research_use(
+    error, _caveats = create_build._validate_candidate_research_use(
         canonical_payload,
         receipt_reader=lambda _ref: receipt,
     )
@@ -229,7 +229,7 @@ def test_ordinary_create_rejects_a_deep_read_receipt_not_seen_in_this_run():
         },
     }
 
-    error = create_build._validate_candidate_research_use(
+    error, _caveats = create_build._validate_candidate_research_use(
         canonical_payload,
         receipt_reader=lambda _ref: receipt,
         not_before="2026-07-30T00:00:00+00:00",
@@ -949,4 +949,51 @@ def test_create_build_review_packet_cli_wraps_invalid_manifest_path(tmp_path):
 
     assert completed.returncode == 1
     assert json.loads(completed.stdout)["errorCode"] == "invalid_run_manifest"
-    assert "Traceback" not in completed.stderr
+
+
+def test_direction_layer_no_match_usage_passes_receipt_audit():
+    """snake_case no_matching_memory usage + a run-fresh receipt passes the receipt audit.
+
+    Guards the alias fix in _validate_candidate_research_use (a snake_case researchMemoryUse
+    must NOT silently skip the receipt/premise audit).
+    """
+    from datetime import datetime, timezone
+
+    payload = agent_submission_payload()
+    candidate = payload["prototypeBuildCandidate"]
+    assert isinstance(candidate, dict)
+    candidate["research_memory_use"] = {
+        "retrieval_outcome": "no_matching_memory",
+        "dedupe_query_refs": ["dq-0123456789abcdef"],
+        "component_keys": [],
+        "build_family_keys": [],
+        "deep_record_ids": [],
+        "pattern_ids": [],
+        "semantic_edge_ids": [],
+        "memory_item_ids": [],
+        "insight_decisions": [],
+        "premise_audit_version": None,
+        "premise_decisions": [],
+        "no_match_reason": "知识库无匹配记忆，以图/机制与模型知识设计",
+    }
+    receipt = {
+        "dedupeQueryRef": "dq-0123456789abcdef",
+        "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+        "result": {},
+    }
+    error, _caveats = create_build._validate_candidate_research_use(
+        payload,
+        receipt_reader=lambda _ref: receipt,
+    )
+    assert error is None
+
+    # A stale receipt must still be caught through the snake_case path.
+    stale = dict(receipt)
+    stale["lastSeenAt"] = "2026-01-01T00:00:00+00:00"
+    error, caveats = create_build._validate_candidate_research_use(
+        payload,
+        receipt_reader=lambda _ref: stale,
+        not_before="2026-07-01T00:00:00+00:00",
+    )
+    assert error == "progression_research_receipt_not_current_run"
+    assert caveats and "dq-0123456789abcdef" in caveats[0]

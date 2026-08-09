@@ -242,7 +242,7 @@ def _stage_for_level(level: int) -> str:
         return "campaign_mid"
     if level < 65:
         return "campaign_late"
-    # Phase 8 uses stage readiness rather than a price or generic level band as the
+    # Lifecycle stage derivation uses readiness rather than a price or generic level band as the
     # transition clock.  In particular, a level-80 target remains maps_entry unless
     # its endgame mechanism is independently closed and verified.
     if level < 82:

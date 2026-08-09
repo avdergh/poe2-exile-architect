@@ -28,15 +28,39 @@ subagent 或聊天内容转发。
 `wait_threads` 是首选但非必需的增量等待能力。当前 Desktop 暴露它时必须优先使用；未暴露时才
 允许按下文的 300 秒低频 `list_threads` fallback 监控，不能忙轮询。
 
-状态更新优先调用 `poe_research_orchestrator` MCP 工具。若当前任务没有直接暴露该 MCP，只允许
-使用以下固定 bridge；bridge 仍通过 MCP 协议调用纯状态接口：
+## 可移植路径与状态服务
 
-```text
-E:\poe-research-orchestrator\.venv\Scripts\python.exe
-E:\poe-research-orchestrator\scripts\invoke_mcp.py
-```
+不得把维护者机器的盘符、用户名或 checkout 绝对路径写入 Skill、提示词或 metadata。开始任何
+状态调用或任务创建前，一次性解析并冻结以下路径：
 
-不得编辑 bridge、临时编写 MCP client、直接导入状态模块或直接修改 Markdown/sidecar。
+1. `creatorRoot`：优先使用环境变量 `POE_BD_CREATOR_DIR`；否则从当前已加载
+   `SKILL.md` 的真实路径向上查找同时包含 `pyproject.toml`、`server/main.py`，且当前 Skill 位于
+   以下任一布局的根目录：源码布局 `poe-bd-creator-plugin/skills/poe-bd-research-loop/SKILL.md`，
+   或发布 bundle 布局 `skills/poe-bd-research-loop/SKILL.md`。候选必须唯一且通过这些标记校验；
+   不得采用当前 shell cwd、临时目录或仅名称相似的目录。若自动发现的 bundle 根不是 Codex
+   Desktop 中可唯一识别的项目，则在 claim 或任何写操作前停止，并要求用户把
+   `POE_BD_CREATOR_DIR` 指向真实源码 checkout。
+2. `orchestratorRoot`：优先使用环境变量 `POE_RESEARCH_ORCHESTRATOR_DIR`；否则只检查
+   `creatorRoot` 的同级目录 `poe-research-orchestrator`。候选必须同时包含 `pyproject.toml`、
+   `scripts/invoke_mcp.py` 和 `research-notes/`。缺失或歧义时在任何 claim/mutation 前停止，并提示
+   用户设置 `POE_RESEARCH_ORCHESTRATOR_DIR`；不得全盘搜索或猜测其他路径。
+3. `notesRoot = orchestratorRoot/research-notes`。向 child 发送固定提示词时，用规范化后的绝对
+   `notesRoot` 替换 `${notesRoot}`。
+
+状态更新优先调用已暴露的 `poe_research_orchestrator` MCP 工具。若当前任务没有直接暴露该 MCP，
+只允许使用 `orchestratorRoot/scripts/invoke_mcp.py` bridge；bridge 仍通过 MCP 协议调用纯状态接口。
+依次使用以下第一个存在的 Python 启动方式：
+
+1. `orchestratorRoot/.venv/Scripts/python.exe`；
+2. `orchestratorRoot/.venv/bin/python`；
+3. PATH 中的 `uv`，以 `uv run --project <orchestratorRoot> python
+   <orchestratorRoot>/scripts/invoke_mcp.py` 运行；
+4. `creatorRoot/.tools/uv/uv.exe` 或 `creatorRoot/.tools/uv/uv`，使用同一 `uv run --project` 参数。
+
+把最终命令前缀记为 `<bridge>`；下文的 `<bridge> validate ...`、`<bridge> claim ...` 等表示在同一
+已验证前缀后追加参数，不是让用户手工输入。没有可用启动方式时停止，不得编辑 bridge、临时编写
+MCP client、直接导入状态模块或直接修改 Markdown/sidecar。环境变量只作为本机配置读取，不能把
+解析后的绝对值写回仓库或发布包。
 
 ## 固定配置与提示词
 
@@ -59,7 +83,7 @@ prompt: 只做审查，不修改代码、数据库或运行产物。基于本任
 
 涉及暗金、天赋、触发或转换的关键结论，应使用当前静态资料或机制工具复核，不能因为组件成功解析就认为机制解释正确。
 
-先独立完成审查，再简单对照 E:\poe-research-orchestrator\research-notes\resolved-issues.md 和 E:\poe-research-orchestrator\research-notes\unresolved-issues.md。Findings 按严重度优先，给出对应 sourceCaseRef、recordId、patternId 或 artifact 位置，并区分：单案例 LLM 判断错误、来源证据不足、确定性的工作流缺陷。只报告当前证据能复现的问题，不要把单个语义错误直接扩展成全局硬规则。没有明显问题时明确说明。
+先独立完成审查，再简单对照 ${notesRoot}/resolved-issues.md 和 ${notesRoot}/unresolved-issues.md。Findings 按严重度优先，给出对应 sourceCaseRef、recordId、patternId 或 artifact 位置，并区分：单案例 LLM 判断错误、来源证据不足、确定性的工作流缺陷。只报告当前证据能复现的问题，不要把单个语义错误直接扩展成全局硬规则。没有明显问题时明确说明。
 ```
 
 Fix 无条件在 review completed 后于同一任务发送；没有问题时由 Agent 自行确认无需修复：
@@ -72,13 +96,13 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 按问题性质处理：
 - 单案例知识错误：如果能精确定位 sourceCaseRef、recordId、patternId，并能根据现有 artifact、来源证据或机制工具确认正确结论，优先精确修复错误字段、证据或关系，保留仍然正确的研究成果；只有无法可靠修复的最小数据单元才清理，不修改通用工作流。无法安全原位修复时，先写入并验证修正版，再清理被替代的数据。
 - 可稳定复现的确定性工作流缺陷：实施最小、通用修复，补聚焦回归测试，并运行 quick 验证；必要时只重新处理明确受影响的本次 sourceCaseRef，不重新研究或清理无关数据。
-- 来源不足、语义不确定、难度高或需要产品取舍的问题：不要强行程序化，记录到 E:\poe-research-orchestrator\research-notes\unresolved-issues.md。
+- 来源不足、语义不确定、难度高或需要产品取舍的问题：不要强行程序化，记录到 ${notesRoot}/unresolved-issues.md。
 
 不得按具体职业、技能、暗金或单一案例硬编码，不做无关重构，不以牺牲 Researcher 分析灵活度换取表面通过。清理污染数据前必须确认影响范围和来源归属，优先清理错误 evidence、关系或记录，而不是整个 run、Family 或 Pattern；存在其他有效来源支持的共享数据不得误删。完成后分别核对修复、保留和删除的数据，以及数据库实际增量。
 
 每个写入或更新的修正版都必须做全对象语义闭环复核，不能只复核 finding 点名的字段。组件、角色、因果或职责变化时，逐项重查 title、summary、content、conditions、failureConditions、typedPayload、applicability / exclusions、contextRequirements、plannerHint 和 verificationTasks；未逐项验证的旧字段不得原样沿用。装备职责还必须区分组件静态文本直接提供的固有职责，与来源实例词缀、插入物、mutation / transform 或其他组件间接提供的职责；后者必须保留真实来源组件或转换前提，证据不能唯一归属时不得写成该装备的固有职责。写入后重新读取完整持久化对象，对照 finding、修正版和预期增量，确认没有陈旧字段或错误来源关系后才能报告已修复。
 
-修复并验证成功的问题精炼记录到 E:\poe-research-orchestrator\research-notes\resolved-issues.md；真正未解决的问题才写入 E:\poe-research-orchestrator\research-notes\unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
+修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md；真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
 
 最终必须单独输出一行 `POE_FIX_DATA_REPAIRED: yes` 或 `POE_FIX_DATA_REPAIRED: no`。只有实际写入、更新、重建或替换了修正后仍保留在数据库中的研究数据时才输出 yes；纯代码、测试、notes、artifact 修改，或只删除错误数据而没有保留修正版时输出 no。
 ```
@@ -94,10 +118,11 @@ prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数�
 
 如果修正版正确，不修改任何数据，明确说明复审通过。如果仍然错误，不再尝试第二次修复；确认 sourceCaseRef、recordId、patternId、来源归属和共享关系后，只清理仍然错误的最小数据单元，保留未受影响及其他来源支持的数据，并核对清理后的数据库实际结果。
 
-复审发现的错误无论清理是否成功，都精炼记录到 E:\poe-research-orchestrator\research-notes\post-fix-review-issues.md；写入前检查同义条目，记录对应 task/thread、sourceCaseRef、recordId、patternId、错误表现、清理范围和结果。复审通过时不要写入该文档。
+复审发现的错误无论清理是否成功，都精炼记录到 ${notesRoot}/post-fix-review-issues.md；写入前检查同义条目，记录对应 task/thread、sourceCaseRef、recordId、patternId、错误表现、清理范围和结果。复审通过时不要写入该文档。
 ```
 
-提示词正文必须逐字使用上面的固定文本，只替换 `${num}`、`${class}`、`${level}`。不要要求 JSON
+提示词正文必须逐字使用上面的固定文本，只替换 `${num}`、`${class}`、`${level}`、`${notesRoot}`。
+`${notesRoot}` 必须是本轮预先解析并冻结的规范化绝对路径。不要要求 JSON
 输出，不要附加结构化 schema。Research 与 Fix 末行的单值标记只用于条件分支，不是结果 schema。
 研究首条消息中的 skill mention 不得省略。只使用已安装插件的 `/poe-bd-research` 入口，不附加
 仓库内 `SKILL.md` 的本地文件链接；否则同一 skill 会以安装版和源码版重复出现在任务中。
@@ -108,14 +133,14 @@ prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数�
    路径或改用临时副本。
 2. 调用 `validate_poe_research_plan(plan_path)`。MCP 未直接暴露时使用：
 
-   ```powershell
-   & 'E:\poe-research-orchestrator\.venv\Scripts\python.exe' 'E:\poe-research-orchestrator\scripts\invoke_mcp.py' validate --plan '<绝对路径>'
+   ```text
+   <bridge> validate --plan '<绝对路径>'
    ```
 
 3. `ok=false`、路径缺失、开放阻断问题或旧检查点待核对时停止并报告安全状态。
 4. 启动、恢复或查询阶段都以 `get_poe_research_status(plan_path)` 为检查点事实源；bridge 为
    `status --plan '<绝对路径>'`。
-5. 调用 `list_projects`，按规范化绝对路径精确选择本地项目 `E:\poe-bd-creator`。没有唯一匹配
+5. 调用 `list_projects`，按规范化绝对路径精确选择本轮已冻结的 `creatorRoot`。没有唯一匹配
    时停止；不要创建 projectless 或 worktree 任务。
 
 ## 每项任务的状态机
@@ -127,7 +152,7 @@ prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数�
 2. 若返回 `paused`、`completed`、`reconcile_legacy` 或 `inspect_and_retry`，按对应恢复规则处理，
    不创建新任务。
 3. 对新 claim 调用 `create_thread`：
-   - target：上一步精确选中的 `E:\poe-bd-creator` 本地项目；
+   - target：上一步精确选中的 `creatorRoot` 本地项目；
    - model：`gpt-5.6-sol`；
    - thinking：`medium`；
    - prompt：固定 research 提示词。
@@ -137,8 +162,8 @@ prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数�
 5. 调用 `record_poe_research_phase_started`，传入
    `task_id + claim_id + thread_id + phase=research + expected_phase=creating_thread`。bridge 为：
 
-   ```powershell
-   & 'E:\poe-research-orchestrator\.venv\Scripts\python.exe' 'E:\poe-research-orchestrator\scripts\invoke_mcp.py' begin --plan '<绝对路径>' --task-id '<task>' --claim-id '<claim>' --thread-id '<thread>' --phase research --expected-phase creating_thread
+   ```text
+   <bridge> begin --plan '<绝对路径>' --task-id '<task>' --claim-id '<claim>' --thread-id '<thread>' --phase research --expected-phase creating_thread
    ```
 
 ### 2. 只监控状态，不转发正文

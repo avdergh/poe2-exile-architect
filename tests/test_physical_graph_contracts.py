@@ -5334,3 +5334,54 @@ def test_run_phase2_acceptance_artifact_script_can_emit_reviewed_pass_report(tmp
                 report_path.unlink()
         else:
             report_path.write_text(previous_report, encoding="utf-8")
+
+
+def test_validation_caveat_exposes_context_type_enum():
+    from pydantic import ValidationError
+
+    from server.knowledge import graph_tools
+
+    try:
+        graph_tools.SupportSkillCandidateInput.model_validate(
+            {
+                "support_key": "support:Execute",
+                "skill_key": "skill:SparkPlayer",
+                "context": {},
+            }
+        )
+        raise AssertionError("expected context validation to fail")
+    except ValidationError as exc:
+        caveat = graph_tools._validation_caveat(exc)
+
+    assert "context_type must be one of" in caveat
+    assert "version_context" in caveat
+    assert "build_state_context" in caveat
+
+    try:
+        graph_tools.SupportSkillCandidateInput.model_validate(
+            {
+                "support_key": "support:Execute",
+                "skill_key": "skill:SparkPlayer",
+                "context": "not-an-object",
+            }
+        )
+        raise AssertionError("expected context validation to fail")
+    except ValidationError as exc:
+        string_caveat = graph_tools._validation_caveat(exc)
+
+    assert "context_type must be one of" in string_caveat
+
+    try:
+        graph_tools.SupportSkillCandidateInput.model_validate(
+            {
+                "support_key": "support:Execute",
+                "skill_key": "skill:SparkPlayer",
+                "context": {"context_type": "typo"},
+            }
+        )
+        raise AssertionError("expected context validation to fail")
+    except ValidationError as exc:
+        wrong_tag_caveat = graph_tools._validation_caveat(exc)
+
+    assert "context_type must be one of" in wrong_tag_caveat
+    assert "version_context" in wrong_tag_caveat

@@ -201,6 +201,191 @@ NODE_TYPE_ROLE_SUGGESTIONS = {
 }
 
 
+def _unresolved_jewel_sockets_deferred(
+    review: dict[str, Any],
+    jewel_counts: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Defer a case whose allocated jewel sockets carry no socketed jewel and whose review
+    never declares the jewel state.
+
+    ``tree_data_missing`` stays advisory-only (the packet cannot prove sockets are empty);
+    a review that mentions jewels anywhere counts as a declaration.
+    """
+    if not isinstance(jewel_counts, dict):
+        return []
+    if str(jewel_counts.get("status") or "") == "tree_data_missing":
+        return []
+    allocated = int(jewel_counts.get("allocatedJewelSocketCount") or 0)
+    socketed = int(jewel_counts.get("socketedJewelCount") or 0)
+    if allocated <= 0 or socketed > 0:
+        return []
+    if _review_declares_jewels(review):
+        return []
+    sample_id = str((review.get("artifactIdentity") or {}).get("sampleId") or "")
+    return [
+        {
+            "titleZh": "已分配珠宝槽未声明珠宝状态",
+            "sampleId": sample_id,
+            "reason": "unresolved_jewel_sockets",
+            "componentKeys": [],
+            "caveats": [
+                f"{allocated} allocated jewel socket(s) carry no socketed jewel and the review "
+                "never mentions jewels; declare the jewel state explicitly (empty sockets, or "
+                "socketed gems with their radius/Time-Lost conditions) before accepting"
+            ],
+            "candidateKind": "research_case",
+        }
+    ]
+
+
+def _review_declares_jewels(review: dict[str, Any]) -> bool:
+    """Whether any research record mentions jewels in its study content.
+
+    Scans only record prose (title/summary/content/conditions/failureConditions) and
+    component candidate names, never identity fields such as sampleId, so a case id that
+    happens to contain the word "jewel" cannot count as a declaration.
+    """
+    for record in review.get("deepResearchRecords") or []:
+        if not isinstance(record, dict):
+            continue
+        parts = [
+            str(record.get("title") or ""),
+            str(record.get("summary") or ""),
+            str(record.get("content") or ""),
+            *[str(value) for value in record.get("conditions") or []],
+            *[str(value) for value in record.get("failureConditions") or []],
+            *[
+                str(component.get("candidateName") or "")
+                for component in record.get("components") or []
+                if isinstance(component, dict)
+            ],
+        ]
+        if any("jewel" in part.casefold() for part in parts):
+            return True
+    return False
+
+
+def _unique_gem_diagnostics(
+    review: dict[str, Any],
+    source_skill_manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Detect lineage (unique) support gems in the source and whether the review labeled them.
+
+    Tri-state lookup: True/False from the corpus ``is_lineage`` field; unknown when the corpus
+    is unavailable or the gem name does not resolve (never blocks). A lineage gem counts as
+    labeled when any record mentions it inside an open_question/modelability_caveat record, or
+    when it appears as a component with role unique_enabler. Otherwise any mention is reported
+    as unlabeled so the Researcher marks its unique identity.
+    """
+    if not isinstance(source_skill_manifest, dict):
+        return {
+            "available": False,
+            "uniqueGemCandidates": [],
+            "unlabeledUniqueGemNames": [],
+            "uniqueGemStatusUnknownNames": [],
+        }
+    gem_names: list[str] = []
+    for group in source_skill_manifest.get("activeSkillGroups") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("activeSkills") or []:
+            if isinstance(item, dict) and str(item.get("name") or "").strip():
+                gem_names.append(str(item["name"]).strip())
+        for item in group.get("supports") or []:
+            if isinstance(item, dict) and str(item.get("name") or "").strip():
+                gem_names.append(str(item["name"]).strip())
+    unique_candidates: list[str] = []
+    unknown_names: list[str] = []
+    try:
+        from server.knowledge import db as corpus_db
+
+        corpus_available = True
+    except Exception:  # pragma: no cover - import layout drift guard
+        corpus_db = None
+        corpus_available = False
+    for name in dict.fromkeys(gem_names):
+        if not corpus_available:
+            unknown_names.append(name)
+            continue
+        try:
+            gem = corpus_db.get_gem(name)
+        except Exception:
+            gem = None
+        if gem is None:
+            unknown_names.append(name)
+            continue
+        if gem.get("is_lineage") is True:
+            unique_candidates.append(name)
+    if not unique_candidates:
+        return {
+            "available": corpus_available,
+            "uniqueGemCandidates": [],
+            "unlabeledUniqueGemNames": [],
+            "uniqueGemStatusUnknownNames": unknown_names,
+        }
+    raw_records = review.get("deepResearchRecords") or []
+    raw_records = raw_records if isinstance(raw_records, list) else []
+    record_texts: list[tuple[str, list[str]]] = []
+    for record in raw_records:
+        if not isinstance(record, dict):
+            continue
+        parts = [
+            str(record.get("title") or ""),
+            str(record.get("summary") or ""),
+            str(record.get("content") or ""),
+            *[str(value) for value in record.get("conditions") or []],
+            *[str(value) for value in record.get("failureConditions") or []],
+        ]
+        record_texts.append((str(record.get("recordKind") or ""), parts))
+    unlabeled: list[str] = []
+    for gem_name in unique_candidates:
+        normalized = gem_name.casefold()
+        labeled = False
+        mentioned = False
+        for record_kind, parts in record_texts:
+            in_text = any(normalized in part.casefold() for part in parts)
+            if not in_text:
+                continue
+            mentioned = True
+            if record_kind in {"open_question", "modelability_caveat"}:
+                labeled = True
+            elif any(_mentions_unique_identity(part, normalized) for part in parts):
+                labeled = True
+        for record in raw_records:
+            if not isinstance(record, dict):
+                continue
+            for component in record.get("components") or []:
+                if not isinstance(component, dict):
+                    continue
+                if str(component.get("candidateName") or "").casefold() != normalized:
+                    continue
+                mentioned = True
+                if str(component.get("role") or "") == "unique_enabler":
+                    labeled = True
+        if mentioned and not labeled:
+            unlabeled.append(gem_name)
+    return {
+        "available": corpus_available,
+        "uniqueGemCandidates": unique_candidates,
+        "unlabeledUniqueGemNames": sorted(unlabeled),
+        "uniqueGemStatusUnknownNames": unknown_names,
+    }
+
+
+def _mentions_unique_identity(text: str, gem_name: str) -> bool:
+    """Whether a record's prose explicitly labels a gem's lineage/unique identity.
+
+    Matches AGENTS.md's allowance to keep a lineage gem's role as support_modifier while
+    labeling its unique identity in prose. The gem name itself is stripped first so a name
+    that literally contains "unique" (e.g. "Unique Breach Lightning Bolt") cannot self-label.
+    """
+    lowered = str(text or "").casefold()
+    if not lowered:
+        return False
+    stripped = lowered.replace(gem_name.casefold(), "")
+    return "lineage" in stripped or "unique" in stripped
+
+
 def accept_deep_review_candidates(
     *,
     db_path: str | Path = DB_PATH,
@@ -213,6 +398,7 @@ def accept_deep_review_candidates(
     graph_service: graph_tools.GraphQueryService | None = None,
     version_context: dict[str, str] | None = None,
     source_skill_manifest: dict[str, Any] | None = None,
+    jewel_counts: dict[str, Any] | None = None,
     review_payload: dict[str, Any] | None = None,
     require_deep_records: bool = False,
     validation_only: bool = False,
@@ -226,6 +412,7 @@ def accept_deep_review_candidates(
     )
     if not isinstance(review, dict) or review.get("safeArtifactOnly") is not True:
         raise ValueError("deep review artifact must be safeArtifactOnly=true")
+    unique_gem_diagnostics = _unique_gem_diagnostics(review, source_skill_manifest)
     review, mechanic_audit_diagnostics, mechanic_audit_deferred = _prepare_mechanic_audit(review)
     mechanic_audit_schema_failed = bool(mechanic_audit_diagnostics["schemaIssueCount"])
     reviewed_mappings = _reviewed_mappings(
@@ -315,6 +502,8 @@ def accept_deep_review_candidates(
             )
         )
     source_specific_components_by_case_ref = _source_specific_components_by_case_ref(deep_payload)
+    if jewel_counts is not None:
+        deferred_records.extend(_unresolved_jewel_sockets_deferred(review, jewel_counts))
     (
         payload,
         accepted_summaries,
@@ -580,6 +769,7 @@ def accept_deep_review_candidates(
         "deferredCandidateCount": len(deferred),
         "deferredCandidates": deferred,
         "deferredReasonCounts": _reason_counts(deferred),
+        "uniqueGemDiagnostics": unique_gem_diagnostics,
         "versionContext": durable_version_context,
         "caveats": [
             "Only structured safe candidate reviews were considered.",
@@ -597,6 +787,17 @@ def accept_deep_review_candidates(
             (
                 "Mechanic audit wiki citations are revision-pinned corroboration, not authority "
                 "for source-instance provenance, compatibility, numerical legality, or Family identity."
+            ),
+            *(
+                [
+                    "Lineage/unique support gems from the source were mentioned without labeling "
+                    "their unique identity: "
+                    + ", ".join(unique_gem_diagnostics["unlabeledUniqueGemNames"])
+                    + ". Label them (unique_enabler role, or an open_question/modelability_caveat "
+                    "record) before the next accept."
+                ]
+                if unique_gem_diagnostics.get("unlabeledUniqueGemNames")
+                else []
             ),
             (
                 "Researcher candidates passed validation only; durable memory was not changed."
@@ -1298,6 +1499,8 @@ def _filter_deep_records_with_identity(
 
     invalid_groups: dict[str, set[str]] = {}
     redundant_automatic_keys: dict[str, set[str]] = {}
+    duplicate_titles: set[tuple[str, str, str]] = set()
+    title_counts: dict[tuple[str, str, str], int] = {}
     for group_id, group_records in records_by_group.items():
         declared = {
             key
@@ -1310,6 +1513,17 @@ def _filter_deep_records_with_identity(
         redundant = declared & set(research_identity.automatic_family_skill_keys(group_records))
         if redundant:
             redundant_automatic_keys[group_id] = redundant
+    for record in records:
+        title_key = (
+            str(record["research_group_id"]),
+            str(record.get("record_kind") or ""),
+            " ".join(str(record.get("title") or "").split()),
+        )
+        if not title_key[2]:
+            continue
+        title_counts[title_key] = title_counts.get(title_key, 0) + 1
+        if title_counts[title_key] > 1:
+            duplicate_titles.add(title_key)
 
     families = {
         group_id: research_identity.infer_build_family(group_records)
@@ -1321,6 +1535,36 @@ def _filter_deep_records_with_identity(
     deferred: list[dict[str, Any]] = []
     for record, summary in zip(records, accepted, strict=True):
         group_id = str(record["research_group_id"])
+        title_key = (
+            group_id,
+            str(record.get("record_kind") or ""),
+            " ".join(str(record.get("title") or "").split()),
+        )
+        if title_key in duplicate_titles:
+            deferred.append(
+                {
+                    "titleZh": summary["titleZh"],
+                    "recordKind": summary["recordKind"],
+                    "sampleId": summary["sampleId"],
+                    "reason": "invalid_schema",
+                    "componentKeys": summary["componentKeys"],
+                    "caveats": [
+                        "Duplicate record title within the same research group and record kind. "
+                        "mechanicAudit.affectedRecords binds by exact title, so duplicates would "
+                        "break audit binding and knowledge deduplication. Rename or merge the "
+                        "duplicate records before accepting."
+                    ],
+                    "validationIssues": [
+                        {
+                            "loc": ["deep_research_records", "title"],
+                            "msg": "duplicate (research_group_id, record_kind, title)",
+                            "type": "value_error",
+                        }
+                    ],
+                    "candidateKind": "deep_research_record",
+                }
+            )
+            continue
         if group_id in invalid_groups:
             deferred.append(
                 {
@@ -1354,9 +1598,8 @@ def _filter_deep_records_with_identity(
                     "reason": "invalid_schema",
                     "componentKeys": summary["componentKeys"],
                     "caveats": [
-                        "clear skills, boss skills, triggered payloads, and trigger hosts paired "
-                        "with triggered payloads are inferred by the Family contract; do not "
-                        "repeat them in typedPayload.familyCoreSkillKeys."
+                        "clear skills, boss skills, and triggered payloads are inferred by the "
+                        "Family contract; do not repeat them in typedPayload.familyCoreSkillKeys."
                     ],
                     "validationIssues": [
                         {
@@ -3210,7 +3453,16 @@ def _source_skill_evidence_diagnostics(
     records = _deep_record_reviews(review)
     structured_skills: set[str] = set()
     structured_supports: set[str] = set()
+    evidence_structured_skills: set[str] = set()
+    packaged_supports: set[str] = set()
+    evidence_kinds = {"skill_package", "mechanic_chain", "rotation"}
     for record in records:
+        is_evidence = record.get("recordKind") in evidence_kinds
+        for package in (record.get("typedPayload") or {}).get("supportPackages") or []:
+            for support_key in package.get("supportKeys") or []:
+                tail = str(support_key).strip().rsplit("/", 1)[-1].casefold()
+                if tail:
+                    packaged_supports.add(tail)
         for component in record.get("components") or []:
             name = str(component.get("candidateName") or "").strip().casefold()
             if not name:
@@ -3222,11 +3474,9 @@ def _source_skill_evidence_diagnostics(
                 structured_supports.add(name)
             elif component_key.startswith("skill:") or component.get("role") != "support_modifier":
                 structured_skills.add(name)
-    evidence_records = [
-        record
-        for record in records
-        if record.get("recordKind") in {"skill_package", "mechanic_chain", "rotation"}
-    ]
+                if is_evidence:
+                    evidence_structured_skills.add(name)
+    evidence_records = [record for record in records if record.get("recordKind") in evidence_kinds]
     record_text_parts: dict[str, list[str]] = {}
     for record in evidence_records:
         kind = str(record.get("recordKind") or "")
@@ -3254,11 +3504,13 @@ def _source_skill_evidence_diagnostics(
             for item in group.get("activeSkills") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
-        support_names = [
-            str(item.get("name") or "").strip()
+        support_items = [
+            item
             for item in group.get("supports") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+        support_names = [str(item.get("name") or "").strip() for item in support_items]
+        support_gem_ids = [str(item.get("gemId") or "").strip() for item in support_items]
         represented = any(name.casefold() in structured_skills for name in active_names)
         if not represented:
             unrepresented_groups.append(
@@ -3286,8 +3538,6 @@ def _source_skill_evidence_diagnostics(
                     "supportCount": len(support_names),
                 }
             )
-            if len(support_names) >= 2:
-                support_blocked = True
         for name in support_names:
             normalized = name.casefold()
             if normalized in structured_supports or normalized in seen_support_names:
@@ -3305,6 +3555,18 @@ def _source_skill_evidence_diagnostics(
                     "recordKinds": record_kinds,
                 }
             )
+        active_in_evidence = any(
+            name.casefold() in evidence_structured_skills for name in active_names
+        )
+        if active_in_evidence and len(support_names) >= 2:
+            unstructured_supports = [
+                name
+                for name, gem_id in zip(support_names, support_gem_ids)
+                if name.casefold() not in structured_supports
+                and gem_id.casefold() not in packaged_supports
+            ]
+            if len(unstructured_supports) >= 2:
+                support_blocked = True
 
     return {
         "available": True,
@@ -3394,7 +3656,9 @@ def _evaluate_case_coverage(
         advisories.append(
             "Source supports named in conclusions were omitted from structured support components: "
             + ", ".join(omitted_supports)
-            + ". This is advisory and does not require every utility support to become durable knowledge."
+            + ". Text-only mentions stay advisory; coverage blocking only applies when an evidence "
+            "record (skill_package/mechanic_chain/rotation) already structured the group's active "
+            "skill while at least two of its supports remain completely unpackaged."
         )
     unsupported_pairs = [
         (

@@ -8,8 +8,10 @@ from scripts import configure_agent_host as host_config
 
 def _runtime(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
-    (repo / "server").mkdir(parents=True)
+    (repo / "server/mcp").mkdir(parents=True)
     (repo / "server/main.py").write_text("", encoding="utf-8")
+    for module in ("knowledge_server", "build_server", "research_server", "learning_server"):
+        (repo / f"server/mcp/{module}.py").write_text("", encoding="utf-8")
     uv = tmp_path / "uv"
     uv.write_text("", encoding="utf-8")
     return repo, uv
@@ -39,20 +41,20 @@ def test_opencode_install_preserves_config_and_is_idempotent(tmp_path):
     )
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    entry = payload["mcp"][host_config.SERVER_NAME]
+    entries = payload["mcp"]
     assert first["status"] == "configured"
-    assert second == {
-        "status": "already_configured",
-        "host": "opencode",
-        "server": host_config.SERVER_NAME,
-        "configPath": str(config_path),
-        "managed": True,
-    }
+    assert second["status"] == "already_configured"
+    assert second["host"] == "opencode"
+    assert second["server"] == list(host_config.SERVER_NAMES)
+    assert second["configPath"] == str(config_path)
+    assert second["managed"] is True
+    assert all(item["status"] == "already_configured" for item in second["entries"])
     assert payload["theme"] == "system"
     assert payload["mcp"]["other"] == {}
-    assert entry == {
+    assert set(entries) == set(host_config.SERVER_NAMES) | {"other"}
+    assert entries["poe_knowledge_mcp"] == {
         "type": "local",
-        "command": [str(uv.resolve()), "run", "python", "-m", "server.main"],
+        "command": [str(uv.resolve()), "run", "python", "-m", "server.mcp.knowledge_server"],
         "cwd": str(repo.resolve()),
         "environment": {"PYTHONPATH": str(repo.resolve())},
         "enabled": True,
@@ -101,7 +103,7 @@ def test_unmanaged_conflict_is_never_overwritten_or_removed(tmp_path):
     repo, uv = _runtime(tmp_path)
     config_path = tmp_path / "claude.json"
     state_path = tmp_path / "state.json"
-    original = {"mcpServers": {host_config.SERVER_NAME: {"command": "custom"}}}
+    original = {"mcpServers": {host_config.SERVER_NAMES[0]: {"command": "custom"}}}
     config_path.write_text(json.dumps(original), encoding="utf-8")
 
     installed = host_config.install_host(
@@ -146,7 +148,7 @@ def test_doctor_checks_exact_runtime_binding(tmp_path):
         state_path=state_path,
     )
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    payload["mcp"][host_config.SERVER_NAME]["cwd"] = "wrong"
+    payload["mcp"][host_config.SERVER_NAMES[0]]["cwd"] = "wrong"
     config_path.write_text(json.dumps(payload), encoding="utf-8")
     unhealthy = host_config.doctor_host(
         "opencode",

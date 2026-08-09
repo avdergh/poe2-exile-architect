@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.4.5+codex.20260805081015",
+  "version": "0.4.5+codex.20260805103926",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Exile Architect",
     "shortDescription": "Research and create PoE2 builds with verification gates.",
-    "longDescription": "Provides visible Desktop research and comparative-learning orchestration, copy-safe mature-build extraction, and Agent-led single-stage or recoverable multi-stage progression creation with typed MCP verification and stable-key identity gates.",
+    "longDescription": "Provides visible Desktop research and comparative-learning orchestration, copy-safe mature-build extraction, and Agent-led single-stage endgame build creation with typed MCP verification and stable-key identity gates.",
     "developerName": "avdergh",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,8 +30,8 @@
     ],
     "websiteURL": "https://github.com/avdergh/poe2-exile-architect",
     "defaultPrompt": [
-      "/poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD",
-      "/poe-bd-create 给我一条武僧开荒到 80 级、后期转高上限流派的完整成长路线",
+      "/poe-bd-create 我想要一个适合终局攻坚的 Deadeye 弓系 BD",
+      "/poe-bd-create 给我一个 80 级的高上限武僧终局 BD",
       "/poe-bd-research --limit 20",
       "/poe-bd-research-loop 使用我附带的 Markdown 任务文档",
       "/poe-bd-learning-loop 使用 10 个同 Family 同等级案例做对照学习"

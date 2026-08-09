@@ -13,12 +13,25 @@ def test_codex_plugin_registers_self_contained_mcp_runtime() -> None:
         (plugin_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     mcp = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))
-    server = mcp["mcpServers"]["poe2_build_mcp"]
+    servers = mcp["mcpServers"]
 
     assert manifest["mcpServers"] == "./.mcp.json"
-    assert server["cwd"] == "."
-    assert server["command"] == "node"
-    assert server["args"] == ["./scripts/run_plugin_server.mjs"]
+    assert set(servers) == {
+        "poe_knowledge_mcp",
+        "poe_build_mcp",
+        "poe_research_mcp",
+        "poe_learning_mcp",
+    }
+    for server_name, args in (
+        ("poe_knowledge_mcp", ["knowledge"]),
+        ("poe_build_mcp", ["build"]),
+        ("poe_research_mcp", ["research"]),
+        ("poe_learning_mcp", ["learning"]),
+    ):
+        server = servers[server_name]
+        assert server["cwd"] == "."
+        assert server["command"] == "node"
+        assert server["args"] == ["./scripts/run_plugin_server.mjs", "--server", *args]
     assert (plugin_root / "scripts" / "run_plugin_server.mjs").is_file()
     assert (plugin_root / "scripts" / "run_plugin_server.py").is_file()
 

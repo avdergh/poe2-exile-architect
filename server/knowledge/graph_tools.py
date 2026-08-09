@@ -79,6 +79,15 @@ GraphToolContext = Annotated[
     Field(discriminator="context_type"),
 ]
 
+_CONTEXT_TYPE_TAGS = tuple(
+    sorted(
+        str(member.model_fields["context_type"].annotation.__args__[0])
+        for member in GraphToolContext.__args__[0].__args__
+        if "context_type" in (getattr(member, "model_fields", None) or {})
+        and getattr(member.model_fields["context_type"].annotation, "__args__", None)
+    )
+)
+
 
 class ResolveGraphComponentInput(StrictModel):
     query: str
@@ -275,10 +284,14 @@ class GraphQueryService:
         try:
             typed_input = model_cls.model_validate(payload)
         except ValidationError as exc:
+            available = ", ".join(sorted(model_cls.model_fields))
             return self._error(
                 query_family=query_family,
                 error_code="invalid_schema",
-                caveats=[_validation_caveat(exc)],
+                caveats=[
+                    _validation_caveat(exc),
+                    f"Available payload fields for {query_family}: {available}.",
+                ],
             )
 
         missing_context = self._missing_context(query_family, typed_input)
@@ -1244,7 +1257,17 @@ def _validation_caveat(exc: ValidationError) -> str:
     first = exc.errors()[0] if exc.errors() else {}
     loc = ".".join(str(part) for part in first.get("loc", ())) or "input"
     message = str(first.get("msg", "invalid input"))
-    return f"Tool input validation failed at '{loc}': {message}. Only use typed schema."
+    hint = ""
+    if "context" in loc.split(".") and first.get("type") in {
+        "union_tag_invalid",
+        "union_tag_not_found",
+        "model_attributes_type",
+    }:
+        hint = (
+            f" context_type must be one of: {', '.join(_CONTEXT_TYPE_TAGS)} "
+            "(or omit context entirely)."
+        )
+    return f"Tool input validation failed at '{loc}': {message}. Only use typed schema.{hint}"
 
 
 def _json_size(payload: dict[str, Any]) -> int:
