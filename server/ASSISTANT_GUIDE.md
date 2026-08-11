@@ -87,7 +87,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 
 Phase 4 turns one mature PoE2 build at a time into copy-safe research memory. The product entry is
 `/poe-bd-research` / `$poe-bd-research`; internal phase names and script commands are not user
-commands.
+commands. The `/poe-bd-research` skill owns the step-by-step command walkthrough and depth
+checklist (including the 13-item pre-submit self-check); this guide keeps only the always-injected
+contract, so the two must stay in sync.
 
 ### Tool map
 

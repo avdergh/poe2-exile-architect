@@ -38,7 +38,9 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "model: gpt-5.6-sol" in skill
     assert "thinking: medium" in skill
     assert skill.count("thinking: xhigh") == 3
-    assert ("/poe-bd-research 抓 ${num} 个 ${class} 的 ${level} 级模板进行研究") in skill
+    assert (
+        "/poe-bd-research --limit ${num} 抓 ${level} 级 ${class} 的成熟 BD 样本进行研究"
+    ) in skill
     assert "poe-bd-research\\SKILL.md" not in skill
     assert "只使用已安装插件的 `/poe-bd-research` 入口" in skill
     assert "POE_RESEARCH_SUCCEEDED: yes" in skill

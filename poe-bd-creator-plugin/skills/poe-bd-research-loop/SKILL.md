@@ -69,10 +69,14 @@ MCP client、直接导入状态模块或直接修改 Markdown/sidecar。环境�
 ```text
 model: gpt-5.6-sol
 thinking: medium
-prompt: /poe-bd-research 抓 ${num} 个 ${class} 的 ${level} 级模板进行研究
+prompt: /poe-bd-research --limit ${num} 抓 ${level} 级 ${class} 的成熟 BD 样本进行研究
 
 最终回答最后一行必须是 `POE_RESEARCH_SUCCEEDED: yes` 或 `POE_RESEARCH_SUCCEEDED: no`。只有请求数量的案例全部正式 accept、最终 remaining 为 0，且报告计数与实际持久化结果一致时才能输出 yes；任何运行失败、案例未完成或证据缺失都输出 no。
 ```
+
+固定 prompt 必须携带 `--limit ${num}`：`/poe-bd-research` 的"无参数必询问"交互规则不适用于本
+loop 的无人值守 child，带参数后 child 直接执行、不询问。研究对象是成熟 BD 样本，不是"模板"
+（reference builds 只是校准摘要，见 AGENTS.md）。
 
 Review 在同一任务中发送：
 
@@ -80,6 +84,8 @@ Review 在同一任务中发送：
 model: gpt-5.6-sol
 thinking: xhigh
 prompt: 只做审查，不修改代码、数据库或运行产物。基于本任务 runDir 中的 safe review、accept/status 报告和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、未解析项和暂缓项是否合理；报告计数是否与实际写入一致。
+
+（"五项研究覆盖"指 review-contract 的 caseCoverage 五维：supports / rotation / passiveAscendancy / gearRoles / resourceDefense。）
 
 涉及暗金、天赋、触发或转换的关键结论，应使用当前静态资料或机制工具复核，不能因为组件成功解析就认为机制解释正确。
 
@@ -103,6 +109,8 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 每个写入或更新的修正版都必须做全对象语义闭环复核，不能只复核 finding 点名的字段。组件、角色、因果或职责变化时，逐项重查 title、summary、content、conditions、failureConditions、typedPayload、applicability / exclusions、contextRequirements、plannerHint 和 verificationTasks；未逐项验证的旧字段不得原样沿用。装备职责还必须区分组件静态文本直接提供的固有职责，与来源实例词缀、插入物、mutation / transform 或其他组件间接提供的职责；后者必须保留真实来源组件或转换前提，证据不能唯一归属时不得写成该装备的固有职责。写入后重新读取完整持久化对象，对照 finding、修正版和预期增量，确认没有陈旧字段或错误来源关系后才能报告已修复。
 
 修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md；真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
+
+修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录（相同 PoB 文本重新 queue + accept）或 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
 
 最终必须单独输出一行 `POE_FIX_DATA_REPAIRED: yes` 或 `POE_FIX_DATA_REPAIRED: no`。只有实际写入、更新、重建或替换了修正后仍保留在数据库中的研究数据时才输出 yes；纯代码、测试、notes、artifact 修改，或只删除错误数据而没有保留修正版时输出 no。
 ```

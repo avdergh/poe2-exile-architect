@@ -36,7 +36,16 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 `$ARGUMENTS` 可包含：
 
+> 快速粘贴模式：`$ARGUMENTS` 允许直接包含裸 PoB import code、pobb.in/pastebin 链接或 raw XML
+> （例如 `/poe-bd-research 研究一下这个bd eNrt...`）。这是受支持的快速测试用法：当前 Agent
+> 应把识别出的 code/链接内容保存到 OS 临时目录的本地文件（不要写进仓库、runDir 或任何运行
+> 产物目录），再执行 `queue --source-file <临时文件>` 走标准单案例流程。**不要把 code 原文拼进
+> `<research-cli> queue ...` 的命令行参数**：raw code 会进入进程参数、shell 历史和日志，也容易
+> 超过命令行长度限制。链接型输入先用宿主 webfetch 取回内容再落临时文件；实在无法本地化的
+> 才提示用户另存为文件。
+
 - `--limit N`：从 poe.ninja 当前 softcore trade league 取样。底层 CLI 默认 50；交互式 skill 无参时不要静默启动 50。
+- `--league current|<league-url>`：透传 poe.ninja league（默认 `current`）。
 - `--ascendancy NAME`：可重复，对已渲染结果做本地升华筛选。
 - `--class NAME`：可重复，透传为 poe.ninja 列表 URL 的 `class` 参数；当前网站用它筛升华，
   例如 `--class "Blood Mage"` 会编码为 `class=Blood+Mage`。从网站 URL 取得的
@@ -62,7 +71,13 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - `大批量提取`：实际运行 `limit=50`，按队列逐案研究。
 - `恢复已有队列`：使用用户指定的 `runDir` 和 `limit`，并附加 `--resume`。不要把 `--resume` 只绑定到大批量。
 
-如果宿主没有选择控件，退化为普通文字选项，等待用户回复。不要在用户选择前联网采样。
+如果宿主没有选择控件，退化为普通文字选项，等待用户回复。不要在用户选择前联网采样。`$ARGUMENTS`
+若包含裸 PoB code/链接（快速粘贴模式），不要询问运行模式，直接按下方"快速粘贴模式"落临时文件并
+走 `queue --source-file`（见 Options）。
+
+当本 skill 由 `poe-bd-research-loop` 编排触发时，child 收到的固定 prompt 已携带 `--limit` 等参数
+（`$ARGUMENTS` 非空），直接按参数执行，不再询问交互模式；不得把 loop 无人值守场景当成普通
+交互式无参调用。
 
 用户明确要求示例时，只展示与所选模式对应的一条 skill 命令，例如
 `/poe-bd-research --limit 5 --dry-run` 或 `/poe-bd-research --limit 20`，不要同时罗列所有组合。
@@ -117,6 +132,14 @@ POE_RESEARCH_SUCCEEDED: no
    Skill、仓库或 review artifact。
 
 ### 逐案流程
+
+0. 参数预处理（快速粘贴模式）：执行 queue 前先检查 `$ARGUMENTS`。若其中包含裸 PoB import code
+   （`eNrt...` / `AIAAA...` 等长 base64 串）、pobb.in/pastebin 链接或 raw XML（例如用户直接写
+   `研究一下这个bd <code>`），把识别出的材料保存为 OS 临时目录下的单个本地文件
+   （命名如 `quick-case-<短hash>.txt`；不写进仓库、runDir 或运行产物目录），然后把该位置的
+   `$ARGUMENTS` 替换为 `--source-file <临时文件>` 再继续；链接先用宿主 webfetch 取回内容再落盘。
+   临时文件与 transient packet 同级由系统清理，不需要手动删除。若 `$ARGUMENTS` 只有轻量选项则
+   跳过本步。
 
 1. 运行 queue：
 
@@ -232,13 +255,28 @@ POE_RESEARCH_SUCCEEDED: no
 
    正式 accept 前必须逐项核对提交前自检（与 `review-contract` 的 `mandatoryChecks` 一一对应）：
    1) 暗金/lineage 宝石已标注 unique 身份（`uniqueGemDiagnostics.unlabeledUniqueGemNames` 为空，
-   或非空时已补 unique_enabler role / open_question / modelability_caveat 声明）；
+      或非空时已补 unique_enabler role / open_question / modelability_caveat 声明）；
    2) `jewelCounts` 中已分配珠宝槽无珠宝物品时，review 已显式声明珠宝状态（无 `unresolved_jewel_sockets`
-   暂缓）；
+      暂缓）；
    3) Spirit/reservation 预算已写入资源记录；
    4) 每个启用技能组的 supports 已完整打包或经 `supportCoverageExceptions` 声明（无
-   `supportCoverageBlockedByStructuredOmission`）；
-   5) support 机制语义均有证据链，无凭名字推断的表述。
+      `supportCoverageBlockedByStructuredOmission`）；
+   5) support 机制语义均有证据链，无凭名字推断的表述；
+   6) Memory 对照用 stable key：先 search_graph_components + resolve_graph_component 解析
+      ascendancy/class，再以 stable key 过滤 `query_research_memory`，并检查
+      `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog` 逐条对照既有同族知识；
+   7) config 条件三栏表：packet 每个 `condition*` 都有"条件 → 来源组件 → 验证状态"，无来源假设
+      已写成 modelability caveat；
+   8) 装备全覆盖：每个装备槽位在记录中"结构化组件 / content 文本 / 显式 not_applicable"三选一；
+   9) 未猜 key 路径：所有组件先 search 再 resolve，支持宝石注意 `Items/Gem` 与 `Items/Gems` 两种
+      metadata 路径；
+   10) silent / unavailable 已沉淀：语料无文本或 `lookup_mechanic` 返回 silent 的高价值机制已写入
+       caveat / verification task；
+   11) 非 Family-core 技能组 supports 已写入记录内容或 secondary supportPackages；
+   12) resource_engine / mechanic_chain 因果方向（生成 vs 消费）已核对并与既有同组件 Family 记录
+       对照；
+   13) 任何 unresolved 计数已先对该组件名 search_graph_components 再定性，未把图中存在的组件误报为
+       source gap。
 
 6. 完成当前案例的 accept 后，才循环 claim/research/accept 处理下一案，直到 status 无 queued case：
 

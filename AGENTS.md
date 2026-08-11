@@ -180,6 +180,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/JUDGE_SCORING_SYSTEM.md`：Judge 当前评分策略、证据分层、兼容逻辑和查询路径说明。
 - `docs/phases/`：中文唯一各阶段执行计划和验收标准。
 - `server/ASSISTANT_GUIDE.md`：通过 MCP 展示给 LLM client 的 runtime 指南。
+- `docs/research/`：研究流程的历史设计与方法归档（`MEMORY_SYSTEM_DESIGN.md`、
+  `EXTRACTION_METHOD.md`、`BD_KNOWLEDGE.md`、`AGENT_MEMORY_SYSTEM_RESEARCH.md`）；现行运行合同
+  以 `/poe-bd-research` skill、claim 的 `workerPrompt` 与 `review-contract` 为准。
 - `scripts/verify.ps1`：验证 profile。
 
 根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的

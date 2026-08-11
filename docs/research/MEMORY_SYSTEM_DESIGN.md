@@ -1,5 +1,12 @@
 # PoE2 BD Agent 记忆系统设计
 
+> **归档状态（2026-08 更新）**：本文是 Phase 4.5 深度 memory MVP 的设计文档，主体已实现
+> （`deep_research_records`、BuildFamily/canonical evidence、`query_research_memory` 两级召回等）。
+> §7.2 / §8.2 列举的 `include_design_memory` / `lifecycle_stage` / `scenario_tags` /
+> `budget_band` 参数未实现；现行查询合同以 `docs/phases/04_research_memory.md`、
+> `/poe-bd-research` skill 与 claim 后动态下发的 review-contract 为准。阅读时把它当作历史设计
+> 参考，不要据此实现、调用或修改合同。
+
 ## 1. 文档定位
 
 本文设计当前项目下一版领域记忆 MVP。项目不是从零开始：Phase 4 已经从真实成熟 BD 中提取

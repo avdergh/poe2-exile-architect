@@ -6,8 +6,11 @@
 - `docs/research/EXTRACTION_METHOD.md`：每批样本反向总结的深度挖掘方法，后续用于调整本阶段的
   schema、prompt、工具和验收标准。
 
-这两份文档是滚动研究记录，不替代本阶段的正式实现合同。新增样本时应同时更新两者，并继续
-遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
+这两份文档是滚动研究记录，不替代本阶段的正式实现合同。运行态（`/poe-bd-research`）禁止修改
+仓库文档（见下方产品化入口），样本知识与方法学的回填由两条通道承担：`poe-bd-research-loop`
+的 review/fix 通道把每案修正沉淀到外部 orchestrator 的 `research-notes/`；需要进仓库的通用
+知识/方法则在开发态手动回填本文档。`research-notes/` 与这两份文档是不同产物，不再互为替身。
+继续遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
 
 下一版深度 memory MVP 采用两层持久化方向：一次研究先按知识单元保存一组聚焦、安全的
 `DeepResearchRecord`，再提炼 fragment/semantic edge/build pattern 作为召回索引。同一案例通过
@@ -44,7 +47,9 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 - fragment/edge/pattern 继续作为短召回索引：已完成；
 - 更多职业样本回放、字段扩展候选和真实生成质量对照：等待后续案例验证。
 
-运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源：
+运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源。命令、顺序与编辑约束的执行事实源是
+`/poe-bd-research` skill 与 claim 返回的 `workerPrompt`/`review-contract`，本节只维护运行时语义
+边界，不复述命令：
 
 - MCP `ASSISTANT_GUIDE`：保留工具能力地图、选择条件、权威边界和安全边界；
 - `/poe-bd-research` skill：保留完整研究流程、深挖方法、覆盖维度及正反例；
@@ -155,8 +160,9 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 
 研究运行态禁止使用 subagent、子代理或独立 agent lane。研究 MCP 工具只保证在触发 skill 的当前
 主会话可用；当前 Agent 必须亲自完成 prompt 读取、深度提取、safe review 和 accept，并严格逐案串行。
-Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆分的 server（工具面约 47 个），
-不触发 Codex 数量上限；历史遗留的统一 `poe2_build_mcp` 巨型入口不再注册。
+Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆分的 server（工具面约 48 个），
+不触发 Codex 数量上限；历史遗留的聚合入口 `poe2-build-mcp`（`server/main.py`）仍注册，仅保留供
+测试与旧宿主配置兼容（见 AGENTS.md），产品运行入口是四个按域拆分的 server。
 工具未直接显示时应先用宿主标准 tool discovery / tool search 按精确名称查找，再判断是否真的不可用。
 
 安装 skill 后，在 Codex 或支持 skill 的宿主中使用：
@@ -174,27 +180,13 @@ Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆�
 `--resume` 是独立恢复模式，不绑定到 50 个样本；恢复时必须同时提供原始 `queue` 返回的
 `--output-dir <runDir>`。
 
-等价的底层脚本入口是：
-
-```powershell
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py queue --limit 50
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py claim --output-dir <runDir>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py worker-brief --output-dir <runDir> --lease-token <leaseToken>  # 仅恢复已领取任务
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py inspect --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py read --output-dir <runDir> --lease-token <leaseToken> --section skills
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py search --output-dir <runDir> --lease-token <leaseToken> --query "Bonestorm"
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py review-contract --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py init-review --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py status --output-dir <runDir>
-```
+等价的底层脚本入口与逐案流程（queue → claim → inspect/read/search → review-contract →
+init-review → accept --validate-only → accept → status）以 `/poe-bd-research` skill 的
+`逐案流程` 为唯一执行事实源，本文档不再复述命令；完整参数见
+`scripts/research_mature_builds.py --help`。
 
 默认非 dry-run `queue` 会创建 `.poe-bd-research/runs/<runId>` 并返回 `runDir`；同一轮的所有后续
-命令都必须使用该目录。不同会话使用不同 run，可以并发执行。显式目录中已有队列时只能使用
-`--resume` 恢复，不能静默重建或覆盖。
-
-macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
+命令都必须使用该目录，且 `--resume` 需要原 `runDir`。不同会话使用不同 run，可以并发执行。
 
 默认行为：
 
@@ -207,8 +199,7 @@ macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 - `worker-brief` 只用于恢复已经 claimed 的任务；
 - 支持 `--ascendancy`、`--league current|<league-url>`、`--level-min`、`--level-max`、
   `--class`（可选透传 poe.ninja URL class filter）、`--source-file`、`--source-batch-file`、
-  `--resume`、`--dry-run`、`--db-path`、
-  `--output-dir`；
+  `--expected-source-count`、`--resume`、`--dry-run`、`--output-dir`；
 - `--class` 同时接受空格名称和 poe.ninja URL 中的 `+` 分隔形式，编码前统一归一；列表返回后还会
   按同一升华名本地复核，非目标升华不得占用 `limit`；
 - batch mode 仍必须一案一轮：一个 Researcher prompt 只包含一个完整 BD；
@@ -372,6 +363,10 @@ PoB code 或临时路径。
   做有界修复；压缩单行不是安全失败，但不符合运行合同。
 
 ### 研究执行 checklist（2026-08-07 修订，防再犯）
+
+以下条目已迁入 `workerPrompt` 的 Mandatory Checks、review-contract 的 `mandatoryChecks` 与
+`/poe-bd-research` skill 的提交前自检（三处一一对应），本段保留为阶段审查记录；执行时以运行时
+合同为准，避免再次出现"两套清单从未对账"。
 
 以下条目来自真实案例审查（Monk/Martial Artist Hollow Palm 案例的补齐与修正），每个 deep
 case 研究都应执行：

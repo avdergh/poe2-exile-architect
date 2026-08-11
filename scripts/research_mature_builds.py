@@ -659,6 +659,14 @@ def render_review_contract(
             "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
             "every enabled skill group's supports must be fully packaged in supportPackages or declared via supportCoverageExceptions",
             "support mechanism claims require typed pairing evidence or a verification task; never infer from the support name",
+            "memory comparison must use stable keys: resolve ascendancy/class via search_graph_components + resolve_graph_component before filtering query_research_memory, and check familyRecordCoverage/familyRecordIndex/familyPremiseCatalog against existing same-family knowledge",
+            "every packet condition* (EnemyChilled/EnemyBleeding/EnemyBlinded/EnemyIgnited/CritRecently/BeenHitRecently/usePowerCharges) must be traced in a 'condition -> source component -> verification status' table; unsourced assumptions become modelability caveats",
+            "every gear slot must appear in the records: structured component, content text, or explicit not_applicable",
+            "never guess stable-key paths: always search_graph_components then resolve_graph_component; support-gem metadata paths can be Items/Gem or Items/Gems",
+            "silent or unavailable high-value mechanics (e.g. Innervate, Charged Mark charge rates) must be preserved in caveats/verification tasks, not dropped",
+            "supports of non-Family-core skill groups must appear in record content or secondary supportPackages, not just compatibility checks",
+            "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
+            "any unresolved count requires a per-name search_graph_components before declaring a source gap",
         ],
         "rules": [
             "只能使用 allowedValues 中的枚举；不得自造 role、axis 或 patternType。",
@@ -2178,10 +2186,13 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 技能、天赋和装备效果必须来自当前案例证据或工具事实；允许保留有价值的推断，但必须明确标为推断，
 不能把模型记忆中的免疫、转换、触发或缩放效果写成已证实事实。
 
-独立重建当前案例后，再调用 query_research_memory 查重和对照；随后用
-search_graph_components 发现具体组件候选、用 resolve_graph_component 确认稳定 ID。工具未直接
-显示时，使用宿主标准 tool discovery / tool search 按精确名称查找；工具可能采用延迟发现，不要根据
-首屏工具列表断言不可用。
+独立重建当前案例后，先解析身份组件：用 search_graph_components 发现候选、用
+resolve_graph_component 确认 ascendancy 与 class 的 stable key（显示名不会命中存储 key，会静默
+返回空）；再以 stable key 过滤 query_research_memory 查重和对照，并检查返回的
+familyRecordCoverage / familyRecordIndex / familyPremiseCatalog，逐条对照既有同升华/同技能
+Family 知识。其余组件同样先 search 再 resolve，不得猜 key 路径（支持宝石 metadata 路径可能有
+Items/Gem 与 Items/Gems 两种形式）。工具未直接显示时，使用宿主标准 tool discovery / tool search
+按精确名称查找；工具可能采用延迟发现，不要根据首屏工具列表断言不可用。
 
 独立重建和组件解析完成后，针对会改变因果链的高风险结论做一轮轻量机制校对：先用
 explain_mechanic / search_mechanics 查看当前本地静态机制资料，再用 lookup_mechanic 查询实时
@@ -2194,7 +2205,7 @@ lookup_mechanic 返回的 revision-pinned sourceRef。Wiki 只作校对证据，
 graph 等独立佐证。
 
 ## Mandatory Checks
-以下五项是提交前的强制自检，缺一不可：
+以下十三项是提交前的强制自检，缺一不可：
 1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
    lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 用 unique_enabler，或在
    open_question/modelability_caveat 记录中说明）；不能当普通 support 处理。
@@ -2208,6 +2219,25 @@ graph 等独立佐证。
 5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，必须用
    support_skill_candidate 或等价 typed 复核配对，机制细节以 corpus/wiki/来源文本为准，不得
    凭名字推断。
+6. Memory 对照用 stable key：查询前先 search_graph_components + resolve_graph_component 解析
+   ascendancy/class，再以 stable key 过滤 query_research_memory；检查
+   familyRecordCoverage / familyRecordIndex / familyPremiseCatalog 并逐条对照既有同族知识。
+7. Config 条件三栏检查表：把 packet 每个 condition*（EnemyChilled / EnemyBleeding /
+   EnemyBlinded / EnemyIgnited / CritRecently / BeenHitRecently / usePowerCharges 等）列成
+   "条件 → 来源组件 → 验证状态"；无来源的假设必须写成 modelability caveat，不得静默采纳。
+8. 装备全覆盖盘点：每个装备槽位（含暗金/黄装/药剂/护符）必须在记录中出现——结构化组件、
+   content 文本或显式 not_applicable 三选一；写 review 前成表自查。
+9. 禁止猜 key 路径：所有组件先 search_graph_components 再 resolve_graph_component；支持宝石的
+   metadata 路径可能有 Items/Gem 与 Items/Gems 两种形式，猜错会被判 component_type_mismatch
+   或 missing。
+10. silent / unavailable 必须沉淀：lookup_mechanic 返回 silent 或语料无文本的高价值机制
+    （Innervate、Charged Mark 充能率等）写入 caveat / verification task，不得丢弃。
+11. 非 core 技能支持入记录：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
+    技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
+12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
+    是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
+13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
+    search_graph_components 再定性为 source gap；图中已存在但未 search 的组件不得误报 gap。
 
 ## Research Goal
 重建并分别记录：
