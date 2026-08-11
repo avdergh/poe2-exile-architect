@@ -22,8 +22,6 @@ _LOCK = threading.RLock()
 MAX_TELEMETRY_BYTES = 5_000_000
 _SAFE_CORRELATION = re.compile(r"^[A-Za-z0-9_.:\-]{3,160}$")
 _CORRELATION_KEYS = (
-    "progression_id",
-    "progressionId",
     "run_id",
     "runId",
     "stage_id",

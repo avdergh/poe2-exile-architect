@@ -32,7 +32,7 @@ def test_tool_telemetry_records_only_safe_metadata(tmp_path, monkeypatch):
     assert row["toolName"] == "query_research_memory"
     assert row["durationMs"] == 123.457
     assert row["responseBytes"] >= 2_000
-    assert row["correlation"] == {"progression_id": "00000000-0000-0000-0000-000000000001"}
+    assert row["correlation"] == {}
     assert secret not in text
     assert "largeToolPayload" not in text
 

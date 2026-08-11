@@ -225,6 +225,49 @@ def inspect_lifecycle_skill_evidence(
     }
 
 
+# Engine-invisible resource layers that real builds carry but PoB cannot quantify. When a build
+# enables these and still shows a mana deficit, the deficit may be covered by the unmodelled layer
+# in-game; downstream gates must disclose instead of treating the engine gap as a build failure.
+_UNMODELLED_MANA_SKILLS = {
+    "mana_remnants": ("mana remnants",),
+}
+_UNMODELLED_MANA_GEAR = {
+    "lavianga_spirits": ("lavianga's spirits",),
+}
+
+
+def inspect_resource_model_gap(xml: str, gear: Any) -> dict[str, Any]:
+    """Detect engine-invisible resource mechanisms the evaluated build actually carries.
+
+    ``xml`` is the exact active snapshot and ``gear`` the same build's equipped-gear readback, so
+    the evidence cannot be forged by the caller. Returns the detected mechanism keys plus stable
+    display names; an empty list means the build relies on no known unmodelled mana layer.
+    """
+    found: dict[str, str] = {}
+    parsed = _parse_skill_groups(xml)
+    if not parsed.get("errorCode"):
+        for group in parsed["groups"]:
+            for skill_name in group["activeNames"]:
+                lowered = str(skill_name).strip().casefold()
+                for key, names in _UNMODELLED_MANA_SKILLS.items():
+                    if key not in found and lowered in names:
+                        found[key] = str(skill_name).strip()
+    if isinstance(gear, dict):
+        for slot, item in gear.items():
+            if not isinstance(item, dict):
+                continue
+            text = f"{item.get('name') or ''} {item.get('base') or ''}".casefold()
+            for key, names in _UNMODELLED_MANA_GEAR.items():
+                if key not in found and any(name in text for name in names):
+                    found[key] = f"{item.get('name') or item.get('base') or ''}".strip()
+    return {
+        "detected": bool(found),
+        "mechanismKeys": sorted(found),
+        "mechanismNames": [found[key] for key in sorted(found)],
+        "evidenceSource": "active_snapshot_and_gear_readback",
+    }
+
+
 def inspect_lifecycle_component_evidence(
     xml: str,
     *,

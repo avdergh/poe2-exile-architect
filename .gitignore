@@ -11,8 +11,8 @@ providers/poe2-build-converter/node_modules/
 providers/poe2-build-converter/dist/
 .runtime-data/
 
-# Build artifacts / generated data (corpus is a release asset, not source)
-data/corpus.sqlite
+# Build artifacts / generated data. Validated release seeds are intentionally tracked so a
+# GitHub checkout has the same offline knowledge baseline as the packaged plugin.
 data/raw/*
 !data/raw/official/
 data/raw/official/*
@@ -32,6 +32,10 @@ data/mature_build_learning/research_memory.sqlite
 /phase45_*.json
 /phase45_*.md
 /.poe-bd-create/
+/.poe-bd-research-*/
+/.test-tmp/
+/poe-bd-creator.test-tmpverify-*/
+/.npm-cache/
 /final-build-artifacts/
 /pob-exports/
 /.tmp_agent_output_*

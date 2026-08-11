@@ -1,0 +1,163 @@
+"""poe-build-mcp: the single headless PoB engine, active build, Judge, Phase 5 runs, artifacts
+and final artifacts/exports.
+
+Holds the engine-facing tool set defined in ``server.main``: build mutation/equipment/passives,
+Judge and generation-run management, final artifact save/export, and lifecycle verification.
+This is the only server that starts the PoB engine.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from ..main import (  # noqa: F401  (re-registered below)
+    _SessionIsolatedFastMCP,
+    add_skill_group,
+    alloc_passive,
+    analyze_build_lifecycle,
+    apply_build_mutation_batch,
+    apply_combat_profile,
+    benchmark_build,
+    cleanup_completed_task_runtime,
+    compare_to,
+    complete_generation_review,
+    craft_item,
+    dealloc_passive,
+    engine_health,
+    equip_item,
+    equip_jewel,
+    evaluate_build,
+    evaluate_generation_candidate,
+    evaluate_jewel_socket,
+    export_build,
+    export_final_build_artifact,
+    export_final_build_package,
+    export_final_pob_artifact,
+    get_build,
+    get_build_planner_converter_status,
+    get_build_stats,
+    get_defenses,
+    import_build,
+    inspect_build_completeness,
+    inspect_generation_checkpoint,
+    inspect_generation_preflight,
+    list_config_options,
+    list_final_build_artifacts,
+    list_jewel_sockets,
+    list_levers,
+    list_skill_groups,
+    load_final_build_artifact,
+    new_build,
+    optimize_build,
+    optimize_item,
+    optimize_jewel,
+    optimize_passives,
+    optimize_supports,
+    parse_item,
+    pinnacle_readiness,
+    plan_gear,
+    rank_levers,
+    rank_upgrades,
+    relevant_mechanics,
+    relevant_uniques,
+    remove_skill_group,
+    replace_skill_group,
+    save_final_build_artifact,
+    scaffold_gear,
+    search_passives,
+    set_class,
+    set_config,
+    set_level,
+    set_skill,
+    set_skill_group_state,
+    solve_for,
+    start_generation_run,
+    unequip_item,
+    validate_generation_output,
+    validate_level_availability,
+    verify_lifecycle_stage,
+)
+
+_GUIDE = Path(__file__).parent.parent / "MCP_BUILD_BOOTSTRAP.md"
+try:
+    _INSTRUCTIONS: str | None = _GUIDE.read_text(encoding="utf-8")
+except OSError:
+    _INSTRUCTIONS = (
+        "Exile Architect build server: one headless PoB engine and the mutable active build. "
+        "Every build number must come from compute readback, never invented."
+    )
+
+mcp = _SessionIsolatedFastMCP("poe-build-mcp", instructions=_INSTRUCTIONS)
+
+_TOOLS = (
+    add_skill_group,
+    alloc_passive,
+    analyze_build_lifecycle,
+    apply_build_mutation_batch,
+    apply_combat_profile,
+    benchmark_build,
+    cleanup_completed_task_runtime,
+    compare_to,
+    complete_generation_review,
+    craft_item,
+    dealloc_passive,
+    engine_health,
+    equip_item,
+    equip_jewel,
+    evaluate_build,
+    evaluate_generation_candidate,
+    evaluate_jewel_socket,
+    export_build,
+    export_final_build_artifact,
+    export_final_build_package,
+    export_final_pob_artifact,
+    get_build,
+    get_build_planner_converter_status,
+    get_build_stats,
+    get_defenses,
+    import_build,
+    inspect_build_completeness,
+    inspect_generation_checkpoint,
+    inspect_generation_preflight,
+    list_config_options,
+    list_final_build_artifacts,
+    list_jewel_sockets,
+    list_levers,
+    list_skill_groups,
+    load_final_build_artifact,
+    new_build,
+    optimize_build,
+    optimize_item,
+    optimize_jewel,
+    optimize_passives,
+    optimize_supports,
+    parse_item,
+    pinnacle_readiness,
+    plan_gear,
+    rank_levers,
+    rank_upgrades,
+    relevant_mechanics,
+    relevant_uniques,
+    remove_skill_group,
+    replace_skill_group,
+    save_final_build_artifact,
+    scaffold_gear,
+    search_passives,
+    set_class,
+    set_config,
+    set_level,
+    set_skill,
+    set_skill_group_state,
+    solve_for,
+    start_generation_run,
+    unequip_item,
+    validate_generation_output,
+    validate_level_availability,
+    verify_lifecycle_stage,
+)
+
+for _fn in _TOOLS:
+    mcp.tool()(_fn)
+
+if __name__ == "__main__":
+    mcp.run()

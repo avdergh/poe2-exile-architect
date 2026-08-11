@@ -6,8 +6,10 @@
 ## 文档语言策略
 
 - `docs/ARCHITECTURE.md` 和 `docs/ARCHITECTURE.CN.md` 是当前唯一维护双语的文档。
+- `server/ASSISTANT_GUIDE.md` 和 `server/MCP_*_BOOTSTRAP.md` 是直接注入不同 LLM client 的英文
+  runtime prompt，属于语言策略的明确例外，不要求翻译或维护 `.CN.md` 副本。
 - `docs/PROJECT_SPEC.md`、`docs/SCHEMAS.md`、`docs/phases/*.md`、`AGENTS.md`、
-  `CLAUDE.md` 以及其他仓库说明文档只维护中文。
+  `CLAUDE.md` 以及除此之外的其他仓库说明文档只维护中文。
 - 不要新增 `.CN.md` 副本，除非用户明确重新改变语言策略。
 
 ## 项目方向
@@ -50,9 +52,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 模糊组件查询只用于候选发现：先 `search_graph_components`，再用
   `resolve_graph_component` 确认 stable key；模糊或向量相似度不能直接授权 semantic edge。
 - Family identity 统一使用玩家 `active_skill` 的 `skill:` stable key。物理图已确认关联的
-  `gem:` key 可以作为 Research 查询别名，但不能直接替代 FamilyTarget、TargetAnchorIdentity
-  或 StageFamilyIdentity；typed receipt 必须保存两者的等价 key 集合。
-- Research 与 PoB 对同一组件可能使用不同显示名。target anchor 仍以 stable key 为身份权威，并
+  `gem:` key 可以作为 Research 查询别名，但不能直接替代 FamilyTarget 或
+  Family 身份权威的 stable key 集合；typed receipt 必须保存两者的等价 key 集合。
+- Research 与 PoB 对同一组件可能使用不同显示名。Family 身份仍以 stable key 为身份权威，并
   保存 artifact 实际显示名；候选 stable key 必须先由 typed Family discovery receipt 验证，
   artifact 名称与候选展示名不同时，还必须由 artifact 的同一 graph snapshot 把 artifact 名称
   唯一解析到该 stable key。解析缺失、歧义、跨 snapshot 或 key 不同都必须失败关闭，不能因此
@@ -65,47 +67,46 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - Judge 数值只能作为 Phase 7 `advisoryOnly` 附件，不能自动决定 Comparator winner 或写 reward。
 - Create packet 只能包含 FamilyTarget、等级、版本和默认目标，不能泄露原 BD 装备、天赋、技能组、
   机制摘要或 Judge 结果。
-- Phase 7 Blind Create 不得读取或调用 Phase 8 `StarterResearchPacket`、starter cache 或
-  progression 状态；联网开荒证据只属于显式 progression 模式。
-- Phase 8 不能修改普通单阶段 Create 的等级语义、Research recall、生成/Judge 或导出合同。
-  progression 必须先通过普通 Create 生成并绑定 immutable target anchor；最后目标阶段复用同一
-  artifact/source hash，不得重新生成一个较弱目标或用桥接形态替换。
-- 每次普通用户触发 Create 时，除非请求明确只产出单个固定目标/最终 BD 且不要开荒过程，否则
-  必须先阻塞式询问是否生成完整开荒成长过程。用户回答前不能调用 freshness、Research、
-  `start-run`、progression 或 PoB/计算工具；本次请求只问一次。选择“需要”进入 progression，
-  选择“不需要”进入普通单阶段 Create。`referenceBlind=true` 的内部 Blind Create 禁止追问，
-  继续按锁定 packet 执行。
-- 新 progression 在未指定唯一目标 Family 时，必须先用基础职业、精确 patch 和天赋树版本调用
-  `query_research_memory(detail_level="family")` 请求 10 个成熟 Family；不足 10 个返回全部合格
-  Family，少于 2 个暂停并报告 Research 缺口。Agent 必须比较 discovery receipt 实际返回的
-  全部 2–10 个候选，按机制闭环、Research 支持、目标契合与强度证据、可玩风险和 modelability
-  完整排序，第一名为目标、第二名为备用。候选阶段不跑完整 Judge、不调用全局 optimizer；
-  modelability 不能在前三项均无优势时单独决定目标。用户提供完整唯一 Family 时跳过 discovery。
-  选定的升华/主技能必须与随后绑定的 target anchor 一致；首次目标失败后只有 Agent 可基于证据
-  显式切换一次备用 Family，Judge 不自动换流派。
+- Phase 7 Blind Create 不得读取或调用任何 starter-research 材料、starter cache 或
+  对照学习状态；联网开荒证据对 Phase 7 Blind Create 同样禁止。普通 Create 的目标等级
+  低于 70 或 Research 无 Family 命中时，允许 Agent 联网研究与模型知识作为设计主源
+  （见 poe-bd-create 工作流第 4 步）；≥70 且命中 Family 时仍以 Family 为身份与设计
+  权威，联网证据只作补充，结论不替换 Family 结论。
+- 每次普通用户触发 Create，直接生成用户请求的目标等级单阶段终局 BD（典型 80+）。`referenceBlind=true`
+  的内部 Blind Create packet 禁止追问，直接按锁定 packet 执行。
+- 普通 Create 以 Research Family 为身份与设计权威：`buildFamilies` 命中时 Family 优先（stable
+  key 身份不变），联网/模型知识仅补维度、结论不替换 Family 结论；`buildFamilies` 为空时如实记录
+  `retrievalOutcome="no_matching_memory"` + `noMatchReason`，以图/机制/语料与模型知识设计，数值
+  与合法性仍以 PoB 读回与 Judge 为准。
+- 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_output /
+  complete_generation_review` 管理 Phase 5 run。不得搜索仓库工作目录或要求用户安装/执行
+  `scripts/create_build.py`；CLI 只保留为仓库开发兼容入口。
 - Create 当前默认禁止 `optimize_build` 和全局被动树重排。Agent 已经决定的机械变更应通过
   `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout / passive_delta /
   required_gear / ordinary_gear / config` 职能拆成小事务；不得把整个 BD 混进一个批次。只有以
   `new_build` 开始的 bootstrap 可省略输入 hash，后续事务必须串联上一批 `outputStateHash`。
   搜索、optimizer、隐式装备槽和隐式珠宝孔不能进入批次。失败只回滚当前职能事务；只有
   `rolledBack=true` 才能确认恢复，`recoveryRequired=true` 时必须停止并恢复活动状态。
-- 每个 progression 阶段（包括 `campaign_early`）都必须交付该等级下完整、强力且可玩的阶段
-  BD，不得用“最小壳”“仅过渡”或空装备槽降低完成标准。蓝图必须在 PoB 构筑前确定阶段方向；
-  claim 后设计冻结，同一阶段只允许一次初始化，后续使用按职能拆分的局部 delta。除蓝图已声明
-  且填写 `rebuildReason` 的重大转型外，后续阶段默认继承上一 artifact；确定性合法性、资源、装备、
-  天赋或辅助问题必须局部修复，只有现有的一次版本化 stage replan 可以在失败后改变整体方向。
-  这些执行约束不能变成固定 DPS/EHP、装备槽或天赋点等主观硬门槛。
+  批次槽位白名单以 `server/compute/mutation_batch.py` 为准：`mechanism_shell` 每批必须恰含
+  一次 `set_main_skill` 且只能初始化一次；`required_gear` 只允许武器槽；箭袋不在任何批次
+  白名单（引擎槽位为 `Weapon 2`），只能走独立 `equip_item`。独立 compute/equip 工具
+  （`equip_item`、`remove_skill_group`、`replace_skill_group`、`set_config` 等）共享同一活动
+  构筑、同样改变 state hash，后续批次必须用其返回的最新 hash 串联。
+- Create/evaluate 的 Research receipt 有 run 内时效：`evaluate_generation_candidate` 传入的
+  `versionContext.researchMemoryRef` 以及 `researchMemoryUse.dedupeQueryRefs` 引用的 receipt
+  都必须在当前 Phase 5 run 创建之后查询过（发现/比较阶段的旧 receipt 不能用于本 run 的
+  evaluate/review，应在 run 内重新做定向查询）。
 - Judge 对新生成的 80 级及以上候选使用确定性终局抗性门槛：火/冰/电分别不得低于 60%，
   非 CI 构筑的混沌抗性不得低于 30%；CI 只豁免混沌抗性。该门槛由共享 preflight 与正式
   Judge 入口共同执行，预检失败返回 `attemptConsumed=false`。79 级及以下、可信第三方参考
   构筑仍只回读抗性作 diagnostic，不产生这组 hard failure；元素 Max Hit 和其他防御层继续按
   各自合同评估。
-- Progression 的 Lifecycle 元素抗性门槛独立于 Judge，但必须按活动 PoB 的实际等级计算，而不是
+- Lifecycle 元素抗性门槛独立于 Judge，但必须按活动 PoB 的实际等级计算，而不是
   按可重叠的 lifecycle stage 名称或调用者提示计算：45–64 级火/冰/电各 30%，65–79 级各 50%，
   80–89 级各 60%；45 级以下和 90 级以上不增加 Lifecycle 百分比门槛。90 级以上仍由 Judge 的
   60/30 终局规则负责，Lifecycle 不得再叠加 75% 满抗要求。
 - Create 的 Judge 反馈默认使用 `strict_mode=false`（`feedbackMode=hard_only`）：内部计算照常
-  执行，但对 Agent、可信 attempt、artifact、retry、Review 和 progression 只暴露确定性
+  执行，但对 Agent、可信 attempt、artifact、retry、Review 只暴露确定性
   `hardFailures`、`passed`、快照绑定和安全诊断，不返回 aggregate、quality band、
   playability/quality warning、reward、主观 caveat 或基于它们的自动结论。只有用户明确要求
   “严格模式”或调用方手动传 `strict_mode=true` 时，才可在本次 run 全程使用完整反馈；首个
@@ -116,9 +117,13 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   正式 Judge 与 artifact-bound lifecycle verification 仍是独立可信步骤。
 - `inspect_generation_checkpoint` 和 `evaluate_generation_candidate` 必须复用同一个无评分
   `HardLegalityAudit`。属性、装备/宝石等级、武器兼容、Spirit、普通与武器组天赋预算、黄装
-  词缀等确定性非法状态必须在写 Judge receipt 前拦截，返回 `attemptConsumed=false`，不能消耗
+  词缀、生成候选遗留的 `Scaffold ...` 装备和 rare/magic 装备缺少 `Item Level` 等确定性非法状态
+  必须在写 Judge receipt 前拦截，返回 `attemptConsumed=false`，不能消耗
   三次正式 Judge 额度。装备优化或升级探针也必须在临时换装后审计整个角色，并拒绝属性不足或
   已装备槽位消失的候选。
+- Phase 5 Agent 输出只需在顶层保存一次完整最终 candidate；每个 `generationAttempts` 可用
+  `prototypeBuildCandidate: {candidateId}` 简写。helper 必须以 attempt index、candidateId、可信
+  evaluation receipt 和 artifact-selection 交叉校验选中轮次，不得要求 Agent 在每轮重复候选正文。
 - `craft_item` 返回的 Perfect Essence、符文和腐化效果必须由 PoB `crafting_options` 派生的
   `craftReceiptRef` 证明；后续 `equip_item` 或批量 `equip_item` 必须原样传该引用。制作、
   装备写入、completeness、Judge 前共享审计和 artifact 保存统一使用来源感知物品合法性，不得
@@ -132,9 +137,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 精确 Family 查询必须检查 `familyRecordCoverage / familyRecordIndex /
   familyPremiseCatalog`。选中 Family 的关键失败 premise 必须在 `ResearchMemoryUse` 中标记
   `resolved/caveated/not_applicable`；resolved 只能引用本轮 record-detail 回执实际深读的解决
-  记录。普通单阶段 Create 与 progression target 共用该审计。caveated premise 不自动判 BD
-  失败，但 target 只能 `limited_accepted`，并把风险写入 TargetDesignCoverage 和路线报告。
-- 对所有 progression 阶段、目标与转型候选，机制完整且合法的基础版本形成后必须做一次符合当前
+  记录。caveated premise 不自动判 BD 失败，只降低采纳档位并把风险写入注意事项。
+- 机制完整且合法的基础版本形成后必须做一次符合当前
   等级的主动质量收尾，检查高影响武器、辅助、天赋路径、珠宝、符文/灵魂核心和配置。Judge 报警
   不是探索前提；只去重同一 state hash、同一目标和同一参数的机械调用，不缩小合理的优化搜索
   空间，也不拿终局数值阈值要求低等级阶段。
@@ -145,32 +149,17 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   已偏离来识别恢复。恢复必须有当前 MCP 进程内的精确 Judge 快照、同 state hash 合法性回执和显式
   `laterFindingsScope=candidate_delta_only`；后续发现若也影响 baseline、快照丢失或绑定不一致，
   必须失败关闭。
-- progression 的活动 lifecycle gate 使用默认 compact 响应，每个正式 Judge attempt 前最多一次；
+- lifecycle gate 使用默认 compact 响应，每个正式 Judge attempt 前最多一次；
   同一 state hash 不重复验证。artifact 保存后再独立且只执行一次 artifact-bound lifecycle。
   调参期间使用 `inspect_generation_checkpoint`，`detail=full` 只用于具名局部诊断。
-- 长 progression 不能依赖聊天历史保存 Research 条件。Create 查询使用紧凑 response profile，
-  选定的重要 evidence、条件、失败场景、验证任务和未解决项写入本地有界 working checkpoint；
-  压缩/重启后先读取 resume packet，再进行 PoB mutation。checkpoint 不保存隐藏推理或原始材料。
-- target anchor 和 progression stage 必须在保存前修复活动快照 lifecycle gate，并在保存后使用
+- Create 查询使用紧凑 response profile，
+  选定的重要 evidence、条件、失败场景、验证任务和未解决项写入本地有界 working checkpoint。
+- 目标与候选必须在保存前修复活动快照 lifecycle gate，并在保存后使用
   `verify_lifecycle_stage(..., artifact_id=...)` 生成可信回执。failed/unknown、篡改或跨
   artifact/stage 的回执不能绑定；调用者布尔值不能授权药剂或资源续航。
 - Phase 5 正常顺序是保存 artifact 后再消费 review。若旧任务误先消费 review，
   `save_final_build_artifact` 仍必须核对同一 candidate/attempt、精确 Judge snapshot 和语义
   state hash 后才能恢复保存；不得手工删除 review marker、可信 receipt 或运行锁。
-- progression 尚未完成但可信 target anchor 已绑定时，即使失败登记、暂停或审批层本身被阻断，
-  也可用 progression id 导出 `routeIncomplete=true` 的恢复包；不能零文件结束或称为完整路线。
-- 只有精确 `graphSnapshotId=unavailable:pending_discovery` 能在 target anchor 绑定时从可信
-  artifact 解析一次；必须在同一 progression id 内原子冻结，不能另开路线或消耗 target retry。
-  `StageCreatePacket.generationMemoryMode` 是阶段唯一事实源；run 绑定和阶段完成都要校验 manifest，
-  模式错误不推进 revision、不消耗 retry，原 claim 可继续绑定正确 run。
-- 新 progression 的 Family/Research 使用必须由 typed query receipt 验证。普通 Create 目标
-  anchor 没有 stage packet，其 `researchMemoryRef` 必须属于本次实际 progressive queries；
-  `family_exact` 阶段必须原样使用 claim 返回的 `StageCreatePacket.versionContext`，不能换成
-  后续临时 ref。实际采用的 Family/record/pattern/edge/fragment 必须真实出现在 receipt 结果中，
-  且 receipt 必须在当前 progression 启动后查询过。尚未升华、主要依靠联网开荒证据与
-  corpus/mechanics 公共知识的 `starter_common` 阶段不是成熟 Family：不得伪造升华 Family 或强求
-  精确 Research 命中，必须使用 typed `StarterStageIdentity`、StarterEvidenceUse 和公共知识引用。
-  已确认核心 secondary skill 的 key/name 仍必须匹配同一 artifact 的启用 tested skill group。
 - 能归入 Research schema 的知识不能写 Learning Memory；Memory correction 必须追加事件并保留
   do-not-repeat 历史。
 - 不要持久化或暴露第三方成熟 BD 的原始整角色材料：PoB code、raw XML、raw account/character
@@ -183,7 +172,7 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 ## 当前事实源
 
-- `AGENTS.md`：标准 agent 操作规则和工具地图。
+- `AGENTS.md`：标准 agent 操作规则、工具地图和变更审查 Checklist。
 - `CLAUDE.md`：轻量 Claude Code shim，指回本文件。
 - `docs/PROJECT_SPEC.md`：中文唯一项目总纲，维护方向、边界、Phase 关系和 Phase 状态。
 - `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.CN.md`：高层架构和数据流，唯一双语文档。
@@ -191,6 +180,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/JUDGE_SCORING_SYSTEM.md`：Judge 当前评分策略、证据分层、兼容逻辑和查询路径说明。
 - `docs/phases/`：中文唯一各阶段执行计划和验收标准。
 - `server/ASSISTANT_GUIDE.md`：通过 MCP 展示给 LLM client 的 runtime 指南。
+- `docs/research/`：研究流程的历史设计与方法归档（`MEMORY_SYSTEM_DESIGN.md`、
+  `EXTRACTION_METHOD.md`、`BD_KNOWLEDGE.md`、`AGENT_MEMORY_SYSTEM_RESEARCH.md`）；现行运行合同
+  以 `/poe-bd-research` skill、claim 的 `workerPrompt` 与 `review-contract` 为准。
 - `scripts/verify.ps1`：验证 profile。
 
 根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的
@@ -211,18 +203,24 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - touched module 使用 focused tests；
 - knowledge/MCP/lifecycle/doc 改动使用 `.\scripts\verify.ps1 quick`；
 - 跨范围非 engine 改动使用 `.\scripts\verify.ps1 noncompute`；
-- engine、PoB、optimizer、runtime packaging 或 release gate 才使用 `compute` / `full`；
-- `compute` / `full` 是重型 Headless PoB 认证入口，本地 Windows 经常运行 15 分钟以上。
-  调用这些 profile 时，外层命令超时必须至少给到 30 分钟（`1800000ms`）；10 分钟工具超时
-  只能说明外层预算不足，不能直接判定 compute suite 失败。`scripts/verify.ps1` 会为这些
-  profile 传入 30 分钟 pytest 单测试超时。
+- runtime packaging、release gate 和最终合并使用 `full`；`full` 明确排除重型
+  `tests/test_compute.py`，因此不会重复消耗十几分钟跑 PoB golden；
+- `compute` 只在直接修改 PoB 引擎、Lua bridge、数值计算或 optimizer 行为，或用户明确要求时
+  手动运行，不再是普通发布/合并门禁。它在 Windows 经常运行 15 分钟以上，调用时外层超时至少
+  30 分钟（`1800000ms`）。
 
 ## 工具 / 文件地图
 
 ### 入口
 
-- `server/main.py`：MCP server 和公开 tool 注册。只有实现已放在正确层级后，才在这里新
-  增用户可见 MCP tool。
+- `server/main.py`：MCP 工具实现的单一事实源（聚合 server `poe2-build-mcp` 保留，供测试与旧宿主配置兼容）。不要在聚合 server 之外新增重复工具实现。
+- `server/mcp/knowledge_server.py` / `build_server.py` / `research_server.py` / `learning_server.py`：
+  四个按域拆分的 MCP server 入口，各自 re-register `server/main.py` 中本域工具并携带各自的短 bootstrap
+   instructions。新工具先在 `server/main.py` 实现，再按归属加入对应入口的 `_TOOLS`（归属判据：是否触碰
+   活动 PoB 引擎——触碰则归 `build_server`，包括 artifact-bound lifecycle 验证；纯状态机归
+   learning 域；只读知识/研究查询归 knowledge；intake/propose/validate 归 research）。
+  归属变更必须同步 `tests/test_mcp_split.py` 的覆盖断言。
+- `server/MCP_*_BOOTSTRAP.md`：各 server 的短 instructions（几百字硬边界）；完整流程在 Skill 中。
 - `server/ASSISTANT_GUIDE.md`：通过 MCP instructions 交付给 LLM client 的 runtime 指南。
 - `server/BUILD_ADVICE.md`：由 `build_advice` 搜索的持久 BD 原则文本。
 
@@ -311,49 +309,28 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/learning/models.py`：FamilyTarget、盲测 Create packet、逐维 comparison、Memory、correction
   和 campaign state typed contracts。
 - `server/learning/case_store.py`：case-bound quarantine；原始 code/XML 只存在本地隔离目录。
-- `server/learning/memory.py`：Research SQLite 之外的本地 append-only Learning Memory、召回、修正
-  和防振荡。
+- `server/learning/memory.py`：Research SQLite 之外、由安全发布种子初始化的本地 append-only
+  Learning Memory、召回、修正和防振荡。只提交净化种子，不提交用户运行态文件。
 - `server/learning/service.py`：Phase 7 CAS、幂等、暂停、恢复、显式 phase retry、串行 case gate 和
   十案例趋势汇总。它不创建 Desktop task、不调用模型。
 - Reference/Profile 与 Comparator 使用同一可见任务；Create 必须是另一个任务。task/thread 创建与
   协调由 `$poe-bd-learning-loop` skill 完成。
 
-### Build Progression 层
+### Generation Provenance / Lifecycle 层
 
-- `server/generation/progression.py`：Phase 8 锚点 Route v3（兼容读取 v1/v2）、本地 manifest、
-  可信 `FinalBuildArtifact` 绑定和按 stage id 加载。
-- `server/generation/progression_research.py`：StarterResearchPacket intake、URL 哈希、安全
-  patch-scoped cache；它不联网、不写 Research/Memory。
-- `server/generation/progression_service.py`：Phase 8 CAS、幂等、暂停、恢复、阶段 run 绑定和
-  严格串行 gate；新状态先绑定普通 Create target anchor，目标前阶段各自运行 Phase 5，最后
-  target closure 不再启动 Create。它不创建 Desktop task、不调用模型。
-- `server/generation/progression_context.py`：独立 context revision 的临时语义工作集和
-  ResumePacket 输入合同；保存 selected Research premises 与简短决策，不保存 PoB/XML、网页、
-  对话或隐藏推理。
 - `server/generation/validation_checkpoint.py`：按语义 build-state hash 合并 completeness、
   preflight 和有界数值回读；只缓存安全结果。
-- `server/generation/progression_provenance.py`：读取已消费 Phase 5 安全 review；对
-  `family_exact` 阶段验证精确 Family query receipt 以及候选实际采用的 Research ID，对
-  `starter_common` 阶段保留 Starter/Web + corpus/mechanics provenance；不读取或返回 PoB XML。
+- `server/generation/progression_provenance.py`：普通 Create 的 Research receipt/premise 审计
+  （receipt run 内时效校验、family-premise 决策完整性）；不读取或返回 PoB XML。
 - `server/generation/progression_lifecycle.py`：保存并重新校验 artifact-bound lifecycle
   内容寻址回执；原始 artifact hash 与 PoB 恢复态 hash 分开记录，回执不保存 XML。
-- `server/generation/progression_costs.py`、`progression_delivery.py`：粗粒度 unique/craft effort
-  成本画像和完整成长包导出。
-- `server/MCP_BOOTSTRAP.md`：实际通过 MCP instructions 发送的短启动规则，避免延迟工具发现反复
-  注入完整 `ASSISTANT_GUIDE.md`；完整指南仍是人类可读 runtime 事实源。
+- `server/MCP_BOOTSTRAP.md`：legacy 聚合 server 的 instructions（`python -m server.main` 兼容入口
+  仍注入它）；四个拆分 server 各注入自己的 `server/MCP_{KNOWLEDGE,BUILD,RESEARCH,LEARNING}_BOOTSTRAP.md`。
+  均为几百字硬边界，避免延迟工具发现反复注入完整 `ASSISTANT_GUIDE.md`；完整指南仍是人类可读
+  runtime 事实源。
 - `server/runtime/tool_telemetry.py`：只记录工具名、耗时、响应字节和安全关联 ID 的上下文成本
   遥测；禁止记录参数正文和响应内容。
-- 完整成长流程的目标 anchor 和每个目标前重要里程碑必须分别拥有可信 Phase 5 artifact；目标
-  anchor 先由普通 Create 从空状态生成，最后目标阶段直接复用它。不能从终局 PoB 自动删点、
-  降级装备来伪造早期阶段。
-- 开荒与目标阶段只锁基础职业，允许不同升华、技能、天赋、装备和资源。外部 Agent 有界搜索
-  开荒资料；首个升华前及其他尚未形成成熟 Family 的阶段使用 `starter_common` 知识模式，
-  结构化保存技能职责、前提和排除条件；转型/目标阶段再启用 `family_exact` Research。程序只
-  验证安全摘要，社区攻略不能直接进入 Research 或 Learning Memory。
-- progression manifest 只保存有界 typed delta、transition bridge、安全 evidence/artifact facts
-  和引用；网页原文、完整 URL 与阶段 XML 不进入其中。
-- 价格只作风险和获取难度说明。转型必须由技能、升华、天赋、Spirit、资源、防御、必需物品和
-  Judge 等机制 readiness 决定，不能由价格档位自动触发。
+- 价格只作风险和获取难度说明。
 
 ### Live / Freshness 层
 
@@ -377,6 +354,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `scripts/smoke_*.py`：按子系统划分的 focused smoke checks。
 - `scripts/install_local_validated_runtime.py`：安装已认证 runtime data 到本地。
 - `scripts/build_bundle.py`：构建 `.mcpb` bundle。
+- `scripts/build_research_release_seed.py`：从本地成熟 Research 库导出 creator-safe、无运行态和本机
+  路径的发布种子。
+- `scripts/package_physical_graph_seed.py`：把最新验证物理图转换为不含绝对路径的发布种子。
+- `scripts/build_codex_plugin.py`：把服务、helper、依赖、语料、Research/graph 种子和 PoB 子集组装为
+  自包含 Codex 插件；必要种子缺失时失败关闭。
 - `data/mature_build_learning/seed_cases.json`：只保存 sanitized seed mature cases。
 - `data/reference_builds.json`：只保存校准摘要，不是模板。
 
@@ -390,8 +372,23 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `docs/phases/05_generation.md`：Agent 主导的 BD 生成原型、Judge 和人工验收。
 - `docs/phases/06_build_export.md`：官方 `.build` export。
 - `docs/phases/07_critic_loop.md`：同 Family/同等级对照学习循环与轻量自进化 Memory。
-- `docs/phases/08_build_progression.md`：用多个可信阶段 artifact 交付完整 BD 成长流程。
 - `docs/phases/09_scale_productization.md`：scale、revalidation 和后续 productization。
+
+## 变更审查 Checklist
+
+任何涉及代码、工具或知识合同的变更在合并前，按以下六维做一轮完整审查，禁止逐轮追加维度：
+
+- 正确性：改动逻辑、恢复/回滚语义、边界分支（含失败路径）逐行核验。
+- 实证：涉及数据/事实的断言（语料内容、引擎规则、数据源结构）必须先查数据源证实，禁止按
+  名称/底座做表层推断（反例：把 PoE2 Historic jewels 误判为 PoE1 遗留）。
+- 表述覆盖：全仓 grep 同源表述（docstring、note、skill、docs、BUILD_ADVICE 等持久文本），
+  不限于已知位置。
+- 消费方清单：新增工具/字段/枚举时，grep 所有消费方（manifest.json、bootstrap、打包脚本、
+  测试断言、文档工具表）；manifest.json tools 清单必须与工具总数一致。
+- 验证矩阵：每个改动文件明确由哪个测试档覆盖（quick / noncompute / compute / full）；
+  不存在"改了个没人测的文件"；Lua bridge 改动合并前必须手动跑 compute 档并覆盖新路径。
+- 边界声明：明确本轮交付的能力边界（如"能力闭环 vs 内容/数据闭环"）、运行期操作提示
+  （MCP 重启、发布时统一更新）。
 
 ## 编辑政策
 

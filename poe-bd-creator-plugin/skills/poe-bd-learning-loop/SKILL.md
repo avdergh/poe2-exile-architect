@@ -174,6 +174,11 @@ Create 提交成功后，回到 Reference 任务 claim `compare`：
 趋势只比较最初 3 例与最后 3 例，中间 4 例是持续学习过程；滚动窗口为 3。不额外运行 Holdout，
 不做逐案例 memory-on/off A/B。无论结果如何，都明确只有 10 例且没有 A/B，因此不是因果证明。
 
+保存最终趋势摘要后，调用
+`cleanup_completed_task_runtime(task_kind="learning_campaign", task_id=campaignId)`。它删除 campaign、
+quarantine、盲测 generation run 和内部 final artifact，只保留 Research Memory、Learning Memory
+及用户已经取得的报告；campaign 未完成时会拒绝清理。
+
 ## 对用户的输出
 
 不要转述原始来源、完整构筑镜像、child 长篇正文或 Memory JSON。报告：campaign/case、两个可见

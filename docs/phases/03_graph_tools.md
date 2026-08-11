@@ -155,7 +155,7 @@ Phase 2 已经提供以下可复用能力：
 - Graph retrieval vs text / vector retrieval 的质量对比属于 Phase 4 或之后；Phase 3 只验证 typed
   physical graph tools 的确定性、可解释性和防幻觉能力。
 - `query_synergy`、`find_archetype_subgraph` 这类语义 / archetype 查询属于 Phase 4 之后。
-- `adjust_weight`、reward weight update 属于 Phase 8。
+- `adjust_weight`、reward weight update 属于后续跨阶段优化。
 - 外部 agent 不获得 `upsert_node`、`upsert_edge` 或 raw graph write tool。
 - Graph tools 不替代 PoB / Judge 的最终 build-state legality；它们只提供 source-backed
   static facts 和可解释查询路径。

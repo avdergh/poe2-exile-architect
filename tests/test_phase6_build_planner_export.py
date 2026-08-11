@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from server.build_planner import exporter
 from server.generation import artifacts
+from server.knowledge import research_memory
 
 from tests.test_phase6_final_artifacts import _evaluate_passing
 from tests.test_phase5_generation_evaluation import _ActiveEngine
+
+
+@pytest.fixture(autouse=True)
+def _fresh_research_receipts(monkeypatch):
+    """Evaluate fail-fasts on run-fresh dq- receipts; default every test to a fresh one."""
+
+    def fake_reader(_self, _ref: str) -> dict[str, object]:
+        return {"lastSeenAt": datetime.now(timezone.utc).isoformat()}
+
+    monkeypatch.setattr(
+        research_memory.ResearchMemoryService,
+        "read_query_receipt",
+        fake_reader,
+    )
 
 
 def _saved_artifact(tmp_path: Path, monkeypatch) -> str:

@@ -67,6 +67,64 @@ def _num(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
+def _canonical_slot(slot: str) -> str:
+    """Map caller-friendly slot aliases onto the engine's slot names.
+
+    PoB models the Quiver as the off-hand weapon slot ("Weapon 2"); crafting/optimizing with the
+    display name "Quiver" silently fails inside eval_items/add_item unless normalized here.
+    """
+    if str(slot).strip() in {"Quiver", "Arrow Quiver"}:
+        return "Weapon 2"
+    return slot
+
+
+_ATTRIBUTE_MOD_QUERIES = {
+    "strength": "to Strength",
+    "dexterity": "to Dexterity",
+    "intelligence": "to Intelligence",
+}
+
+
+def _attribute_bridge_suggestions(
+    shortfalls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Suggest a real +attribute suffix that bridges a projected whole-build shortfall.
+
+    Planning-mode helper: when an optimized item is legal in isolation but the current character
+    cannot equip it yet (attribute chicken-and-egg), name the smallest real bridge mod so the
+    caller can order gear assembly instead of guessing.
+    """
+    suggestions: list[dict[str, Any]] = []
+    for shortfall in shortfalls:
+        attribute = str(shortfall.get("attribute") or "")
+        missing = shortfall.get("shortfall")
+        query = _ATTRIBUTE_MOD_QUERIES.get(attribute)
+        if not query or not isinstance(missing, (int, float)) or missing <= 0:
+            continue
+        best: tuple[int, str, str] | None = None
+        for mod in db.search_mods(query, mod_type="suffix", limit=30):
+            text = str(mod.get("text") or "")
+            match = re.search(r"\+(\d+)\s*to\s*" + re.escape(attribute.capitalize()), text)
+            if match:
+                amount = int(match.group(1))
+                if best is None or amount > best[0]:
+                    best = (amount, text, str(mod.get("name") or ""))
+        if best is not None:
+            suggestions.append(
+                {
+                    "attribute": attribute,
+                    "shortfall": round(float(missing), 1),
+                    "suggestedMod": best[1],
+                    "suggestedModName": best[2],
+                    "bridgeNote": (
+                        f"equip a {best[1]} bridge piece (or allocate an attribute node) before "
+                        "crafting/equipping the high-requirement item; then re-run this craft"
+                    ),
+                }
+            )
+    return suggestions
+
+
 def _round2(x: Any) -> Any:
     return round(x, 2) if _num(x) else x
 
@@ -152,6 +210,7 @@ def optimize_item(
     goals: dict[str, float] | None = None,
     extra_mods: dict[str, list[dict[str, Any]]] | None = None,
     special_affix_sources: dict[str, dict[str, Any]] | None = None,
+    planning: bool = False,
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare for a single `metric`, or a weighted blend via `goals`.
 
@@ -162,6 +221,7 @@ def optimize_item(
     candidate affixes beyond the base's natural pool — used by the crafting layer to offer
     essence-only mods (e.g. a Perfect Essence's % Life on body armour). See the module docstring.
     """
+    slot = _canonical_slot(slot)
     build = engine.get_build()
     gear = build.get("gear") or {}
     if not base:
@@ -236,7 +296,16 @@ def optimize_item(
             res = engine.eval_items(
                 slot, [_item_text(base, ls, slot, ilvl=ilvl) for ls in line_sets], keys=keys
             )["results"]
-            return [r if isinstance(r, dict) else {} for r in res]
+            # A candidate that failed to parse/equip comes back as `false` from the engine bridge.
+            # Do NOT silently treat it as "no change": an all-failed batch means the slot/base is
+            # not craftable here and the caller must hear that instead of receiving a blank item.
+            failed = sum(1 for r in res if not isinstance(r, dict))
+            if failed:
+                raise ValueError(
+                    f"eval_items failed to equip {failed}/{len(res)} candidate(s) for slot "
+                    f"'{slot}' on base '{base}' — the slot may not be craftable via this tool"
+                )
+            return res
 
         # Bare base = the craft's starting point; relative gains in `goals` mode are measured from it.
         base_stats = stats_of([[]])[0]
@@ -344,7 +413,20 @@ def optimize_item(
                 "base": base,
                 "legalityCheck": legality,
             }
-        engine.add_item(final, slot=slot)
+        add_result = engine.add_item(final, slot=slot)
+        if not isinstance(add_result, dict) or not add_result.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "optimized_item_equip_failed",
+                "error": (
+                    "The optimized candidate could not be equipped into slot '{slot}' "
+                    "(engine rejected the item text or the slot). "
+                    + str((add_result or {}).get("error") or "no engine detail")
+                ),
+                "slot": slot,
+                "base": base,
+                "rejectedCandidate": final,
+            }
         candidate_xml = engine.get_xml()
         candidate_build = engine.get_build()
         after_equipped_slots = _equipped_slots(candidate_build)
@@ -369,6 +451,32 @@ def optimize_item(
             *legality_regression["reasons"],
         ]
         if rejection_reasons:
+            attribute_only = all(
+                isinstance(reason, dict) and reason.get("code") == "attribute_requirement_unmet"
+                for reason in rejection_reasons
+            )
+            if planning and attribute_only:
+                shortfalls = (
+                    (whole_build_legality.get("checks") or {}).get("attributes") or {}
+                ).get("shortfalls") or []
+                return {
+                    "ok": False,
+                    "errorCode": "whole_build_legality_check_failed",
+                    "planning": True,
+                    "error": (
+                        "The optimized item needs attribute bridging before the current character "
+                        "can equip it (planning mode: the candidate is preserved for chain "
+                        "planning, not equipped)."
+                    ),
+                    "slot": slot,
+                    "base": base,
+                    "rejectedCandidate": final,
+                    "rejectionReasons": rejection_reasons,
+                    "projectedShortfalls": shortfalls,
+                    "bridgeAffixSuggestions": _attribute_bridge_suggestions(shortfalls),
+                    "wholeBuildLegality": whole_build_legality,
+                    "legalityRegression": legality_regression,
+                }
             return {
                 "ok": False,
                 "errorCode": "whole_build_legality_check_failed",
@@ -419,6 +527,14 @@ def optimize_item(
                 "item is blank; pick a slot/metric the skill actually moves, or optimize a defensive "
                 "metric (e.g. TotalEHP) on this slot instead."
             )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "errorCode": "optimized_item_eval_failed",
+            "error": str(exc),
+            "slot": slot,
+            "base": base,
+        }
     finally:
         engine.load_build_xml(snapshot)
 
@@ -674,7 +790,8 @@ def optimize_jewel(
         "note": (
             "Best jewel by marginal gain (jewel mods are ~independent). Socket it with equip_jewel "
             "into an ALLOCATED tree socket (list_jewel_sockets). Verify your jewel base's affix limit "
-            "— some hold fewer than 3 prefix / 3 suffix. Radius/Time-Lost jewels aren't modelled here."
+            "— some hold fewer than 3 prefix / 3 suffix. Radius/Time-Lost jewels aren't modelled "
+            "here — evaluate them positionally with evaluate_jewel_socket."
         ),
     }
     if weights:
@@ -710,6 +827,28 @@ def _attr_bias(engine: PobEngine) -> str:
     st = engine.get_stats(["Str", "Dex", "Int"]).get("stats") or {}
     by = {"str": st.get("Str") or 0, "dex": st.get("Dex") or 0, "int": st.get("Int") or 0}
     return max(by, key=lambda k: by[k])
+
+
+# Allocated passives whose value depends on the BASE TYPE of a gear slot. plan_gear must respect
+# these when auto-basing a from-scratch set, or it plans a coherent-but-wrong defence layer
+# (e.g. an armour chest that starves Spectral Ward's evasion→ES conversion).
+_DEFENSE_LAYER_NOTABLE_BIAS = {
+    "Spectral Ward": {"Body Armour": "dex"},  # evasion chest feeds the conversion
+    "Subterfuge Mask": {"Helmet": "int"},  # ES helmet feeds evasion conversion
+    "Iron Reflexes": {"Body Armour": "str", "Helmet": "str"},
+}
+
+
+def _defense_layer_bias(build: dict[str, Any]) -> dict[str, str]:
+    """Map allocated passives onto per-slot base-attribute preferences ({slot: 'str'|'dex'|'int'})."""
+    notables = {str(name) for name in build.get("notables") or []}
+    keystones = {str(name) for name in build.get("keystones") or []}
+    triggers = notables | keystones
+    bias: dict[str, str] = {}
+    for passive_name, slot_attr in _DEFENSE_LAYER_NOTABLE_BIAS.items():
+        if passive_name in triggers:
+            bias.update(slot_attr)
+    return bias
 
 
 def _marginal_craft(
@@ -808,7 +947,11 @@ def plan_gear(
     )
     defense_weight = float(profile["defenseWeight"])
     def_goal = {"TotalEHP": defense_weight, "TotalDPS": round(1.0 - defense_weight, 3)}
-    order = list(slots) if slots else list(_OFFENSE_SLOTS) + list(_DEFENSE_SLOTS)
+    order = (
+        [_canonical_slot(str(s)) for s in slots]
+        if slots
+        else list(_OFFENSE_SLOTS) + list(_DEFENSE_SLOTS)
+    )
     gear = build.get("gear") or {}
 
     snapshot = engine.get_xml()
@@ -816,16 +959,24 @@ def plan_gear(
     skipped: list[dict[str, str]] = []
     rejected_illegal: list[dict[str, Any]] = []
     slot_base: dict[str, str] = {}
+    base_direction: dict[str, str] = {}
     try:
-        attr = _attr_bias(engine) if auto_base else "int"
+        dominant_attr = _attr_bias(engine) if auto_base else "int"
+        layer_bias = _defense_layer_bias(build)
         for slot in order:
             cur = gear.get(slot)
             if isinstance(cur, dict) and cur.get("base"):
                 base: str | None = cur["base"]
             elif auto_base and slot in _AUTO_BASE_CLASS:
                 # AUTO-BASE an empty armour/jewellery slot so a from-scratch build gets a whole set.
-                base = db.pick_base(_AUTO_BASE_CLASS[slot], attr, max_drop_level=character_level)
+                # Allocated defence passives (Spectral Ward / Subterfuge Mask / Iron Reflexes) can
+                # override the dominant-attribute base so the planned layer actually feeds them.
+                slot_attr = layer_bias.get(slot, dominant_attr)
+                base = db.pick_base(
+                    _AUTO_BASE_CLASS[slot], slot_attr, max_drop_level=character_level
+                )
                 if base:
+                    base_direction[slot] = slot_attr
                     engine.add_item(
                         _item_text(base, [], slot, ilvl=item_level), slot=slot
                     )  # bare base; crafted below
@@ -940,12 +1091,30 @@ def plan_gear(
     if min_ehp:
         projected["minEHP"] = min_ehp
         projected["ehpFloorMet"] = ehp_floor_met
+    conflict_warnings: list[str] = []
+    if layer_bias:
+        tree_triggers = sorted(
+            name
+            for name in {
+                *{str(n) for n in build.get("notables") or []},
+                *{str(k) for k in build.get("keystones") or []},
+            }
+            if name in _DEFENSE_LAYER_NOTABLE_BIAS
+        )
+        for slot_name, biased_attr in sorted(layer_bias.items()):
+            if biased_attr != dominant_attr:
+                conflict_warnings.append(
+                    f"{slot_name} planned with {biased_attr} bases because the tree allocates "
+                    f"{tree_triggers} — the build's dominant attribute is {dominant_attr}"
+                )
     return {
         "ok": True,
         "plan": plan,
         "skipped": skipped,
         "rejectedIllegalCandidates": rejected_illegal,
         "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
+        "baseDirection": base_direction,
+        "conflictWarnings": conflict_warnings,
         "stageProfile": profile,
         "itemLevel": item_level,
         "projected": projected,
@@ -957,4 +1126,62 @@ def plan_gear(
             "chaos_resist_target only when the content or build identity warrants it. Read-only — "
             "equip the plan's items with equip_item. Greedy, not a global optimum."
         ),
+    }
+
+
+def evaluate_jewel_socket(
+    engine: PobEngine,
+    *,
+    socket: int,
+    raw: str,
+    keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """Read-only: measure ONE candidate jewel (raw PoB item text) placed in ONE tree socket.
+
+    Unlike optimize_jewel (rare-only, global mods), this evaluates the actual equipped state:
+    radius/Time-Lost jewels are placed in the socket and their positional grants over the
+    radius' allocated passives are computed by the engine. The build is restored afterwards.
+    `keys` defaults to damage + pool stats; deltas are vs the CURRENT build (so re-run after
+    equipping a chosen jewel to compare against the new baseline).
+    """
+    keys = list(keys) if keys else ["TotalDPS", "TotalEHP", "Life", "EnergyShield"]
+    slot = f"Jewel {socket}"
+    base = engine.get_stats(keys)
+    base_stats = base.get("stats") if isinstance(base, dict) else {}
+    if not isinstance(base_stats, dict):
+        return {
+            "ok": False,
+            "error": "engine returned no stats for the current build",
+            "socket": socket,
+        }
+    result = engine.eval_items(slot=slot, items=[raw], keys=keys)
+    results = result.get("results") if isinstance(result, dict) else None
+    candidate = results[0] if results else None
+    if not isinstance(candidate, dict):
+        return {
+            "ok": False,
+            "error": "candidate jewel failed to parse or equip in this socket",
+            "socket": socket,
+        }
+    deltas: dict[str, float] = {}
+    for key in keys:
+        before = base_stats.get(key)
+        after = candidate.get(key)
+        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+            deltas[key] = round(float(after) - float(before), 6)
+    return {
+        "ok": True,
+        "socket": socket,
+        "keys": keys,
+        "baseStats": {k: base_stats.get(k) for k in keys},
+        "candidateStats": {k: candidate.get(k) for k in keys},
+        "deltas": deltas,
+        "note": (
+            "Read-only probe: the build was restored. Radius/Time-Lost grants are computed over "
+            "the socket radius' allocated passives; an UNALLOCATED socket yields deltas near 0 — "
+            "allocate the socket (alloc_passive) first, then evaluate. Deltas are vs the current "
+            "build state."
+        ),
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
     }

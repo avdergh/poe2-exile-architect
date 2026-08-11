@@ -86,6 +86,12 @@ def audit_build(
     if not item_affixes.get("ok"):
         failures.append("illegal_equipped_item_affixes")
 
+    generated_item_delivery = check_generated_item_delivery(
+        build,
+        source_context=source_context,
+    )
+    failures.extend(generated_item_delivery["hardFailures"])
+
     spirit_used = _num(build.get("spiritUsed")) if build.get("spiritUsed") is not None else None
     spirit_available = (
         _num(build.get("spiritAvailable")) if build.get("spiritAvailable") is not None else None
@@ -139,9 +145,58 @@ def audit_build(
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
             "equippedItemAffixes": item_affixes,
+            "generatedItemDelivery": generated_item_delivery,
         },
         "sourceContext": source_context,
         "noRawMaterial": True,
+    }
+
+
+def check_generated_item_delivery(
+    build: dict[str, Any],
+    *,
+    source_context: str,
+) -> dict[str, Any]:
+    """Block deterministic delivery omissions only for newly generated candidates.
+
+    The default ``source_context="generated_candidate"`` also applies to the whole-build
+    audits run by ``optimize_item``/``craft_item``: pre-existing scaffold or missing
+    Item-Level states there serve only as the regression baseline and never block the
+    probe by themselves — a candidate is rejected only when it introduces a NEW delivery
+    violation (matching the AGENTS.md deterministic-illegality gate). Callers that audit
+    trusted reference material should pass ``source_context="trusted_reference"``.
+    """
+
+    if source_context != "generated_candidate":
+        return {
+            "ok": True,
+            "applicable": False,
+            "scaffoldSlots": [],
+            "missingItemLevelSlots": [],
+            "hardFailures": [],
+        }
+    gear = build.get("gear") if isinstance(build.get("gear"), dict) else {}
+    scaffold_slots: list[str] = []
+    missing_item_level_slots: list[str] = []
+    for slot, item in gear.items():
+        if not isinstance(item, dict):
+            continue
+        if item.get("isScaffold") is True:
+            scaffold_slots.append(str(slot))
+        rarity = str(item.get("rarity") or "").casefold()
+        if rarity in {"rare", "magic"} and item.get("itemLevel") is None:
+            missing_item_level_slots.append(str(slot))
+    failures: list[str] = []
+    if scaffold_slots:
+        failures.append("scaffold_gear_must_be_replaced")
+    if missing_item_level_slots:
+        failures.append("rare_or_magic_item_level_missing")
+    return {
+        "ok": not failures,
+        "applicable": True,
+        "scaffoldSlots": sorted(scaffold_slots),
+        "missingItemLevelSlots": sorted(missing_item_level_slots),
+        "hardFailures": failures,
     }
 
 
@@ -320,6 +375,25 @@ def attribute_shortfalls(build: dict[str, Any]) -> list[dict[str, Any]]:
         "dexterity": ("dexterity", "dex", "Dex"),
         "intelligence": ("intelligence", "int", "Int"),
     }
+    contributors_by_attribute: dict[str, list[dict[str, Any]]] = {}
+    for source in build.get("attributeRequirementSources") or []:
+        if not isinstance(source, dict):
+            continue
+        source_name = str(source.get("source") or "")
+        kind = str(source.get("kind") or "item")
+        if not source_name:
+            continue
+        for attribute, keys in aliases.items():
+            required = _first_present_number(source, keys)
+            if required <= 0:
+                continue
+            contributors_by_attribute.setdefault(attribute, []).append(
+                {
+                    "source": source_name,
+                    "kind": kind,
+                    "required": required,
+                }
+            )
     output: list[dict[str, Any]] = []
     for attribute, keys in aliases.items():
         required = _first_present_number(reqs, keys)
@@ -327,14 +401,20 @@ def attribute_shortfalls(build: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         available = _first_present_number(attrs, keys)
         if available < required:
-            output.append(
-                {
-                    "attribute": attribute,
-                    "available": available,
-                    "required": required,
-                    "shortfall": required - available,
-                }
-            )
+            entry: dict[str, Any] = {
+                "attribute": attribute,
+                "available": available,
+                "required": required,
+                "shortfall": required - available,
+            }
+            contributors = contributors_by_attribute.get(attribute)
+            if contributors:
+                entry["contributors"] = sorted(
+                    contributors,
+                    key=lambda item: item["required"],
+                    reverse=True,
+                )[:8]
+            output.append(entry)
     return output
 
 

@@ -225,6 +225,12 @@ def apply_build_mutation_batch(
                 **_rejected("build_state_conflict", batch_kind=batch_kind),
                 "expectedStateHash": expected_state_hash,
                 "actualStateHash": input_hash,
+                "recoveryHint": (
+                    "The active build changed since your expected state (any mutating tool — "
+                    "equip_item, add_skill_group, plan_gear, set_config, etc. — updates the "
+                    "state hash). Re-read the latest outputStateHash / stateHash from your "
+                    "previous call and pass it as expected_state_hash."
+                ),
             }
 
         step_results: list[dict[str, Any]] = []
@@ -258,6 +264,15 @@ def apply_build_mutation_batch(
                     failed_operation=operation.operation,
                     error_code=str(raw_result.get("errorCode") or "mutation_operation_rejected"),
                     step_results=step_results,
+                    failure_details={
+                        "engineError": str(raw_result.get("error") or "")
+                        or "engine rejected the operation without a message",
+                        **(
+                            {"legalityIssues": raw_result.get("legalityCheck", {}).get("issues")}
+                            if isinstance(raw_result.get("legalityCheck"), dict)
+                            else {}
+                        ),
+                    },
                 )
             semantic_error, semantic_details = _operation_postcondition_error(
                 batch_kind=batch_kind,
@@ -458,16 +473,32 @@ def _validate_item_slots(
             continue
         if operation.slot is None:
             return "mutation_batch_explicit_item_slot_required"
-        if operation.slot in allowed_slots:
-            continue
-        if (
-            allow_jewel_slots
-            and operation.operation == "unequip_item"
-            and _JEWEL_SLOT.fullmatch(operation.slot)
-        ):
-            continue
-        return "mutation_batch_item_slot_outside_scope"
+        if operation.slot not in allowed_slots:
+            if (
+                allow_jewel_slots
+                and operation.operation == "unequip_item"
+                and _JEWEL_SLOT.fullmatch(operation.slot)
+            ):
+                continue
+            return "mutation_batch_item_slot_outside_scope"
+        if operation.operation == "equip_item" and _is_quiver_item(operation.raw):
+            # AGENTS.md: quivers map to the engine slot "Weapon 2" and are whitelisted in no
+            # batch scope; they must go through the standalone equip_item tool.
+            return "mutation_batch_quiver_requires_direct_equip"
     return None
+
+
+def _is_quiver_item(raw: str | None) -> bool:
+    """Best-effort quiver detection from PoB item text; unparseable text never blocks."""
+    if not raw:
+        return False
+    try:
+        from server.knowledge import itemparse
+
+        parsed = itemparse.parse_item(raw)
+    except Exception:  # pragma: no cover - defensive; parse failures must not block batches
+        return False
+    return str(parsed.get("itemClass") or "").casefold() == "quiver"
 
 
 def _duplicate_operation_selector(

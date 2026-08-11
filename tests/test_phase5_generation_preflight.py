@@ -189,6 +189,49 @@ def test_lifecycle_skill_evidence_reads_ascendancy_supports_and_named_duty():
     }
 
 
+def test_resource_model_gap_detects_mana_remnants_skill_group():
+    groups = _group(active_name="Ice Shot", active_id="SkillGemIceShot") + _group(
+        active_name="Mana Remnants",
+        active_id="SkillGemManaRemnants",
+    )
+
+    result = preflight.inspect_resource_model_gap(_xml(groups), {})
+
+    assert result["detected"] is True
+    assert "mana_remnants" in result["mechanismKeys"]
+    assert "Mana Remnants" in result["mechanismNames"]
+    assert result["evidenceSource"] == "active_snapshot_and_gear_readback"
+
+
+def test_resource_model_gap_detects_lavianga_spirits_flask():
+    gear = {
+        "Flask 1": {"name": "Ultimate Life Flask", "base": "Ultimate Life Flask"},
+        "Flask 2": {
+            "name": "Lavianga's Spirits",
+            "base": "Gargantuan Mana Flask",
+        },
+    }
+
+    result = preflight.inspect_resource_model_gap(_xml(_group()), gear)
+
+    assert result["detected"] is True
+    assert "lavianga_spirits" in result["mechanismKeys"]
+    assert result["mechanismNames"] == ["Lavianga's Spirits"]
+
+
+def test_resource_model_gap_empty_without_unmodelled_mechanisms():
+    gear = {
+        "Flask 1": {"name": "Ultimate Life Flask", "base": "Ultimate Life Flask"},
+        "Flask 2": {"name": "Ultimate Mana Flask", "base": "Ultimate Mana Flask"},
+    }
+
+    result = preflight.inspect_resource_model_gap(_xml(_group()), gear)
+
+    assert result["detected"] is False
+    assert result["mechanismKeys"] == []
+    assert result["mechanismNames"] == []
+
+
 def test_lifecycle_skill_evidence_does_not_accept_unmatched_named_duty():
     result = preflight.inspect_lifecycle_skill_evidence(
         _xml(_group(active_name="Storm Wave")),

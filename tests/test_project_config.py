@@ -21,6 +21,9 @@ def test_verification_script_exposes_layered_profiles():
     assert "tests/test_server.py" in script
     assert "--ignore=tests/test_compute.py" in script
     assert "tests/test_compute.py" in script
+    full_block = script.split('"full" {', maxsplit=1)[1].split('"lint" {', maxsplit=1)[0]
+    assert "--ignore=tests/test_compute.py" in full_block
+    assert "ComputePytestTimeoutSeconds" not in full_block
 
 
 def test_compute_profile_documents_long_runtime_timeout_budget():

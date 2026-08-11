@@ -290,6 +290,23 @@ def list_final_build_artifacts() -> dict[str, Any]:
     }
 
 
+def mark_final_build_delivery_complete(artifact_id: str) -> bool:
+    """Record that every required user-facing file was exported for this artifact."""
+
+    found = _find_artifact(artifact_id)
+    if found is None:
+        return False
+    artifact_dir, manifest = found
+    marker = {
+        "schemaVersion": 1,
+        "artifactId": manifest.artifact_id,
+        "runId": manifest.run_id,
+        "deliveredAt": datetime.now(timezone.utc).isoformat(),
+        "containsRawPob": False,
+    }
+    return run_store.write_json_atomic(artifact_dir / "delivery-complete.json", marker)
+
+
 def load_final_build_artifact(active_engine: Any, *, artifact_id: str) -> dict[str, Any]:
     found = _find_artifact(artifact_id)
     if found is None:

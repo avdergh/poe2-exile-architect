@@ -321,6 +321,70 @@ def test_canonical_multi_attempt_review_rejects_malformed_artifact_selection():
     assert canonical["errorCode"] == "artifact_selection_receipt_mismatch"
 
 
+def test_canonical_multi_attempt_review_accepts_candidate_id_shorthand():
+    payload, receipts = _retry_payload("no_memory")
+    for attempt in payload["generationAttempts"]:
+        candidate = attempt["prototypeBuildCandidate"]
+        attempt["prototypeBuildCandidate"] = {
+            "candidateId": candidate["candidate_id"],
+            "primarySkillIntent": candidate["primary_skill_intent"],
+        }
+    selected_index = 1
+    artifact_selection = {
+        "schemaVersion": 1,
+        "runId": "run:test",
+        "artifactId": "final-build:test",
+        "candidateId": receipts[selected_index]["candidateId"],
+        "selectedAttemptIndex": selected_index,
+        "selectedEvaluationRef": f"run:run:test:attempt:{selected_index}",
+        "selectionOutcome": "latest_passing_attempt_selected",
+        "laterFindingsScope": "not_applicable",
+    }
+
+    canonical = canonicalize.canonicalize_agent_output(
+        payload,
+        receipts,
+        artifact_selection=artifact_selection,
+    )
+
+    assert canonical["status"] == "accepted"
+    assert canonical["payload"]["generationAttempts"][0]["prototypeBuildCandidate"] == {
+        "candidateId": receipts[0]["candidateId"]
+    }
+    reviewed = prototype.validate_and_build_human_review_packet(
+        canonical["payload"],
+        trusted_evaluation=True,
+    )
+    assert reviewed["status"] == "accepted"
+    retry_result = retry.validate_and_build_retry_report(
+        reviewed["humanReviewPacket"],
+        {"experimentContext": {"memoryMode": "no_memory", "maxRetryCount": 2}},
+        receipts,
+        run_id="run:test",
+    )
+    assert retry_result["status"] == "accepted"
+    assert retry_result["retryComparisonReport"]["selectedAttemptIndex"] == selected_index
+
+
+def test_canonical_compact_selected_attempt_still_rejects_wrong_candidate_id():
+    payload, receipts = _retry_payload("no_memory")
+    payload["generationAttempts"][1]["prototypeBuildCandidate"] = {"candidateId": "candidate:wrong"}
+
+    canonical = canonicalize.canonicalize_agent_output(
+        payload,
+        receipts,
+        artifact_selection={
+            "runId": "run:test",
+            "candidateId": receipts[1]["candidateId"],
+            "selectedAttemptIndex": 1,
+            "selectedEvaluationRef": "run:run:test:attempt:1",
+        },
+    )
+
+    assert canonical["status"] == "rejected"
+    assert canonical["errorCode"] == "trusted_evaluation_mismatch"
+
+
 def test_no_memory_mode_rejects_research_memory_usage():
     payload, receipts = _retry_payload("memory_assisted")
     reviewed = prototype.validate_and_build_human_review_packet(payload, trusted_evaluation=True)

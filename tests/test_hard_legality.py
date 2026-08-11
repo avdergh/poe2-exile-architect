@@ -134,6 +134,60 @@ def test_hard_legality_accepts_a_fully_legal_candidate():
     assert result["hardFailures"] == []
 
 
+@pytest.mark.parametrize(
+    ("item", "failure", "slot_key"),
+    [
+        (
+            {
+                "name": "Scaffold Body Armour",
+                "rarity": "rare",
+                "itemLevel": 85,
+                "isScaffold": True,
+                "affixLegality": {"ok": True, "issues": []},
+            },
+            "scaffold_gear_must_be_replaced",
+            "scaffoldSlots",
+        ),
+        (
+            {
+                "name": "Generated Ring",
+                "rarity": "rare",
+                "itemLevel": None,
+                "isScaffold": False,
+                "affixLegality": {"ok": True, "issues": []},
+            },
+            "rare_or_magic_item_level_missing",
+            "missingItemLevelSlots",
+        ),
+    ],
+)
+def test_generated_candidate_delivery_omissions_are_hard_failures(item, failure, slot_key):
+    build = _legal_build()
+    build["gear"]["Body Armour"] = item
+
+    result = hard_legality.audit_build(build, source_context="generated_candidate")
+
+    assert result["hardLegalityReady"] is False
+    assert failure in result["hardFailures"]
+    assert result["checks"]["generatedItemDelivery"][slot_key] == ["Body Armour"]
+
+
+def test_reference_build_does_not_inherit_generated_delivery_metadata_gates():
+    build = _legal_build()
+    build["gear"]["Body Armour"] = {
+        "name": "Scaffold Body Armour",
+        "rarity": "rare",
+        "itemLevel": None,
+        "isScaffold": True,
+        "affixLegality": {"ok": True, "issues": []},
+    }
+
+    result = hard_legality.audit_build(build, source_context="trusted_reference")
+
+    assert "scaffold_gear_must_be_replaced" not in result["hardFailures"]
+    assert "rare_or_magic_item_level_missing" not in result["hardFailures"]
+
+
 def test_legality_regression_does_not_blame_an_unchanged_preexisting_shortfall():
     before_build = _legal_build()
     before_build["attributes"]["intelligence"] = 72

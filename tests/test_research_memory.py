@@ -249,17 +249,18 @@ def test_trigger_host_and_payload_form_a_deterministic_family_pair():
     ]
     automatic = research_identity.infer_build_family([trigger_record])
     trigger_record["typed_payload"] = {"familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"]}
-    manually_repeated = research_identity.infer_build_family([trigger_record])
+    explicitly_declared = research_identity.infer_build_family([trigger_record])
 
     assert automatic is not None
-    assert automatic.secondary_skill_keys == (
+    assert automatic.secondary_skill_keys == ("skill:CometPlayer",)
+    assert explicitly_declared is not None
+    assert explicitly_declared.secondary_skill_keys == (
         "skill:CometPlayer",
         "skill:MetaCastOnCritPlayer",
     )
-    assert manually_repeated == automatic
 
 
-def test_trigger_host_delivering_primary_payload_is_part_of_family_identity():
+def test_trigger_host_enters_family_identity_only_when_declared():
     trigger_record = _deep_record_payload()["deep_research_records"][0]
     trigger_record["record_kind"] = "skill_package"
     trigger_record["ascendancy_key"] = "ascendancy:druid:oracle"
@@ -269,13 +270,14 @@ def test_trigger_host_delivering_primary_payload_is_part_of_family_identity():
         {"role": "trigger_host", "component_key": "skill:MetaCastOnCritPlayer"},
     ]
 
-    family = research_identity.infer_build_family([trigger_record])
+    automatic = research_identity.infer_build_family([trigger_record])
+    assert automatic is not None
+    assert automatic.secondary_skill_keys == ()
 
-    assert family is not None
-    assert family.secondary_skill_keys == (
-        "skill:MetaCastOnCritPlayer",
-        "skill:MetaSpellslingerPlayer",
-    )
+    trigger_record["typed_payload"] = {"familyCoreSkillKeys": ["skill:MetaCastOnCritPlayer"]}
+    declared = research_identity.infer_build_family([trigger_record])
+    assert declared is not None
+    assert declared.secondary_skill_keys == ("skill:MetaCastOnCritPlayer",)
 
 
 def test_unpaired_trigger_host_does_not_change_family_identity():
@@ -319,10 +321,7 @@ def test_modelability_caveat_payload_does_not_change_family_identity():
     family = research_identity.infer_build_family([primary, caveat])
 
     assert family is not None
-    assert family.secondary_skill_keys == (
-        "skill:CometPlayer",
-        "skill:MetaCastOnCritPlayer",
-    )
+    assert family.secondary_skill_keys == ("skill:CometPlayer",)
 
 
 def test_resource_knowledge_identity_uses_structured_mechanisms_without_graph_nodes():
@@ -1512,6 +1511,64 @@ def test_same_source_accepted_revision_can_replace_longer_canonical_prose(tmp_pa
         con.close()
 
 
+def test_sibling_family_hints_flag_same_primary_different_secondary(tmp_path):
+    from server.knowledge import mature_learning, research_memory
+
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+        initialize_store=True,
+    )
+    now = research_memory._now()
+    con = mature_learning.connect(service.db_path)
+    con.execute(
+        """
+        INSERT INTO research_build_families(
+            build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+            evidence_count, created_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            "bf-alpha",
+            "ascendancy:mercenary:gemling_legionnaire",
+            "skill:TwisterPlayer",
+            '["skill:FrostWallPlayer"]',
+            now,
+            now,
+        ),
+    )
+    con.execute(
+        """
+        INSERT INTO research_build_families(
+            build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+            evidence_count, created_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            "bf-beta",
+            "ascendancy:mercenary:gemling_legionnaire",
+            "skill:TwisterPlayer",
+            "[]",
+            now,
+            now,
+        ),
+    )
+    con.commit()
+
+    hints = research_memory._sibling_family_hints(con, {"bf-beta"})
+    con.close()
+
+    assert hints == [
+        {
+            "familyKey": "bf-beta",
+            "ascendancyKey": "ascendancy:mercenary:gemling_legionnaire",
+            "primarySkillKey": "skill:TwisterPlayer",
+            "siblingFamilyKey": "bf-alpha",
+            "siblingSecondarySkillKeys": ["skill:FrostWallPlayer"],
+        }
+    ]
+
+
 def test_defense_engine_identity_keeps_distinct_unique_enablers_separate():
     first = _deep_record_payload("第一个防御方案由独立暗金提供关键防御基底。")
     first_record = first["deep_research_records"][0]
@@ -1794,22 +1851,30 @@ def test_historical_backfill_supersedes_only_high_confidence_duplicates(tmp_path
 
     report = service.backfill_deep_research_knowledge(force=True)
 
-    assert report["supersededRecordCount"] == 1
+    assert report["supersededRecordCount"] == 2
     assert report["canonicalRecordCount"] == 1
+    assert report["relocatedRecordCount"] == 1
     assert report["evidenceAddedCount"] == 2
     con = mature_learning.connect(db_path)
     try:
         rows = con.execute(
             """
-            SELECT status, superseded_by_id, knowledge_key, evidence_count
+            SELECT record_id, status, superseded_by_id, knowledge_key, evidence_count
             FROM deep_research_records ORDER BY status
             """
         ).fetchall()
-        assert len(rows) == 2
-        deprecated = next(row for row in rows if row["status"] == "deprecated")
+        assert len(rows) == 3
+        deprecated = [row for row in rows if row["status"] == "deprecated"]
         canonical = next(row for row in rows if row["status"] == "valid")
-        assert deprecated["superseded_by_id"] is not None
-        assert deprecated["knowledge_key"] == canonical["knowledge_key"]
+        assert len(deprecated) == 2
+        assert all(row["superseded_by_id"] is not None for row in deprecated)
+        assert all(row["knowledge_key"] == canonical["knowledge_key"] for row in deprecated)
+        # The canonical now lives at id = hash(knowledge_key); its old id is a tombstone.
+        assert (
+            canonical["record_id"]
+            == "drr-"
+            + research_memory._stable_hash({"knowledge_key": canonical["knowledge_key"]})[:16]
+        )
         assert canonical["evidence_count"] == 2
         assert (
             con.execute(
@@ -1822,7 +1887,7 @@ def test_historical_backfill_supersedes_only_high_confidence_duplicates(tmp_path
             con.execute(
                 "SELECT value FROM meta WHERE key = 'phase4_build_family_backfill_version'"
             ).fetchone()[0]
-            == "4"
+            == research_memory.BUILD_FAMILY_BACKFILL_VERSION
         )
     finally:
         con.close()
@@ -3620,3 +3685,552 @@ def test_family_discovery_never_backfills_wrong_class_patch_or_status(tmp_path):
     assert len(result["buildFamilies"]) == 1
     assert result["familyDiscovery"]["coverage"] == "insufficient"
     assert result["buildFamilies"][0]["primarySkillKey"] == "skill:FamilyDiscovery04"
+
+
+def _family_deep_payload(
+    *,
+    title: str = "投射物覆盖机制链",
+    group: str = "research:la-safe",
+    sources: tuple[str, ...] = ("case:la-safe",),
+) -> dict:
+    payload = _deep_record_payload()
+    record = payload["deep_research_records"][0]
+    record["record_kind"] = "skill_package"
+    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["research_group_id"] = group
+    record["title"] = title
+    record["source_case_refs"] = list(sources)
+    record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Scattershot",
+            "role": "support_modifier",
+            "resolver_query": "Scattershot",
+            "expected_node_types": ["support_gem"],
+            "scope": "any",
+            "component_key": "support:Scattershot",
+            "resolution_status": "resolved",
+        },
+    ]
+    record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:LightningArrowPlayer",
+                "supportKeys": ["support:Scattershot"],
+            }
+        ]
+    }
+    return payload
+
+
+def _drift_row_key(db_path: Path, record_id: str, drifted_key: str) -> None:
+    """Simulate the historical backfill drift: knowledge_key rewritten in place, id untouched."""
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE deep_research_records SET knowledge_key = ? WHERE record_id = ?",
+            (drifted_key, record_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_persist_adopts_drifted_anchor_row_by_record_id(tmp_path):
+    """A row occupying id = hash(knowledge_key) with a drifted stored key is adopted and
+    reconciled instead of crashing with a UNIQUE record_id violation."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    record_id = first["recordIds"][0]
+    key = first["knowledgeKeys"][0]
+    _drift_row_key(db_path, record_id, "ku-" + "d" * 20)
+
+    second = service.propose_deep_research_records(_family_deep_payload())
+
+    assert second["status"] == "accepted"
+    assert second["recordIds"] == [record_id]
+    assert second["createdRecordCount"] == 0
+    assert second["updatedRecordCount"] == 1
+    assert second["knowledgeKeys"] == [key]
+    con = mature_learning.connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT knowledge_key, status, superseded_by_id FROM deep_research_records "
+            "WHERE record_id = ?",
+            (record_id,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["knowledge_key"] == key
+        assert rows[0]["status"] == "valid"
+        assert rows[0]["superseded_by_id"] is None
+    finally:
+        con.close()
+
+
+def test_persist_deletes_husk_with_active_head_and_inserts_fresh(tmp_path):
+    """A deprecated husk occupying the anchor id whose superseding head is still active
+    is removed; a fresh active row is inserted at the anchor with the submitted content."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    anchor_id = first["recordIds"][0]
+    key = first["knowledgeKeys"][0]
+    con = mature_learning.connect(db_path)
+    try:
+        head_row = dict(
+            con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?", (anchor_id,)
+            ).fetchone()
+        )
+        head_key = "ku-" + "e" * 20
+        head_id = "drr-" + research_memory._stable_hash({"knowledge_key": head_key})[:16]
+        head_row["record_id"] = head_id
+        head_row["knowledge_key"] = head_key
+        head_row["research_group_id"] = "research:superseding-case"
+        columns = tuple(head_row)
+        con.execute(
+            f"INSERT INTO deep_research_records({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(head_row[column] for column in columns),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET status = 'deprecated', superseded_by_id = ? "
+            "WHERE record_id = ?",
+            (head_id, anchor_id),
+        )
+        # A second husk that chained through the anchor tombstone: its chain must be
+        # re-pointed to the active head when the tombstone is removed.
+        chained = dict(
+            con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?", (anchor_id,)
+            ).fetchone()
+        )
+        chained_id = "drr-" + research_memory._stable_hash({"knowledge_key": "ku-" + "a" * 20})[:16]
+        chained["record_id"] = chained_id
+        chained["knowledge_key"] = "ku-" + "a" * 20
+        chained["research_group_id"] = "research:chained-case"
+        chained["status"] = "deprecated"
+        chained["superseded_by_id"] = anchor_id
+        chained_columns = tuple(chained)
+        con.execute(
+            f"INSERT INTO deep_research_records({', '.join(chained_columns)}) "
+            f"VALUES ({', '.join('?' for _ in chained_columns)})",
+            tuple(chained[column] for column in chained_columns),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    second = service.propose_deep_research_records(_family_deep_payload())
+
+    assert second["status"] == "accepted"
+    assert second["recordIds"] == [anchor_id]
+    assert second["createdRecordCount"] == 1
+    con = mature_learning.connect(db_path)
+    try:
+        anchor = con.execute(
+            "SELECT status, superseded_by_id, knowledge_key FROM deep_research_records "
+            "WHERE record_id = ?",
+            (anchor_id,),
+        ).fetchone()
+        assert anchor is not None
+        assert anchor["status"] == "valid"
+        assert anchor["superseded_by_id"] is None
+        assert anchor["knowledge_key"] == key
+        heads = con.execute(
+            "SELECT status FROM deep_research_records WHERE record_id = ?", (head_id,)
+        ).fetchall()
+        assert len(heads) == 1
+        assert heads[0]["status"] == "valid"
+        chained = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (chained_id,),
+        ).fetchone()
+        assert chained is not None
+        assert chained["status"] == "deprecated"
+        assert chained["superseded_by_id"] == head_id
+    finally:
+        con.close()
+
+
+def test_persist_revives_dangling_husk_at_anchor(tmp_path):
+    """A husk whose supersession chain is dangling is adopted and revived through the
+    update path instead of being INSERTed over."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    anchor_id = first["recordIds"][0]
+    key = first["knowledgeKeys"][0]
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE deep_research_records SET status = 'deprecated', superseded_by_id = ? "
+            "WHERE record_id = ?",
+            ("drr-ffffffffffffffff", anchor_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    second = service.propose_deep_research_records(_family_deep_payload())
+
+    assert second["status"] == "accepted"
+    assert second["recordIds"] == [anchor_id]
+    assert second["createdRecordCount"] == 0
+    assert second["updatedRecordCount"] == 1
+    con = mature_learning.connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT knowledge_key, status, superseded_by_id FROM deep_research_records "
+            "WHERE record_id = ?",
+            (anchor_id,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["knowledge_key"] == key
+        assert rows[0]["status"] == "valid"
+        assert rows[0]["superseded_by_id"] is None
+    finally:
+        con.close()
+
+
+def test_backfill_relocates_drifted_rows_to_anchor_ids(tmp_path):
+    """Backfill keeps the record_id = hash(knowledge_key) invariant: a row whose stored
+    identity recomputes to a different key is relocated to the new anchor id and the old
+    id is deprecated toward it."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    old_id = first["recordIds"][0]
+    con = mature_learning.connect(db_path)
+    try:
+        # Change the stored role components so the recomputed identity (and thus the
+        # canonical anchor id) differs from the creation-time one.
+        mentions = [
+            {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+            {"role": "clear_skill", "component_key": "skill:ClearSkillPlayer"},
+            {"role": "support_modifier", "component_key": "support:Scattershot"},
+        ]
+        con.execute(
+            "UPDATE deep_research_records SET component_mentions = ? WHERE record_id = ?",
+            (json.dumps(mentions, ensure_ascii=False), old_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.backfill_deep_research_knowledge(force=True)
+
+    assert result["status"] == "applied"
+    assert result["relocatedRecordCount"] == 1
+    con = mature_learning.connect(db_path)
+    try:
+        active = con.execute(
+            "SELECT record_id, knowledge_key, status, superseded_by_id "
+            "FROM deep_research_records WHERE status IN ('valid', 'needs_revalidation')"
+        ).fetchall()
+        assert len(active) == 1
+        active_id = str(active[0]["record_id"])
+        assert active_id != old_id
+        assert (
+            active_id
+            == "drr-"
+            + research_memory._stable_hash({"knowledge_key": active[0]["knowledge_key"]})[:16]
+        )
+        tombstone = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (old_id,),
+        ).fetchone()
+        assert tombstone is not None
+        assert tombstone["status"] == "deprecated"
+        assert tombstone["superseded_by_id"] == active_id
+    finally:
+        con.close()
+
+
+def test_query_deep_record_ids_resolve_superseded_chain(tmp_path):
+    """Explicit deep reads resolve deprecated husk ids to their active superseding head."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    old_id = first["recordIds"][0]
+    con = mature_learning.connect(db_path)
+    try:
+        head_row = dict(
+            con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?", (old_id,)
+            ).fetchone()
+        )
+        head_key = "ku-" + "a" * 20
+        head_id = "drr-" + research_memory._stable_hash({"knowledge_key": head_key})[:16]
+        head_row["record_id"] = head_id
+        head_row["knowledge_key"] = head_key
+        columns = tuple(head_row)
+        con.execute(
+            f"INSERT INTO deep_research_records({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(head_row[column] for column in columns),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET status = 'deprecated', superseded_by_id = ? "
+            "WHERE record_id = ?",
+            (head_id, old_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    recalled = service.query_research_memory("", detail_level="record", record_ids=[old_id])[
+        "deepResearchRecords"
+    ]
+
+    assert len(recalled) == 1
+    assert recalled[0]["recordId"] == head_id
+
+
+def test_backfill_adopts_live_head_when_deprecated_husk_occupies_anchor(tmp_path):
+    """Backfill v6: a deprecated husk occupying the anchor id for a key is deleted and the
+    cluster adopts its live head, instead of forming a deprecated cycle that hides the unit."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    old_id = first["recordIds"][0]
+
+    def _clone_row(con, source_id, record_id, knowledge_key, status, superseded_by_id, **overrides):
+        row = dict(
+            con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?", (source_id,)
+            ).fetchone()
+        )
+        row["record_id"] = record_id
+        row["knowledge_key"] = knowledge_key
+        row["status"] = status
+        row["superseded_by_id"] = superseded_by_id
+        row.update(overrides)
+        columns = tuple(row)
+        con.execute(
+            f"INSERT INTO deep_research_records({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(row[column] for column in columns),
+        )
+
+    con = mature_learning.connect(db_path)
+    try:
+        # Drift the stored identity so the recomputed key differs from the creation-time key.
+        mentions = [
+            {
+                "candidate_name": "Lightning Arrow",
+                "role": "primary_damage",
+                "resolver_query": "Lightning Arrow",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:LightningArrowPlayer",
+                "resolution_status": "resolved",
+            },
+            {
+                "candidate_name": "Clear Skill",
+                "role": "clear_skill",
+                "resolver_query": "Clear Skill",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:ClearSkillPlayer",
+                "resolution_status": "resolved",
+            },
+            {
+                "candidate_name": "Scattershot",
+                "role": "support_modifier",
+                "resolver_query": "Scattershot",
+                "expected_node_types": ["support_gem"],
+                "scope": "any",
+                "component_key": "support:Scattershot",
+                "resolution_status": "resolved",
+            },
+        ]
+        con.execute(
+            "UPDATE deep_research_records SET component_mentions = ? WHERE record_id = ?",
+            (json.dumps(mentions, ensure_ascii=False), old_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    # First pass relocates the drifted row onto its new anchor id.
+    service.backfill_deep_research_knowledge(force=True)
+    con = mature_learning.connect(db_path)
+    try:
+        anchor = con.execute(
+            "SELECT * FROM deep_research_records "
+            "WHERE status IN ('valid', 'needs_revalidation') AND record_id != ?",
+            (old_id,),
+        ).fetchone()
+        assert anchor is not None
+        anchor_id = str(anchor["record_id"])
+        anchor_key = str(anchor["knowledge_key"])
+        head_id = "drr-" + research_memory._stable_hash({"knowledge_key": "ku-head-probe"})[:16]
+        # Turn the anchor occupant into a deprecated husk first so its unique key slot is
+        # released, then insert the live head with the same key.
+        con.execute(
+            "UPDATE deep_research_records SET status = 'deprecated', superseded_by_id = ? "
+            "WHERE record_id = ?",
+            (head_id, anchor_id),
+        )
+        # Lower-quality live head sharing the anchor's key.
+        _clone_row(
+            con,
+            anchor_id,
+            head_id,
+            anchor_key,
+            "valid",
+            None,
+            content="x",
+            conditions="[]",
+            failure_conditions="[]",
+        )
+        # Revive the drifted row as an active candidate with a blanked key so the recompute
+        # targets the same cluster without colliding with the live head's unique key.
+        con.execute(
+            "UPDATE deep_research_records SET status = 'valid', superseded_by_id = NULL, "
+            "knowledge_key = NULL WHERE record_id = ?",
+            (old_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.backfill_deep_research_knowledge(force=True)
+    assert result["status"] == "applied"
+    con = mature_learning.connect(db_path)
+    try:
+        husk = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?", (anchor_id,)
+        ).fetchone()
+        assert husk is None, "deprecated husk occupying the anchor must be deleted"
+        head = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?", (head_id,)
+        ).fetchone()
+        assert head is not None
+        assert head["status"] in {"valid", "needs_revalidation"}
+        assert head["superseded_by_id"] is None
+        drifted = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (old_id,),
+        ).fetchone()
+        assert drifted is not None
+        assert drifted["status"] == "deprecated"
+        assert drifted["superseded_by_id"] == head_id
+        active = con.execute(
+            "SELECT record_id FROM deep_research_records "
+            "WHERE knowledge_key = ? AND status IN ('valid', 'needs_revalidation') "
+            "AND superseded_by_id IS NULL",
+            (anchor_key,),
+        ).fetchall()
+        assert len(active) == 1
+        assert str(active[0]["record_id"]) == head_id
+    finally:
+        con.close()
+
+
+def test_backfill_replaces_quarantined_anchor_occupant(tmp_path):
+    """Backfill v6: a quarantined row occupying the anchor id is dropped and the drifted
+    canonical row is relocated onto the anchor (mirrors the write-path handling)."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = service.propose_deep_research_records(_family_deep_payload())
+    old_id = first["recordIds"][0]
+
+    con = mature_learning.connect(db_path)
+    try:
+        mentions = [
+            {
+                "candidate_name": "Lightning Arrow",
+                "role": "primary_damage",
+                "resolver_query": "Lightning Arrow",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:LightningArrowPlayer",
+                "resolution_status": "resolved",
+            },
+            {
+                "candidate_name": "Clear Skill",
+                "role": "clear_skill",
+                "resolver_query": "Clear Skill",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "component_key": "skill:ClearSkillPlayer",
+                "resolution_status": "resolved",
+            },
+            {
+                "candidate_name": "Scattershot",
+                "role": "support_modifier",
+                "resolver_query": "Scattershot",
+                "expected_node_types": ["support_gem"],
+                "scope": "any",
+                "component_key": "support:Scattershot",
+                "resolution_status": "resolved",
+            },
+        ]
+        con.execute(
+            "UPDATE deep_research_records SET component_mentions = ? WHERE record_id = ?",
+            (json.dumps(mentions, ensure_ascii=False), old_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    service.backfill_deep_research_knowledge(force=True)
+    con = mature_learning.connect(db_path)
+    try:
+        anchor = con.execute(
+            "SELECT * FROM deep_research_records "
+            "WHERE status IN ('valid', 'needs_revalidation') AND record_id != ?",
+            (old_id,),
+        ).fetchone()
+        assert anchor is not None
+        anchor_id = str(anchor["record_id"])
+        anchor_key = str(anchor["knowledge_key"])
+        # Quarantine the anchor occupant and revive the drifted row (key blanked).
+        con.execute(
+            "UPDATE deep_research_records SET status = 'quarantined' WHERE record_id = ?",
+            (anchor_id,),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET status = 'valid', superseded_by_id = NULL, "
+            "knowledge_key = NULL WHERE record_id = ?",
+            (old_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.backfill_deep_research_knowledge(force=True)
+    assert result["status"] == "applied"
+    con = mature_learning.connect(db_path)
+    try:
+        occupant = con.execute(
+            "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
+            (anchor_id,),
+        ).fetchone()
+        assert occupant is not None
+        assert occupant["status"] != "quarantined", (
+            "quarantined anchor occupant must be dropped and rebuilt"
+        )
+        assert occupant["status"] in {"valid", "needs_revalidation"}
+        assert occupant["superseded_by_id"] is None
+        active = con.execute(
+            "SELECT record_id FROM deep_research_records "
+            "WHERE knowledge_key = ? AND status IN ('valid', 'needs_revalidation') "
+            "AND superseded_by_id IS NULL",
+            (anchor_key,),
+        ).fetchall()
+        assert len(active) == 1
+        assert str(active[0]["record_id"]) == anchor_id
+    finally:
+        con.close()

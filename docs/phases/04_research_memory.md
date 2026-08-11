@@ -6,8 +6,11 @@
 - `docs/research/EXTRACTION_METHOD.md`：每批样本反向总结的深度挖掘方法，后续用于调整本阶段的
   schema、prompt、工具和验收标准。
 
-这两份文档是滚动研究记录，不替代本阶段的正式实现合同。新增样本时应同时更新两者，并继续
-遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
+这两份文档是滚动研究记录，不替代本阶段的正式实现合同。运行态（`/poe-bd-research`）禁止修改
+仓库文档（见下方产品化入口），样本知识与方法学的回填由两条通道承担：`poe-bd-research-loop`
+的 review/fix 通道把每案修正沉淀到外部 orchestrator 的 `research-notes/`；需要进仓库的通用
+知识/方法则在开发态手动回填本文档。`research-notes/` 与这两份文档是不同产物，不再互为替身。
+继续遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
 
 下一版深度 memory MVP 采用两层持久化方向：一次研究先按知识单元保存一组聚焦、安全的
 `DeepResearchRecord`，再提炼 fragment/semantic edge/build pattern 作为召回索引。同一案例通过
@@ -36,13 +39,17 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 - 研究队列与 MCP 查询统一使用用户数据目录中的正式 mature-learning SQLite；队列创建时注入应用
   当前 patch/tree 和 PoB 版本枚举，accept 时把缺失/`unknown` 归一为当前值并覆盖 worker 自填值：
   已完成；
-- accept/status 按 typed reason 区分 schema、resolver、图源覆盖和提取深度问题：已完成；
+- accept/status 按 typed reason 区分 schema、resolver、图源覆盖和提取深度问题：已完成；其中
+  `unresolved_jewel_sockets` 覆盖“已分配珠宝槽无珠宝物品且 review 未声明珠宝状态”，
+  `tree_data_missing` 不阻塞只提示：已完成；
 - `accept --validate-only` 复用正式 acceptance 逻辑，返回具体字段路径、提交值和 canonical 枚举，且
   不写 durable memory、不改变 lease；Agent 必须自行修复后再正式 accept：已完成；
 - fragment/edge/pattern 继续作为短召回索引：已完成；
 - 更多职业样本回放、字段扩展候选和真实生成质量对照：等待后续案例验证。
 
-运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源：
+运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源。命令、顺序与编辑约束的执行事实源是
+`/poe-bd-research` skill 与 claim 返回的 `workerPrompt`/`review-contract`，本节只维护运行时语义
+边界，不复述命令：
 
 - MCP `ASSISTANT_GUIDE`：保留工具能力地图、选择条件、权威边界和安全边界；
 - `/poe-bd-research` skill：保留完整研究流程、深挖方法、覆盖维度及正反例；
@@ -58,11 +65,39 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   组件；兼容字段 `unresolvedDeepRecordComponentCount` 继续表示 mention 次数。
 - `createdDeepRecordCount`、`updatedDeepRecordCount` 与 `addedDeepRecordEvidenceCount` 分开报告；
   同一 Family 的同知识再次出现时优先追加证据，不重复制造近义正文。
-- Family 自动使用 clear/boss/triggered-payload 和同一技能包/机制链中成对的 trigger-host，普通
-  secondary 只作为变体；不得在 `familyCoreSkillKeys` 重复声明这些自动角色，其他核心副技能才显式
-  声明。`skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持不同知识单元。
+- Family 自动使用 clear/boss/triggered-payload；trigger-host 是投送手段而不是身份（同一 payload
+  换 host 视为变体），只有显式声明进 `familyCoreSkillKeys` 才参与 Family 身份；普通 secondary 只
+  作为变体；不得在 `familyCoreSkillKeys` 重复声明自动角色，其他核心副技能才显式声明。
+  `skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持不同知识单元。
   无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。
   `unkeyedDeepRecordCount > 0` 时只能报告 partial，不能报告 clean。
+- 签名词缀（极端掷骰 "Rolls only the minimum or maximum Damage value"、最低抗性伤害、元素地面
+  交互、implicit "Allocates <passive>"、"Grants Skill: Level N"、Surpassing 额外投射、充能保留
+  概率词缀）驱动记录因果结论时，必须独立成记录或进入 mechanicAudit，不能只出现在 content 字符串。
+- 跨设计轴罕见同现（如混沌伤害节点、荆棘与中毒机会并存）无法闭环时建 `open_question` 记录结构化
+  疑点；`modelability_caveat` 只用于“机制存在但 PoB 未建模/未证实”的情况。`read` 输出的
+  cross-axis advisory 只作提示，不参与验收 gate。
+- Family key 稳定性跟踪（P3 验证阶段）：`accept` 输出新增 `siblingFamilyHints`——当新写入的
+  Family 与既有 Family 共享 ascendancy+primary 但 secondary 集合不同时列出提示，用于观察
+  “自动/变体 secondary 导致同族分裂”的实际频率。若分裂成为系统性问题，再评估 key 重构
+  （key 只含 ascendancy+primary+familyCoreSkillKeys，自动 secondary 降为元数据）；任何 key
+  变更必须先跑 `backfill_deep_research_knowledge` 迁移并覆盖测试，不得静默自动合并身份。
+- 已知数据缺口（unique jewels）：语料 unique 表来自 `pob/PathOfBuilding-PoE2/src/Data/Uniques/*.lua`
+  的非递归 glob 摄入，存在三个具体缺口：
+  1. **PoE2 Time-Lost 系列缺失**——其 unique 条目位于 `Uniques/Special/Generated.lua`
+     （Time-Lost Diamond 等），提取器未摄入且 item_type 会是 "Generated"，因此
+     `get_unique` / `search_uniques` 拿不到 Time-Lost 文本；
+  2. **Historic timeless jewels**（Heroic Tragedy、Undying Hate，base "Timeless Jewel"，PoE2
+     条目）被 `relevant_uniques.uniqueJewels` 排除出候选——因为 pinned 引擎的
+     "Passives in radius are Conquered" 词缀是空规则（`ModParser.lua` 中 `= { }`），评估无意义；
+     该排除依赖引擎实现状态，若未来引擎实现 conquered 规则应移除该过滤；
+  3. **Grand Spectrum 变体被 name 去重丢弃**（只保留 Ruby）。
+  执行层约束：即使补齐数据，研究提取侧也无法重建可评估的 PoB item text——research packet 只
+  保留解析后的词缀摘要（`research_packet._parse_item_text` 丢弃原始文本），Time-Lost Jewel 的
+  完整文本只能人工维护。PoB 引擎对 Time-Lost Jewel 的 radius 计算支持完整（词缀
+  "Small/Notable Passive Skills in Radius also grant X" 按半径内已分配天赋生效，已实测验证），
+  Create 侧用 `evaluate_jewel_socket` 做位置化评估。数据修复需上游 PoB-PoE2 更新
+  Uniques/jewel.lua 或人工维护（另开数据维护任务）。
 - `source_specific_random` 随机实例知识只解释来源案例，默认不进入 Create 召回或 planner Pattern。
 - supports 覆盖要求每个核心技能组有至少两个结构化辅助；passiveAscendancy 覆盖要求升华壳和具体
   `ascendancyResponsibilities`，不能由任意普通 notable/keystone 代替。
@@ -125,7 +160,9 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 
 研究运行态禁止使用 subagent、子代理或独立 agent lane。研究 MCP 工具只保证在触发 skill 的当前
 主会话可用；当前 Agent 必须亲自完成 prompt 读取、深度提取、safe review 和 accept，并严格逐案串行。
-当前没有证据表明 98 个工具触发 Codex 数量上限；统一 `poe2_build_mcp` 可发现完整研究工具面。
+Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆分的 server（工具面约 48 个），
+不触发 Codex 数量上限；历史遗留的聚合入口 `poe2-build-mcp`（`server/main.py`）仍注册，仅保留供
+测试与旧宿主配置兼容（见 AGENTS.md），产品运行入口是四个按域拆分的 server。
 工具未直接显示时应先用宿主标准 tool discovery / tool search 按精确名称查找，再判断是否真的不可用。
 
 安装 skill 后，在 Codex 或支持 skill 的宿主中使用：
@@ -143,27 +180,13 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 `--resume` 是独立恢复模式，不绑定到 50 个样本；恢复时必须同时提供原始 `queue` 返回的
 `--output-dir <runDir>`。
 
-等价的底层脚本入口是：
-
-```powershell
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py queue --limit 50
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py claim --output-dir <runDir>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py worker-brief --output-dir <runDir> --lease-token <leaseToken>  # 仅恢复已领取任务
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py inspect --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py read --output-dir <runDir> --lease-token <leaseToken> --section skills
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py search --output-dir <runDir> --lease-token <leaseToken> --query "Bonestorm"
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py review-contract --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py init-review --output-dir <runDir> --lease-token <leaseToken>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json> --validate-only
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
-.\.tools\uv\uv.exe run python scripts\research_mature_builds.py status --output-dir <runDir>
-```
+等价的底层脚本入口与逐案流程（queue → claim → inspect/read/search → review-contract →
+init-review → accept --validate-only → accept → status）以 `/poe-bd-research` skill 的
+`逐案流程` 为唯一执行事实源，本文档不再复述命令；完整参数见
+`scripts/research_mature_builds.py --help`。
 
 默认非 dry-run `queue` 会创建 `.poe-bd-research/runs/<runId>` 并返回 `runDir`；同一轮的所有后续
-命令都必须使用该目录。不同会话使用不同 run，可以并发执行。显式目录中已有队列时只能使用
-`--resume` 恢复，不能静默重建或覆盖。
-
-macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
+命令都必须使用该目录，且 `--resume` 需要原 `runDir`。不同会话使用不同 run，可以并发执行。
 
 默认行为：
 
@@ -176,8 +199,7 @@ macOS / Linux 将 `.\.tools\uv\uv.exe` 替换为 `./.tools/uv/uv`。
 - `worker-brief` 只用于恢复已经 claimed 的任务；
 - 支持 `--ascendancy`、`--league current|<league-url>`、`--level-min`、`--level-max`、
   `--class`（可选透传 poe.ninja URL class filter）、`--source-file`、`--source-batch-file`、
-  `--resume`、`--dry-run`、`--db-path`、
-  `--output-dir`；
+  `--expected-source-count`、`--resume`、`--dry-run`、`--output-dir`；
 - `--class` 同时接受空格名称和 poe.ninja URL 中的 `+` 分隔形式，编码前统一归一；列表返回后还会
   按同一升华名本地复核，非目标升华不得占用 `limit`；
 - batch mode 仍必须一案一轮：一个 Researcher prompt 只包含一个完整 BD；
@@ -199,6 +221,20 @@ durable write 路径。
 产品默认 durable memory 是 `paths.mature_learning_path()` 指向的用户数据数据库，与 MCP
 `query_research_memory` 使用同一文件。仓库根的 `phase4_real_research_memory.sqlite` 仅是旧开发脚本
 历史路径，不再是 `/poe-bd-research` 默认写入目标。
+
+### 公开知识种子与本地增量
+
+开源分发不依赖中央 Research API，也不直接发布维护者的 mutable 数据库。发布流程从维护者本地库
+筛选 `creator_visible + train_context + (global_seed/local_user) + copy_safety_state=passed` 的有效知识，清空
+quarantine、来源原材料、查询回执、拒绝提案和维护事件，再生成带 schema、release version 与
+SHA-256 的只读 SQLite seed。发布前先运行 `scripts/audit_public_research_memory.py`，该审计只输出
+计数、版本覆盖和安全 ID，不输出记录正文。
+
+Git checkout 与 release bundle 都携带 `data/mature_build_learning/release.sqlite`。新用户第一次初始化
+且本地数据库不存在时，从已验证 seed 安装；已有数据库绝不覆盖。`local_user` 仍是运行时作用域，
+但维护者当前通过安全审计的内容也进入发布种子。Research 运行状态、Judge 快照与最终
+artifact 始终只在用户数据目录。中央服务只用于未来明确 opt-in 的投稿、撤回或跨设备同步，不能
+成为 Create/Research 的硬依赖。
 
 ## 提取目标
 
@@ -325,3 +361,66 @@ PoB code 或临时路径。
   Agent 把 `payoff` 机械改写成 `passive_anchor`。
 - safe review 使用 UTF-8、两空格缩进的多行 JSON，保证 validate-only 后能对单个 role、query 或 key
   做有界修复；压缩单行不是安全失败，但不符合运行合同。
+
+### 研究执行 checklist（2026-08-07 修订，防再犯）
+
+以下条目已迁入 `workerPrompt` 的 Mandatory Checks、review-contract 的 `mandatoryChecks` 与
+`/poe-bd-research` skill 的提交前自检（三处一一对应），本段保留为阶段审查记录；执行时以运行时
+合同为准，避免再次出现"两套清单从未对账"。
+
+以下条目来自真实案例审查（Monk/Martial Artist Hollow Palm 案例的补齐与修正），每个 deep
+case 研究都应执行：
+
+1. **Memory 对照必须用 stable key**：查询前先 `search_graph_components` +
+   `resolve_graph_component` 解析 packet 的 ascendancy 与 class，再用
+   `ascendancy:monk:martial_artist` / `class:monk` 形式过滤 `query_research_memory`；
+   显示名（Martial Artist / Monk）不会命中存储 key，会静默返回空。必须检查返回的
+   `familyRecordCoverage` / `familyRecordIndex` / `familyPremiseCatalog` 并逐条对照既有
+   同升华/同技能 Family 知识（生成/消费角色、充能链、Combo 独立性等），避免重复或方向错误。
+2. **Config 条件三栏检查表**：把 packet 每个 `condition*`（EnemyChilled / EnemyBleeding /
+   EnemyBlinded / EnemyIgnited / CritRecently / BeenHitRecently / usePowerCharges 等）列成
+   "条件 → 来源组件 → 验证状态"；无来源的假设（例如无点火来源却启用 Ignited）必须写成
+   modelability caveat，不得静默采纳。
+3. **装备全覆盖盘点**：14/14 件装备逐一在 records 中出现（结构化组件 / content 文本 /
+   显式 not_applicable 三选一）；写 review 前成表自查，避免装备信息零命中。
+4. **禁止猜 key 路径**：所有组件先 `search_graph_components` 再 `resolve_graph_component`；
+   支持宝石的 metadata 路径可能有 `Items/Gem` 与 `Items/Gems` 两种形式，猜错会被判
+   component_type_mismatch 或 missing。
+5. **silent / unavailable 必须沉淀**：`lookup_mechanic` 返回 silent 或语料无文本的高价值机制
+   （Innervate、Charged Mark 充能率等）写入 caveat / verification task，不得丢弃。
+6. **非 core 技能支持入记录**：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
+   技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
+7. **因果方向自查**：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（Rend 是
+   Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照。
+8. **未解析组件逐个 search**：任何 unresolved 计数出现时，先对该组件名执行一次
+   `search_graph_components` 再定性为 source gap（Nascent Hope 案例：图中实际存在
+   `unique:pob:nascent_hope`，未 search 导致误报 gap）。
+
+### 存量修正通道
+
+Research Memory 的 durable writer 只有 accept。修正既有记录两条路径：
+
+- **同 case 补录（新 research run + accept）**：用与最初完全相同的 PoB 文本重新 queue
+  （sampleId/sourceHashRef 相同 → researchGroupId 相同）；补录记录保持旧记录的
+  `title / recordKind / researchGroupId / source_case_refs` 不变时，`_persist_deep_record`
+  会命中 `_existing_deep_record_id` 并原地 UPDATE 覆盖（`updatedDeepRecordCount` 计数）；
+  identity 变化（knowledge_key 改变）时同一 UPDATE 会清理旧 key 的孤儿 evidence，不产生
+  双记录。familyCoreSkillKeys 修正会改变 Family secondary 集合 → Family key 变化，旧 key
+  成为无记录空壳，属预期。
+- **维护脚本**：`server/knowledge/research_maintenance.py` 提供
+  `calibrate_research_contract_v1`（按 source_ref spec 重建记录 + 旧记录
+  `deprecated + superseded_by_id` + force backfill，带 backup 与原子事务），以及
+  `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`；CLI 入口
+  `scripts/calibrate_phase4_research_contract.py`。适合批量确定性修正（装备职责、support
+  归属、availability 标记），不适合需要重新推理的方向性修正。
+
+### 2026-08-07 修正记录（Tempest Flurry Hollow Palm 案例）
+
+- 新 research run（同 source）重放 11 条记录，全部原地 UPDATE（updatedDeepRecordCount=11，
+  createdDeepRecordCount=0），acceptanceMode=clean，unresolved 归零。
+- 修正：Rend 从充能生成器改为消费者（payoff，ConsumesCharges→闪电 buff）；familyCoreSkillKeys
+  移除 WyvernRendPlayer；Nascent Hope 解析为 `unique:pob:nascent_hope` 并结构化；7 件装备
+  （Dread Curtain / Anarchy Spark / Demon Salvation / 生命瓶 / 2 魅力 / Golem Urge）补录进
+  content；config 条件缺口（Ignited/Bleeding/Blinded）与 Innervate 补进 modelability caveat；
+  Spirit 总预算补进暴击敲钟记录的 failureConditions；Overabundance I 的 key 修正为
+  `support:Metadata/Items/Gems/SupportGemOverabundance`（复数 Gems）。

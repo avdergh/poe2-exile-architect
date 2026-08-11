@@ -346,12 +346,17 @@ def verify_stage_metrics(
     state: dict[str, Any] | None = None,
     engine_warning: str | None = None,
     caveats: list[str] | None = None,
+    unmodelled_mana_mechanisms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the active build snapshot against a lifecycle stage budget.
 
     This function is deliberately pure and read-only: `main.verify_lifecycle_stage` gathers PoB
     values, while this helper translates those values into stage-readiness checks. Checks that need
     non-engine evidence stay unknown so the caller cannot accidentally overclaim a stage.
+
+    ``unmodelled_mana_mechanisms`` must come from the evaluated build itself (see
+    ``preflight.inspect_resource_model_gap``); it never authorizes sustain by itself, it only
+    prevents an engine blind spot from being misread as a build failure.
     """
     plan = plan_stage_verification(stage, state=state)
     if not plan.get("ok"):
@@ -362,6 +367,7 @@ def verify_stage_metrics(
         defenses or {},
         state=state or {},
         fallback_level=plan["levelTarget"],
+        unmodelled_mana_mechanisms=unmodelled_mana_mechanisms,
     )
     checks = _evaluate_known_checks(stage, plan["targetChecks"], observations, engine_warning)
     failed = [row["check"] for row in checks if row["status"] == "failed"]
@@ -372,6 +378,26 @@ def verify_stage_metrics(
     if engine_warning:
         result_caveats.append(engine_warning)
     result_caveats.extend(caveats or [])
+    mana_sustain = observations.get("manaSustain") or {}
+    if mana_sustain.get("classification") == "model_gap_flask_assisted":
+        gap_names = ", ".join(mana_sustain.get("unmodelledManaMechanisms") or [])
+        deficit = mana_sustain.get("netDeficitPerSecond")
+        seconds = mana_sustain.get("secondsFromFull")
+        result_caveats.append(
+            "unmodelled_mana_layer_present: "
+            + (f"{gap_names}; " if gap_names else "")
+            + (
+                f"engine-model deficit {deficit:.1f}/s, "
+                if isinstance(deficit, (int, float))
+                else ""
+            )
+            + (
+                f"full-mana buffer {seconds:.1f}s under the modelled continuous rate; "
+                if isinstance(seconds, (int, float))
+                else ""
+            )
+            + "verify the in-game recovery layer and disclose boss-fight mana risk"
+        )
 
     return {
         "ok": True,
@@ -425,6 +451,7 @@ def _observations(
     *,
     state: dict[str, Any],
     fallback_level: int | None = None,
+    unmodelled_mana_mechanisms: list[str] | None = None,
 ) -> dict[str, Any]:
     resists = _resistances(stats, defenses)
     life = _number(stats.get("Life") or defenses.get("life"))
@@ -442,6 +469,7 @@ def _observations(
     mana_sustain = sustain.classify_mana_sustain(
         stats,
         mana_flask_equipped=_optional_bool(state.get("manaFlaskEquipped")),
+        unmodelled_mana_mechanisms=unmodelled_mana_mechanisms,
     )
     return {
         "level": _lifecycle_level(state.get("level"), fallback=fallback_level),
@@ -731,6 +759,22 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "ok": True,
             "detail": detail,
             "target": "continuous mana demand is covered without flask recovery",
+        }
+    if classification == "model_gap_flask_assisted":
+        # The build carries engine-invisible resource layers (e.g. Mana Remnants pickup,
+        # Lavianga's Spirits permanent recovery) whose game-real values PoB cannot quantify.
+        # The numeric deficit stays fully disclosed below; the engine gap is not treated as a
+        # stage-blocking build failure, matching the Judge's warning-only handling of the plain
+        # flask-dependency case.
+        return {
+            "check": "sustain_ok",
+            "status": "passed",
+            "ok": True,
+            "detail": detail,
+            "target": (
+                "engine-invisible mana mechanisms are present; disclose the modelled deficit and "
+                "verify the unmodelled recovery layer in-game"
+            ),
         }
     if classification == "flask_assisted_required":
         return {

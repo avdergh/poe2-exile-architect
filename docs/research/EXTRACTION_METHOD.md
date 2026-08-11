@@ -1,7 +1,13 @@
 # 成熟 BD 深度挖掘方法
 
 本文档记录研究成熟 PoE2 BD 时学到的方法，直接指导后续 Phase 4 提取 schema、prompt、工具和
-验收标准调整。每批新样本都应更新本文档，而不是只增加构筑知识。
+验收标准调整。运行态不更新本文档；新样本的方法学反馈由 `poe-bd-research-loop` 的 review/fix
+通道沉淀到外部 orchestrator 的 `research-notes/`，需要进仓库的通用方法在开发态手动回填。
+
+> 注意：本文是方法学文档，其中出现的 role / 枚举示例（如 §三、§九）是方法描述，不是运行时
+> 枚举。canonical role、axis、patternType 以当前 lease 的 review-contract `allowedValues` 为准
+> （代码事实源 `server/knowledge/research_models.py` 的 `COMPONENT_ROLES`），写 review 时不得
+> 采用本文示例枚举。
 
 ## 当前方法版本
 
@@ -115,7 +121,7 @@ Phase 4 应新增或强化以下提取轴：
 - 共同 notable：可能代表职业壳或升华的稳定骨架；
 - 变体专属 notable：解释具体技能、资源或防御方向；
 - 仅出现在 weapon set 的节点：代表状态切换，而非始终生效；
-- 由项链涂油、Megalomaniac、Time-Lost Jewel 等授予/放大的节点：不能和普通路径混为一谈。
+- 由项链涂油、特殊宝石（Time-Lost Jewel、暗金宝石等）授予/放大的节点：不能和普通路径混为一谈。
 
 建议输出：
 
@@ -221,7 +227,8 @@ Judge 结果不能覆盖 Researcher 的机制分析。发现“成熟样本全�
     拆分；只有拆分会破坏同一核心机制的因果闭环时才允许少量超出，不能机械截断。
 12. 再从记录组提炼 fragment、semantic edge 和 build pattern，作为有界召回索引；索引不是深度
     记录的替代品。
-13. 分别更新 BD 知识文档和本方法文档。
+13. 在开发态（而非运行态）把本轮方法学反馈回填 BD 知识文档和本文档；运行态只通过
+    `poe-bd-research-loop` 的 fix 通道沉淀到 `research-notes/`。
 
 ## 十二、聚焦深度记录与召回索引必须分开
 

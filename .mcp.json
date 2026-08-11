@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "poe_knowledge_mcp": {
+      "command": "./.tools/uv/uv.exe",
+      "args": ["run", "python", "-m", "server.mcp.knowledge_server"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    },
+    "poe_build_mcp": {
+      "command": "./.tools/uv/uv.exe",
+      "args": ["run", "python", "-m", "server.mcp.build_server"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    },
+    "poe_research_mcp": {
+      "command": "./.tools/uv/uv.exe",
+      "args": ["run", "python", "-m", "server.mcp.research_server"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    },
+    "poe_learning_mcp": {
+      "command": "./.tools/uv/uv.exe",
+      "args": ["run", "python", "-m", "server.mcp.learning_server"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}

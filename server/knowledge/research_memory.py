@@ -28,7 +28,7 @@ DIRECTIONAL_EDGE_TYPES = {
 }
 VALID_REVALIDATION_TARGET_KINDS = {"fragment", "semantic_edge", "build_pattern"}
 VALID_REVALIDATION_OUTCOMES = {"still_valid", "invalidated", "changed_scope", "needs_review"}
-BUILD_FAMILY_BACKFILL_VERSION = "4"
+BUILD_FAMILY_BACKFILL_VERSION = "6"
 RESEARCH_MEMORY_SCOPE_WEIGHTS = {
     "exact_family": 1.0,
     "same_primary_skill": 0.9,
@@ -91,6 +91,32 @@ def _known_version(value: Any) -> str:
     return "" if normalized.casefold() in {"", "unknown", "none", "null"} else normalized
 
 
+def _follow_supersession_head(con: sqlite3.Connection, start_record_id: str) -> sqlite3.Row | None:
+    """Walk a deprecated row's ``superseded_by_id`` chain to its live head.
+
+    Returns the first row whose supersession chain terminates at a live
+    (valid/needs_revalidation, not superseded) row, or ``None`` when the chain
+    is dangling (head missing) or ends in another deprecated row. A ``seen``
+    guard protects against deprecated cycles.
+    """
+    seen: set[str] = set()
+    current_id = start_record_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        current = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?", (current_id,)
+        ).fetchone()
+        if current is None:
+            return None
+        if str(current["superseded_by_id"] or ""):
+            current_id = str(current["superseded_by_id"])
+            continue
+        if str(current["status"] or "") in {"valid", "needs_revalidation"}:
+            return current
+        return None
+    return None
+
+
 class ResearchMemoryService:
     def __init__(
         self,
@@ -108,7 +134,6 @@ class ResearchMemoryService:
 
     def backfill_deep_research_knowledge(self, *, force: bool = False) -> dict[str, Any]:
         """Assign high-confidence historical records to families and canonical knowledge units."""
-
         con = mature_learning.connect(self.db_path)
         try:
             marker = con.execute(
@@ -218,6 +243,17 @@ class ResearchMemoryService:
             evidence_added_count = 0
             canonical_record_count = 0
             skipped_invalid_record_count = 0
+            relocated_record_count = 0
+            occupied_anchor_target_count = 0
+            # record_id is a deterministic function of knowledge_key, so assigning a new
+            # key to a row whose id no longer hashes to it would decouple id from key and
+            # turn future identical accepts into UNIQUE record_id collisions. Phase 1
+            # inserts relocated canonical copies (or updates the id-canonical occupant);
+            # Phase 2 (after every insert) deprecates displaced rows, so no UPDATE by id
+            # can clobber a row another cluster already moved.
+            deprecations: list[
+                tuple[str, str, str, str]
+            ] = []  # (old id, final id, family key, key)
             for key, candidates in sorted(clusters.items()):
                 canonical_row, canonical_family = max(
                     candidates,
@@ -228,26 +264,79 @@ class ResearchMemoryService:
                     ),
                 )
                 canonical_id = str(canonical_row["record_id"])
+                target_id = "drr-" + _stable_hash({"knowledge_key": key})[:16]
+                displace_canonical = False
+                adopt_canonical_id: str | None = None
+                occupant = None
+                if canonical_id != target_id:
+                    occupant = con.execute(
+                        "SELECT * FROM deep_research_records WHERE record_id = ?",
+                        (target_id,),
+                    ).fetchone()
+                    if occupant is None:
+                        displace_canonical = True
+                    elif str(occupant["knowledge_key"] or "") == key:
+                        if str(occupant["superseded_by_id"] or ""):
+                            # Deprecated husk occupies the anchor id for this key. Follow its
+                            # supersession chain: a live head adopts the cluster (re-point its
+                            # dependents, delete the husk); a dangling chain is left for the
+                            # write path to revive, so the canonical row stays at its own id.
+                            head = _follow_supersession_head(con, target_id)
+                            if head is not None:
+                                head_id = str(head["record_id"])
+                                con.execute(
+                                    """
+                                    UPDATE deep_research_records
+                                    SET superseded_by_id = ?
+                                    WHERE superseded_by_id = ?
+                                    """,
+                                    (head_id, target_id),
+                                )
+                                con.execute(
+                                    "DELETE FROM deep_research_records WHERE record_id = ?",
+                                    (target_id,),
+                                )
+                                adopt_canonical_id = head_id
+                                occupant = None
+                            else:
+                                occupied_anchor_target_count += 1
+                        elif str(occupant["status"] or "") == "quarantined":
+                            # A quarantined row at the anchor id cannot be canonical; drop it
+                            # and relocate the drifted canonical row onto the anchor.
+                            con.execute(
+                                "DELETE FROM deep_research_records WHERE record_id = ?",
+                                (target_id,),
+                            )
+                            occupant = None
+                            displace_canonical = True
+                        elif str(occupant["status"] or "") == "deprecated":
+                            # Bare deprecated row (no supersession target): leave it for the
+                            # write path; keeping the canonical at its own id avoids cycles.
+                            occupied_anchor_target_count += 1
+                        else:
+                            # The id-canonical for this key already exists and is live; the
+                            # drifted canonical row is superseded toward it.
+                            displace_canonical = True
+                    else:
+                        # Anchor id occupied by a different unit (drift cycle/conflict):
+                        # keep the canonical row at its id; the write-path adoption in
+                        # _persist_deep_record keeps future accepts safe.
+                        occupied_anchor_target_count += 1
+                final_canonical_id = adopt_canonical_id or (
+                    target_id if displace_canonical else canonical_id
+                )
                 duplicates = [
-                    row for row, _family in candidates if row["record_id"] != canonical_id
+                    row for row, _family in candidates if row["record_id"] != final_canonical_id
                 ]
                 for duplicate in duplicates:
-                    con.execute(
-                        """
-                        UPDATE deep_research_records
-                        SET build_family_key = ?, knowledge_key = ?, status = 'deprecated',
-                            superseded_by_id = ?, last_seen_at = ?
-                        WHERE record_id = ?
-                        """,
+                    deprecations.append(
                         (
+                            str(duplicate["record_id"]),
+                            final_canonical_id,
                             canonical_family.key,
                             key,
-                            canonical_id,
-                            now,
-                            duplicate["record_id"],
-                        ),
+                        )
                     )
-                superseded_record_count += len(duplicates)
 
                 source_refs: set[str] = set()
                 safe_refs: set[str] = set()
@@ -276,24 +365,104 @@ class ResearchMemoryService:
                         (key,),
                     ).fetchone()[0]
                 )
+                if displace_canonical and occupant is None:
+                    # Relocate the canonical to its anchor id (Phase 1 insert). The copy
+                    # is built directly from the stored row so it never depends on the
+                    # proposal parser; created_at is preserved for tombstone semantics.
+                    # Blank the displaced row's key first: when its stored key already
+                    # equals the recomputed key (drift), the copy would otherwise collide
+                    # with the canonical knowledge-key index until Phase 2 deprecates it.
+                    con.execute(
+                        "UPDATE deep_research_records SET knowledge_key = NULL WHERE record_id = ?",
+                        (canonical_id,),
+                    )
+                    # Release the unique canonical-key index for every other live same-key
+                    # row too: a live duplicate (e.g. a cluster head on a legacy id) would
+                    # otherwise collide with the relocated anchor until Phase 2 deprecates
+                    # it, and backfill has no rollback for an IntegrityError here.
+                    for duplicate in duplicates:
+                        con.execute(
+                            "UPDATE deep_research_records SET knowledge_key = NULL "
+                            "WHERE record_id = ?",
+                            (str(duplicate["record_id"]),),
+                        )
+                    values = {column: canonical_row[column] for column in canonical_row.keys()}
+                    values["record_id"] = target_id
+                    values["knowledge_key"] = key
+                    values["build_family_key"] = canonical_family.key
+                    values["evidence_count"] = evidence_count
+                    values["source_case_refs"] = _json(sorted(source_refs))
+                    values["safe_evidence_refs"] = _json(sorted(safe_refs))
+                    values["last_seen_at"] = now
+                    values["superseded_by_id"] = None
+                    columns = tuple(values)
+                    con.execute(
+                        f"INSERT INTO deep_research_records({', '.join(columns)}) "
+                        f"VALUES ({', '.join('?' for _ in columns)})",
+                        tuple(values[column] for column in columns),
+                    )
+                    relocated_record_count += 1
+                elif displace_canonical and occupant is not None:
+                    con.execute(
+                        """
+                        UPDATE deep_research_records
+                        SET build_family_key = ?, knowledge_key = ?, evidence_count = ?,
+                            source_case_refs = ?, safe_evidence_refs = ?, last_seen_at = ?
+                        WHERE record_id = ?
+                        """,
+                        (
+                            canonical_family.key,
+                            key,
+                            evidence_count,
+                            _json(sorted(source_refs)),
+                            _json(sorted(safe_refs)),
+                            now,
+                            str(occupant["record_id"]),
+                        ),
+                    )
+                else:
+                    if adopt_canonical_id is None:
+                        con.execute(
+                            """
+                            UPDATE deep_research_records
+                            SET build_family_key = ?, knowledge_key = ?, evidence_count = ?,
+                                source_case_refs = ?, safe_evidence_refs = ?, last_seen_at = ?
+                            WHERE record_id = ?
+                            """,
+                            (
+                                canonical_family.key,
+                                key,
+                                evidence_count,
+                                _json(sorted(source_refs)),
+                                _json(sorted(safe_refs)),
+                                now,
+                                canonical_id,
+                            ),
+                        )
+                    # With a live head adopted (adopt_canonical_id set) the canonical row is a
+                    # duplicate that Phase 2 deprecates toward the head; writing its key here
+                    # would collide with the head's unique canonical-key index.
+                canonical_record_count += 1
+
+            # Phase 2: deprecate displaced rows only after every insert is complete, so no
+            # UPDATE by id can clobber a row another cluster already relocated into.
+            new_ids = {final_id for _old_id, final_id, _family_key, _key in deprecations}
+            for old_id, final_id, family_key, key in deprecations:
+                if old_id in new_ids:
+                    continue
                 con.execute(
                     """
                     UPDATE deep_research_records
-                    SET build_family_key = ?, knowledge_key = ?, evidence_count = ?,
-                        source_case_refs = ?, safe_evidence_refs = ?, last_seen_at = ?
+                    SET build_family_key = ?,
+                        knowledge_key = ?,
+                        status = 'deprecated',
+                        superseded_by_id = ?,
+                        last_seen_at = ?
                     WHERE record_id = ?
                     """,
-                    (
-                        canonical_family.key,
-                        key,
-                        evidence_count,
-                        _json(sorted(source_refs)),
-                        _json(sorted(safe_refs)),
-                        now,
-                        canonical_id,
-                    ),
+                    (family_key, key, final_id, now, old_id),
                 )
-                canonical_record_count += 1
+                superseded_record_count += 1
 
             # Keep audit rows aligned with their active canonical representative after identities
             # change, then remove evidence/families made obsolete by the new deterministic keys.
@@ -430,6 +599,8 @@ class ResearchMemoryService:
                 "classifiedResearchGroupCount": len(family_by_group),
                 "canonicalRecordCount": canonical_record_count,
                 "supersededRecordCount": superseded_record_count,
+                "relocatedRecordCount": relocated_record_count,
+                "occupiedAnchorTargetCount": occupied_anchor_target_count,
                 "unclassifiedRecordCount": unclassified_record_count,
                 "unkeyedRecordCount": unkeyed_record_count,
                 "skippedInvalidRecordCount": skipped_invalid_record_count,
@@ -776,7 +947,7 @@ class ResearchMemoryService:
         }
 
     def read_query_receipt(self, dedupe_query_ref: str) -> dict[str, Any] | None:
-        """Read one copy-safe typed query/result receipt for progression provenance checks."""
+        """Read one copy-safe typed query/result receipt for Create provenance checks."""
 
         if not re.fullmatch(r"dq-[A-Fa-f0-9]{16}", str(dedupe_query_ref or "")):
             return None
@@ -804,7 +975,7 @@ class ResearchMemoryService:
         result = _loads(row["result_contract"], {})
         if not isinstance(request, dict) or not isinstance(result, dict) or not request:
             # Historical receipts remain valid for query-before-propose dedupe, but they cannot
-            # authorize a new progression stage or target anchor.
+            # authorize a new Create target.
             return None
         receipt = {
             "dedupeQueryRef": row["dedupe_query_ref"],
@@ -1158,6 +1329,7 @@ class ResearchMemoryService:
                 created_record_count += int(persisted["created"])
                 updated_record_count += int(not persisted["created"])
                 evidence_added_count += int(persisted["evidence_added_count"])
+            sibling_hints = _sibling_family_hints(con, build_family_keys)
             con.commit()
         except BaseException:
             con.rollback()
@@ -1170,6 +1342,7 @@ class ResearchMemoryService:
             "recordWrites": record_writes,
             "knowledgeKeys": sorted(knowledge_keys),
             "buildFamilyKeys": sorted(build_family_keys),
+            "siblingFamilyHints": sibling_hints,
             "createdRecordCount": created_record_count,
             "updatedRecordCount": updated_record_count,
             "evidenceAddedCount": evidence_added_count,
@@ -1203,6 +1376,67 @@ class ResearchMemoryService:
                 """,
                 (knowledge_key,),
             ).fetchone()
+        adopted_by_id = False
+        if existing is None and knowledge_key:
+            # record_id is a deterministic function of knowledge_key, so the row occupying
+            # hash(knowledge_key) is the same knowledge unit even when its stored key
+            # drifted (historical backfill decoupling). Adopt it instead of INSERTing into
+            # a taken primary key; the update path below reconciles the key and evidence.
+            anchor_id = "drr-" + _stable_hash({"knowledge_key": knowledge_key})[:16]
+            occupant = con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id = ?",
+                (anchor_id,),
+            ).fetchone()
+            if occupant is not None:
+                occupant_superseded_by = occupant["superseded_by_id"]
+                occupant_status = str(occupant["status"] or "")
+                if occupant_superseded_by is not None:
+                    head = None
+                    head_id = occupant_superseded_by
+                    seen = {anchor_id}
+                    while head_id is not None and head_id not in seen:
+                        seen.add(head_id)
+                        head = con.execute(
+                            "SELECT * FROM deep_research_records WHERE record_id = ?",
+                            (head_id,),
+                        ).fetchone()
+                        if head is None:
+                            break
+                        head_id = head["superseded_by_id"]
+                    if head is not None and str(head["status"] or "") != "deprecated":
+                        # The anchor id is a deprecated husk whose superseding chain head
+                        # is still active: the unit lives on under the head. Re-point any
+                        # husks that chained through this tombstone toward the active head
+                        # (mirroring the reconciliation migration), then drop the husk so
+                        # the fresh INSERT below recreates the anchor row from this case's
+                        # content; reviving a calibration husk in place would leak
+                        # uncalibrated content into queries.
+                        con.execute(
+                            """
+                            UPDATE deep_research_records
+                            SET superseded_by_id = ?
+                            WHERE superseded_by_id = ?
+                            """,
+                            (head["record_id"], anchor_id),
+                        )
+                        con.execute(
+                            "DELETE FROM deep_research_records WHERE record_id = ?",
+                            (anchor_id,),
+                        )
+                    else:
+                        # Dangling supersession chain: the husk is the only row for this
+                        # anchor. Adopt it and let the update path revive it.
+                        existing = occupant
+                        adopted_by_id = True
+                elif occupant_status == "quarantined":
+                    # Quarantined material is never adopted; replace it with a fresh row.
+                    con.execute(
+                        "DELETE FROM deep_research_records WHERE record_id = ?",
+                        (anchor_id,),
+                    )
+                else:
+                    existing = occupant
+                    adopted_by_id = True
         if existing is None:
             existing_id = self._existing_deep_record_id(con, record)
             if existing_id:
@@ -1280,6 +1514,7 @@ class ResearchMemoryService:
         )
         use_incoming = (
             identity_changed
+            or adopted_by_id
             or typed_identity_changed
             # Quality ranking selects a representative across different sources. A newly
             # accepted review of the exact same source set is instead a revision and must
@@ -2750,6 +2985,30 @@ class ResearchMemoryService:
             "copy_safety_state = 'passed'",
             "status IN ('valid', 'needs_revalidation')",
         ]
+        if record_ids:
+            # Explicit record IDs are deep-read anchors that may have been issued before a
+            # relocation (backfill/migration moves a unit to id = hash(knowledge_key) and
+            # deprecates the old id). Resolve each id to its active superseding chain head
+            # so stored receipts and caller-held ids keep resolving; the status filter keeps
+            # the deprecated husks themselves out of the result.
+            resolved_ids: list[str] = []
+            for record_id in record_ids:
+                resolved_ids.append(record_id)
+                head = con.execute(
+                    "SELECT superseded_by_id FROM deep_research_records WHERE record_id = ?",
+                    (record_id,),
+                ).fetchone()
+                head_id = head["superseded_by_id"] if head is not None else None
+                seen = {record_id}
+                while head_id is not None and head_id not in seen:
+                    seen.add(head_id)
+                    resolved_ids.append(head_id)
+                    head = con.execute(
+                        "SELECT superseded_by_id FROM deep_research_records WHERE record_id = ?",
+                        (head_id,),
+                    ).fetchone()
+                    head_id = head["superseded_by_id"] if head is not None else None
+            record_ids = resolved_ids
         if not record_ids:
             where.append(
                 "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
@@ -4137,6 +4396,51 @@ def _historical_family_hints(
         )
         for source_ref in _loads(row["source_case_refs"], []):
             hints.setdefault(str(source_ref), set()).update(pairs)
+    return hints
+
+
+def _sibling_family_hints(
+    con: sqlite3.Connection, build_family_keys: set[str]
+) -> list[dict[str, Any]]:
+    """Advisory hints when a written family shares ascendancy+primary with another stored family.
+
+    This is the verification mechanism for family-key stability: a new family key that differs
+    only by automatic/variant secondary skills signals possible identity splitting. It is
+    advisory-only and never gates acceptance.
+    """
+    hints: list[dict[str, Any]] = []
+    for family_key in sorted(build_family_keys):
+        row = con.execute(
+            """
+            SELECT ascendancy_key, primary_skill_key
+            FROM research_build_families
+            WHERE build_family_key = ?
+            """,
+            (family_key,),
+        ).fetchone()
+        if row is None:
+            continue
+        siblings = con.execute(
+            """
+            SELECT build_family_key, secondary_skill_keys
+            FROM research_build_families
+            WHERE ascendancy_key = ? AND primary_skill_key = ?
+              AND build_family_key != ?
+            ORDER BY evidence_count DESC, build_family_key
+            LIMIT 5
+            """,
+            (row["ascendancy_key"], row["primary_skill_key"], family_key),
+        ).fetchall()
+        for sibling in siblings:
+            hints.append(
+                {
+                    "familyKey": family_key,
+                    "ascendancyKey": row["ascendancy_key"],
+                    "primarySkillKey": row["primary_skill_key"],
+                    "siblingFamilyKey": str(sibling["build_family_key"]),
+                    "siblingSecondarySkillKeys": _loads(sibling["secondary_skill_keys"], []),
+                }
+            )
     return hints
 
 

@@ -526,6 +526,69 @@ def test_verify_stage_metrics_classifies_mana_flask_dependency_and_boss_risk():
     assert "sustain_ok" in result["failedChecks"]
 
 
+def test_verify_stage_metrics_model_gap_flask_assisted_passes_with_disclosure():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={
+            "Life": 2600,
+            "Mana": 533,
+            "ManaUnreserved": 533,
+            "ManaCost": 45.384615,
+            "Speed": 2.1375,
+            "ManaRegenRecovery": 58.4,
+            "ManaLeechGainRate": 0,
+            "ManaOnHitRate": 0,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 12000,
+        },
+        state={"manaFlaskEquipped": True},
+        unmodelled_mana_mechanisms=["Mana Remnants", "Lavianga's Spirits"],
+    )
+
+    sustain = result["observations"]["manaSustain"]
+    assert sustain["classification"] == "model_gap_flask_assisted"
+    assert sustain["unmodelledManaMechanisms"] == ["Mana Remnants", "Lavianga's Spirits"]
+    # The numeric deficit stays fully disclosed even though the gate passes.
+    assert sustain["netDeficitPerSecond"] == pytest.approx(38.6096, rel=1e-4)
+    assert sustain["secondsFromFull"] == pytest.approx(13.8049, rel=1e-4)
+    assert "sustain_ok" not in result["failedChecks"]
+    assert "sustain_ok" not in result["unknownChecks"]
+    assert result["pass"] is True
+    assert any("unmodelled_mana_layer_present" in caveat for caveat in result["caveats"])
+
+
+def test_verify_stage_metrics_model_gap_does_not_weaken_plain_flask_dependency():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={
+            "Life": 2600,
+            "Mana": 533,
+            "ManaUnreserved": 533,
+            "ManaCost": 45.384615,
+            "Speed": 2.1375,
+            "ManaRegenRecovery": 58.4,
+            "ManaLeechGainRate": 0,
+            "ManaOnHitRate": 0,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 12000,
+        },
+        state={"manaFlaskEquipped": False},
+        unmodelled_mana_mechanisms=["Mana Remnants"],
+    )
+
+    sustain = result["observations"]["manaSustain"]
+    assert sustain["classification"] == "unsustainable"
+    assert "sustain_ok" in result["failedChecks"]
+
+
 def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():
     from server.knowledge import lifecycle_verification
 

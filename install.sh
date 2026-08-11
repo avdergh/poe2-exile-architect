@@ -7,9 +7,11 @@ REPO_URL="${POE_BD_CREATOR_REPO_URL:-https://github.com/avdergh/poe2-exile-archi
 REPO_DIR="${POE_BD_CREATOR_DIR:-$HOME/.poe-bd-creator/repo}"
 PLUGIN_LINK="$HOME/.poe-bd-creator-plugin"
 DRY_RUN=0
+FROM_CHECKOUT=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGED_MCP_BEGIN="# BEGIN poe-bd-creator managed MCP server"
 MANAGED_MCP_END="# END poe-bd-creator managed MCP server"
+PORTABLE_SKILLS="poe-bd-research poe-bd-create"
 
 platforms_table() {
   cat <<EOF
@@ -18,7 +20,7 @@ claude|$HOME/.claude/skills|per-skill
 cursor|$HOME/.cursor/skills|per-skill
 vscode|$HOME/.copilot/skills|per-skill
 gemini|$HOME/.agents/skills|per-skill
-opencode|$HOME/.agents/skills|per-skill
+opencode|$HOME/.config/opencode/skills|per-skill
 openclaw|$HOME/.openclaw/skills|folder
 hermes|$HOME/.hermes/skills|folder
 EOF
@@ -44,8 +46,10 @@ Exile Architect installer
 Usage:
   install.sh [<platform>]            Install for <platform> (or prompt if omitted)
   install.sh --dry-run <platform>    Show actions without changing files
+  install.sh --from-checkout <platform>  Install this checkout without clone/pull
   install.sh --update                Pull latest changes
-  install.sh --register-mcp-only     Register this checkout's MCP server without cloning/linking
+  install.sh --register-mcp-only [host]  Register this checkout's MCP server
+  install.sh --doctor <host>         Check MCP runtime/config binding
   install.sh --uninstall <platform>  Remove links for <platform>
   install.sh --help
 
@@ -117,11 +121,15 @@ clone_or_update() {
 }
 
 list_skills() {
-  local root
+  local id="${1:-codex}" root
   root="$(skill_list_root)"
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
-      printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+      if [[ "$id" == "codex" ]]; then
+        printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+      else
+        printf '%s\n' $PORTABLE_SKILLS
+      fi
       return 0
     fi
     say "Skills directory not found: $root"
@@ -130,7 +138,11 @@ list_skills() {
   local d
   for d in "$root"/*/; do
     [[ -d "$d" ]] || continue
-    basename "$d"
+    local name
+    name="$(basename "$d")"
+    if [[ "$id" == "codex" || " $PORTABLE_SKILLS " == *" $name "* ]]; then
+      printf '%s\n' "$name"
+    fi
   done
 }
 
@@ -138,7 +150,7 @@ list_skills_for_uninstall() {
   local root
   root="$(skill_list_root)"
   if [[ -d "$root" ]]; then
-    list_skills
+    list_skills codex
   else
     printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
   fi
@@ -201,7 +213,7 @@ remove_link() {
 }
 
 link_skills() {
-  local target="$1" style="$2" root
+  local target="$1" style="$2" id="$3" root
   root="$(skills_root)"
   [[ "$DRY_RUN" == "1" ]] || mkdir -p "$target"
   case "$style" in
@@ -209,7 +221,11 @@ link_skills() {
       local skill
       while IFS= read -r skill; do
         safe_link "$root/$skill" "$target/$skill"
-      done < <(list_skills)
+      done < <(list_skills "$id")
+      if [[ "$id" != "codex" ]]; then
+        remove_link "$target/poe-bd-research-loop"
+        remove_link "$target/poe-bd-learning-loop"
+      fi
       ;;
     folder)
       safe_link "$root" "$target/poe-bd-creator"
@@ -268,11 +284,16 @@ resolve_uv_command() {
     printf '%s\n' "$local_uv"
     return 0
   fi
+  local checkout_uv="$SCRIPT_DIR/.tools/uv/uv"
+  if [[ -x "$checkout_uv" ]]; then
+    printf '%s\n' "$checkout_uv"
+    return 0
+  fi
   if command -v uv >/dev/null 2>&1; then
     command -v uv
     return 0
   fi
-  say "Codex MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer."
+  say "MCP installation requires uv. Install uv from https://docs.astral.sh/uv/ and rerun the installer."
   return 1
 }
 
@@ -316,28 +337,58 @@ register_codex_mcp_server() {
   command="$(resolve_uv_command)"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    say "[dry-run] register Codex MCP server poe2_build_mcp in $config_path"
+    say "[dry-run] register Codex MCP servers (poe_knowledge_mcp, poe_build_mcp, poe_research_mcp, poe_learning_mcp) in $config_path"
     return 0
   fi
 
   mkdir -p "$(dirname "$config_path")"
   local existing=""
   [[ -f "$config_path" ]] && existing="$(cat "$config_path")"
-  if grep -q '^\[mcp_servers\.poe2_build_mcp\]$' <<<"$existing" && ! grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing"; then
-    say "Codex MCP server poe2_build_mcp already exists but is not installer-managed; leaving it unchanged."
-    return 0
-  fi
+  local name
+  for name in poe_knowledge_mcp poe_build_mcp poe_research_mcp poe_learning_mcp; do
+    if grep -q "^\[mcp_servers\.${name}\]$" <<<"$existing" && ! grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing"; then
+      say "Codex MCP server $name already exists but is not installer-managed; leaving it unchanged."
+      return 0
+    fi
+  done
 
   clean="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
   block="$(cat <<EOF
 $MANAGED_MCP_BEGIN
-[mcp_servers.poe2_build_mcp]
+[mcp_servers.poe_knowledge_mcp]
 command = $(toml_string "$command")
-args = ["run", "python", "-m", "server.main"]
+args = ["run", "python", "-m", "server.mcp.knowledge_server"]
 cwd = $(toml_string "$repo_root")
 startup_timeout_sec = 120
 
-[mcp_servers.poe2_build_mcp.env]
+[mcp_servers.poe_knowledge_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_build_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.build_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_build_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_research_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.research_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_research_mcp.env]
+PYTHONPATH = $(toml_string "$repo_root")
+
+[mcp_servers.poe_learning_mcp]
+command = $(toml_string "$command")
+args = ["run", "python", "-m", "server.mcp.learning_server"]
+cwd = $(toml_string "$repo_root")
+startup_timeout_sec = 120
+
+[mcp_servers.poe_learning_mcp.env]
 PYTHONPATH = $(toml_string "$repo_root")
 $MANAGED_MCP_END
 EOF
@@ -353,7 +404,7 @@ $block
 "
   fi
   printf '%s' "$next" > "$config_path"
-  say "Registered Codex MCP server poe2_build_mcp in $config_path"
+  say "Registered Codex MCP servers (poe_knowledge_mcp, poe_build_mcp, poe_research_mcp, poe_learning_mcp) in $config_path"
 }
 
 unregister_codex_mcp_server() {
@@ -363,32 +414,73 @@ unregister_codex_mcp_server() {
   existing="$(cat "$config_path")"
   grep -qF "$MANAGED_MCP_BEGIN" <<<"$existing" || return 0
   if [[ "$DRY_RUN" == "1" ]]; then
-    say "[dry-run] remove Codex MCP server poe2_build_mcp from $config_path"
+    say "[dry-run] remove Codex MCP servers from $config_path"
     return 0
   fi
   next="$(remove_managed_mcp_block "$existing" | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
   printf '%s\n' "$next" > "$config_path"
-  say "Removed installer-managed Codex MCP server poe2_build_mcp from $config_path"
+  say "Removed installer-managed Codex MCP servers from $config_path"
+}
+
+is_portable_mcp_host() {
+  [[ "$1" == "claude" || "$1" == "cursor" || "$1" == "opencode" ]]
+}
+
+configure_portable_host() {
+  local action="$1" host="$2" uv_path script project_root
+  uv_path="$(resolve_uv_command)"
+  script="$REPO_DIR/scripts/configure_agent_host.py"
+  [[ -f "$script" ]] || script="$SCRIPT_DIR/scripts/configure_agent_host.py"
+  project_root="$REPO_DIR"
+  [[ -f "$project_root/pyproject.toml" ]] || project_root="$SCRIPT_DIR"
+  local args=(run --project "$project_root" python "$script" "$action" --host "$host")
+  if [[ "$action" != "uninstall" ]]; then
+    args+=(--repo-root "$REPO_DIR" --uv-command "$uv_path")
+  fi
+  [[ "$DRY_RUN" == "1" ]] && args+=(--dry-run)
+  "$uv_path" "${args[@]}"
+}
+
+register_mcp_server() {
+  local id="$1"
+  if [[ "$id" == "codex" ]]; then
+    register_codex_mcp_server
+  elif is_portable_mcp_host "$id"; then
+    configure_portable_host install "$id"
+  else
+    say "$id skill links were installed, but automatic MCP registration is not available for this host."
+  fi
+}
+
+unregister_mcp_server() {
+  local id="$1"
+  if [[ "$id" == "codex" ]]; then
+    unregister_codex_mcp_server
+  elif is_portable_mcp_host "$id"; then
+    configure_portable_host uninstall "$id"
+  fi
 }
 
 cmd_install() {
   local id="$1" row target style
   row="$(resolve_platform "$id")"
-  if [[ "$id" == "codex" && "$DRY_RUN" != "1" ]]; then
-    resolve_uv_command >/dev/null
-  fi
   target="$(printf '%s\n' "$row" | cut -d'|' -f2)"
   style="$(printf '%s\n' "$row" | cut -d'|' -f3)"
-  clone_or_update
+  [[ "$FROM_CHECKOUT" == "1" ]] || clone_or_update
+  if [[ "$id" == "codex" ]] || is_portable_mcp_host "$id"; then
+    [[ "$DRY_RUN" == "1" ]] || resolve_uv_command >/dev/null
+  fi
   say "Linking skills for $id ($style -> $target)"
-  link_skills "$target" "$style"
+  link_skills "$target" "$style" "$id"
   say "Linking universal plugin root"
   link_plugin_root
   install_build_converter_provider
+  register_mcp_server "$id"
   if [[ "$id" == "codex" ]]; then
-    register_codex_mcp_server
+    say "Installed Exile Architect for $id. Restart the host to discover all four workflows."
+  else
+    say "Installed Exile Architect for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
   fi
-  say "Installed Exile Architect skills for $id. Restart the host to discover /poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop."
 }
 
 cmd_uninstall() {
@@ -397,9 +489,7 @@ cmd_uninstall() {
   target="$(printf '%s\n' "$row" | cut -d'|' -f2)"
   style="$(printf '%s\n' "$row" | cut -d'|' -f3)"
   unlink_skills "$target" "$style"
-  if [[ "$id" == "codex" ]]; then
-    unregister_codex_mcp_server
-  fi
+  unregister_mcp_server "$id"
   remove_link "$PLUGIN_LINK"
   say "Checkout kept at $REPO_DIR."
 }
@@ -423,13 +513,32 @@ main() {
       shift
       cmd_install "${1:-$(prompt_platform)}"
       ;;
+    --from-checkout)
+      FROM_CHECKOUT=1
+      REPO_DIR="$SCRIPT_DIR"
+      shift
+      cmd_install "${1:-$(prompt_platform)}"
+      ;;
     --update)
       cmd_update
       ;;
     --register-mcp-only)
       REPO_DIR="$SCRIPT_DIR"
       resolve_uv_command >/dev/null
-      register_codex_mcp_server
+      shift
+      register_mcp_server "${1:-codex}"
+      ;;
+    --doctor)
+      shift
+      [[ -n "${1:-}" ]] || { say "--doctor requires a host"; exit 1; }
+      if [[ "$1" == "codex" ]]; then
+        say "Codex doctor remains available through a new Codex task and engine_health."
+      elif is_portable_mcp_host "$1"; then
+        configure_portable_host doctor "$1"
+      else
+        say "Doctor supports: codex, claude, cursor, opencode"
+        exit 1
+      fi
       ;;
     --uninstall)
       shift

@@ -1,2 +1,5 @@
 # Patch files must stay LF + BOM-free so `git apply` works on Linux CI (CLAUDE.md §7 fork patches).
 *.patch text eol=lf
+
+# Python sources stay LF so whole-file CRLF flips never pollute diffs again.
+*.py text eol=lf

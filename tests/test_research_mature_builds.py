@@ -384,6 +384,18 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert "source_artifact" in contract["allowedValues"]["mechanicAuditCorroboration"]
     assert any("mechanic_chain 和 resource_engine" in rule for rule in contract["rules"])
     assert any("A / B" in rule for rule in contract["rules"])
+    family_rules = [rule for rule in contract["rules"] if "BuildFamily" in rule]
+    assert family_rules
+    assert any("trigger_host" in rule and "不自动参与身份" in rule for rule in family_rules)
+    assert not any(
+        "trigger_host 由程序自动参与" in rule or "trigger_host roles" in rule
+        for rule in contract["rules"]
+    )
+    assert (
+        "clear/boss/triggered_payload"
+        in contract["typedPayloadSchema"]["familyCoreSkillKeys"]["rule"]
+    )
+    assert "trigger hosts" in contract["typedPayloadSchema"]["familyCoreSkillKeys"]["rule"]
     assert "support_modifier" in contract["allowedValues"]["componentRole"]
     assert "burst_window" not in contract["allowedValues"]["componentRole"]
     assert contract["artifactEncoding"] == {
@@ -797,6 +809,119 @@ def test_passive_reader_exposes_ascendancy_ownership(tmp_path):
     assert node["name"] == "Forced Outcome"
     assert node["ascendancyName"] == "Oracle"
     assert node["isAscendancyPassive"] is True
+
+
+def test_passive_reader_filters_by_node_type(tmp_path):
+    from scripts import research_mature_builds
+
+    xml = _sample_xml("SparkPlayer", ascendancy="Stormweaver", level=90).replace(
+        "</PathOfBuilding2>",
+        '<Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="57513,45918,100" /></Tree></PathOfBuilding2>',
+    )
+    source_file = tmp_path / "passive-filter-sample.txt"
+    source_file.write_text(pob_code.encode_code(xml), encoding="utf-8")
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-passive-filter"
+    research_mature_builds.queue_cases(
+        source_files=[source_file], output_dir=output_dir, temp_root=temp_root
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    keystone_page = research_mature_builds.read_case_section(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        section="passives",
+        node_type="keystone",
+        limit=50,
+    )
+    keystone_nodes = [item for item in keystone_page["items"] if item["kind"] == "allocated_node"]
+    assert [item["nodeId"] for item in keystone_nodes] == ["57513", "45918"]
+    assert keystone_page["totalCount"] == 2
+    assert keystone_page["complete"] is True
+
+    normal_page = research_mature_builds.read_case_section(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        section="passives",
+        node_type="normal",
+        limit=50,
+    )
+    normal_nodes = [item for item in normal_page["items"] if item["kind"] == "allocated_node"]
+    assert [item["nodeId"] for item in normal_nodes] == ["100"]
+
+    unfiltered = research_mature_builds.read_case_section(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        section="passives",
+        limit=50,
+    )
+    unfiltered_allocated = [
+        item for item in unfiltered["items"] if item["kind"] == "allocated_node"
+    ]
+    assert sorted(item["nodeId"] for item in unfiltered_allocated) == ["100", "45918", "57513"]
+
+
+def test_case_reader_reports_cross_axis_rare_cooccurrence_advisory(tmp_path):
+    from scripts import research_mature_builds
+
+    xml = _sample_xml("SparkPlayer", ascendancy="Stormweaver", level=90).replace(
+        "</PathOfBuilding2>",
+        (
+            '<Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="57513" /></Tree>'
+            '<Items activeItemSet="1">'
+            '<Item id="7">Rarity: RARE\nThorns of Chaos\nHelmet\nItem Level: 82\n'
+            "+30 to maximum Life\n50% increased Chaos Damage\n40 to 60 Physical Thorns damage</Item>"
+            '<ItemSet id="1"><Slot name="Helmet" itemId="7" /></ItemSet></Items>'
+            "</PathOfBuilding2>"
+        ),
+    )
+    source_file = tmp_path / "advisory-sample.txt"
+    source_file.write_text(pob_code.encode_code(xml), encoding="utf-8")
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-advisory"
+    research_mature_builds.queue_cases(
+        source_files=[source_file], output_dir=output_dir, temp_root=temp_root
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    page = research_mature_builds.read_case_section(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        section="gear",
+        limit=50,
+    )
+    assert page["advisories"]
+    assert "chaos" in page["advisories"][0]
+    assert "thorns" in page["advisories"][0]
+
+
+def test_case_reader_omits_advisory_without_rare_axis_cooccurrence(tmp_path):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "clean-sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-clean-advisory"
+    research_mature_builds.queue_cases(
+        source_files=[source_file], output_dir=output_dir, temp_root=temp_root
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    page = research_mature_builds.read_case_section(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        section="skills",
+        limit=50,
+    )
+    assert page["advisories"] == []
 
 
 def test_case_reader_rejects_wrong_or_expired_lease(tmp_path):
@@ -1576,4 +1701,148 @@ def test_research_packet_builds_safe_active_skill_evidence_manifest():
     assert manifest["noRawMatureBuildMaterial"] is True
     serialized = json.dumps(manifest, ensure_ascii=False)
     assert "<Skills" not in serialized
+    assert "rawXml" not in serialized
+
+
+def test_compact_accept_report_only_for_clean_results():
+    from scripts import research_mature_builds as rmb
+
+    clean = {
+        "status": "accepted",
+        "deferredCandidateCount": 0,
+        "caseCoverageGapCount": 0,
+        "unresolvedDeepRecordMentionCount": 0,
+        "unresolvedUniqueComponentCount": 0,
+    }
+    assert rmb._should_compact_report(clean) is True
+    assert rmb._should_compact_report({**clean, "deferredCandidateCount": 1}) is False
+    assert rmb._should_compact_report({**clean, "status": "validation_failed"}) is False
+    assert rmb._should_compact_report({**clean, "unresolvedDeepRecordComponentCount": 2}) is False
+    assert rmb._should_compact_report({**clean, "caseCoverageGapCount": 1}) is False
+    assert rmb._should_compact_report({**clean, "status": "validation_passed"}) is True
+
+
+def test_compact_accept_result_strips_bulk_blocks_and_keeps_quality_summary():
+    from scripts import research_mature_builds as rmb
+
+    result = {
+        "status": "accepted",
+        "sampleId": "case:fixture",
+        "acceptedDeepRecordCount": 2,
+        "deferredReasonCounts": {},
+        "mechanicAudit": {
+            "entryCount": 10,
+            "pinnedRevisionCount": 6,
+            "liveEvidenceStatus": "partial",
+            "schemaIssueCount": 0,
+            "unauditedHighRiskRecordCount": 0,
+            "entries": [{"index": 0, "claim": "long claim body"}],
+        },
+        "sourceEvidenceDiagnostics": {"available": True, "unstructuredSourceSupportMentions": []},
+        "patternWrite": {"status": "accepted", "patternIds": ["bdp-1"]},
+        "deepRecordWrite": {"status": "accepted", "recordWrites": [{"title": "long canonical"}]},
+        "deferredCandidates": [],
+        "noRawMatureBuildMaterial": True,
+    }
+    compact = rmb._compact_accept_result(result)
+
+    assert compact["mechanicAudit"] == {
+        "entryCount": 10,
+        "pinnedRevisionCount": 6,
+        "liveEvidenceStatus": "partial",
+        "schemaIssueCount": 0,
+        "unauditedHighRiskRecordCount": 0,
+    }
+    assert "entries" not in compact["mechanicAudit"]
+    assert "sourceEvidenceDiagnostics" not in compact
+    assert "patternWrite" not in compact
+    assert "deepRecordWrite" not in compact
+    assert "deferredCandidates" not in compact
+    assert compact["acceptedDeepRecordCount"] == 2
+    assert compact["status"] == "accepted"
+    assert compact["noRawMatureBuildMaterial"] is True
+
+
+def test_research_packet_jewel_counts_reports_allocated_sockets_without_gems():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    assert socket_ids, "0_5 tree must expose jewel socket nodes for this fixture"
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    counts = research_packet.jewel_counts(packet)
+
+    assert counts["status"] == "ok"
+    assert counts["allocatedJewelSocketCount"] == 1
+    assert counts["socketedJewelCount"] == 0
+    assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_jewel_counts_counts_socketed_jewels():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
+  <Items activeItemSet="1">
+    <Item id="3">Rarity: RARE\nResearch Jewel\nEmerald\nItem Level: 82\n12% increased Attack Speed</Item>
+    <ItemSet id="1"><Slot name="Jewel 1" itemId="3" /></ItemSet>
+  </Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    counts = research_packet.jewel_counts(packet)
+
+    assert counts["status"] == "ok"
+    assert counts["allocatedJewelSocketCount"] == 1
+    assert counts["socketedJewelCount"] == 1
+    assert research_packet.jewel_advisories(packet) == []
+
+
+def test_research_packet_jewel_counts_flags_tree_data_missing():
+    from server.knowledge import research_packet
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5_unknown_tree" nodes="2491" /></Tree>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    counts = research_packet.jewel_counts(packet)
+
+    assert counts["status"] == "tree_data_missing"
+    assert any("node metadata" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_inspect_exposes_jewel_counts_without_raw_xml():
+    from server.knowledge import research_packet
+
+    packet = {"rawContext": {"rawXml": _rich_sample_xml()}}
+    inspected = research_packet.inspect_packet(packet)
+
+    assert inspected["jewelCounts"]["status"] == "ok"
+    assert isinstance(inspected["jewelCounts"]["allocatedJewelSocketCount"], int)
+    assert isinstance(inspected["jewelAdvisories"], list)
+    serialized = json.dumps(inspected, ensure_ascii=False)
+    assert "<Tree" not in serialized
     assert "rawXml" not in serialized

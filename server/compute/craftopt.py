@@ -88,6 +88,7 @@ def craft_item(
     weapons/armour typically allow up to 2). The build is restored; only a raw-free legality receipt
     for the returned item is persisted. See the module docstring.
     """
+    slot = itemopt._canonical_slot(slot)
     weights: dict[str, float] = {}
     if goals:
         weights = {str(k): float(v) for k, v in goals.items() if _num(v) and float(v) > 0}

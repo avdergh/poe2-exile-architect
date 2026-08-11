@@ -1,0 +1,52 @@
+{
+  "mcpServers": {
+    "poe_knowledge_mcp": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./scripts/run_plugin_server.mjs",
+        "--server",
+        "knowledge"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    },
+    "poe_build_mcp": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./scripts/run_plugin_server.mjs",
+        "--server",
+        "build"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    },
+    "poe_research_mcp": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./scripts/run_plugin_server.mjs",
+        "--server",
+        "research"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    },
+    "poe_learning_mcp": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./scripts/run_plugin_server.mjs",
+        "--server",
+        "learning"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

@@ -44,11 +44,44 @@ extraction method, not an optional reading list.
    case finding.
 10. BuildFamily identity uses only confirmed skill_package and mechanic_chain evidence. Unverified
     components mentioned in modelability_caveat, failure_mode, or open_question do not authorize
-     Family identity. clear_skill, boss_skill, triggered_payload, and a trigger_host that delivers
-     either a triggered_payload or primary_damage skill are core by role; do not repeat them in
-     typed_payload.familyCoreSkillKeys.
+    Family identity. clear_skill, boss_skill, and triggered_payload are core by role; do not repeat
+    them in typed_payload.familyCoreSkillKeys. A trigger host is NOT automatic Family identity
+    (swapping hosts is a variant): declare only an identity-defining trigger host explicitly in
+    typed_payload.familyCoreSkillKeys.
     For resource_engine records whose leech/flask/affix mechanism has no physical graph node, add
     precise lower_snake_case typed_payload.resourceMechanisms tags.
+
+## SIGNATURE MOD CHECKLIST
+When a record's causal conclusion is driven by a signature mod, that mod must be independently
+recorded (gear_synergy/mechanic_chain) or covered by a mechanicAudit entry - never only a content
+string. Signature mod families include: extreme variance rolls ("Rolls only the minimum or maximum
+Damage value"), lowest-resistance damage ("based on their Lowest Resistance"), elemental-ground
+interactions ("Wind Skills which can be boosted by Elemental Ground"), implicit passive allocation
+("Allocates <passive>"), granted skills ("Grants Skill: Level N <skill>"), extra-projectile
+mechanics ("Surpassing chance"), and charge retention ("X% chance to not remove Charges but still
+count as consuming them"). When a signature mod drives the conclusion, audit it with a
+revision-pinned lookup_mechanic sourceRef plus at least one independent corroboration.
+
+## UNIQUE GEM / RADIUS JEWEL CHECKLIST
+Unique gems (Ailith's Chimes, Uhtred's series, ...) and unique jewels carry fixed effects and
+often positional power. When a case uses them: mark the unique identity in the record
+(support_modifier / unique_enabler roles), keep radius/Time-Lost jewel mods
+("Small/Notable Passive Skills in Radius also grant X") verbatim in conditions or
+verificationTasks, never treat a radius grant as a global grant, and record which allocated
+passive types sit in the radius. Data caveats: the bundled unique-jewel table misses the PoE2
+Time-Lost series (their uniques live in Uniques/Special/Generated.lua, which the corpus
+extractor does not ingest), and Historic timeless jewels (base "Timeless Jewel") are excluded
+from candidates because the pinned engine's conquered rule is a no-op. When a source radius
+jewel cannot be fetched from the corpus, rely on PoB engine readback and record the data gap
+in a modelability_caveat.
+
+## OPEN QUESTION CRITERIA
+modelability_caveat is for mechanisms that exist but are unmodelled/unverified in PoB. A
+cross-component anomaly combination that cannot be closed - for example chaos-damage passives,
+thorns, and poison chance coexisting with a low-life branch - is an open_question record: name the
+anomalous components, the possible mechanisms, the exclusions you checked, and the verification
+tasks. Do not bury an unclosed anomaly in a modelability_caveat.
+
 
 ## CALIBRATED POSITIVE EXAMPLE (SANITIZED)
 Observation: one mature charge-based melee sample contains Killing Palm, Flicker Strike supported by
@@ -141,14 +174,31 @@ def build_researcher_prompt_package(
         f"{DEEP_RESEARCH_PLAYBOOK}\n\n"
         "## STEP 2: Query, Compare, and Deduplicate (Mandatory Before Writing)\n"
         "After the independent working model is formed, call "
-        'query_research_memory(detail_level="summary") with a query derived from your own current '
-        "case analysis. Include resolved component_keys only when already available; they are "
-        "optional for this first comparison. Use the returned dedupeQueryRef when proposing new "
+        'query_research_memory(detail_level="summary", response_profile="create_compact") with a '
+        "query derived from your own current case analysis. Use the compact profile for wide recall "
+        'queries; switch to detail_level="record" with record_ids=[...] only for the few records '
+        "you deep-read. Before the first comparison, resolve the case's ascendancy and class with "
+        "search_graph_components + resolve_graph_component and filter the memory query with their "
+        'STABLE keys (for example ascendancy_key="ascendancy:monk:martial_artist", '
+        'class_key="class:monk", build_family_keys=[...]); display names such as "Martial Artist" '
+        'or "Monk" do not match stored keys and silently return empty results. Always inspect the '
+        "returned familyRecordCoverage, familyRecordIndex and familyPremiseCatalog blocks: a "
+        "non-empty exact/same-family result must be compared record-by-record against your working "
+        "model for duplicates, variants, conflicts, missing conditions, stronger evidence, and "
+        "already-known mechanisms (for example an existing same-family record may already define "
+        "charge generation/consumption roles). Use the returned dedupeQueryRef when proposing new "
         "fragments. If a returned deep-record summary is highly relevant, call "
         'query_research_memory(detail_level="record", record_ids=[...]) to read only those records. '
         "Compare the current case against memory for exact duplicates, variants, conflicts, missing "
         "conditions, stronger evidence, and genuinely new knowledge. Do not rewrite the current "
         "analysis merely to match an older record.\n"
+        "- Config condition closure: list every packet config condition (conditionEnemyChilled, "
+        "conditionEnemyBleeding, conditionEnemyBlinded, conditionEnemyIgnited, conditionCritRecently, "
+        "conditionBeenHitRecently, usePowerCharges, ...) and close each one with either (a) a "
+        "structured source component and its causal chain, or (b) an explicit caveat/verification "
+        "task that the assumption is unproven. An enemy-state condition with no proven source "
+        "(for example ignited with no ignite provider) must be recorded as a modelability caveat, "
+        "never silently adopted.\n"
         "- If the exact or near-equivalent insight already exists, call append_evidence_to_fragment "
         "with safe source/evidence refs. DO NOT create duplicates.\n"
         "- If the insight is genuinely new, proceed to Step 3 and then submit it with the "
@@ -239,10 +289,12 @@ def build_researcher_prompt_package(
         "control_skill.\n"
         "- Family identity comes only from confirmed skill_package and mechanic_chain records. "
         "Components mentioned only in a modelability_caveat do not belong to the Family. "
-        "clear_skill, boss_skill, triggered_payload, and a trigger_host delivering either a "
-        "triggered_payload or primary_damage skill count automatically. Do not repeat those keys in "
-        "typed_payload.familyCoreSkillKeys or promote every secondary_skill. Put only other identity-defining resolved skill "
-        "keys in typed_payload.familyCoreSkillKeys. For a resource_engine without a resolved "
+        "clear_skill, boss_skill, and triggered_payload count automatically. Do not repeat those "
+        "keys in typed_payload.familyCoreSkillKeys or promote every secondary_skill. A trigger "
+        "host is NOT automatic Family identity (swapping hosts is a variant): declare only an "
+        "identity-defining trigger host explicitly in typed_payload.familyCoreSkillKeys, and put "
+        "only identity-defining resolved skill "
+        "keys there. For a resource_engine without a resolved "
         "resource component, add lower_snake_case typed_payload.resourceMechanisms such as "
         "mana_leech or mana_flask; prose alone cannot receive a canonical knowledge key.\n"
         "- REQUIRED EXTRACTION CHECKLIST: evaluate the following extraction modes for this one "

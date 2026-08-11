@@ -209,7 +209,10 @@ def validate_fragment_extraction_output(payload: dict[str, Any]) -> dict[str, An
             "paths": forbidden_paths,
         }
 
-    copyability_flags = copy_safety.copyability_flags(payload)
+    # Clean knowledge may legitimately carry complete core mechanism packages (skill/support
+    # link chains, ordered passive paths, exact slot gear), so use the durable projection —
+    # the same semantic the rest of the durable writers use — instead of the strict raw set.
+    copyability_flags = copy_safety.durable_knowledge_flags(payload)
     if copyability_flags:
         return {
             "ok": False,
@@ -243,11 +246,15 @@ def validate_fragment_extraction_output(payload: dict[str, Any]) -> dict[str, An
 
 
 def validate_fragment_report_markdown(markdown: str) -> dict[str, Any]:
-    """Ensure the rendered report remains free of recipe-level build material."""
+    """Ensure the rendered report remains free of recipe-level build material.
+
+    Like fragment validation, complete mechanism packages (skill/support chains) are
+    durable-legal, so the durable projection applies here as well.
+    """
     if not isinstance(markdown, str):
         return {"ok": False, "error": "markdown_must_be_string"}
 
-    copyability_flags = copy_safety.copyability_flags({"markdown": markdown})
+    copyability_flags = copy_safety.durable_knowledge_flags({"markdown": markdown})
     if copyability_flags:
         return {
             "ok": False,

@@ -72,7 +72,19 @@ def corpus_info() -> dict[str, Any]:
     return meta
 
 
-def search_items(query: str = "", item_class: str | None = None, limit: int = 20) -> list[dict]:
+def search_items(
+    query: str = "",
+    item_class: str | None = None,
+    limit: int = 20,
+    max_drop_level: int | None = None,
+    order: str = "drop_desc",
+) -> list[dict]:
+    """Search item bases by name/tags/class.
+
+    `max_drop_level` filters to bases obtainable by a character level (SQL-side, so low-level
+    bases are NOT truncated by the LIMIT — this is what pick_base relies on for campaign gear).
+    `order` is "drop_desc" (highest tier first, default) or "drop_asc" (campaign-friendly).
+    """
     con = _conn()
     params: list[Any] = []
     if query:
@@ -86,8 +98,14 @@ def search_items(query: str = "", item_class: str | None = None, limit: int = 20
     if item_class:
         sql += "AND i.item_class = ? "
         params.append(item_class)
-    # highest-tier (endgame) bases first — what build crafting usually wants
-    sql += "ORDER BY i.drop_level DESC LIMIT ?"
+    if max_drop_level is not None:
+        sql += "AND i.drop_level <= ? "
+        params.append(int(max_drop_level))
+    if order == "drop_asc":
+        sql += "ORDER BY i.drop_level ASC LIMIT ?"
+    else:
+        # highest-tier (endgame) bases first — what build crafting usually wants
+        sql += "ORDER BY i.drop_level DESC LIMIT ?"
     params.append(limit)
     return [
         {
@@ -132,9 +150,9 @@ def pick_base(
     `max_drop_level` prevents campaign planners from silently using endgame-only bases. Attribute-
     gated armour still prefers the build's dominant attribute within the eligible base set.
     """
-    rows = search_items(item_class=item_class, limit=100)  # highest drop_level first
-    if max_drop_level is not None:
-        rows = [row for row in rows if int(row.get("drop_level") or 0) <= max_drop_level]
+    rows = search_items(
+        item_class=item_class, limit=100, max_drop_level=max_drop_level
+    )  # highest drop_level first, filtered in SQL so low-level bases survive the LIMIT
     if not rows:
         return None
     if attr and item_class in _ATTR_GATED_CLASSES:
@@ -143,6 +161,45 @@ def pick_base(
             if tag in (r.get("tags") or []):
                 return str(r["name"])
     return str(rows[0]["name"])
+
+
+def _gem_crafting_meta(raw: str | None) -> dict[str, Any]:
+    """Extract crafting metadata from a gem's raw RePoE entry (fail-soft).
+
+    ``crafting_level`` is the RePoE *crafting* tier (0-14), NOT the character level at which the
+    gem becomes usable — gem level requirements live in the PoB engine and are queried through
+    the engine, not here. The field is surfaced only as an acquisition reference, and callers
+    must not treat it as a level gate.
+
+    ``is_lineage`` marks lineage support gems (a unique/special acquisition family, e.g.
+    Bhatair's Vengeance / Ailith's Chimes / Uhtred's series). It is tri-state: True/False when
+    the raw entry carries the field, None when the raw entry is missing or unparseable.
+    """
+    if not raw:
+        return {
+            "crafting_level": None,
+            "crafting_types": None,
+            "craftingTypesUnknown": True,
+            "is_lineage": None,
+        }
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {
+            "crafting_level": None,
+            "crafting_types": None,
+            "craftingTypesUnknown": True,
+            "is_lineage": None,
+        }
+    level = data.get("crafting_level")
+    types = data.get("crafting_types")
+    lineage = data.get("is_lineage")
+    return {
+        "crafting_level": int(level) if isinstance(level, int) else None,
+        "crafting_types": list(types) if isinstance(types, list) else None,
+        "craftingTypesUnknown": not isinstance(types, list),
+        "is_lineage": bool(lineage) if isinstance(lineage, bool) else None,
+    }
 
 
 def find_skills(
@@ -156,13 +213,13 @@ def find_skills(
     params: list[Any] = []
     if query:
         sql = (
-            "SELECT g.id, g.name, g.color, g.gem_type, g.tags, g.supports, g.description "
+            "SELECT g.id, g.name, g.color, g.gem_type, g.tags, g.supports, g.description, g.raw "
             "FROM gems_fts f JOIN gems g ON g.id = f.gem_id WHERE gems_fts MATCH ? "
         )
         params.append(_match(query))
     else:
         sql = (
-            "SELECT g.id, g.name, g.color, g.gem_type, g.tags, g.supports, g.description "
+            "SELECT g.id, g.name, g.color, g.gem_type, g.tags, g.supports, g.description, g.raw "
             "FROM gems g WHERE 1=1 "
         )
     if gem_type:
@@ -185,6 +242,7 @@ def find_skills(
             "tags": json.loads(r["tags"]),
             "supports": json.loads(r["supports"]),
             "description": r["description"],
+            **_gem_crafting_meta(r["raw"]),
         }
         for r in con.execute(sql, params)
     ]
@@ -237,7 +295,7 @@ def find_supports_for(skill: str, limit: int = 25) -> dict:
 def get_gem(name_or_id: str) -> dict | None:
     con = _conn()
     row = con.execute(
-        "SELECT id, name, color, gem_type, tags, grants, supports, description, types "
+        "SELECT id, name, color, gem_type, tags, grants, supports, description, types, raw "
         "FROM gems WHERE id = ? OR lower(name) = lower(?) LIMIT 1",
         (name_or_id, name_or_id),
     ).fetchone()
@@ -253,6 +311,8 @@ def get_gem(name_or_id: str) -> dict | None:
         "supports": json.loads(row["supports"]),
         "description": row["description"],
         "types": json.loads(row["types"]),
+        "requirement_weights": _requirement_weights(row["raw"]),
+        **_gem_crafting_meta(row["raw"]),
     }
 
 
@@ -275,6 +335,127 @@ def meta_trigger_gems(names: Iterable[str]) -> list[str]:
             seen.add(gem["name"])
             out.append(gem["name"])
     return out
+
+
+# The corpus has no class table (only ascendancies with name/class/flavour), so the base-class →
+# dominant-attribute mapping is a static fact sourced from the official class descriptions:
+# Warrior=Strength, Ranger=Dexterity, Sorceress=Intelligence, Monk=Dexterity, Mercenary=Strength,
+# Witch=Intelligence, Huntress=Dexterity, Druid=Strength. "full" names match gem
+# `requirement_weights` keys; "short" names match db.pick_base's `{attr}_armour` tag convention.
+_CLASS_ATTRIBUTE_MAP: dict[str, tuple[str, str]] = {
+    "Warrior": ("strength", "str"),
+    "Ranger": ("dexterity", "dex"),
+    "Sorceress": ("intelligence", "int"),
+    "Monk": ("dexterity", "dex"),
+    "Mercenary": ("strength", "str"),
+    "Witch": ("intelligence", "int"),
+    "Huntress": ("dexterity", "dex"),
+    "Druid": ("strength", "str"),
+}
+
+
+def class_attribute_mapping() -> dict[str, dict[str, str]]:
+    """Eight base classes → dominant attribute, in both full and short naming."""
+    return {
+        name: {"attribute": full, "short": short}
+        for name, (full, short) in _CLASS_ATTRIBUTE_MAP.items()
+    }
+
+
+def _requirement_weights(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    weights = data.get("requirement_weights")
+    return weights if isinstance(weights, dict) else None
+
+
+def attribute_compatible(weights: dict[str, Any] | None, attribute: str) -> bool:
+    """Whether a gem's attribute weights admit the given dominant attribute.
+
+    All-zero weights (no preference, ~20% of gems) pass through; mixed weights (e.g. 50/50)
+    admit any dominant attribute that has a positive share.
+    """
+    if not weights:
+        return True
+    total = sum(
+        int(value) for value in weights.values() if isinstance(value, (int, float)) and value > 0
+    )
+    if total <= 0:
+        return True
+    return int(weights.get(attribute) or 0) > 0
+
+
+def list_gems_for_level(
+    level: int,
+    gem_type: str | None = None,
+    class_key: str | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    """List gems usable as acquisition references at `level`, optionally class/type-filtered.
+
+    NOTE on the level semantics: the corpus has NO reliable character-level requirement for gems
+    (``crafting_level`` is the RePoE crafting tier, 0-14, not a character level). This query only
+    applies a SOFT filter — gems with a crafting level at or below `level`, plus gems whose
+    crafting level is unknown — and every returned entry carries ``craftingLevelIsReference``.
+    TRUE level availability must be verified through the PoB engine (``gem_level_requirements`` /
+    ``validate_level_availability``); treat this list as a candidate pool, not a gate.
+    """
+    con = _conn()
+    params: list[Any] = []
+    sql = (
+        "SELECT id, name, color, gem_type, tags, grants, supports, description, types, raw "
+        "FROM gems WHERE 1=1 "
+    )
+    if gem_type:
+        sql += "AND gem_type = ? "
+        params.append(gem_type)
+    rows = con.execute(sql, params).fetchall()
+
+    attribute = None
+    if class_key:
+        entry = _CLASS_ATTRIBUTE_MAP.get(str(class_key))
+        attribute = entry[0] if entry else None
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        meta = _gem_crafting_meta(r["raw"])
+        crafting_level = meta["crafting_level"]
+        if crafting_level is not None and crafting_level > int(level):
+            continue
+        weights = _requirement_weights(r["raw"])
+        if attribute is not None and not attribute_compatible(weights, attribute):
+            continue
+        out.append(
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "color": r["color"],
+                "gem_type": r["gem_type"],
+                "tags": json.loads(r["tags"]),
+                "grants": json.loads(r["grants"]),
+                "supports": json.loads(r["supports"]),
+                "description": r["description"],
+                "types": json.loads(r["types"]),
+                **meta,
+                "requirement_weights": weights,
+                "craftingLevelIsReference": True,
+            }
+        )
+    # Stable, campaign-friendly order: gems with a known crafting level first (ascending), then
+    # unknown/zero (ascendancy-exclusive and missing-data entries) — so a level filter is not
+    # swamped by crafting_level=0 entries before regular skills like Lightning Arrow.
+    out.sort(
+        key=lambda item: (
+            0 if (item.get("crafting_level") or 0) > 0 else 1,
+            int(item.get("crafting_level") or 0),
+            str(item.get("name") or "").casefold(),
+        )
+    )
+    return out[: int(limit)]
 
 
 def list_ascendancies(character: str | None = None) -> list[dict]:

@@ -38,7 +38,9 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "model: gpt-5.6-sol" in skill
     assert "thinking: medium" in skill
     assert skill.count("thinking: xhigh") == 3
-    assert ("/poe-bd-research 抓 ${num} 个 ${class} 的 ${level} 级模板进行研究") in skill
+    assert (
+        "/poe-bd-research --limit ${num} 抓 ${level} 级 ${class} 的成熟 BD 样本进行研究"
+    ) in skill
     assert "poe-bd-research\\SKILL.md" not in skill
     assert "只使用已安装插件的 `/poe-bd-research` 入口" in skill
     assert "POE_RESEARCH_SUCCEEDED: yes" in skill
@@ -72,15 +74,8 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "未逐项验证的旧字段不得原样沿用" in skill
     assert "装备职责还必须区分组件静态文本直接提供的固有职责" in skill
     assert "写入后重新读取完整持久化对象" in skill
-    assert (
-        "修复并验证成功的问题精炼记录到 "
-        r"E:\poe-research-orchestrator\research-notes\resolved-issues.md"
-    ) in skill
-    assert (
-        "真正未解决的问题才写入 "
-        r"E:\poe-research-orchestrator\research-notes\unresolved-issues.md"
-        "，写入前检查同义条目"
-    ) in skill
+    assert ("修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md") in skill
+    assert ("真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目") in skill
     assert "若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复" in skill
     assert "POE_FIX_DATA_REPAIRED: yes" in skill
     assert "POE_FIX_DATA_REPAIRED: no" in skill
@@ -89,7 +84,7 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "对每个修正版重新读取完整持久化对象，检查全对象语义闭环" in skill
     assert "不能只复查 Fix 声称修改的字段" in skill
     assert "如果仍然错误，不再尝试第二次修复" in skill
-    assert r"E:\poe-research-orchestrator\research-notes\post-fix-review-issues.md" in skill
+    assert "${notesRoot}/post-fix-review-issues.md" in skill
     assert "claim --plan '<绝对路径>' --workflow-version 2" in skill
     assert "data_repaired=true" in skill
     assert "data_repaired=false" in skill
@@ -97,8 +92,8 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "phase=rereview + expected_phase=rereview_running" in skill
     assert "review一下上面的研究结果和过程" not in skill
     assert "修复上面review发现的明显问题" not in skill
-    assert r"E:\poe-research-orchestrator\research-notes\unresolved-issues.md" in skill
-    assert r"E:\poe-research-orchestrator\research-notes\resolved-issues.md" in skill
+    assert "${notesRoot}/unresolved-issues.md" in skill
+    assert "${notesRoot}/resolved-issues.md" in skill
     for desktop_state in (
         "`active`",
         "`idle`",
@@ -114,11 +109,26 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "stop_poe_research" not in skill
     assert "worker" not in skill
     assert "JSON 事件" in skill
-    assert "scripts\\invoke_mcp.py" in skill
+    assert "scripts/invoke_mcp.py" in skill
     assert "不得编辑 bridge" in skill
     assert "不得复述 child 输出" in skill
+    assert "POE_BD_CREATOR_DIR" in skill
+    assert "POE_RESEARCH_ORCHESTRATOR_DIR" in skill
+    assert "creatorRoot" in skill
+    assert "orchestratorRoot" in skill
+    assert "notesRoot" in skill
+    assert "poe-bd-creator-plugin/skills/poe-bd-research-loop/SKILL.md" in skill
+    assert "skills/poe-bd-research-loop/SKILL.md" in skill
+    assert "POE_BD_CREATOR_DIR` 指向真实源码 checkout" in skill
+    assert "不得全盘搜索或猜测其他路径" in skill
+    assert "E:\\poe-bd-creator" not in skill
+    assert "E:\\poe-research-orchestrator" not in skill
     assert 'value: "poe_research_orchestrator"' in metadata
     assert "State-only Markdown claims" in metadata
+    assert "command:" not in metadata
+    assert "args:" not in metadata
+    assert "cwd:" not in metadata
+    assert "E:\\" not in metadata
     assert "allow_implicit_invocation: true" in metadata
 
 
@@ -151,21 +161,17 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     phase4 = (REPO_ROOT / "docs" / "phases" / "04_research_memory.md").read_text(encoding="utf-8")
 
     assert "/poe-bd-research" in readme
+    assert "poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md" in readme
     assert "/poe-bd-research" in guide
     assert "$poe-bd-research" in guide
     assert "/poe-bd-research" in phase4
     assert "$poe-bd-research" in phase4
     assert "每项 `gearResponsibilities` 必须区分组件静态文本直接提供的固有职责" in skill
     assert "在 validate-only 和正式 accept 前对每个最终对象做全对象语义闭环复核" in skill
-    assert "scripts/research_mature_builds.py" in readme
-    assert "worker-brief" in readme
     assert "worker-brief" in guide
     assert "worker-brief" in phase4
-    assert "claim` 原子返回" in readme
     assert "atomically returns the safe `workerPrompt`" in guide
     assert "`claim` 原子返回" in phase4
-    assert "当前 Agent 一次只领取并分析一个完整 BD" in readme
-    assert "禁止委派给 subagent" in readme
     assert "Never delegate a research case to a subagent" in guide
     assert "研究运行态禁止使用 subagent" in phase4
     assert "开发阶段有意不保留 `README.md`" not in agents
@@ -178,36 +184,29 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "prompt slot" not in phase4.lower()
     assert "poe-bd-research" in guide
     assert "poe-bd-research" in phase4
-    assert "先询问运行数量和模式" in readme
     assert "before any network crawl" in guide
     assert "先询问运行数量和模式" in phase4
-    assert "不是让你在聊天框里执行 shell 命令" in readme
     assert "Do not ask Codex Desktop" in guide
     assert "users to paste PowerShell/Python commands into the chat box" in guide
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
     assert "不得转交给其他 agent" in phase4
     assert "not rely only on a local `SKILL.md` path" in guide
-    assert "预检 5 个样本" in readme
+    assert "预检 5 个成熟 BD 样本" in readme
     assert "preflight 5" in guide
     assert "预检 5 个样本" in phase4
-    assert "交互式选择控件" in readme
     assert "交互式选择/确认工具" in skill
     assert "小批量" in phase4
     assert "大批量" in phase4
     assert "恢复已有队列" in phase4
-    assert "不绑定到 50 个样本" in readme
     assert "不要把 `--resume` 只绑定到大批量" in skill
     assert ".poe-bd-research/runs/<runId>" in skill
     assert "--output-dir <runDir>" in skill
     assert "Never fall back to the shared `.poe-bd-research` root" in guide
-    assert "已有队列目录不会被静默覆盖" in readme
     assert '--class "Blood Mage"' in skill
     assert "class=Blood+Mage" in guide
     assert "class=Blood%2BMage" in guide
     assert 'URL-style input such as `--class "Blood+Mage"` is normalized' in guide
     assert "非目标升华不得占用 `limit`" in phase4
-    assert "不传 `--class`" in readme
-    assert "产品运行态" in readme
     assert "runtime product workflow" in guide
     assert "query_research_memory" in guide
     assert "search_graph_components" in guide
@@ -216,19 +215,19 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "init-review" in guide
     assert "accept --validate-only" in guide
     assert "Plain `accept` is the only durable writer" in guide
-    assert "fullyResolvedForAccept" in readme
     assert "fullyResolvedForAccept" in guide
     assert "componentRoleNodeTypeCompatibility" in skill
     assert "两空格缩进的多行 JSON" in skill
     assert "unresolvedUniqueComponentCount" in phase4
-    assert "inspect --output-dir" in readme
-    assert "read --output-dir" in readme
-    assert "search --output-dir" in readme
-    assert "review-contract --output-dir" in readme
-    assert "init-review --output-dir" in readme
-    assert "accept --validate-only" in readme
-    assert "prompt` 是兼容入口" in readme
-    assert "raw-rich transient material" not in readme
+    for internal_contract in (
+        "scripts/research_mature_builds.py",
+        "worker-brief",
+        "review-contract --output-dir",
+        "accept --validate-only",
+        "fullyResolvedForAccept",
+        "runDir",
+    ):
+        assert internal_contract not in readme
     assert "不得修改仓库源码" in phase4
     assert "## 开发验证" not in readme
 
@@ -263,6 +262,17 @@ def test_skill_documents_one_case_worker_semantics():
     assert "不要把 `--resume` 只绑定到大批量" in skill
     assert "退化为普通文字选项" in skill
     assert "底层 `scripts/research_mature_builds.py` 命令是 agent 内部实现步骤" in skill
+    assert "不得依赖调用时 cwd" in skill
+    assert "`poe_knowledge_mcp`（或任一 `poe_*_mcp`）条目中的" in skill
+    assert "OpenCode 使用 `command[0]`" in skill
+    assert "不能把 Codex bundle 的 `node` launcher 当成 uv" in skill
+    assert "`repoRoot/.tools/uv/uv.exe`、`repoRoot/.tools/uv/uv`、PATH 中的 `uv`" in skill
+    assert "<uvCommand> run --project <repoRoot> python" in skill
+    assert "<repoRoot>/scripts/research_mature_builds.py" in skill
+    assert "<research-cli> queue $ARGUMENTS" in skill
+    assert "在项目根目录运行 queue" not in skill
+    assert "./.tools/uv/uv run python scripts/research_mature_builds.py" not in skill
+    assert ".\\.tools\\uv\\uv.exe run python scripts\\research_mature_builds.py" not in skill
     assert "worker-brief" in skill
     assert "`workerPrompt` 已内联运行边界" in skill
     assert "`claim` 会在同一次原子操作中返回 `workerPrompt`" in skill
@@ -279,6 +289,17 @@ def test_skill_documents_one_case_worker_semantics():
     assert not (
         REPO_ROOT / "poe-bd-creator-plugin" / "agents" / "mature-build-researcher.md"
     ).exists()
+
+
+def test_document_language_policy_exempts_runtime_prompts():
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "server/ASSISTANT_GUIDE.md" in agents
+    assert "server/MCP_BOOTSTRAP.md" in agents
+    assert "英文" in agents
+    assert "runtime prompt" in agents
+    assert "属于语言策略的明确例外" in agents
+    assert "不要求翻译或维护 `.CN.md` 副本" in agents
 
 
 def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
@@ -300,11 +321,26 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     )
     codex_mcp = json.loads((REPO_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert codex_manifest["mcpServers"] == "./.mcp.json"
-    server = codex_mcp["mcpServers"]["poe2_build_mcp"]
-    assert server["command"] == "./.tools/uv/uv.exe"
-    assert server["args"] == ["run", "python", "-m", "server.main"]
-    assert server["cwd"] == "."
-    assert server["env"]["PYTHONPATH"] == "."
+    assert set(codex_mcp["mcpServers"]) == {
+        "poe_knowledge_mcp",
+        "poe_build_mcp",
+        "poe_research_mcp",
+        "poe_learning_mcp",
+    }
+    for module in (
+        "server.mcp.knowledge_server",
+        "server.mcp.build_server",
+        "server.mcp.research_server",
+        "server.mcp.learning_server",
+    ):
+        server = next(
+            s
+            for s in codex_mcp["mcpServers"].values()
+            if s["args"] == ["run", "python", "-m", module]
+        )
+        assert server["command"] == "./.tools/uv/uv.exe"
+        assert server["cwd"] == "."
+        assert server["env"]["PYTHONPATH"] == "."
 
     codex_bundle = json.loads(
         (REPO_ROOT / "poe-bd-creator-plugin" / ".codex-plugin" / "plugin.json").read_text(
@@ -313,7 +349,7 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     )
     assert codex_bundle["name"] == "poe-bd-creator"
     assert codex_bundle["version"].startswith("0.4.5")
-    assert codex_bundle["skills"] == "skills"
+    assert codex_bundle["skills"] == "./skills/"
 
 
 def test_installers_support_dry_run_and_refuse_real_directory_overwrite():

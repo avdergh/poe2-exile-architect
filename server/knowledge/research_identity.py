@@ -307,7 +307,12 @@ def family_core_skill_keys(record: Any) -> tuple[str, ...]:
 
 
 def automatic_family_skill_keys(records: Iterable[Any]) -> tuple[str, ...]:
-    """Return secondary Family skills that are determined by structured component roles."""
+    """Return secondary Family skills that are determined by structured component roles.
+
+    Only clear/boss/triggered_payload roles enter automatically. A trigger host is a delivery
+    mechanism, not identity: swapping hosts is a variant, so hosts only participate when a
+    researcher explicitly declares them in typed_payload.familyCoreSkillKeys.
+    """
 
     rows = [
         row
@@ -320,12 +325,6 @@ def automatic_family_skill_keys(records: Iterable[Any]) -> tuple[str, ...]:
         for key in _role_component_keys(row, SECONDARY_ROLES)
         if _is_skill_key(key)
     }
-    for row in rows:
-        if not _role_component_keys(row, ("triggered_payload", "primary_damage")):
-            continue
-        values.update(
-            key for key in _role_component_keys(row, ("trigger_host",)) if _is_skill_key(key)
-        )
     return tuple(sorted(values))
 
 

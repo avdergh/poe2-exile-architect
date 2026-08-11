@@ -9,13 +9,6 @@ dependencies:
       value: "poe_research_orchestrator"
       description: "State-only Markdown claims, checkpoints, pause, resume, and retry tools"
       transport: "stdio"
-      command: "E:\\poe-bd-creator\\.tools\\uv\\uv.exe"
-      args:
-        - "--project"
-        - "E:\\poe-research-orchestrator"
-        - "run"
-        - "poe-research-mcp"
-      cwd: "E:\\poe-research-orchestrator"
 
 policy:
   allow_implicit_invocation: true

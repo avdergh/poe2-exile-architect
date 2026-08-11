@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "snapshotId": "physical-graph-0d654c46a79c5aff8647871f",
+  "snapshotFile": "snapshots/physical-graph-0d654c46a79c5aff8647871f.json",
+  "sha256": "90ba4f538006766e0689a42f0398a12b25c7a7779d2a4201b0ed1dce7f9cac4d",
+  "nodeCount": 46588,
+  "edgeCount": 99346,
+  "sourceCount": 7
+}

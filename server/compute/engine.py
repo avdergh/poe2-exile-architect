@@ -324,6 +324,15 @@ class PobEngine:
         """Batch-evaluate candidate items in a slot; returns each one's `keys` stats. Restores."""
         return self.call("eval_items", slot=slot, items=items, keys=keys)
 
+    def gem_level_requirements(self, gem_name: str) -> dict[str, Any]:
+        """Read-only per-level requirements of a gem (levelRequirement per gem level).
+
+        PoB owns the real level-requirement curve (the corpus only has crafting metadata); the
+        leveled-build kernel uses this to decide skill usability at a character level. Never
+        mutates the build.
+        """
+        return self.call("gem_level_requirements", gem_name=gem_name)
+
     def crafting_options(self, slot: str) -> dict[str, Any]:
         """PoB's own crafting data (runes/soul cores, corrupted implicits, essence mods) applicable to
         the item in `slot`, as ready item-text lines. Used by the crafting optimizer."""

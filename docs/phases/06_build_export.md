@@ -284,5 +284,6 @@ Phase 6 完成后，真实 PoB / `.build` 导出仍会继续作为全链路验�
 .\scripts\verify.ps1 quick
 ```
 
-涉及 PoB XML 捕获/恢复、converter runtime 或打包时，按改动范围运行 compute/full。最终提交前统一
-进行代码审查和完整验证。
+涉及 PoB XML 捕获/恢复、converter runtime 或打包时运行 `full`；它覆盖全部非计算回归但不自动
+执行重型 PoB golden。只有直接改变引擎/Lua/数值行为时才另行运行 `compute`。最终提交前统一进行
+代码审查和完整验证。

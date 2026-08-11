@@ -9,8 +9,18 @@ def classify_mana_sustain(
     stats: dict[str, Any],
     *,
     mana_flask_equipped: bool | None,
+    unmodelled_mana_mechanisms: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Classify continuous main-skill mana sustain without inventing flask recovery rates."""
+    """Classify continuous main-skill mana sustain without inventing flask recovery rates.
+
+    ``unmodelled_mana_mechanisms`` names engine-invisible resource layers the build actually
+    carries (for example ``Mana Remnants`` pickup or ``Lavianga's Spirits`` permanent recovery).
+    Their game-real numbers cannot be read from PoB, so a flask-assisted deficit that the build
+    can attribute to those layers is classified ``model_gap_flask_assisted`` instead of a plain
+    flask dependency: the deficit stays fully disclosed, but the engine gap is not treated as a
+    build failure by downstream gates. Callers derive the list from the evaluated build itself
+    (enabled skill groups / equipped gear), never from Agent-authored booleans.
+    """
     mana_cost = _number(stats.get("ManaCost"))
     use_rate = _number(stats.get("Speed"))
     mana_pool = _first_number(stats.get("ManaUnreserved"), stats.get("Mana"))
@@ -23,6 +33,9 @@ def classify_mana_sustain(
     recovery = None
     if recovery_known:
         recovery = sum(float(value or 0.0) for value in (regen, leech, on_hit))
+
+    gap_mechanisms = [str(value) for value in (unmodelled_mana_mechanisms or []) if value]
+    gap_mechanisms = list(dict.fromkeys(gap_mechanisms))
 
     result: dict[str, Any] = {
         "classification": "unknown",
@@ -41,6 +54,7 @@ def classify_mana_sustain(
         "netDeficitPerSecond": None,
         "secondsFromFull": None,
         "bossRisk": "unknown",
+        "unmodelledManaMechanisms": gap_mechanisms,
     }
     if mana_cost is None:
         return result
@@ -76,6 +90,13 @@ def classify_mana_sustain(
             {
                 "classification": "sustainable_baseline",
                 "bossRisk": "none_from_continuous_mana_demand",
+            }
+        )
+    elif mana_flask_equipped is True and gap_mechanisms:
+        result.update(
+            {
+                "classification": "model_gap_flask_assisted",
+                "bossRisk": "long_boss_fight_can_run_out_of_mana",
             }
         )
     elif mana_flask_equipped is True:

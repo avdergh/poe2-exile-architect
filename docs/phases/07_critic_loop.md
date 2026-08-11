@@ -110,8 +110,9 @@ Create 完成后必须：
 
 ## Learning Memory
 
-Learning Memory 是本地 user-data 中的独立 append-only JSONL store，不进入 Research SQLite，
-不进入 Git。每条 lesson 包含：
+Learning Memory 是 user-data 中独立于 Research SQLite 的 append-only JSONL store。维护者当前通过
+事件 schema 与 durable copy-safety 的 lesson/correction 会生成只读发布种子并进入 Git；新用户
+首次运行时复制到本地可写 store。每条 lesson 包含：
 
 - 简短 lesson；
 - `global/family/level_band` 作用域及对应 Family/等级条件；
@@ -168,7 +169,7 @@ modelability 可用率，以及各阶段和每案例耗时。
 
 10 个案例且没有 A/B 只能提供方向性证据，不能声明因果证明。如果趋势没有改善，Phase 7 标记为
 “功能实现完成、学习效果未证实”，保留全部根因和 Memory correction，再决定下一批案例或
-Phase 8 方案。
+后续规模化方案。
 
 已消费 Create 后发生 Family/等级回读不匹配属于终态失败：记录指标并释放严格串行槽位，不允许
 重放该 Create；失败尝试计入十案例总数，但因比较证据不完整，不能支持“初步进步信号”。
