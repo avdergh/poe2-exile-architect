@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -1929,9 +1930,17 @@ def save_snapshot(snapshot: GraphSnapshot, path: str | Path) -> None:
 
 
 def load_snapshot(path: str | Path) -> GraphSnapshot:
-    """Load a JSON snapshot produced by :func:`save_snapshot`."""
+    """Load a JSON snapshot produced by :func:`save_snapshot`.
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    Gzip-compressed snapshots (``.json.gz`` or raw gzip magic) are transparently decompressed;
+    plain JSON files keep working unchanged.
+    """
+
+    snapshot_path = Path(path)
+    raw = snapshot_path.read_bytes()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    payload = json.loads(raw.decode("utf-8"))
     return GraphSnapshot(
         snapshot_id=_required_text(str(payload["snapshot_id"]), "snapshot id"),
         created_at=datetime.fromisoformat(_required_text(payload["created_at"], "created_at")),

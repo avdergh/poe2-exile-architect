@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -37,9 +38,9 @@ def package_graph_seed(*, source_dir: str | Path, output_dir: str | Path) -> dic
         raise ValueError("physical graph index and snapshot identity differ")
     snapshots_dir = output_root / "snapshots"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
-    target = snapshots_dir / f"{snapshot.snapshot_id}.json"
+    target = snapshots_dir / f"{snapshot.snapshot_id}.json.gz"
     temp = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
-    _copy_json_with_lf(source_snapshot, temp)
+    _write_gzip_snapshot(source_snapshot, temp)
     temp.replace(target)
     digest = _sha256(target)
     manifest = {
@@ -47,6 +48,7 @@ def package_graph_seed(*, source_dir: str | Path, output_dir: str | Path) -> dic
         "snapshotId": snapshot.snapshot_id,
         "snapshotFile": f"snapshots/{target.name}",
         "sha256": digest,
+        "compressed": True,
         "nodeCount": len(snapshot.nodes),
         "edgeCount": len(snapshot.edges),
         "sourceCount": len(snapshot.sources),
@@ -75,15 +77,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _copy_json_with_lf(source: Path, target: Path) -> None:
-    """Stream a validated JSON snapshot while normalizing platform newlines for Git."""
+def _write_gzip_snapshot(source: Path, target: Path) -> None:
+    """Stream a validated snapshot into a deterministic gzip seed for Git/bundles.
+
+    Newlines are normalized to LF (like the old plain-JSON packaging) so the decompressed
+    content is platform-independent. gzip header embeds no timestamp by default in this Python
+    implementation, so the bytes are reproducible across builds; the manifest sha256 covers the
+    compressed file.
+    """
 
     with (
         source.open("r", encoding="utf-8", newline=None) as source_handle,
-        target.open("w", encoding="utf-8", newline="\n") as target_handle,
+        gzip.GzipFile(filename="", mode="wb", fileobj=target.open("wb"), mtime=0) as target_handle,
     ):
         while chunk := source_handle.read(1024 * 1024):
-            target_handle.write(chunk)
+            target_handle.write(chunk.replace("\r\n", "\n").encode("utf-8"))
 
 
 def main(argv: list[str] | None = None) -> int:
