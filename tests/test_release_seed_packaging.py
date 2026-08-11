@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -192,7 +193,13 @@ def test_physical_graph_release_seed_is_portable_and_installed_once(
     seed_manifest = json.loads((output / "seed.json").read_text(encoding="utf-8"))
     assert not Path(seed_manifest["snapshotFile"]).is_absolute()
     assert b"\r\n" not in (output / "seed.json").read_bytes()
-    assert b"\r\n" not in (output / seed_manifest["snapshotFile"]).read_bytes()
+    snapshot_seed = output / seed_manifest["snapshotFile"]
+    assert snapshot_seed.name.endswith(".json.gz")
+    assert seed_manifest.get("compressed") is True
+
+    decompressed = gzip.decompress(snapshot_seed.read_bytes()).decode("utf-8")
+    assert json.loads(decompressed)["snapshot_id"] == snapshot.snapshot_id
+    assert b"\r\n" not in decompressed.encode("utf-8")
 
     user_data = tmp_path / "user-data"
     monkeypatch.setattr(paths, "BUNDLE_ROOT", bundle_root)

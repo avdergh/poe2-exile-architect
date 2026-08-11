@@ -34,7 +34,7 @@ def ensure_installed() -> Path:
     if snapshot.snapshot_id != manifest["snapshotId"]:
         raise ValueError("bundled physical graph seed identity mismatch")
 
-    target = graph_root / "snapshots" / f"{snapshot.snapshot_id}.json"
+    target = graph_root / "snapshots" / bundled_snapshot.name
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         temp = target.with_name(f".{target.name}.{uuid4().hex}.installing")
