@@ -512,11 +512,13 @@ def _gear_items(root: ET.Element) -> list[dict[str, Any]]:
     item_sets = items.findall("ItemSet")
     if not item_sets:
         item_sets = [items]
+    referenced: set[str] = set()
     result: list[dict[str, Any]] = []
     for set_index, item_set in enumerate(item_sets, start=1):
         set_id = str(item_set.get("id") or set_index)
         for slot in item_set.findall("Slot"):
             item_id = str(slot.get("itemId") or "0")
+            referenced.add(item_id)
             node = by_id.get(item_id)
             if node is None:
                 continue
@@ -530,6 +532,23 @@ def _gear_items(root: ET.Element) -> list[dict[str, Any]]:
                     **parsed,
                 }
             )
+    # Jewels are stored as bare <Item> elements in PoB-PoE2 XML without an ItemSet
+    # <Slot> reference (their tree socket lives on the active Spec), so a slot-based
+    # walk drops them entirely. Surface unreferenced items as jewels so research and
+    # jewel-closure checks can see socketed gems (radius/Time-Lost grants included).
+    for item_id, node in sorted(by_id.items()):
+        if item_id in referenced:
+            continue
+        parsed = _parse_item_text(node.text or "")
+        result.append(
+            {
+                "itemSetId": str(items.get("id") or 1),
+                "activeItemSet": True,
+                "slot": "Jewel",
+                "itemId": item_id,
+                **parsed,
+            }
+        )
     return result
 
 

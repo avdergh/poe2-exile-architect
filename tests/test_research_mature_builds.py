@@ -1763,7 +1763,43 @@ def test_compact_accept_result_strips_bulk_blocks_and_keeps_quality_summary():
     assert compact["noRawMatureBuildMaterial"] is True
 
 
-def test_research_packet_jewel_counts_reports_allocated_sockets_without_gems():
+def test_research_packet_captures_unslotted_jewel_items():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nRapture Curio\nTime-Lost Ruby\nItem Level: 80\nLevelReq: 0\nRadius: Large\nUpgrades Radius to Large\nNotable Passive Skills in Radius also grant 5% increased Life Regeneration rate\nSmall Passive Skills in Radius also grant 2% increased Fire Damage\nSmall Passive Skills in Radius also grant 3% increased Warcry Speed</Item>
+    <Item id="2">Rarity: RARE\nFate Core\nSiege Crossbow\nItem Level: 80\nLevelReq: 79\nAdds 92 to 143 Fire Damage</Item>
+    <ItemSet id="1"><Slot name="Weapon 1 Swap" itemId="2" /></ItemSet>
+  </Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    sections = research_packet._packet_sections(packet)
+    jewel_items = [item for item in sections["gear"] if "Time-Lost" in str(item.get("base") or "")]
+    assert len(jewel_items) == 1
+    assert jewel_items[0]["slot"] == "Jewel"
+    assert jewel_items[0]["name"] == "Rapture Curio"
+    assert any(
+        "Notable Passive Skills in Radius also grant" in mod for mod in jewel_items[0]["modifiers"]
+    )
+    assert any(
+        "Small Passive Skills in Radius also grant 2% increased Fire Damage" in mod
+        for mod in jewel_items[0]["modifiers"]
+    )
+    counts = research_packet.jewel_counts(packet, sections=sections)
+    assert counts["allocatedJewelSocketCount"] == 1
+    assert counts["socketedJewelCount"] == 1
+    assert research_packet.jewel_advisories(packet, sections=sections) == []
     from server.knowledge import research_packet
 
     metadata = research_packet._passive_node_metadata("0_5")
