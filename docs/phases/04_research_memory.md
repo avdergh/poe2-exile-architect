@@ -364,9 +364,10 @@ PoB code 或临时路径。
 
 ### 研究执行 checklist（2026-08-07 修订，防再犯）
 
-以下条目已迁入 `workerPrompt` 的 Mandatory Checks、review-contract 的 `mandatoryChecks` 与
-`/poe-bd-research` skill 的提交前自检（三处一一对应），本段保留为阶段审查记录；执行时以运行时
-合同为准，避免再次出现"两套清单从未对账"。
+以下条目已迁入 `workerPrompt` 的 Mandatory Checks（中文 13 项，运行时权威）与 review-contract
+的 `mandatoryChecks`（英文枚举），两处一一对应；`/poe-bd-research` skill 不再保留 13 项全文，
+只以引用指向 claim 返回的 `workerPrompt`（详见该 skill 的提交前自检段）。本段保留为阶段审查
+记录；执行时以运行时合同为准，避免再次出现"两套清单从未对账"。
 
 以下条目来自真实案例审查（Monk/Martial Artist Hollow Palm 案例的补齐与修正），每个 deep
 case 研究都应执行：

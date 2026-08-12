@@ -173,8 +173,14 @@ def _remove_tree(
         return
     try:
         shutil.rmtree(candidate)
-    except OSError:
-        failures.append(label)
+    except OSError as exc:
+        errno_value = getattr(exc, "errno", None)
+        winerror = getattr(exc, "winerror", None)
+        detail = f" (errno={errno_value}, winerror={winerror})" if errno_value or winerror else ""
+        failures.append(
+            f"{label} 清理失败{detail}：目录可能被其他进程/工具持有句柄，"
+            "请关闭占用它的进程后重试，或手动删除该目录"
+        )
     else:
         removed.append(label)
 
