@@ -1603,7 +1603,37 @@ def test_unresolved_jewel_sockets_deferral_skips_declared_or_filled_or_unknown()
         )
         == []
     )
+    assert (
+        acceptance._unresolved_jewel_sockets_deferred(
+            base_review, {**counts, "status": "sockets_absent"}
+        )
+        == []
+    )
     assert acceptance._unresolved_jewel_sockets_deferred(base_review, None) == []
+
+
+def test_unresolved_jewel_sockets_deferral_uses_tree_socket_count():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-020"},
+        "deepResearchRecords": [],
+    }
+    # Embedded item-socket jewels must not suppress the empty tree-socket declaration.
+    counts = {
+        "allocatedJewelSocketCount": 2,
+        "treeSocketedJewelCount": 0,
+        "embeddedJewelCount": 1,
+        "socketedJewelCount": 1,
+        "status": "ok",
+    }
+    deferred = acceptance._unresolved_jewel_sockets_deferred(review, counts)
+    assert len(deferred) == 1
+    assert deferred[0]["reason"] == "unresolved_jewel_sockets"
+
+    filled = {**counts, "treeSocketedJewelCount": 1}
+    assert acceptance._unresolved_jewel_sockets_deferred(review, filled) == []
 
 
 def test_unresolved_jewel_sockets_deferral_ignores_jewel_in_identity_fields():
@@ -2839,6 +2869,175 @@ def test_deep_review_acceptance_defers_malformed_candidate_without_losing_deep_r
     assert report["acceptedDeepRecordCount"] == 1
     assert report["acceptedPatternCount"] == 0
     assert report["deferredReasonCounts"] == {"invalid_schema": 1}
+
+
+def test_deep_review_acceptance_structural_issues_return_issues_not_crash(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="empty-verification-tasks-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["candidateReviews"][0]["verificationTasks"] = []
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "rejected"
+    assert report["acceptedPatternCount"] == 0
+    assert report["deferredReasonCounts"] == {"invalid_schema": 1}
+    issues = (report["deferredCandidates"][0] or {}).get("validationIssues") or []
+    assert any(
+        issue.get("loc") == ["candidateReviews", 0, "verificationTasks"]
+        and "non-empty list" in str(issue.get("msg") or "")
+        for issue in issues
+    )
+
+
+def test_deep_review_acceptance_structural_issues_validate_only_path(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="missing-pattern-type-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["candidateReviews"][0].pop("patternType")
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+        validation_only=True,
+    )
+
+    assert report["status"] == "rejected"
+    issues = (report["deferredCandidates"][0] or {}).get("validationIssues") or []
+    assert any(
+        issue.get("loc") == ["candidateReviews", 0, "patternType"]
+        and "missing required field" in str(issue.get("msg") or "")
+        for issue in issues
+    )
+
+
+def test_deep_review_acceptance_structural_issues_container_type_errors(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="container-type-errors-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["candidateReviews"] = {"not": "a list"}
+    review["mechanicAudit"] = {"not": "a list"}
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "rejected"
+    all_issues = [
+        issue
+        for deferred in report["deferredCandidates"]
+        for issue in (deferred.get("validationIssues") or [])
+    ]
+    assert any(issue.get("loc") == ["candidateReviews"] for issue in all_issues)
+    assert any(issue.get("loc") == ["mechanicAudit"] for issue in all_issues)
+
+
+def test_deep_review_acceptance_structural_issues_record_missing_content(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="record-missing-content-review.json",
+        components=[],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0].pop("content")
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "rejected"
+    issues = (report["deferredCandidates"][0] or {}).get("validationIssues") or []
+    assert any(
+        issue.get("loc") == ["deepResearchRecords", 0, "content"]
+        and "missing required field" in str(issue.get("msg") or "")
+        for issue in issues
+    )
+
+
+def test_structural_preflight_field_rules_match_normalizer_required_fields():
+    acceptance = run_phase4_deep_review_acceptance
+    assert set(acceptance._STRUCTURAL_CANDIDATE_REQUIRED) == {
+        "sampleId",
+        "caseRef",
+        "patternType",
+        "plannerHint",
+        "verificationGate",
+    }
+    assert set(acceptance._STRUCTURAL_CANDIDATE_NONEMPTY_LISTS) == {
+        "axes",
+        "verificationTasks",
+    }
+    assert set(acceptance._STRUCTURAL_RECORD_REQUIRED) == {
+        "sampleId",
+        "researchGroupId",
+        "caseRef",
+        "recordKind",
+        "title",
+        "summary",
+        "content",
+    }
+
+
+def test_kind_identity_roles_fallback_matches_record_kind_superset():
+    from server.knowledge import research_identity, research_models
+
+    roles = research_identity.kind_identity_roles()
+    assert set(roles["fallback"]["kindsWithoutExplicitRoles"]) == (
+        research_models.DEEP_RESEARCH_RECORD_KINDS - set(research_identity._KIND_IDENTITY_ROLES)
+    )
+    assert set(roles["explicitRoles"]) == set(research_identity._KIND_IDENTITY_ROLES)
 
 
 def test_deep_review_acceptance_resolves_component_when_worker_omits_stable_key(tmp_path):

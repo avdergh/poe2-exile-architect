@@ -9,6 +9,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from . import research_models
+
 
 PRIMARY_ROLES = ("primary_damage",)
 PRIMARY_FALLBACK_ROLES = ("boss_skill",)
@@ -128,6 +130,30 @@ _KIND_ROLE_BUCKETS: dict[str, dict[str, str]] = {
         "weapon_base": "state_enabler",
     },
 }
+
+
+def kind_identity_roles() -> dict[str, dict[str, object]]:
+    """Public identity-role contract for the research review-contract.
+
+    Maps each explicit record kind to the component roles that can constitute its
+    knowledge identity (single source of truth for acceptance), plus the fallback
+    semantics applied to kinds without an explicit mapping and the role-bucket labels
+    that determine how identity role components are labelled.
+    """
+
+    return {
+        "explicitRoles": {kind: list(roles) for kind, roles in _KIND_IDENTITY_ROLES.items()},
+        "fallback": {
+            "kindsWithoutExplicitRoles": sorted(
+                research_models.DEEP_RESEARCH_RECORD_KINDS - set(_KIND_IDENTITY_ROLES)
+            ),
+            "rule": (
+                "kinds without an explicit identity-role mapping take any mention role "
+                "except support_modifier / scaling_stat as identity"
+            ),
+        },
+        "roleBuckets": {kind: dict(buckets) for kind, buckets in _KIND_ROLE_BUCKETS.items()},
+    }
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
 import secrets
 import shutil
@@ -30,7 +31,7 @@ from scripts import run_phase45_researcher_batch as legacy_batch  # noqa: E402
 from scripts import run_phase4_deep_review_acceptance as acceptance  # noqa: E402
 from server import paths  # noqa: E402
 from server.freshness import providers as freshness_providers  # noqa: E402
-from server.knowledge import copy_safety, research_models, research_packet  # noqa: E402
+from server.knowledge import copy_safety, research_identity, research_models, research_packet  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
 RUNS_DIRNAME = "runs"
@@ -498,7 +499,7 @@ def render_review_contract(
     artifact_identity = _lease_artifact_identity(row)
     result = {
         "status": "ok",
-        "contractVersion": "phase4-safe-review-v1",
+        "contractVersion": "phase4-safe-review-v2",
         "sampleId": sample_id,
         "reviewFile": review_file,
         "artifactIdentity": {
@@ -555,6 +556,7 @@ def render_review_contract(
             role: list(node_types)
             for role, node_types in sorted(acceptance.ROLE_NODE_TYPES.items())
         },
+        "recordIdentityRoles": research_identity.kind_identity_roles(),
         "typedPayloadSchema": {
             "knowledgeShape": {
                 "mechanic_chain": "state_causal_chain",
@@ -645,7 +647,7 @@ def render_review_contract(
             ],
             "plannerHint": "生成阶段可尝试的安全提示",
             "verificationGate": "需要 PoB/Judge/人工复验的条件",
-            "verificationTasks": [],
+            "verificationTasks": ["用 PoB 读回验证 <机制> 的 <数值>，记录实测是否符合预期"],
             "transferScope": "family",
             "availability": "standard",
             "sourceSpecificComponentNames": [],
@@ -697,6 +699,7 @@ def render_review_contract(
             "transferScope=component 只用于有明确因果链、最低适用条件、排除条件和验证任务的跨 Family 候选；普通案例事实使用 family。",
             "单案例不得提交 transferScope=global。公用知识由后端依据跨 Family 证据晋升，且最高只到 likely_pattern。",
             "不要为了产出公用知识而强行标记 component；不确定时保持 family。",
+            "support 配对以 review 内的组合 fixed-point 校验为准（support_skill_group_candidates，模拟 PoB 技能组实际生效性）；独立的 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。",
         ],
         "versionContext": version_context,
         "nextActions": ["init-review", "edit_review", "accept --validate-only", "accept"],
@@ -2209,8 +2212,9 @@ graph 等独立佐证。
 1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
    lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 用 unique_enabler，或在
    open_question/modelability_caveat 记录中说明）；不能当普通 support 处理。
-2. 珠宝槽闭环：inspect 的 jewelCounts 显示已分配珠宝槽且无珠宝物品时，必须在 review 中显式声明
-   珠宝状态（空置，或已插宝石及 radius/Time-Lost 位置化词缀的覆盖范围）。
+2. 珠宝槽闭环：inspect 的 jewelCounts 显示已分配珠宝槽且 treeSocketedJewelCount 为 0 时，
+   必须在 review 中显式声明珠宝状态（空置，或已插宝石及 radius/Time-Lost 位置化词缀的
+   覆盖范围）。装备自带的珠宝孔不豁免树槽声明——装备孔里的宝石不能填天赋树槽。
 3. Spirit/reservation 预算：评估所有 persistent buff（光环/战旗/常驻技能）的 Spirit 预留总量与
    来源（装备/升华），写入资源闭环记录。
 4. support 打包：每个启用技能组的 supports 必须完整打包进 skill_package/mechanic_chain 的
@@ -2517,6 +2521,17 @@ def _runtime_failure_payload(command: str | None, exc: Exception) -> dict[str, A
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows GBK consoles garble UTF-8 Chinese output; normalize stdout to UTF-8 unless the
+    # user explicitly chose another encoding (PYTHONIOENCODING / UTF-8 mode / already UTF-8).
+    try:
+        if (
+            not os.environ.get("PYTHONIOENCODING")
+            and not sys.flags.utf8_mode
+            and getattr(sys.stdout, "encoding", None) != "utf-8"
+        ):
+            sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
     parser = argparse.ArgumentParser(prog="poe-bd-research")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

@@ -7,6 +7,10 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 把成熟 PoE2 BD 样本转成 copy-safe、resolver-backed、planner-advisory 的研究记忆。脚本只负责队列、lease、transient packet、验收和入库；外部 agent 负责逐案例研究。
 
+> 分层声明：本 skill 只保留 claim 前必须知道的内容与 workerPrompt 未覆盖的补充检查。研究细则、
+> 13 项强制检查、身份角色、枚举与填写规则由 claim 返回的 `workerPrompt`（中文）与
+> `review-contract`（枚举/字段事实源）即时披露；冲突时以运行时合同为准。
+
 ## Runtime Mode - Hard Boundary
 
 这是产品运行态 workflow，不是开发/调试任务。
@@ -42,7 +46,8 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 > 产物目录），再执行 `queue --source-file <临时文件>` 走标准单案例流程。**不要把 code 原文拼进
 > `<research-cli> queue ...` 的命令行参数**：raw code 会进入进程参数、shell 历史和日志，也容易
 > 超过命令行长度限制。链接型输入先用宿主 webfetch 取回内容再落临时文件；实在无法本地化的
-> 才提示用户另存为文件。
+> 才提示用户另存为文件。code 识别按 `eNrt...` / `AIAAA...` 等长 base64 前缀判断；临时文件与
+> transient packet 同级由系统清理，不需要手动删除；若 `$ARGUMENTS` 只有轻量选项则本模式不适用。
 
 - `--limit N`：从 poe.ninja 当前 softcore trade league 取样。底层 CLI 默认 50；交互式 skill 无参时不要静默启动 50。
 - `--league current|<league-url>`：透传 poe.ninja league（默认 `current`）。
@@ -133,13 +138,9 @@ POE_RESEARCH_SUCCEEDED: no
 
 ### 逐案流程
 
-0. 参数预处理（快速粘贴模式）：执行 queue 前先检查 `$ARGUMENTS`。若其中包含裸 PoB import code
-   （`eNrt...` / `AIAAA...` 等长 base64 串）、pobb.in/pastebin 链接或 raw XML（例如用户直接写
-   `研究一下这个bd <code>`），把识别出的材料保存为 OS 临时目录下的单个本地文件
-   （命名如 `quick-case-<短hash>.txt`；不写进仓库、runDir 或运行产物目录），然后把该位置的
-   `$ARGUMENTS` 替换为 `--source-file <临时文件>` 再继续；链接先用宿主 webfetch 取回内容再落盘。
-   临时文件与 transient packet 同级由系统清理，不需要手动删除。若 `$ARGUMENTS` 只有轻量选项则
-   跳过本步。
+0. 参数预处理（快速粘贴模式）：执行 queue 前先检查 `$ARGUMENTS`。若包含裸 PoB import code /
+   pobb.in / pastebin 链接 / raw XML，按 Options 的"快速粘贴模式"落临时文件并替换为
+   `--source-file <临时文件>`；`$ARGUMENTS` 只有轻量选项时跳过本步。
 
 1. 运行 queue：
 
@@ -202,17 +203,10 @@ POE_RESEARCH_SUCCEEDED: no
    `resolve_graph_component` 确认 stable key。`propose_*` 只校验候选，不代表入库；accept 仍是唯一
    durable writer。
 
-   独立重建和组件解析完成后，只针对会改变结论因果链的高风险机制做轻量校对。先用
-   `explain_mechanic` / `search_mechanics` 查看当前本地静态机制资料，再用 `lookup_mechanic` 查询实时
-   poe2wiki；工具未出现在首屏时使用宿主的 tool discovery 按精确名称查找。优先检查触发与手动施放、
-   前置状态、资源生成/消耗、伤害转换、mutation / transform，不要为普通组件名称逐页查询。
-   每次 `lookup_mechanic` 只查询一个精确页面或中央机制名称，不得把 `A / B` 组件名拼成一次查询；
-   一个关系需要多页证据时，写多条关联同一对象的原子审计。每条 `mechanic_chain` 和
-   `resource_engine` 都必须被至少一项 `mechanicAudit.affectedRecords` 精确引用，且 `claim` 必须写该
-   对象真正依赖的最强因果结论，不能只审计一个较弱前提。
-   `lookup_mechanic` 命中后，把其 `pageId`、`revisionId` 形成的 revision-pinned `sourceRef` 连同结论写入
-   safe review 顶层 `mechanicAudit`。Wiki 只作机制解释的校对证据，不能替代来源实例归属、辅助兼容性、
-   武器状态、Family 身份或数值 Judge；每项 supports / contradicts 还必须注明至少一种独立佐证。
+   独立重建和组件解析完成后，机制校对（工具顺序、不得把 `A / B` 组件名拼成一次查询、
+   每条 `mechanic_chain`/`resource_engine` 必须被 `mechanicAudit.affectedRecords` 精确引用且写
+   **最强因果结论**、revision-pinned sourceRef、独立佐证）按 claim 返回的 `workerPrompt` 的
+   Evidence First 执行。
 
 4. 初步研究、memory 对照和组件解析完成后，读取当前 lease 的精确 review 合同：
 
@@ -242,41 +236,24 @@ POE_RESEARCH_SUCCEEDED: no
    ```
 
    `validation_failed` 时按 `validationIssues` 自行 review 和修正，不得要求程序猜测或自动映射自造
-   枚举。`readyForAccept=true` 只表示当前安全子集可以入库；只有
-   `fullyResolvedForAccept=true` / `acceptanceMode=clean` 才表示 Build Family 可归档，且覆盖维度、
-   候选和深度记录组件均无缺口。若返回
-   `partial_with_deferred`，先修复 `component_type_mismatch`、错误 role/query/componentKey 等当前证据
-   可解决的问题并重新校验；真实 `source_coverage_gap` 或经有界查询仍无法唯一解析的内容才允许保留
-   暂缓。确认这些边界后，才去掉 `--validate-only` 正式运行：
+   枚举。`readyForAccept` / `fullyResolvedForAccept` / `acceptanceMode=clean` /
+   `partial_with_deferred` 的边界语义（含 component_type_mismatch 修复与 source_coverage_gap 暂缓
+   边界）按 claim 返回的 `workerPrompt` 的 Write And Validate 执行。确认这些边界后，才去掉
+   `--validate-only` 正式运行：
 
    ```bash
    <research-cli> accept --output-dir <runDir> --lease-token <leaseToken> --review-file <safe-review.json>
    ```
 
-   正式 accept 前必须逐项核对提交前自检（与 `review-contract` 的 `mandatoryChecks` 一一对应）：
-   1) 暗金/lineage 宝石已标注 unique 身份（`uniqueGemDiagnostics.unlabeledUniqueGemNames` 为空，
-      或非空时已补 unique_enabler role / open_question / modelability_caveat 声明）；
-   2) `jewelCounts` 中已分配珠宝槽无珠宝物品时，review 已显式声明珠宝状态（无 `unresolved_jewel_sockets`
-      暂缓）；
-   3) Spirit/reservation 预算已写入资源记录；
-   4) 每个启用技能组的 supports 已完整打包或经 `supportCoverageExceptions` 声明（无
-      `supportCoverageBlockedByStructuredOmission`）；
-   5) support 机制语义均有证据链，无凭名字推断的表述；
-   6) Memory 对照用 stable key：先 search_graph_components + resolve_graph_component 解析
-      ascendancy/class，再以 stable key 过滤 `query_research_memory`，并检查
-      `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog` 逐条对照既有同族知识；
-   7) config 条件三栏表：packet 每个 `condition*` 都有"条件 → 来源组件 → 验证状态"，无来源假设
-      已写成 modelability caveat；
-   8) 装备全覆盖：每个装备槽位在记录中"结构化组件 / content 文本 / 显式 not_applicable"三选一；
-   9) 未猜 key 路径：所有组件先 search 再 resolve，支持宝石注意 `Items/Gem` 与 `Items/Gems` 两种
-      metadata 路径；
-   10) silent / unavailable 已沉淀：语料无文本或 `lookup_mechanic` 返回 silent 的高价值机制已写入
-       caveat / verification task；
-   11) 非 Family-core 技能组 supports 已写入记录内容或 secondary supportPackages；
-   12) resource_engine / mechanic_chain 因果方向（生成 vs 消费）已核对并与既有同组件 Family 记录
-       对照；
-   13) 任何 unresolved 计数已先对该组件名 search_graph_components 再定性，未把图中存在的组件误报为
-       source gap。
+   正式 accept 前逐项核对 claim 返回的 `workerPrompt` 的 Mandatory Checks（中文 13 项，与
+   `review-contract` 的 `mandatoryChecks` 一一对应），全部通过后才去掉 `--validate-only` 正式运行；
+   若 `workerPrompt` 已被上下文压缩，用 `worker-brief --lease-token <token>` 重取。
+
+   常见的结构错误（缺必填字段、空列表、容器/对象类型错误）会返回 `validation_failed`
+   （validate-only）或 `acceptance_rejected`（正式 accept）并带可修复的 `validationIssues`，
+   不会报 `runtime_failed`；其余深层字段类型错误与版本枚举错误仍可能直接失败。正式 accept 被拒后
+   该 case 的 lease 已清除，需用 `retry-accept --sample-id` 重新提交修正后的 review，
+   不要手工改运行文件。
 
 6. 完成当前案例的 accept 后，才循环 claim/research/accept 处理下一案，直到 status 无 queued case：
 
@@ -329,20 +306,24 @@ POE_RESEARCH_SUCCEEDED: no
   组件就会产生 sibling family 分裂——同一个 BD 的知识会分散到多个档案夹，系统只有提示不会自动
   合并。无法确认首轮身份结构时，先用 `query_research_memory` 的 familyRecordCoverage 核对既有
   Family 的 secondary 集合，再写 identity 记录。
-- 辅助与主动技能即使都已解析，也不代表二者机制兼容。凡声称某辅助为具体技能生成、转换、保留或放大
-  某项机制，必须用 `support_skill_candidate` 或等价 typed graph helper 复核该精确配对；结果未知时保留
-  caveat / verification task，不得写成已成立事实。
+- **更正既有入库结论**按以下优先级执行（三者都做对，错误结论不会与正确结论并存）：
+  1) 首选：对同一知识用**相同的标题**在同 case 下重跑 accept——系统按 (case、类型、标题、来源)
+     识别为同一条记录并原地更新；
+  2) 次选：若标题必须变化，保持与旧记录**相同的构成**（同一 Family、同一记录类型、同一组件/槽位
+     集合），使系统识别为同一知识的更新版；且更正内容的分量（已解析组件数、条件数、内容长度）
+     **不得低于旧记录**，否则旧的错误结论会反向压过更正；
+  3) 仅当旧结论确实失效时，显式写明"旧结论作废"理由；禁止"只改正文不改构成"导致新旧两条矛盾
+     记录同时存活。
+  已入库的珠宝"空置"类错误结论是此类更正的真实案例（组件集不一致导致无法覆盖，矛盾记录并存）。
 - 每项 `gearResponsibilities` 必须区分组件静态文本直接提供的固有职责，以及来源实例词缀、插入物、
   mutation / transform 或其他组件间接提供的职责。只有前者可以直接归因给该装备组件；后者必须把真实
   来源组件或转换前提写入结构化字段和条件，证据无法唯一归属时降为 caveat / open question，不能因为
   装备名称成功解析就把整份来源实例的效果归给该装备。
-- safe review 顶层 `mechanicAudit` 只记录高风险事实声明，精确关联受影响的 record/candidate 标题，并
-  使用 `supports`、`contradicts`、`silent`、`unavailable` 和 `keep`、`revise`、`defer`。Wiki 冲突却
-  仍 keep、主动 defer、或没有独立 corroboration 的 wiki-only 对象会被最小范围暂缓；Wiki 不可用
-  不会自动阻塞无关对象。
-- 不得在 Wiki 审计中把 `A / B` 这类多个页面名拼成查询主题；查询中央机制或逐页查询，并让
-  claim 覆盖 record/candidate 中实际使用的完整因果关系。`mechanic_chain` / `resource_engine` 未被
-  mechanicAudit 引用会作为显式 advisory 报告，但不会由程序按技能名硬拒绝。
+- safe review 顶层 `mechanicAudit` 只记录高风险事实声明并精确关联受影响的 record/candidate 标题；
+  状态枚举（`supports`/`contradicts`/`silent`/`unavailable`/`keep`/`revise`/`defer`）与"wiki 冲突仍
+  keep、主动 defer、无独立 corroboration 的 wiki-only 对象最小范围暂缓"以 review-contract 的
+  allowedValues/rules 为准。`mechanic_chain` / `resource_engine` 未被 mechanicAudit 引用会在
+  acceptance 报告为 advisory 计数（`mechanicAuditAdvisories`），不阻塞。
 - 中文 `content` 原则上不超过 400 字，英文不超过 250 个单词。独立结论必须拆分；不可拆分的核心
   机制链才允许填写 `lengthExceptionReason` 后少量超出。
 - `rotation` 必须描述玩家操作顺序并写
@@ -369,8 +350,9 @@ POE_RESEARCH_SUCCEEDED: no
   记录结构化疑点（异常组件、可能机制、已排除项、验证任务），不得塞进 modelability caveat；
   `modelability_caveat` 只用于"机制存在但 PoB 无法建模/未证实数值"。`read` 输出中的
   cross-axis advisory 是提示不是 gate。
-- mechanicAudit 除 `mechanic_chain` / `resource_engine` 强制项外，凡记录因果结论依赖签名词缀、
-  或主输出链接存在未验证辅助时，也必须审计或写验证任务。
+- mechanicAudit 强制范围：除 `mechanic_chain` / `resource_engine` 必须被精确引用外，凡记录因果
+  结论依赖签名词缀（见上条）或主输出链接存在未验证辅助时，也必须审计或写验证任务（与
+  review-contract 的 support 机制证据链检查合并执行）。
 - 宽召回 memory 查询使用 `query_research_memory(detail_level="summary",
   response_profile="create_compact")`；只有深读指定记录时才 `detail_level="record"`。
   被动分区读取可用 `read --section passives --node-type notable|keystone|jewel_socket|normal`

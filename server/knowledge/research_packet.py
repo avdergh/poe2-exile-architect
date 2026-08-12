@@ -135,6 +135,21 @@ def cleanup_packets_by_safe_hashes(
     return {"removed": removed}
 
 
+def _spec_id(spec: ET.Element, index: int) -> str:
+    """Stable spec identifier: the XML ``id`` attribute when present, else the 1-based index.
+
+    Real PoB exports never write a Spec ``id`` attribute (PassiveSpec:Save), so the index is
+    the normal case and aligns with ``<Tree activeSpec="1">``; the attribute path only serves
+    third-party XML.
+    """
+    raw = str(spec.get("id") or "")
+    return raw if raw else str(index)
+
+
+def _active_spec_id(tree: ET.Element) -> str:
+    return str(tree.get("activeSpec") or "1")
+
+
 def _tree_metadata_status(root: ET.Element) -> str:
     """Return whether passive-node metadata (tree.json) is available for the active spec.
 
@@ -145,19 +160,78 @@ def _tree_metadata_status(root: ET.Element) -> str:
     tree = root.find("Tree")
     if tree is None:
         return "ok"
-    active_spec = str(tree.get("activeSpec") or "1")
+    specs = tree.findall("Spec")
+    active_spec = _active_spec_id(tree)
     spec = next(
-        (s for s in tree.findall("Spec") if str(s.get("id") or "") == active_spec),
+        (s for index, s in enumerate(specs, start=1) if _spec_id(s, index) == active_spec),
         None,
     )
     if spec is None:
-        spec = next(iter(tree.findall("Spec")), None)
+        spec = next(iter(specs), None)
     if spec is None:
         return "ok"
     tree_version = str(spec.get("treeVersion") or "")
     if not tree_version:
         return "tree_data_missing"
-    return "ok" if _passive_node_metadata(tree_version) else "tree_data_missing"
+    if not _passive_node_metadata(tree_version):
+        return "tree_data_missing"
+    # Real PoB always writes a <Sockets> element (even empty); its absence means a
+    # third-party/legacy export whose socket mapping cannot be trusted.
+    if spec.find("Sockets") is None:
+        return "sockets_absent"
+    return "ok"
+
+
+def _jewel_socket_map(root: ET.Element) -> dict[str, dict[str, Any]]:
+    """Map socketed jewel item ids to their tree socket (itemId -> nodeId) from <Sockets>.
+
+    ``<Spec><Sockets><Socket nodeId itemId/></Sockets>`` is PoB's authoritative socket
+    contract (Save/Load symmetric, PassiveSpec.lua). Only entries with a positive item id
+    that actually exists in the item list are kept (mirrors the loader's stale defence).
+    When the same item id is referenced by several specs, the active spec wins.
+    """
+    tree = root.find("Tree")
+    if tree is None:
+        return {}
+    active_spec = _active_spec_id(tree)
+    items = root.find("Items")
+    if items is None:
+        return {}
+    item_ids = {str(item.get("id")) for item in items.findall("Item") if item.get("id")}
+    item_map: dict[str, dict[str, Any]] = {}
+    for index, spec in enumerate(tree.findall("Spec"), start=1):
+        spec_id = _spec_id(spec, index)
+        is_active = spec_id == active_spec
+        sockets = spec.find("Sockets")
+        if sockets is None:
+            continue
+        for socket in sockets.findall("Socket"):
+            node_id = str(socket.get("nodeId") or "").strip()
+            item_id = str(socket.get("itemId") or "").strip()
+            if not node_id or not item_id:
+                continue
+            try:
+                if int(item_id) <= 0:
+                    continue
+            except ValueError:
+                continue
+            if item_id not in item_ids:
+                continue
+            existing = item_map.get(item_id)
+            if existing is not None:
+                if is_active and not existing["activeSpec"]:
+                    item_map[item_id] = {
+                        "nodeId": node_id,
+                        "specId": spec_id,
+                        "activeSpec": True,
+                    }
+                continue
+            item_map[item_id] = {
+                "nodeId": node_id,
+                "specId": spec_id,
+                "activeSpec": is_active,
+            }
+    return item_map
 
 
 def jewel_counts(
@@ -166,9 +240,12 @@ def jewel_counts(
 ) -> dict[str, Any]:
     """Count allocated jewel sockets vs socketed jewels in the packet's active spec.
 
-    Derived view, never persisted: computed from the same raw XML ``_packet_sections``
-    parses, so safeHash is unaffected and old packets compute it identically. Callers
-    that already parsed ``_packet_sections`` may pass ``sections`` to avoid re-parsing.
+    Tree sockets are counted from the authoritative ``<Sockets>`` mapping resolved onto the
+    gear section; embedded jewel sockets on items ("X Jewel Socket N") are counted
+    separately. ``allocated`` covers only the active spec. Derived view, never persisted:
+    computed from the same raw XML ``_packet_sections`` parses, so safeHash is unaffected
+    and old packets compute it identically. Callers that already parsed ``_packet_sections``
+    may pass ``sections`` to avoid re-parsing.
     """
     normalized = _unwrap_packet(packet)
     if sections is None:
@@ -176,10 +253,16 @@ def jewel_counts(
     allocated = sum(
         1
         for item in sections["passives"]
-        if item.get("kind") == "allocated_node" and "jewel_socket" in (item.get("nodeTypes") or [])
+        if item.get("kind") == "allocated_node"
+        and item.get("activeSpec") is True
+        and "jewel_socket" in (item.get("nodeTypes") or [])
     )
-    socketed = sum(
-        1 for item in sections["gear"] if str(item.get("slot") or "").startswith("Jewel")
+    tree_socketed = sum(1 for item in sections["gear"] if item.get("socketSource") == "tree_socket")
+    embedded = sum(
+        1
+        for item in sections["gear"]
+        if item.get("activeItemSet") is True
+        and re.search(r"Jewel Socket \d+$", str(item.get("slot") or ""))
     )
     raw_context = normalized.get("rawContext")
     raw_context = raw_context if isinstance(raw_context, dict) else {}
@@ -194,7 +277,9 @@ def jewel_counts(
             status = _tree_metadata_status(root)
     return {
         "allocatedJewelSocketCount": allocated,
-        "socketedJewelCount": socketed,
+        "treeSocketedJewelCount": tree_socketed,
+        "embeddedJewelCount": embedded,
+        "socketedJewelCount": tree_socketed + embedded,
         "status": status,
     }
 
@@ -204,14 +289,15 @@ def jewel_advisories(
     sections: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     counts = jewel_counts(packet, sections=sections)
-    if counts["status"] == "tree_data_missing":
+    if counts["status"] in {"tree_data_missing", "sockets_absent"}:
         return [
-            "passive-tree node metadata is unavailable for this packet, so allocated jewel "
-            "sockets cannot be counted; state the jewel situation explicitly in the review"
+            "passive-tree node metadata or the jewel socket mapping is unavailable for this "
+            "packet, so allocated jewel sockets cannot be counted reliably; state the jewel "
+            "situation explicitly in the review"
         ]
     allocated = int(counts["allocatedJewelSocketCount"] or 0)
-    socketed = int(counts["socketedJewelCount"] or 0)
-    if allocated > 0 and socketed == 0:
+    tree_socketed = int(counts["treeSocketedJewelCount"] or 0)
+    if allocated > 0 and tree_socketed == 0:
         return [
             f"{allocated} allocated jewel socket(s) carry no socketed jewel (empty or extraction "
             "gap); the review must declare the jewel state explicitly"
@@ -242,6 +328,7 @@ def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
         "activeSets": _active_sets(normalized),
         "jewelCounts": jewel_counts(packet, sections=sections),
         "jewelAdvisories": jewel_advisories(packet, sections=sections),
+        **_unslotted_summary(normalized),
         "recommendedReadOrder": list(RESEARCH_SECTIONS),
         "requiredCoverage": [
             "supports",
@@ -532,24 +619,65 @@ def _gear_items(root: ET.Element) -> list[dict[str, Any]]:
                     **parsed,
                 }
             )
-    # Jewels are stored as bare <Item> elements in PoB-PoE2 XML without an ItemSet
-    # <Slot> reference (their tree socket lives on the active Spec), so a slot-based
-    # walk drops them entirely. Surface unreferenced items as jewels so research and
-    # jewel-closure checks can see socketed gems (radius/Time-Lost grants included).
+    # Tree jewels are bare <Item> elements referenced only by <Spec><Sockets> (their
+    # socket is a passive-tree node), so a slot-based walk drops them. Resolve them via
+    # the authoritative socket mapping; items outside the active spec's sockets are other
+    # trees' configuration and are ignored entirely, and unslotted inventory items are
+    # counted separately (see _unslotted_items) instead of polluting the gear section.
+    socket_map = _jewel_socket_map(root)
     for item_id, node in sorted(by_id.items()):
         if item_id in referenced:
+            continue
+        mapping = socket_map.get(item_id)
+        if mapping is None or not mapping["activeSpec"]:
             continue
         parsed = _parse_item_text(node.text or "")
         result.append(
             {
-                "itemSetId": str(items.get("id") or 1),
+                "itemSetId": "",
                 "activeItemSet": True,
-                "slot": "Jewel",
+                "socketSource": "tree_socket",
+                "slot": f"Jewel {mapping['nodeId']}",
+                "specId": mapping["specId"],
                 "itemId": item_id,
                 **parsed,
             }
         )
     return result
+
+
+def _unslotted_summary(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Summarize inventory items that are neither equipped in an ItemSet slot nor socketed
+    as a tree jewel. Bounded name list keeps the summary small; full items never enter the
+    gear section so Researcher gear analysis stays about the equipped build.
+    """
+    raw_xml = str((normalized.get("rawContext") or {}).get("rawXml") or "")
+    if not raw_xml:
+        return {"unslottedItemCount": 0, "unslottedItemNames": []}
+    try:
+        root = ET.fromstring(raw_xml)
+    except ET.ParseError:
+        return {"unslottedItemCount": 0, "unslottedItemNames": []}
+    items = root.find("Items")
+    if items is None:
+        return {"unslottedItemCount": 0, "unslottedItemNames": []}
+    by_id = {str(item.get("id")): item for item in items.findall("Item") if item.get("id")}
+    referenced: set[str] = set()
+    for item_set in items.findall("ItemSet"):
+        for slot in item_set.findall("Slot"):
+            referenced.add(str(slot.get("itemId") or "0"))
+    socket_map = _jewel_socket_map(root)
+    unslotted: list[dict[str, str]] = []
+    for item_id, node in sorted(by_id.items()):
+        if item_id in referenced or item_id in socket_map:
+            continue
+        parsed = _parse_item_text(node.text or "")
+        name = str(parsed.get("name") or str(parsed.get("base") or "") or f"item-{item_id}")
+        unslotted.append({"itemId": item_id, "name": name})
+    return {
+        "unslottedItemCount": len(unslotted),
+        "unslottedItemNames": [str(item["name"]) for item in unslotted[:10]],
+    }
 
 
 def _parse_item_text(raw: str) -> dict[str, Any]:
@@ -599,56 +727,82 @@ def _passive_items(root: ET.Element) -> list[dict[str, Any]]:
     tree = root.find("Tree")
     if tree is None:
         return []
-    active_spec = str(tree.get("activeSpec") or "1")
+    active_spec = _active_spec_id(tree)
     result: list[dict[str, Any]] = []
     for index, spec in enumerate(tree.findall("Spec"), start=1):
-        spec_id = str(spec.get("id") or index)
+        spec_id = _spec_id(spec, index)
+        is_active = spec_id == active_spec
         tree_version = str(spec.get("treeVersion") or "")
         node_metadata = _passive_node_metadata(tree_version)
+        # Weapon-set members come from the <WeaponSet1/2 nodes=...> child elements that
+        # PoB actually writes (PassiveSpec:Save); the nodes1/nodes2 attributes it never
+        # writes are not read. Nodes allocated to a weapon set appear BOTH in the spec's
+        # `nodes` attribute and the WeaponSet element, so the allocated rows carry a
+        # weaponSet marker instead of duplicating rows.
+        weapon_set_members: dict[int, set[str]] = {}
+        for weapon_elem in spec:
+            tag = str(weapon_elem.tag or "")
+            if tag in {"WeaponSet1", "WeaponSet2"}:
+                weapon_set = 1 if tag == "WeaponSet1" else 2
+                weapon_set_members.setdefault(weapon_set, set()).update(
+                    _csv_values(weapon_elem.get("nodes"))
+                )
+        allocated_ids: set[str] = set()
         result.append(
             {
                 "kind": "spec",
                 "specId": spec_id,
-                "activeSpec": spec_id == active_spec,
+                "activeSpec": is_active,
                 "treeVersion": tree_version,
                 "classId": str(spec.get("classId") or ""),
                 "ascendClassId": str(spec.get("ascendClassId") or ""),
                 "allocatedNodeCount": len(_csv_values(spec.get("nodes"))),
-                "weaponSet1NodeCount": len(_csv_values(spec.get("nodes1"))),
-                "weaponSet2NodeCount": len(_csv_values(spec.get("nodes2"))),
+                "weaponSet1NodeCount": len(weapon_set_members.get(1, set())),
+                "weaponSet2NodeCount": len(weapon_set_members.get(2, set())),
             }
         )
         for node_id in _csv_values(spec.get("nodes")):
+            allocated_ids.add(node_id)
+            weapon_set = (
+                1
+                if node_id in weapon_set_members.get(1, set())
+                else 2
+                if node_id in weapon_set_members.get(2, set())
+                else None
+            )
             result.append(
                 {
                     "kind": "allocated_node",
                     "specId": spec_id,
+                    "activeSpec": is_active,
                     "nodeId": node_id,
+                    "weaponSet": weapon_set,
                     **node_metadata.get(node_id, {}),
                 }
             )
-        for node_id in _csv_values(spec.get("nodes1")):
-            result.append(
-                {
-                    "kind": "weapon_set_node",
-                    "specId": spec_id,
-                    "weaponSet": 1,
-                    "nodeId": node_id,
-                    **node_metadata.get(node_id, {}),
-                }
-            )
-        for node_id in _csv_values(spec.get("nodes2")):
-            result.append(
-                {
-                    "kind": "weapon_set_node",
-                    "specId": spec_id,
-                    "weaponSet": 2,
-                    "nodeId": node_id,
-                    **node_metadata.get(node_id, {}),
-                }
-            )
+        for weapon_set, members in sorted(weapon_set_members.items()):
+            for node_id in sorted(members):
+                if node_id in allocated_ids:
+                    continue
+                result.append(
+                    {
+                        "kind": "weapon_set_node",
+                        "specId": spec_id,
+                        "activeSpec": is_active,
+                        "weaponSet": weapon_set,
+                        "nodeId": node_id,
+                        **node_metadata.get(node_id, {}),
+                    }
+                )
         for mastery in _csv_values(spec.get("masteryEffects")):
-            result.append({"kind": "mastery_effect", "specId": spec_id, "value": mastery})
+            result.append(
+                {
+                    "kind": "mastery_effect",
+                    "specId": spec_id,
+                    "activeSpec": is_active,
+                    "value": mastery,
+                }
+            )
     return result
 
 

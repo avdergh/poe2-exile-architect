@@ -213,11 +213,16 @@ def _unresolved_jewel_sockets_deferred(
     """
     if not isinstance(jewel_counts, dict):
         return []
-    if str(jewel_counts.get("status") or "") == "tree_data_missing":
+    if str(jewel_counts.get("status") or "") in {"tree_data_missing", "sockets_absent"}:
         return []
     allocated = int(jewel_counts.get("allocatedJewelSocketCount") or 0)
-    socketed = int(jewel_counts.get("socketedJewelCount") or 0)
-    if allocated <= 0 or socketed > 0:
+    # Only tree sockets count toward the closure gate: a jewel in an embedded equipment
+    # socket cannot fill an empty tree socket, so it must not suppress the declaration.
+    tree_socketed = jewel_counts.get("treeSocketedJewelCount")
+    if tree_socketed is None:
+        tree_socketed = jewel_counts.get("socketedJewelCount") or 0
+    tree_socketed = int(tree_socketed or 0)
+    if allocated <= 0 or tree_socketed > 0:
         return []
     if _review_declares_jewels(review):
         return []
@@ -412,6 +417,12 @@ def accept_deep_review_candidates(
     )
     if not isinstance(review, dict) or review.get("safeArtifactOnly") is not True:
         raise ValueError("deep review artifact must be safeArtifactOnly=true")
+    structural_groups = _structural_schema_issues(review)
+    if structural_groups:
+        report = _structural_failure_report(structural_groups)
+        if not validation_only:
+            _write_safe_report(report, Path(json_output), Path(md_output))
+        return report
     unique_gem_diagnostics = _unique_gem_diagnostics(review, source_skill_manifest)
     review, mechanic_audit_diagnostics, mechanic_audit_deferred = _prepare_mechanic_audit(review)
     mechanic_audit_schema_failed = bool(mechanic_audit_diagnostics["schemaIssueCount"])
@@ -3286,6 +3297,217 @@ def _prepare_mechanic_audit(
         "advisories": advisories,
     }
     return prepared, diagnostics, list(deferred_by_key.values())
+
+
+_STRUCTURAL_CANDIDATE_REQUIRED = (
+    "sampleId",
+    "caseRef",
+    "patternType",
+    "plannerHint",
+    "verificationGate",
+)
+_STRUCTURAL_CANDIDATE_NONEMPTY_LISTS = ("axes", "verificationTasks")
+_STRUCTURAL_RECORD_REQUIRED = (
+    "sampleId",
+    "researchGroupId",
+    "caseRef",
+    "recordKind",
+    "title",
+    "summary",
+    "content",
+)
+
+
+def _structural_schema_issues(
+    review: dict[str, Any],
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """Collect non-optional schema errors as fixable issues instead of raising.
+
+    Mirrors the required-field and container-type rules of :func:`_candidate_reviews` /
+    :func:`_deep_record_reviews` / :func:`_prepare_mechanic_audit` (and their
+    ``_required`` / ``_string_list`` helpers) so ``--validate-only`` can return
+    ``validationIssues`` instead of crashing with a ``runtime_failed`` exception.
+    Candidate ``title``/``summary`` are intentionally excluded: they are soft fields
+    that defer the candidate without losing accepted deep records.
+
+    ``loc`` values point at the review JSON path (camelCase + index) so the Agent can
+    locate the field inside the review file. Known boundaries kept as direct failures:
+    deep field value types inside ``_optional_string_list`` / ``_component_payload``
+    (e.g. ``expectedNodeTypes`` non-list) and unsupported PoB version enums in
+    ``_durable_version_context`` (fail-closed by design, runs before this check).
+
+    Returns ``[(sample_id, candidateKind, issues)]`` groups.
+    """
+
+    groups: list[tuple[str, str, list[dict[str, Any]]]] = []
+
+    def _container_issue(path: list[object], msg: str) -> dict[str, Any]:
+        return {"loc": path, "msg": msg, "type": "value_error"}
+
+    mechanic_audit = review.get("mechanicAudit") or []
+    if not isinstance(mechanic_audit, list):
+        groups.append(
+            (
+                "",
+                "research_case",
+                [_container_issue(["mechanicAudit"], "deep review mechanicAudit must be a list")],
+            )
+        )
+
+    candidates = review.get("candidateReviews") or []
+    if not isinstance(candidates, list):
+        groups.append(
+            (
+                "",
+                "build_pattern",
+                [
+                    _container_issue(
+                        ["candidateReviews"], "deep review candidateReviews must be a list"
+                    )
+                ],
+            )
+        )
+        candidates = []
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            groups.append(
+                (
+                    "",
+                    "build_pattern",
+                    [
+                        _container_issue(
+                            ["candidateReviews", index],
+                            "deep review candidate must be an object",
+                        )
+                    ],
+                )
+            )
+            continue
+        issues: list[dict[str, Any]] = []
+        sample_id = str(candidate.get("sampleId") or "")
+        for field in _STRUCTURAL_CANDIDATE_REQUIRED:
+            if not str(candidate.get(field) or "").strip():
+                issues.append(
+                    {
+                        "loc": ["candidateReviews", index, field],
+                        "msg": f"deep review missing required field: {field}",
+                        "type": "value_error",
+                    }
+                )
+        for field in _STRUCTURAL_CANDIDATE_NONEMPTY_LISTS:
+            values = candidate.get(field) or []
+            if not isinstance(values, list) or not values:
+                issues.append(
+                    {
+                        "loc": ["candidateReviews", index, field],
+                        "msg": f"deep review field must be a non-empty list: {field}",
+                        "type": "value_error",
+                    }
+                )
+        components = candidate.get("components") or []
+        if not isinstance(components, list):
+            issues.append(
+                _container_issue(
+                    ["candidateReviews", index, "components"],
+                    "deep review components must be a list",
+                )
+            )
+        safe_evidence = candidate.get("safeEvidenceRefs") or []
+        if not isinstance(safe_evidence, list):
+            issues.append(
+                _container_issue(
+                    ["candidateReviews", index, "safeEvidenceRefs"],
+                    "deep review safeEvidenceRefs must be a list",
+                )
+            )
+        if issues:
+            groups.append((sample_id, "build_pattern", issues))
+    records = review.get("deepResearchRecords") or []
+    if not isinstance(records, list):
+        groups.append(
+            (
+                "",
+                "deep_research_record",
+                [
+                    _container_issue(
+                        ["deepResearchRecords"], "deep review deepResearchRecords must be a list"
+                    )
+                ],
+            )
+        )
+        records = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            groups.append(
+                (
+                    "",
+                    "deep_research_record",
+                    [
+                        _container_issue(
+                            ["deepResearchRecords", index],
+                            "deep research record must be an object",
+                        )
+                    ],
+                )
+            )
+            continue
+        issues = []
+        sample_id = str(record.get("sampleId") or "")
+        for field in _STRUCTURAL_RECORD_REQUIRED:
+            if not str(record.get(field) or "").strip():
+                issues.append(
+                    {
+                        "loc": ["deepResearchRecords", index, field],
+                        "msg": f"deep review missing required field: {field}",
+                        "type": "value_error",
+                    }
+                )
+        typed_payload = record.get("typedPayload") or {}
+        if not isinstance(typed_payload, dict):
+            issues.append(
+                _container_issue(
+                    ["deepResearchRecords", index, "typedPayload"],
+                    "deep research record typedPayload must be an object",
+                )
+            )
+        if issues:
+            groups.append((sample_id, "deep_research_record", issues))
+    return groups
+
+
+def _structural_failure_report(
+    groups: list[tuple[str, str, list[dict[str, Any]]]],
+) -> dict[str, Any]:
+    """Short-circuit report for structurally invalid reviews.
+
+    Shape aligns with the normal deferred-candidate contract so ``--validate-only``
+    surfaces ``validation_failed`` + fixable ``validationIssues`` and the real accept
+    path lands on ``acceptance_rejected`` instead of a crash.
+    """
+
+    deferred: list[dict[str, Any]] = []
+    for sample_id, kind, issues in groups:
+        deferred.append(
+            {
+                "titleZh": "safe review 结构校验未通过",
+                "sampleId": sample_id or "",
+                "reason": "invalid_schema",
+                "componentKeys": [],
+                "caveats": [
+                    f"{kind} 存在结构错误：按 validationIssues 修正后重新校验；"
+                    "不要把 raw 材料填入 review"
+                ],
+                "validationIssues": issues,
+            }
+        )
+    return {
+        "status": "rejected",
+        "deferredCandidates": deferred,
+        "deferredReasonCounts": {"invalid_schema": len(deferred)},
+        "deferredCandidateCount": len(deferred),
+        "acceptedPatternCount": 0,
+        "acceptedDeepRecordCount": 0,
+    }
 
 
 def _candidate_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:

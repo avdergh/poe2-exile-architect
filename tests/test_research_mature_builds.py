@@ -615,6 +615,68 @@ def test_validate_only_keeps_current_lease_and_skips_durable_acceptance(tmp_path
     assert status["acceptedCount"] == 0
 
 
+def test_validate_only_structural_errors_return_validation_failed_not_runtime_failed(
+    tmp_path, monkeypatch
+):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-structural-validate",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    payload = {
+        "safeArtifactOnly": True,
+        "candidateReviews": [
+            {
+                "sampleId": claimed["sampleId"],
+                "caseRef": claimed["sourceHashRef"],
+                "safeEvidenceRef": f"evidence:{claimed['packetSafeHash'][:16]}",
+                "patternType": "cooccurrence",
+                "title": "结构测试候选",
+                "summary": "verificationTasks 为空时应返回可修复 issues",
+                "axes": ["mechanic_engine"],
+                "components": [],
+                "plannerHint": "仅测试结构预检",
+                "verificationGate": "测试 gate",
+                "verificationTasks": [],
+                "transferScope": "family",
+            }
+        ],
+        "deepResearchRecords": [],
+    }
+    review_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance._graph_service",
+        lambda: None,
+    )
+    result = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+        validation_only=True,
+    )
+
+    assert result["status"] == "validation_failed"
+    issues = list(result.get("validationIssues") or [])
+    assert any(
+        issue.get("loc") == ["candidateReviews", 0, "verificationTasks"]
+        and "non-empty list" in str(issue.get("msg") or "")
+        for issue in issues
+    )
+
+
 def test_validation_only_distinguishes_partial_acceptance_from_clean_acceptance():
     from scripts import research_mature_builds
 
@@ -1653,7 +1715,7 @@ def _rich_sample_xml() -> str:
       <Skill enabled="true"><Gem nameSpec="Blasphemy" skillId="BlasphemyPlayer" enabled="true" /></Skill>
     </SkillSet>
   </Skills>
-  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{nodes}" nodes1="201,202" nodes2="301" /></Tree>
+  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{nodes}" nodes1="201,202" nodes2="301"><Sockets></Sockets></Spec></Tree>
   <Items activeItemSet="1">
     <Item id="1">Rarity: RARE\nResearch Wand\nAttuned Wand\nItem Level: 90\n+3 to Level of all Spell Skills\n80% increased Spell Damage</Item>
     <Item id="2">Rarity: UNIQUE\nResearch Armour\nSilk Robe\nItem Level: 90\nGain a defensive state while casting</Item>
@@ -1763,7 +1825,7 @@ def test_compact_accept_result_strips_bulk_blocks_and_keeps_quality_summary():
     assert compact["noRawMatureBuildMaterial"] is True
 
 
-def test_research_packet_captures_unslotted_jewel_items():
+def test_research_packet_captures_tree_jewels_via_sockets_mapping():
     from server.knowledge import research_packet
 
     metadata = research_packet._passive_node_metadata("0_5")
@@ -1775,10 +1837,15 @@ def test_research_packet_captures_unslotted_jewel_items():
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <PathOfBuilding2>
   <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
-  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
+  <Tree activeSpec="1">
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]}">
+      <Sockets><Socket nodeId="{socket_ids[0]}" itemId="1"/></Sockets>
+    </Spec>
+  </Tree>
   <Items activeItemSet="1">
     <Item id="1">Rarity: RARE\nRapture Curio\nTime-Lost Ruby\nItem Level: 80\nLevelReq: 0\nRadius: Large\nUpgrades Radius to Large\nNotable Passive Skills in Radius also grant 5% increased Life Regeneration rate\nSmall Passive Skills in Radius also grant 2% increased Fire Damage\nSmall Passive Skills in Radius also grant 3% increased Warcry Speed</Item>
     <Item id="2">Rarity: RARE\nFate Core\nSiege Crossbow\nItem Level: 80\nLevelReq: 79\nAdds 92 to 143 Fire Damage</Item>
+    <Item id="3">Rarity: NORMAL\nSpare Staff\nGnarled Branch\nItem Level: 5\n20% increased Spell Damage</Item>
     <ItemSet id="1"><Slot name="Weapon 1 Swap" itemId="2" /></ItemSet>
   </Items>
 </PathOfBuilding2>
@@ -1787,7 +1854,8 @@ def test_research_packet_captures_unslotted_jewel_items():
     sections = research_packet._packet_sections(packet)
     jewel_items = [item for item in sections["gear"] if "Time-Lost" in str(item.get("base") or "")]
     assert len(jewel_items) == 1
-    assert jewel_items[0]["slot"] == "Jewel"
+    assert jewel_items[0]["slot"] == f"Jewel {socket_ids[0]}"
+    assert jewel_items[0]["socketSource"] == "tree_socket"
     assert jewel_items[0]["name"] == "Rapture Curio"
     assert any(
         "Notable Passive Skills in Radius also grant" in mod for mod in jewel_items[0]["modifiers"]
@@ -1796,36 +1864,21 @@ def test_research_packet_captures_unslotted_jewel_items():
         "Small Passive Skills in Radius also grant 2% increased Fire Damage" in mod
         for mod in jewel_items[0]["modifiers"]
     )
+    # The spare staff is inventory, not equipped gear: it never enters the gear section.
+    assert not any("Gnarled Branch" in str(item.get("name") or "") for item in sections["gear"])
     counts = research_packet.jewel_counts(packet, sections=sections)
-    assert counts["allocatedJewelSocketCount"] == 1
-    assert counts["socketedJewelCount"] == 1
-    assert research_packet.jewel_advisories(packet, sections=sections) == []
-    from server.knowledge import research_packet
-
-    metadata = research_packet._passive_node_metadata("0_5")
-    socket_ids = [
-        node_id
-        for node_id, meta in metadata.items()
-        if "jewel_socket" in (meta.get("nodeTypes") or [])
-    ]
-    assert socket_ids, "0_5 tree must expose jewel socket nodes for this fixture"
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<PathOfBuilding2>
-  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
-  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
-  <Items activeItemSet="1"><ItemSet id="1" /></Items>
-</PathOfBuilding2>
-"""
-    packet = {"rawContext": {"rawXml": xml}}
-    counts = research_packet.jewel_counts(packet)
-
     assert counts["status"] == "ok"
     assert counts["allocatedJewelSocketCount"] == 1
-    assert counts["socketedJewelCount"] == 0
-    assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+    assert counts["treeSocketedJewelCount"] == 1
+    assert counts["embeddedJewelCount"] == 0
+    assert counts["socketedJewelCount"] == 1
+    assert research_packet.jewel_advisories(packet, sections=sections) == []
+    inspected = research_packet.inspect_packet(packet)
+    assert inspected["unslottedItemCount"] == 1
+    assert "Spare Staff" in inspected["unslottedItemNames"]
 
 
-def test_research_packet_jewel_counts_counts_socketed_jewels():
+def test_research_packet_jewel_counts_counts_embedded_item_sockets():
     from server.knowledge import research_packet
 
     metadata = research_packet._passive_node_metadata("0_5")
@@ -1837,10 +1890,19 @@ def test_research_packet_jewel_counts_counts_socketed_jewels():
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <PathOfBuilding2>
   <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
-  <Tree activeSpec="1"><Spec id="1" treeVersion="0_5" nodes="{socket_ids[0]}" /></Tree>
+  <Tree activeSpec="1">
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]}"><Sockets></Sockets></Spec>
+  </Tree>
   <Items activeItemSet="1">
     <Item id="3">Rarity: RARE\nResearch Jewel\nEmerald\nItem Level: 82\n12% increased Attack Speed</Item>
-    <ItemSet id="1"><Slot name="Jewel 1" itemId="3" /></ItemSet>
+    <Item id="4">Rarity: RARE\nOffhand Jewel\nEmerald\nItem Level: 82\n8% increased Attack Speed</Item>
+    <ItemSet id="1">
+      <Slot name="Body Armour Jewel Socket 1" itemId="3" />
+      <Slot name="Body Armour" itemId="0" />
+    </ItemSet>
+    <ItemSet id="2">
+      <Slot name="Body Armour Jewel Socket 1" itemId="4" />
+    </ItemSet>
   </Items>
 </PathOfBuilding2>
 """
@@ -1849,8 +1911,107 @@ def test_research_packet_jewel_counts_counts_socketed_jewels():
 
     assert counts["status"] == "ok"
     assert counts["allocatedJewelSocketCount"] == 1
+    assert counts["treeSocketedJewelCount"] == 0
+    assert counts["embeddedJewelCount"] == 1  # only the active item set's embedded jewel
     assert counts["socketedJewelCount"] == 1
-    assert research_packet.jewel_advisories(packet) == []
+    # Empty tree socket with only embedded jewels still needs a declaration.
+    assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_jewel_counts_allocated_scope_is_active_spec_only():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="2">
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]}"><Sockets></Sockets></Spec>
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]},{socket_ids[1]}"><Sockets></Sockets></Spec>
+  </Tree>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    counts = research_packet.jewel_counts(packet)
+
+    assert counts["status"] == "ok"
+    assert counts["allocatedJewelSocketCount"] == 2  # active spec 2 only
+    assert counts["treeSocketedJewelCount"] == 0
+    assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_jewel_counts_drops_stale_socket_references():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1">
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]}">
+      <Sockets>
+        <Socket nodeId="{socket_ids[0]}" itemId="99"/>
+        <Socket nodeId="{socket_ids[0]}" itemId="0"/>
+        <Socket nodeId="" itemId="1"/>
+      </Sockets>
+    </Spec>
+  </Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nResearch Jewel\nEmerald\nItem Level: 82\n12% increased Attack Speed</Item>
+    <ItemSet id="1" />
+  </Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    sections = research_packet._packet_sections(packet)
+    counts = research_packet.jewel_counts(packet, sections=sections)
+
+    # All three stale entries are dropped: missing item, non-positive id, empty node id.
+    assert counts["treeSocketedJewelCount"] == 0
+    assert counts["allocatedJewelSocketCount"] == 1
+    assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_extracts_weapon_set_passives_without_double_count():
+    from server.knowledge import research_packet
+
+    # A plain allocated node plus a weapon-set member (WeaponSet1 child element).
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1">
+    <Spec treeVersion="0_5" nodes="100,101">
+      <Sockets></Sockets>
+      <WeaponSet1 nodes="101" />
+    </Spec>
+  </Tree>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    sections = research_packet._packet_sections(packet)
+    allocated = [item for item in sections["passives"] if item.get("kind") == "allocated_node"]
+    weapon_set = [item for item in sections["passives"] if item.get("kind") == "weapon_set_node"]
+    assert len(allocated) == 2
+    assert weapon_set == []
+    node_101 = next(item for item in allocated if item.get("nodeId") == "101")
+    assert node_101["weaponSet"] == 1
+    assert node_101["activeSpec"] is True
+    node_100 = next(item for item in allocated if item.get("nodeId") == "100")
+    assert node_100["weaponSet"] is None
+    spec = next(item for item in sections["passives"] if item.get("kind") == "spec")
+    assert spec["weaponSet1NodeCount"] == 1
 
 
 def test_research_packet_jewel_counts_flags_tree_data_missing():
