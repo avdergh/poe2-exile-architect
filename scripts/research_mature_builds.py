@@ -656,11 +656,11 @@ def render_review_contract(
             "exclusionConditions": [],
         },
         "mandatoryChecks": [
-            "lineage/unique support gems must be labeled with their unique identity (unique_enabler role or an open_question/modelability_caveat record)",
+            "lineage/unique support gems must be labeled with their unique identity (support_modifier role with the lineage/unique identity stated in prose, or an open_question/modelability_caveat record; unique_enabler role fails resolver checks for support_gem nodes)",
             "allocated jewel sockets without socketed jewels require an explicit jewel-state declaration in the review",
             "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
             "every enabled skill group's supports must be fully packaged in supportPackages or declared via supportCoverageExceptions",
-            "support mechanism claims require typed pairing evidence or a verification task; never infer from the support name",
+            "support mechanism claims are judged by the review's combined fixed-point pairing check (support_skill_group_candidates, simulating the PoB group's effective compatibility); the single-pair support_skill_candidate query is candidate discovery only and defers to the combined check; never infer from the support name",
             "memory comparison must use stable keys: resolve ascendancy/class via search_graph_components + resolve_graph_component before filtering query_research_memory, and check familyRecordCoverage/familyRecordIndex/familyPremiseCatalog against existing same-family knowledge",
             "every packet condition* (EnemyChilled/EnemyBleeding/EnemyBlinded/EnemyIgnited/CritRecently/BeenHitRecently/usePowerCharges) must be traced in a 'condition -> source component -> verification status' table; unsourced assumptions become modelability caveats",
             "every gear slot must appear in the records: structured component, content text, or explicit not_applicable",
@@ -1294,15 +1294,15 @@ def cleanup_completed_run(
     # directory. A failure rolls the original directory back so a partial cleanup can never
     # leave the run (queue, reviews, acceptance reports) half-deleted and un-auditable.
     staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         try:
             if staging.exists():
                 shutil.rmtree(staging)
             output_root.rename(staging)
             break
         except OSError as exc:
-            if attempt == 1:
-                time.sleep(0.4)
+            if attempt < 3:
+                time.sleep(0.5)
                 continue
             return {
                 "status": "partial",
@@ -1312,8 +1312,11 @@ def cleanup_completed_run(
                     "osError": _safe_os_error(exc),
                     "retried": True,
                     "hint": (
-                        "another process may hold a handle inside the run directory; "
-                        "re-run cleanup once the handle is released"
+                        "another process may hold a handle inside the run directory (for example "
+                        "a terminal or file explorer opened at this run directory, an editor that "
+                        "keeps the review/queue files open, or an antivirus scan); close such "
+                        "handles and re-run cleanup, or delete the run directory manually after "
+                        "confirming the task is fully accepted"
                     ),
                 },
             }
@@ -2210,8 +2213,10 @@ graph 等独立佐证。
 ## Mandatory Checks
 以下十三项是提交前的强制自检，缺一不可：
 1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
-   lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 用 unique_enabler，或在
-   open_question/modelability_caveat 记录中说明）；不能当普通 support 处理。
+   lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 保持 support_modifier——
+   unique support gem 的节点类型是 support_gem，使用 unique_enabler role 会被解析校验拒绝——并在
+   记录 prose 中写明 lineage/unique，或在 open_question/modelability_caveat 记录中说明）；不能当
+   普通 support 处理。
 2. 珠宝槽闭环：inspect 的 jewelCounts 显示已分配珠宝槽且 treeSocketedJewelCount 为 0 时，
    必须在 review 中显式声明珠宝状态（空置，或已插宝石及 radius/Time-Lost 位置化词缀的
    覆盖范围）。装备自带的珠宝孔不豁免树槽声明——装备孔里的宝石不能填天赋树槽。
@@ -2220,9 +2225,10 @@ graph 等独立佐证。
 4. support 打包：每个启用技能组的 supports 必须完整打包进 skill_package/mechanic_chain 的
    supportPackages，或经 supportCoverageExceptions 声明；被 evidence 记录提及的组不得遗留
    ≥2 个未打包辅助。
-5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，必须用
-   support_skill_candidate 或等价 typed 复核配对，机制细节以 corpus/wiki/来源文本为准，不得
-   凭名字推断。
+5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，以 review 内
+   组合 fixed-point 校验（support_skill_group_candidates，模拟 PoB 技能组实际生效性）为准；
+   独立 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。机制细节
+   以 corpus/wiki/来源文本为准，不得凭名字推断。
 6. Memory 对照用 stable key：查询前先 search_graph_components + resolve_graph_component 解析
    ascendancy/class，再以 stable key 过滤 query_research_memory；检查
    familyRecordCoverage / familyRecordIndex / familyPremiseCatalog 并逐条对照既有同族知识。

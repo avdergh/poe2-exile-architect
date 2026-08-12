@@ -1727,7 +1727,7 @@ def test_unique_gem_diagnostics_labels_lineage_support_identity():
     assert "Bhatair's Vengeance" in diagnostics["unlabeledUniqueGemNames"]
 
 
-def test_unique_gem_diagnostics_exempts_open_question_and_unique_enabler():
+def test_unique_gem_diagnostics_exempts_open_question_but_not_enabler_role():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -1786,7 +1786,7 @@ def test_unique_gem_diagnostics_exempts_open_question_and_unique_enabler():
         ],
     }
     diagnostics = acceptance._unique_gem_diagnostics(enabler_review, manifest)
-    assert diagnostics["unlabeledUniqueGemNames"] == []
+    assert diagnostics["unlabeledUniqueGemNames"] == ["Bhatair's Vengeance"]
 
 
 def test_unique_gem_diagnostics_handles_missing_manifest():
@@ -3002,6 +3002,34 @@ def test_deep_review_acceptance_structural_issues_record_missing_content(tmp_pat
     assert any(
         issue.get("loc") == ["deepResearchRecords", 0, "content"]
         and "missing required field" in str(issue.get("msg") or "")
+        for issue in issues
+    )
+
+
+def test_deep_review_acceptance_structural_issues_record_bad_safe_evidence_type(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="record-bad-safe-evidence-review.json",
+        components=[],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["safeEvidenceRefs"] = "evidence:fix"
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "rejected"
+    issues = (report["deferredCandidates"][0] or {}).get("validationIssues") or []
+    assert any(
+        issue.get("loc") == ["deepResearchRecords", 0, "safeEvidenceRefs"]
+        and "must be a list" in str(issue.get("msg") or "")
         for issue in issues
     )
 

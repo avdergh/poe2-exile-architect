@@ -339,7 +339,10 @@ POE_RESEARCH_SUCCEEDED: no
   revision-pinned `lookup_mechanic` sourceRef 和至少一项独立佐证。
 - 暗金宝石（unique skill/support gem、unique jewel）与普通宝石不同：unique support gem 自带固定
   词缀（如 Ailith's Chimes / Uhtred's 系列），unique jewel 常带位置化效果。凡案例使用暗金宝石，
-  必须在记录中标注其 unique 身份（组件 role 保持 support_modifier/unique_enabler），radius/Time-Lost
+  必须在记录中标注其 unique 身份：unique support gem 的节点类型是 support_gem，组件 role 必须保持
+  support_modifier 并在记录 prose 中写明 lineage/unique（unique_enabler role 会被解析校验拒绝，
+  可在 open_question/modelability_caveat 记录中说明）；unique jewel 可用 unique_enabler role。
+  radius/Time-Lost
   jewel 的"Small/Notable Passive Skills in Radius also grant X"词缀必须原样保留在
   conditions/verificationTasks 中，并把半径覆盖的已分配天赋类型写入 conditions；不得把 radius
   增益当作全局增益。数据缺口：语料 unique jewel 表缺 PoE2 Time-Lost 系列（其 unique 在

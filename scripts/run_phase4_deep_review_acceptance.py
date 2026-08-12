@@ -279,8 +279,10 @@ def _unique_gem_diagnostics(
     Tri-state lookup: True/False from the corpus ``is_lineage`` field; unknown when the corpus
     is unavailable or the gem name does not resolve (never blocks). A lineage gem counts as
     labeled when any record mentions it inside an open_question/modelability_caveat record, or
-    when it appears as a component with role unique_enabler. Otherwise any mention is reported
-    as unlabeled so the Researcher marks its unique identity.
+    when the record prose explicitly labels its lineage/unique identity. A bare component with
+    role unique_enabler does not label it: lineage gems are support_gem nodes, so that role
+    fails resolver type checks (use support_modifier with prose labeling instead). Otherwise
+    any mention is reported as unlabeled so the Researcher marks its unique identity.
     """
     if not isinstance(source_skill_manifest, dict):
         return {
@@ -365,8 +367,6 @@ def _unique_gem_diagnostics(
                 if str(component.get("candidateName") or "").casefold() != normalized:
                     continue
                 mentioned = True
-                if str(component.get("role") or "") == "unique_enabler":
-                    labeled = True
         if mentioned and not labeled:
             unlabeled.append(gem_name)
     return {
@@ -804,8 +804,9 @@ def accept_deep_review_candidates(
                     "Lineage/unique support gems from the source were mentioned without labeling "
                     "their unique identity: "
                     + ", ".join(unique_gem_diagnostics["unlabeledUniqueGemNames"])
-                    + ". Label them (unique_enabler role, or an open_question/modelability_caveat "
-                    "record) before the next accept."
+                    + ". Label them (support_modifier role with the lineage/unique identity "
+                    "stated in prose, or an open_question/modelability_caveat record) before "
+                    "the next accept."
                 ]
                 if unique_gem_diagnostics.get("unlabeledUniqueGemNames")
                 else []
@@ -3468,6 +3469,14 @@ def _structural_schema_issues(
                 _container_issue(
                     ["deepResearchRecords", index, "typedPayload"],
                     "deep research record typedPayload must be an object",
+                )
+            )
+        safe_evidence = record.get("safeEvidenceRefs") or []
+        if not isinstance(safe_evidence, list):
+            issues.append(
+                _container_issue(
+                    ["deepResearchRecords", index, "safeEvidenceRefs"],
+                    "deep research record safeEvidenceRefs must be a list",
                 )
             )
         if issues:

@@ -65,7 +65,9 @@ revision-pinned lookup_mechanic sourceRef plus at least one independent corrobor
 ## UNIQUE GEM / RADIUS JEWEL CHECKLIST
 Unique gems (Ailith's Chimes, Uhtred's series, ...) and unique jewels carry fixed effects and
 often positional power. When a case uses them: mark the unique identity in the record
-(support_modifier / unique_enabler roles), keep radius/Time-Lost jewel mods
+(support_modifier role with the lineage/unique identity stated in prose, or an
+open_question/modelability_caveat record; unique_enabler role fails resolver checks because
+lineage gems are support_gem nodes), keep radius/Time-Lost jewel mods
 ("Small/Notable Passive Skills in Radius also grant X") verbatim in conditions or
 verificationTasks, never treat a radius grant as a global grant, and record which allocated
 passive types sit in the radius. Data caveats: the bundled unique-jewel table misses the PoE2
@@ -312,8 +314,11 @@ def build_researcher_prompt_package(
         "jointly define behavior, preserve the complete key package and skill-to-support ownership in "
         "typed_payload.supportPackages. A skill_package must assign every structured support. "
         "Before claiming that a support creates, preserves, converts, or generates a mechanic for "
-        "an active skill, verify that exact pair with support_skill_candidate or the equivalent "
-        "typed graph helper; successful component resolution is not compatibility evidence.\n"
+        "an active skill, rely on the review's combined fixed-point pairing check "
+        "(support_skill_group_candidates, which simulates the PoB group's effective compatibility); "
+        "the single-pair support_skill_candidate query is candidate discovery only and defers to "
+        "the combined check when they disagree. Successful component resolution is not "
+        "compatibility evidence.\n"
         "- Coverage: supports requires supportPackages for every confirmed Family core skill group, "
         "including trigger hosts and triggered payloads, with at least two resolved supports per "
         "group. Use supportCoverageExceptions only for an explicit source_coverage_gap or "
