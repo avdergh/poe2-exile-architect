@@ -308,6 +308,10 @@ def load_reference_into_engine(
             for key in ("mainSkill", "treeVersion")
             if key in loaded and isinstance(loaded[key], (str, int, float, bool))
         }
+        if "mainSkill" in safe_build:
+            # Engine readback is authoritative, unlike the research queue's
+            # programmatic_snapshot_non_authoritative first-nameSpec label.
+            safe_build["mainSkillAuthority"] = "engine_readback_authoritative"
     return {
         "status": "loaded",
         "caseId": case_id,

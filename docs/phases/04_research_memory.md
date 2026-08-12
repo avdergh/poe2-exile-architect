@@ -387,8 +387,9 @@ case 研究都应执行：
 4. **禁止猜 key 路径**：所有组件先 `search_graph_components` 再 `resolve_graph_component`；
    支持宝石的 metadata 路径可能有 `Items/Gem` 与 `Items/Gems` 两种形式，猜错会被判
    component_type_mismatch 或 missing。
-5. **silent / unavailable 必须沉淀**：`lookup_mechanic` 返回 silent 或语料无文本的高价值机制
-   （Innervate、Charged Mark 充能率等）写入 caveat / verification task，不得丢弃。
+5. **silent / unavailable 不丢结论**：`lookup_mechanic` 返回 silent 或语料无文本的机制，直接以
+   样本证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task
+   （wiki 佐证不是要求，论坛 BD 多数机制没有对应 wiki 页面）。
 6. **非 core 技能支持入记录**：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
    技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
 7. **因果方向自查**：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（Rend 是

@@ -28,7 +28,7 @@ NINJA_LIST_MAX_RETRIES = 2
 from scripts import run_judge_ninja_samples  # noqa: E402
 from server.compute import pob_code  # noqa: E402
 from server.freshness import ninja as freshness_ninja  # noqa: E402
-from server.knowledge import copy_safety, research_packet, research_prompt  # noqa: E402
+from server.knowledge import copy_safety, pob_xml_meta, research_packet, research_prompt  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "phase45_researcher_batch"
 STATE_FILENAME = "phase45_researcher_batch_state.json"
@@ -61,7 +61,6 @@ POE_NINJA_JSON_HEADERS = {
 
 _BUILD_ATTR = re.compile(r"<Build\b([^>]*)>", re.IGNORECASE)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
-_SKILL_GEM = re.compile(r'nameSpec="([^"]+)"', re.IGNORECASE)
 
 
 def build_researcher_batch_report(
@@ -832,11 +831,7 @@ def _build_attributes(xml: str) -> dict[str, str]:
 
 
 def _main_skill(xml: str) -> str | None:
-    for value in _SKILL_GEM.findall(xml):
-        text = value.strip()
-        if text:
-            return text
-    return None
+    return pob_xml_meta.main_skill_from_pob_xml(xml)
 
 
 def _safe_hash(value: str) -> str:

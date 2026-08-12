@@ -82,7 +82,7 @@ def test_deep_researcher_report_is_safe_while_transient_packet_keeps_raw_and_dia
     assert report["sampleCount"] == 1
     assert report["readyCount"] == 1
     sample = report["samples"][0]
-    assert sample["diagnosticSummary"]["rawImportedMainSkill"] == "Dread Banner"
+    assert sample["diagnosticSummary"]["rawImportedMainSkill"] == "Molten Blast"
     assert sample["diagnosticSummary"]["judgeSelectedSkillCandidate"] == "Molten Blast"
     assert sample["diagnosticSummary"]["authority"] == "non_authoritative"
     assert sample["promptInstructionChecks"]["singleCaseOnly"] is True

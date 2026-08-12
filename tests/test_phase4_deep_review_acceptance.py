@@ -2838,7 +2838,7 @@ def test_deep_review_acceptance_advises_rotation_shape_mismatch(tmp_path):
     assert "player_action_sequence" in report["recordKindAdvisories"][0]
 
 
-def test_deep_review_acceptance_defers_malformed_candidate_without_losing_deep_records(tmp_path):
+def test_deep_review_acceptance_rejects_malformed_candidate(tmp_path):
     review_file = _write_review(
         tmp_path,
         filename="missing-candidate-text-review.json",
@@ -2865,10 +2865,15 @@ def test_deep_review_acceptance_defers_malformed_candidate_without_losing_deep_r
         graph_service=_graph_service(),
     )
 
-    assert report["status"] == "accepted"
-    assert report["acceptedDeepRecordCount"] == 1
+    # A schema-violating candidate must fail the whole case closed (mirroring
+    # the validate-only gate) instead of being silently dropped into a partial
+    # payload.
+    assert report["status"] == "rejected"
+    assert report["acceptanceMode"] == "blocked"
+    assert report["acceptedDeepRecordCount"] == 0
     assert report["acceptedPatternCount"] == 0
     assert report["deferredReasonCounts"] == {"invalid_schema": 1}
+    assert report["durableWritePerformed"] is False
 
 
 def test_deep_review_acceptance_structural_issues_return_issues_not_crash(tmp_path):
@@ -3671,7 +3676,7 @@ def test_deep_review_acceptance_normalizes_worker_enum_canonical_variants(tmp_pa
             con.close()
 
 
-def test_deep_review_acceptance_defers_design_axis_as_pattern_type(tmp_path):
+def test_deep_review_acceptance_rejects_invalid_pattern_type(tmp_path):
     review_file = _write_review(
         tmp_path,
         components=[
@@ -3695,7 +3700,8 @@ def test_deep_review_acceptance_defers_design_axis_as_pattern_type(tmp_path):
         graph_service=_graph_service(),
     )
 
-    assert report["status"] == "accepted"
+    assert report["status"] == "rejected"
+    assert report["acceptanceMode"] == "blocked"
     assert report["acceptedPatternCount"] == 0
     assert report["deferredCandidateCount"] == 1
     assert report["deferredCandidates"][0]["reason"] == "invalid_schema"
@@ -4410,3 +4416,180 @@ def _graph_service() -> gt.GraphQueryService:
         ),
     )
     return gt.GraphQueryService.from_snapshot(snapshot)
+
+
+def test_unique_gem_diagnostics_splits_non_gem_names_and_corpus_missing():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:10",
+                "activeSkills": [
+                    {
+                        "name": "ThornsPlayer",
+                        "skillId": "ThornsPlayer",
+                        "nameSource": "internal_id",
+                    },
+                    {
+                        "name": "EnemyExplode",
+                        "skillId": "EnemyExplode",
+                        "nameSource": "internal_id",
+                    },
+                    {"name": "Bonestorm", "skillId": "BonestormPlayer", "nameSource": "gem_name"},
+                ],
+                "supports": [
+                    {
+                        "name": "Oisin's Oath",
+                        "gemId": "SupportGemOisinsOath",
+                        "nameSource": "gem_name",
+                    }
+                ],
+            }
+        ]
+    }
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-020"},
+        "deepResearchRecords": [],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(review, manifest)
+
+    assert diagnostics["available"] is True
+    assert "ThornsPlayer" in diagnostics["nonGemSkillNames"]
+    assert "EnemyExplode" in diagnostics["nonGemSkillNames"]
+    assert "Bonestorm" not in diagnostics["nonGemSkillNames"]
+    assert "Oisin's Oath" in diagnostics["corpusMissingGemNames"]
+    assert diagnostics["uniqueGemCandidates"] == []
+    assert diagnostics["proseMentionedWithoutComponentNames"] == []
+
+
+def test_unique_gem_diagnostics_reports_prose_mention_without_component():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                "supports": [
+                    {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"}
+                ],
+            }
+        ]
+    }
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-021"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-021",
+                "researchGroupId": "research:case:fix-021",
+                "caseRef": "source-hash:fix-021",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Rotation",
+                "recordKind": "rotation",
+                "summary": "Bhatair's Vengeance mentioned in prose only",
+                "content": "Flash Grenade controls; Bhatair's Vengeance adds stun buildup",
+                "components": [
+                    {
+                        "candidateName": "Flash Grenade",
+                        "componentKey": "skill:FlashGrenadePlayer",
+                        "role": "control_skill",
+                    }
+                ],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(review, manifest)
+
+    assert "Bhatair's Vengeance" in diagnostics["proseMentionedWithoutComponentNames"]
+    assert diagnostics["unlabeledUniqueGemNames"] == ["Bhatair's Vengeance"]
+
+
+def test_unique_gem_diagnostics_component_declaration_clears_prose_only():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                "supports": [
+                    {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"}
+                ],
+            }
+        ]
+    }
+    review = {
+        "safeArtifactOnly": True,
+        "artifactIdentity": {"sampleId": "case:fix-022"},
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:fix-022",
+                "researchGroupId": "research:case:fix-022",
+                "caseRef": "source-hash:fix-022",
+                "safeEvidenceRefs": ["evidence:fix"],
+                "title": "Rotation",
+                "recordKind": "rotation",
+                "summary": "declared component",
+                "content": "Flash Grenade controls with Freeze",
+                "components": [
+                    {
+                        "candidateName": "Flash Grenade",
+                        "componentKey": "skill:FlashGrenadePlayer",
+                        "role": "control_skill",
+                    },
+                    {
+                        "candidateName": "Bhatair's Vengeance",
+                        "componentKey": "support:SupportGemBhatairsVengeance",
+                        "role": "support_modifier",
+                    },
+                ],
+            }
+        ],
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(review, manifest)
+
+    assert diagnostics["proseMentionedWithoutComponentNames"] == []
+
+
+def test_source_skill_id_resolutions_skips_internal_id_skills():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    calls: list[tuple[str, dict]] = []
+
+    class FakeGraph:
+        def run_tool(self, name, payload):
+            calls.append((name, payload))
+            return {"status": "resolved", "resolvedSubject": {"stableKey": payload["query"]}}
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:1",
+                "activeSkills": [
+                    {
+                        "name": "ThornsPlayer",
+                        "skillId": "ThornsPlayer",
+                        "nameSource": "internal_id",
+                    },
+                    {
+                        "name": "Bonestorm",
+                        "skillId": "BonestormPlayer",
+                        "nameSource": "gem_name",
+                    },
+                ],
+                "supports": [],
+            }
+        ]
+    }
+
+    resolutions = acceptance._source_skill_id_resolutions(
+        graph_service=FakeGraph(),
+        source_skill_manifest=manifest,
+    )
+
+    assert set(resolutions) == {"bonestorm"}
+    assert len(calls) == 1
+    assert calls[0][1]["query"] == "skill:BonestormPlayer"

@@ -5385,3 +5385,89 @@ def test_validation_caveat_exposes_context_type_enum():
 
     assert "context_type must be one of" in wrong_tag_caveat
     assert "version_context" in wrong_tag_caveat
+
+
+def test_ingest_passive_tree_aliases_renamed_ascendancy_to_canonical_key(tmp_path):
+    tree_file = tmp_path / "tree.json"
+    tree_file.write_text(
+        json.dumps(
+            {
+                "classes": [
+                    {
+                        "name": "Witch",
+                        "integerId": 2,
+                        "ascendancies": [
+                            {
+                                "id": "Lich",
+                                "internalId": "Witch3",
+                                "name": "Lich",
+                                "replaceBy": "Abyssal Lich",
+                            },
+                            {
+                                "id": "Abyssal Lich",
+                                "internalId": "Witch3b",
+                                "name": "Abyssal Lich",
+                                "replace": "Lich",
+                            },
+                        ],
+                    }
+                ],
+                "groups": [{"nodes": [28431], "orbits": [0], "x": 0, "y": 0}],
+                "nodes": {
+                    "28431": {
+                        "ascendancyName": "Lich",
+                        "connections": [],
+                        "group": 1,
+                        "icon": "asc.dds",
+                        "isNotable": True,
+                        "name": "Eternal Life",
+                        "orbit": 0,
+                        "orbitIndex": 0,
+                        "skill": 28431,
+                        "stats": [],
+                    }
+                },
+                "tree": "0_5",
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = pg.GraphSource(
+        source_id="pob:passive_tree",
+        kind="pob_tree",
+        source_file="TreeData/0_5/tree.json",
+        expected_count=0,
+    )
+    ingestion = pg.ingest_passive_tree(tree_file, source=source, tree_version="0_5")
+
+    node_keys = {node.stable_key for node in ingestion.nodes}
+    assert "ascendancy:witch:abyssal_lich" in node_keys
+    assert "ascendancy:witch:lich" not in node_keys
+
+    edge_pairs = {(edge.source_key, edge.target_key) for edge in ingestion.edges}
+    assert ("notable:pob:0_5:28431", "ascendancy:witch:abyssal_lich") in edge_pairs
+    assert ("ascendancy:witch:abyssal_lich", "class:witch") in edge_pairs
+    assert not any(
+        source_key == "notable:pob:0_5:28431" and target_key == "ascendancy:witch:lich"
+        for source_key, target_key in edge_pairs
+    )
+
+    alias_targets = {
+        alias.alias: alias.target_key
+        for alias in ingestion.aliases
+        if alias.target_key.startswith("ascendancy:")
+    }
+    assert alias_targets["Lich"] == "ascendancy:witch:abyssal_lich"
+
+    mapping_targets = {
+        (mapping.system, mapping.external_id): mapping.target_key
+        for mapping in ingestion.id_mappings
+    }
+    assert mapping_targets[("pob:ascendancy_id", "Lich")] == "ascendancy:witch:abyssal_lich"
+    assert (
+        mapping_targets[("pob:ascendancy_internal_id", "Witch3")] == "ascendancy:witch:abyssal_lich"
+    )
+    assert (
+        mapping_targets[("pob:ascendancy_internal_id", "Witch3b")]
+        == "ascendancy:witch:abyssal_lich"
+    )

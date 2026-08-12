@@ -157,6 +157,5 @@ def test_mechanic_audit_warns_about_compound_wiki_page_queries():
     assert diagnostics["liveEvidenceStatus"] == "unavailable_or_unused"
     assert diagnostics["compoundWikiQueryCount"] == 1
     assert diagnostics["advisories"] == [
-        "Mechanic audit was submitted without any revision-pinned poe2wiki evidence.",
         "Mechanic audit used compound wiki page titles; query one exact page per lookup.",
     ]

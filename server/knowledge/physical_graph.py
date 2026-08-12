@@ -634,6 +634,39 @@ def ingest_passive_tree(
         if isinstance(class_record, dict) and class_record.get("name")
     }
 
+    # PoB tree data models renamed ascendancies as a pair: the obsolete entry
+    # carries ``replaceBy`` (the current name), the current entry carries
+    # ``replace`` (the obsolete name).  Only the current name creates a node;
+    # the obsolete name and its ids resolve to the canonical key so passive
+    # nodes still attributed under the old ``ascendancyName`` keep a valid
+    # belongs_to edge (e.g. Witch "Lich" -> "Abyssal Lich").
+    ascendancy_rename_targets: dict[str, str] = {}
+    ascendancy_current_tokens: set[str] = set()
+    for class_record in classes_payload:
+        if not isinstance(class_record, dict):
+            continue
+        for ascendancy in class_record.get("ascendancies") or []:
+            if not isinstance(ascendancy, dict):
+                continue
+            ascendancy_name = str(ascendancy.get("name") or ascendancy.get("id") or "").strip()
+            replace_by = str(ascendancy.get("replaceBy") or "").strip()
+            if not ascendancy_name:
+                continue
+            ascendancy_current_tokens.add(_normalized_token(ascendancy_name))
+            if replace_by:
+                ascendancy_rename_targets[_normalized_token(ascendancy_name)] = _normalized_token(
+                    replace_by
+                )
+    # Only obsolete names whose canonical current name actually exists in the
+    # same tree are aliased; a dangling rename target (globally absent) keeps
+    # the old node instead. A rename target that exists but under a different
+    # class is treated as broken data and fails the build closed.
+    ascendancy_rename_targets = {
+        old_token: new_token
+        for old_token, new_token in ascendancy_rename_targets.items()
+        if new_token in ascendancy_current_tokens
+    }
+
     for class_record in classes_payload:
         if not isinstance(class_record, dict):
             raise ValueError("passive tree class entry must be an object")
@@ -663,6 +696,7 @@ def ingest_passive_tree(
             continue
         if not isinstance(ascendancies, list):
             raise ValueError(f"{class_name} ascendancies must be a list")
+        class_token = _normalized_token(class_name)
         for ascendancy in ascendancies:
             if not isinstance(ascendancy, dict):
                 raise ValueError("ascendancy entry must be an object")
@@ -670,9 +704,9 @@ def ingest_passive_tree(
                 str(ascendancy.get("name") or ascendancy.get("id")),
                 "ascendancy name",
             )
-            ascendancy_key = (
-                f"ascendancy:{_normalized_token(class_name)}:{_normalized_token(ascendancy_name)}"
-            )
+            if _normalized_token(ascendancy_name) in ascendancy_rename_targets:
+                continue
+            ascendancy_key = f"ascendancy:{class_token}:{_normalized_token(ascendancy_name)}"
             nodes[ascendancy_key] = GraphNode(
                 stable_key=ascendancy_key,
                 node_type="ascendancy",
@@ -705,6 +739,42 @@ def ingest_passive_tree(
                         system="pob:ascendancy_internal_id",
                         external_id=str(ascendancy["internalId"]),
                         target_key=ascendancy_key,
+                        source_refs=(source.source_id,),
+                    )
+                )
+        for ascendancy in ascendancies:
+            if not isinstance(ascendancy, dict):
+                raise ValueError("ascendancy entry must be an object")
+            ascendancy_name = _required_text(
+                str(ascendancy.get("name") or ascendancy.get("id")),
+                "ascendancy name",
+            )
+            canonical_token = ascendancy_rename_targets.get(_normalized_token(ascendancy_name))
+            if canonical_token is None:
+                continue
+            canonical_key = f"ascendancy:{class_token}:{canonical_token}"
+            if nodes.get(canonical_key) is None:
+                raise ValueError(
+                    f"ascendancy rename target missing for {ascendancy_name}: {canonical_key}"
+                )
+            aliases[(ascendancy_name, canonical_key)] = GraphAlias(
+                alias=ascendancy_name,
+                target_key=canonical_key,
+                source_refs=(source.source_id,),
+            )
+            if ascendancy.get("id") is not None:
+                id_mappings[("pob:ascendancy_id", str(ascendancy["id"]))] = GraphIdMapping(
+                    system="pob:ascendancy_id",
+                    external_id=str(ascendancy["id"]),
+                    target_key=canonical_key,
+                    source_refs=(source.source_id,),
+                )
+            if ascendancy.get("internalId") is not None:
+                id_mappings[("pob:ascendancy_internal_id", str(ascendancy["internalId"]))] = (
+                    GraphIdMapping(
+                        system="pob:ascendancy_internal_id",
+                        external_id=str(ascendancy["internalId"]),
+                        target_key=canonical_key,
                         source_refs=(source.source_id,),
                     )
                 )
@@ -791,7 +861,9 @@ def ingest_passive_tree(
 
         ascendancy_name = node_record.get("ascendancyName")
         if isinstance(ascendancy_name, str) and ascendancy_name.strip():
-            ascendancy_key = _ascendancy_key_for_name(nodes, ascendancy_name)
+            ascendancy_key = _ascendancy_key_for_name(
+                nodes, ascendancy_name, rename_targets=ascendancy_rename_targets
+            )
             if ascendancy_key is not None:
                 edges.add(
                     GraphEdge(
@@ -4198,6 +4270,8 @@ def _passive_type_key_for_record(node_record: dict[str, Any]) -> str:
 def _ascendancy_key_for_name(
     nodes: dict[str, GraphNode],
     ascendancy_name: str,
+    *,
+    rename_targets: dict[str, str] | None = None,
 ) -> str | None:
     normalized = _normalized_token(ascendancy_name)
     matches = [
@@ -4207,6 +4281,15 @@ def _ascendancy_key_for_name(
     ]
     if len(matches) == 1:
         return matches[0]
+    if rename_targets:
+        canonical_token = rename_targets.get(normalized)
+        if canonical_token:
+            for key, node in nodes.items():
+                if (
+                    node.node_type == "ascendancy"
+                    and _normalized_token(node.display_name) == canonical_token
+                ):
+                    return key
     return None
 
 

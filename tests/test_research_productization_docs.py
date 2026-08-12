@@ -281,7 +281,9 @@ def test_skill_documents_one_case_worker_semantics():
     assert "tool discovery / tool search" in skill
     assert "不要仅凭首屏工具列表断言 MCP 不可用" in skill
     assert "mechanicAuditLiveEvidenceStatus" in skill
-    assert "Wiki 审计未实际取得 live evidence" in skill
+    assert "wiki 佐证是" in skill
+    assert "mechanicAudit 的**可选项**" in skill
+    assert "不需要额外标注" in skill
     assert "不得把 `A / B`" in skill
     assert "最强因果结论" in skill
     assert "只使用文件编辑工具或 `apply_patch` 编辑" in skill

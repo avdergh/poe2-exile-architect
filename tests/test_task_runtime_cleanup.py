@@ -248,3 +248,205 @@ def test_completed_learning_cleanup_allows_own_artifact_reference(monkeypatch, t
     assert result["status"] == "cleaned"
     assert not campaign_path.exists()
     assert not quarantine_dir.exists()
+
+
+def test_research_cleanup_restores_staging_directory_before_not_found(monkeypatch, tmp_path):
+    run_id = "20260805-010203-abcd"
+    runs_root = tmp_path / ".poe-bd-research" / "runs"
+    output_root = runs_root / run_id
+    staging = runs_root / f"{run_id}.cleanup-staging"
+    db_path = staging / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    (staging / "acceptance").mkdir()
+    (staging / "acceptance" / "sample-acceptance.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "safe-hash",
+                "accepted_deep_record_count": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+
+    result = research_mature_builds.cleanup_completed_run(run_id=run_id)
+
+    assert result["status"] == "cleaned"
+    assert not staging.exists()
+    assert not output_root.exists()
+
+
+def test_research_cleanup_staging_restore_failure_preserves_staging(monkeypatch, tmp_path):
+    import os
+
+    if os.name != "nt":
+        return  # Windows-only: POSIX renames succeed with open handles
+    run_id = "20260805-010203-abcd"
+    runs_root = tmp_path / ".poe-bd-research" / "runs"
+    staging = runs_root / f"{run_id}.cleanup-staging"
+    staging.mkdir(parents=True)
+    db_path = staging / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.write_text("fixture", encoding="utf-8")
+    handle = open(db_path, "r", encoding="utf-8")  # keep a handle so rename fails
+    try:
+        monkeypatch.setattr(
+            research_mature_builds,
+            "DEFAULT_OUTPUT_DIR",
+            tmp_path / ".poe-bd-research",
+        )
+        result = research_mature_builds.cleanup_completed_run(run_id=run_id)
+    finally:
+        handle.close()
+
+    assert result["status"] == "partial"
+    assert result["errorCode"] == "research_run_cleanup_failed"
+    assert result["detail"]["reason"] == "staging_restore_failed"
+    assert staging.exists()
+
+
+def test_research_queue_report_level_bias_note_when_all_samples_at_max(tmp_path):
+    db_path = tmp_path / "queue.sqlite"
+    cases = [
+        {
+            "status": "accepted",
+            "level": 100,
+            "sampleId": f"case:{index}",
+            "mainSkill": "X",
+            "mainSkillAuthority": "x",
+            "className": "Witch",
+            "ascendancy": "Abyssal Lich",
+            "sourceType": "poe_ninja_import_code",
+            "sourceHashRef": "source-hash:abc",
+            "packetSafeHash": "p",
+            "packetId": "p",
+            "sourceHash": "h",
+            "league": "l",
+            "createdAt": "",
+            "acceptedAt": "",
+        }
+        for index in range(2)
+    ]
+    report = research_mature_builds._queue_report(
+        status="ok",
+        db_path=db_path,
+        requested_worker_count=1,
+        cases=cases,
+        dry_run=False,
+        inserted_count=2,
+        source_input_summary={"requestedSampleCount": 2, "levelMin": 95, "levelMax": 100},
+    )
+    assert any("Level filter 95-100 semantics" in item for item in report["caveats"])
+
+    mixed = [
+        {**cases[0], "level": 96},
+        {**cases[1], "level": 100},
+    ]
+    report = research_mature_builds._queue_report(
+        status="ok",
+        db_path=db_path,
+        requested_worker_count=1,
+        cases=mixed,
+        dry_run=False,
+        inserted_count=2,
+        source_input_summary={"requestedSampleCount": 2, "levelMin": 95, "levelMax": 100},
+    )
+    assert not any("Level filter" in item for item in report["caveats"])
+
+
+def test_research_cleanup_retries_staging_removal_then_cleans(monkeypatch, tmp_path):
+    run_id = "20260805-010203-abcd"
+    output_root = tmp_path / ".poe-bd-research" / "runs" / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "safe-hash",
+                "accepted_deep_record_count": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+    real_rmtree = research_mature_builds.shutil.rmtree
+    attempts = {"count": 0}
+
+    def flaky_rmtree(path):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError(5, "Access is denied")
+        real_rmtree(path)
+
+    monkeypatch.setattr(research_mature_builds.shutil, "rmtree", flaky_rmtree)
+
+    result = research_mature_builds.cleanup_completed_run(run_id=run_id)
+
+    assert result["status"] == "cleaned"
+    assert not output_root.exists()
+
+
+def test_research_cleanup_staging_removal_failed_restores_dir(monkeypatch, tmp_path):
+    run_id = "20260805-010203-abcd"
+    output_root = tmp_path / ".poe-bd-research" / "runs" / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "safe-hash",
+                "accepted_deep_record_count": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+
+    def failing_rmtree(path):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(research_mature_builds.shutil, "rmtree", failing_rmtree)
+
+    result = research_mature_builds.cleanup_completed_run(run_id=run_id)
+
+    assert result["status"] == "partial"
+    assert result["errorCode"] == "research_run_cleanup_failed"
+    assert result["detail"]["reason"] == "staging_removal_failed"
+    assert result["detail"]["restoredFromStaging"] is True
+    assert output_root.exists()

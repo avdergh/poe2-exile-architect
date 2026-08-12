@@ -277,32 +277,44 @@ def _unique_gem_diagnostics(
     """Detect lineage (unique) support gems in the source and whether the review labeled them.
 
     Tri-state lookup: True/False from the corpus ``is_lineage`` field; unknown when the corpus
-    is unavailable or the gem name does not resolve (never blocks). A lineage gem counts as
-    labeled when any record mentions it inside an open_question/modelability_caveat record, or
-    when the record prose explicitly labels its lineage/unique identity. A bare component with
-    role unique_enabler does not label it: lineage gems are support_gem nodes, so that role
-    fails resolver type checks (use support_modifier with prose labeling instead). Otherwise
-    any mention is reported as unlabeled so the Researcher marks its unique identity.
+    is unavailable or the gem name does not resolve (never blocks). Only names whose
+    ``nameSource`` is ``nameSpec`` are gem candidates: item/passive-granted skills fall back to
+    internal skill ids and are reported separately as ``nonGemSkillNames`` so they never pollute
+    gem diagnostics. A lineage gem counts as labeled when any record mentions it inside an
+    open_question/modelability_caveat record, or when the record prose explicitly labels its
+    lineage/unique identity. A bare component with role unique_enabler does not label it:
+    lineage gems are support_gem nodes, so that role fails resolver type checks (use
+    support_modifier with prose labeling instead). Otherwise any mention is reported as
+    unlabeled so the Researcher marks its unique identity.
     """
     if not isinstance(source_skill_manifest, dict):
         return {
             "available": False,
             "uniqueGemCandidates": [],
             "unlabeledUniqueGemNames": [],
-            "uniqueGemStatusUnknownNames": [],
+            "corpusMissingGemNames": [],
+            "nonGemSkillNames": [],
+            "proseMentionedWithoutComponentNames": [],
         }
     gem_names: list[str] = []
+    non_gem_names: list[str] = []
     for group in source_skill_manifest.get("activeSkillGroups") or []:
         if not isinstance(group, dict):
             continue
-        for item in group.get("activeSkills") or []:
-            if isinstance(item, dict) and str(item.get("name") or "").strip():
-                gem_names.append(str(item["name"]).strip())
-        for item in group.get("supports") or []:
-            if isinstance(item, dict) and str(item.get("name") or "").strip():
-                gem_names.append(str(item["name"]).strip())
+        for item in [
+            *(group.get("activeSkills") or []),
+            *(group.get("supports") or []),
+        ]:
+            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                continue
+            name = str(item["name"]).strip()
+            name_source = str(item.get("nameSource") or "gem_name")
+            if name_source == "gem_name":
+                gem_names.append(name)
+            else:
+                non_gem_names.append(name)
     unique_candidates: list[str] = []
-    unknown_names: list[str] = []
+    corpus_missing_names: list[str] = []
     try:
         from server.knowledge import db as corpus_db
 
@@ -312,14 +324,14 @@ def _unique_gem_diagnostics(
         corpus_available = False
     for name in dict.fromkeys(gem_names):
         if not corpus_available:
-            unknown_names.append(name)
+            corpus_missing_names.append(name)
             continue
         try:
             gem = corpus_db.get_gem(name)
         except Exception:
             gem = None
         if gem is None:
-            unknown_names.append(name)
+            corpus_missing_names.append(name)
             continue
         if gem.get("is_lineage") is True:
             unique_candidates.append(name)
@@ -328,7 +340,9 @@ def _unique_gem_diagnostics(
             "available": corpus_available,
             "uniqueGemCandidates": [],
             "unlabeledUniqueGemNames": [],
-            "uniqueGemStatusUnknownNames": unknown_names,
+            "corpusMissingGemNames": corpus_missing_names,
+            "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
+            "proseMentionedWithoutComponentNames": [],
         }
     raw_records = review.get("deepResearchRecords") or []
     raw_records = raw_records if isinstance(raw_records, list) else []
@@ -345,15 +359,25 @@ def _unique_gem_diagnostics(
         ]
         record_texts.append((str(record.get("recordKind") or ""), parts))
     unlabeled: list[str] = []
+    prose_only_mentions: list[str] = []
+    declared_component_names = {
+        str(component.get("candidateName") or "").casefold()
+        for record in raw_records
+        if isinstance(record, dict)
+        for component in record.get("components") or []
+        if isinstance(component, dict)
+    }
     for gem_name in unique_candidates:
         normalized = gem_name.casefold()
         labeled = False
         mentioned = False
+        in_prose = False
         for record_kind, parts in record_texts:
             in_text = any(normalized in part.casefold() for part in parts)
             if not in_text:
                 continue
             mentioned = True
+            in_prose = True
             if record_kind in {"open_question", "modelability_caveat"}:
                 labeled = True
             elif any(_mentions_unique_identity(part, normalized) for part in parts):
@@ -369,11 +393,15 @@ def _unique_gem_diagnostics(
                 mentioned = True
         if mentioned and not labeled:
             unlabeled.append(gem_name)
+        if in_prose and normalized not in declared_component_names:
+            prose_only_mentions.append(gem_name)
     return {
         "available": corpus_available,
         "uniqueGemCandidates": unique_candidates,
         "unlabeledUniqueGemNames": sorted(unlabeled),
-        "uniqueGemStatusUnknownNames": unknown_names,
+        "corpusMissingGemNames": corpus_missing_names,
+        "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
+        "proseMentionedWithoutComponentNames": sorted(prose_only_mentions),
     }
 
 
@@ -570,7 +598,11 @@ def accept_deep_review_candidates(
         }
         for item in deferred
     )
-    acceptance_gate_failed = depth_gate_failed or mechanic_audit_schema_failed
+    # Formal acceptance mirrors the validate-only schema gate: schema-violating
+    # candidates are deferred (never silently dropped into a partial payload),
+    # so a case carrying any invalid_schema deferral must not be accepted.
+    schema_gate_failed = any(str(item.get("reason") or "") == "invalid_schema" for item in deferred)
+    acceptance_gate_failed = depth_gate_failed or mechanic_audit_schema_failed or schema_gate_failed
     if acceptance_gate_failed:
         payload = {"schema_version": 4, "build_design_observations": [], "patterns": []}
         deep_payload = {"schema_version": 5, "deep_research_records": []}
@@ -801,14 +833,45 @@ def accept_deep_review_candidates(
             ),
             *(
                 [
-                    "Lineage/unique support gems from the source were mentioned without labeling "
-                    "their unique identity: "
+                    "Advisory: lineage/unique support gems from the source were mentioned "
+                    "without labeling their unique identity: "
                     + ", ".join(unique_gem_diagnostics["unlabeledUniqueGemNames"])
                     + ". Label them (support_modifier role with the lineage/unique identity "
-                    "stated in prose, or an open_question/modelability_caveat record) before "
-                    "the next accept."
+                    "stated in prose, or an open_question/modelability_caveat record) so "
+                    "downstream consumers can distinguish unique gems from ordinary supports."
                 ]
                 if unique_gem_diagnostics.get("unlabeledUniqueGemNames")
+                else []
+            ),
+            *(
+                [
+                    "Advisory: source gems not found in the bundled corpus (unique/lineage "
+                    "status unknown): "
+                    + ", ".join(unique_gem_diagnostics["corpusMissingGemNames"])
+                    + "."
+                ]
+                if unique_gem_diagnostics.get("corpusMissingGemNames")
+                else []
+            ),
+            *(
+                [
+                    "Advisory: source skill names are internal ids rather than gem names "
+                    "(nameSource != gem_name) and were excluded from unique-gem diagnostics: "
+                    + ", ".join(unique_gem_diagnostics["nonGemSkillNames"])
+                    + "."
+                ]
+                if unique_gem_diagnostics.get("nonGemSkillNames")
+                else []
+            ),
+            *(
+                [
+                    "Advisory: unique gems mentioned in record prose without a declared "
+                    "component (their graph presence cannot be verified or counted): "
+                    + ", ".join(unique_gem_diagnostics["proseMentionedWithoutComponentNames"])
+                    + ". Declare them as components (even unresolved) so coverage counts "
+                    "surface them."
+                ]
+                if unique_gem_diagnostics.get("proseMentionedWithoutComponentNames")
                 else []
             ),
             (
@@ -2112,7 +2175,10 @@ def _source_skill_id_resolutions(
                 continue
             name = str(skill.get("name") or "").strip()
             skill_id = str(skill.get("skillId") or "").strip()
-            if not name or not skill_id:
+            # Item/passive-granted skills carry internal ids rather than gem
+            # names; the resolver cannot confirm them, so skip them instead of
+            # issuing a guaranteed-miss graph lookup.
+            if not name or not skill_id or str(skill.get("nameSource") or "gem_name") != "gem_name":
                 continue
             normalized_name = name.casefold()
             stable_key = skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}"
@@ -3103,9 +3169,6 @@ def _prepare_mechanic_audit(
                     )
                 )
             matched_candidates.extend(matches)
-        audited_record_titles.update(
-            str(target.get("title") or "").strip() for target in matched_records
-        )
 
         corroboration = raw.get("corroboration", [])
         if not isinstance(corroboration, list) or any(
@@ -3176,6 +3239,14 @@ def _prepare_mechanic_audit(
                     }
                 )
 
+        # A record counts as audited only when the covering entry is itself
+        # valid and accepted; invalid/deferred entries filter their records out
+        # of the payload and must not inflate the audited set.
+        if not reason:
+            audited_record_titles.update(
+                str(target.get("title") or "").strip() for target in matched_records
+            )
+
         if reason:
             for kind, targets in (
                 ("deep_research_record", matched_records),
@@ -3245,11 +3316,13 @@ def _prepare_mechanic_audit(
         if not isinstance(item, dict)
         or str(item.get("title") or "").strip() not in filtered_candidate_titles
     ]
+    accepted_record_payload = prepared.get("deepResearchRecords") or []
     high_risk_record_titles = sorted(
         {
             str(item.get("title") or "").strip()
-            for item in record_objects
-            if str(item.get("recordKind") or "").strip() in MECHANIC_AUDIT_HIGH_RISK_RECORD_KINDS
+            for item in accepted_record_payload
+            if isinstance(item, dict)
+            and str(item.get("recordKind") or "").strip() in MECHANIC_AUDIT_HIGH_RISK_RECORD_KINDS
             and str(item.get("title") or "").strip()
         }
     )
@@ -3264,10 +3337,6 @@ def _prepare_mechanic_audit(
         else "unavailable_or_unused"
     )
     advisories: list[str] = []
-    if audit_values and not pinned_revision_count:
-        advisories.append(
-            "Mechanic audit was submitted without any revision-pinned poe2wiki evidence."
-        )
     if compound_wiki_query_count:
         advisories.append(
             "Mechanic audit used compound wiki page titles; query one exact page per lookup."

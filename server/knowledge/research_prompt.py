@@ -59,8 +59,11 @@ Damage value"), lowest-resistance damage ("based on their Lowest Resistance"), e
 interactions ("Wind Skills which can be boosted by Elemental Ground"), implicit passive allocation
 ("Allocates <passive>"), granted skills ("Grants Skill: Level N <skill>"), extra-projectile
 mechanics ("Surpassing chance"), and charge retention ("X% chance to not remove Charges but still
-count as consuming them"). When a signature mod drives the conclusion, audit it with a
-revision-pinned lookup_mechanic sourceRef plus at least one independent corroboration.
+count as consuming them"). When a signature mod drives the conclusion, audit it with at least one
+corroboration (source_artifact, pinned_pob_static, typed_graph, typed_support_compatibility,
+local_mechanics, or judge_readback - the acceptance gate defers entries without any) and add a
+lookup_mechanic sourceRef when available; wiki unavailability is normal for forum builds and must
+not lower adoption or require extra labeling.
 
 ## UNIQUE GEM / RADIUS JEWEL CHECKLIST
 Unique gems (Ailith's Chimes, Uhtred's series, ...) and unique jewels carry fixed effects and

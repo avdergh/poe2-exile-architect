@@ -6,10 +6,10 @@ from typing import Any
 import re
 
 from ..compute import pob_code
+from . import pob_xml_meta
 
 _BUILD_ATTR = re.compile(r"<Build\b([^>]*)>", re.IGNORECASE)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
-_SKILL_GEM = re.compile(r'nameSpec="([^"]+)"', re.IGNORECASE)
 
 
 def build_payload_row_from_build_source(
@@ -77,8 +77,4 @@ def _build_attributes(xml: str) -> dict[str, str]:
 
 
 def _main_skill(xml: str) -> str | None:
-    for value in _SKILL_GEM.findall(xml):
-        text = value.strip()
-        if text:
-            return text
-    return None
+    return pob_xml_meta.main_skill_from_pob_xml(xml)

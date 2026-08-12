@@ -22,13 +22,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from server.compute import pob_code  # noqa: E402
-from server.knowledge import copy_safety, research_packet  # noqa: E402
+from server.knowledge import copy_safety, pob_xml_meta, research_packet  # noqa: E402
 
 JSON_OUTPUT = REPO_ROOT / "phase4_deep_researcher_pass_report.json"
 MD_OUTPUT = REPO_ROOT / "phase4_deep_researcher_pass_report.md"
 _BUILD_ATTR = re.compile(r"<Build\b([^>]*)>", re.IGNORECASE)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
-_SKILL_GEM = re.compile(r'nameSpec="([^"]+)"', re.IGNORECASE)
 
 RAW_MARKERS = (
     "eNrt",
@@ -375,11 +374,7 @@ def _build_attributes(xml: str) -> dict[str, str]:
 
 
 def _main_skill(xml: str) -> str | None:
-    for value in _SKILL_GEM.findall(xml):
-        text = value.strip()
-        if text:
-            return text
-    return None
+    return pob_xml_meta.main_skill_from_pob_xml(xml)
 
 
 def _prompt_checks(prompt_text: str) -> dict[str, bool]:

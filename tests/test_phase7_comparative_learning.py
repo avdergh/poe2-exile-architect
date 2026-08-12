@@ -895,3 +895,38 @@ def test_ten_case_trend_is_directional_only():
     unproven = comparison.campaign_trend(incomplete)
     assert unproven["claim"] == "function_complete_learning_unproven"
     assert unproven["conditions"]["comparisonCoverageComplete"] is False
+
+
+def test_load_reference_into_engine_marks_engine_readback_main_skill(
+    isolated_data: Path, monkeypatch
+):
+    class FakeEngine:
+        def load_build_xml(self, xml: str, *, name: str):
+            return {
+                "mainSkill": "Tempest Flurry",
+                "treeVersion": "0_5",
+                "class": "Monk",
+            }
+
+    campaign_id, case_id, revision = _start_and_intake()
+    claim = service.claim_phase(
+        campaign_id=campaign_id,
+        case_id=case_id,
+        phase="profile",
+        task_id="task-reference",
+        thread_id="thread-reference",
+        expected_revision=revision,
+        operation_id="claim-load-ref",
+    )
+
+    loaded = service.load_reference_into_engine(
+        FakeEngine(),
+        campaign_id=campaign_id,
+        case_id=case_id,
+        claim_id=claim["claimId"],
+        thread_id="thread-reference",
+    )
+
+    assert loaded["status"] == "loaded"
+    assert loaded["activeReference"]["mainSkill"] == "Tempest Flurry"
+    assert loaded["activeReference"]["mainSkillAuthority"] == "engine_readback_authoritative"

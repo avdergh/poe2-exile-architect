@@ -106,6 +106,8 @@ def queue_cases(
         "sourceFileArgumentCount": len(source_file_values),
         "sourceBatchFileArgumentCount": len(source_batch_file_values),
         "localSourceInputCount": len(local_sources),
+        "levelMin": max(0, int(level_min or 0)),
+        "levelMax": max(0, int(level_max or 0)),
         "requestedSampleCount": (
             len(local_sources)
             if source_file_values or source_batch_file_values
@@ -687,10 +689,10 @@ def render_review_contract(
             "组件已被 resolve_graph_component 唯一解析时，将返回的 stable key 写入 componentKey。宿主没有 resolver 时，supportPackages 可用 skillName/supportNames，升华和装备职责可用 componentName；accept 只对同一记录中唯一解析的精确名称做 stable-key 替换。",
             "classKey 和 ascendancyKey 必须是图节点 stable key（例如 class:monk、ascendancy:monk:martial_artist），不能写显示名（Monk / Martial Artist）；显示名会导致端点校验失败。",
             "更细的轮转、窗口和证据语义写入 content、typedPayload、conditions 或 summary。",
-            "只在独立重建完成后，用 explain_mechanic/search_mechanics 和 lookup_mechanic 复核触发、前置条件、资源流、转换或变形等高风险结论，并把结果写入 mechanicAudit。lookup_mechanic 命中时必须使用其 revision-pinned sourceRef。",
+            "只在独立重建完成后，可用 explain_mechanic/search_mechanics 和 lookup_mechanic 复核触发、前置条件、资源流、转换或变形等高风险结论，并把结果写入 mechanicAudit；lookup_mechanic 命中时使用其返回的 revision-pinned sourceRef。wiki 无对应页面是常态，不要求为此标注或降级。",
             "每条 mechanic_chain 和 resource_engine 都必须被至少一个 mechanicAudit.affectedRecords 精确引用；claim 必须写该对象实际依赖的最强因果结论，不能只审计一个更弱的前提。",
             "每次 lookup_mechanic 只查询一个精确 Wiki 页面或一个中央机制名称，不得把 A / B 组件名拼成一次查询。一个关系需要多页证据时，提交多条关联同一对象的原子 mechanicAudit。",
-            "poe2wiki 只能作为机制解释的校对证据，不能替代来源实例归属、support 兼容性、武器状态、数值 Judge 或 Family 身份证据；每项 supports/contradicts 结论还必须填写至少一种 corroboration。",
+            "poe2wiki 只能作为机制解释的校对证据，不能替代来源实例归属、support 兼容性、武器状态、数值 Judge 或 Family 身份证据；每条 mechanicAudit 条目都必须填写至少一种 corroboration（source_artifact / pinned_pob_static / typed_graph / typed_support_compatibility / local_mechanics / judge_readback 任选，样本来源即可，silent/unavailable 条目同样适用），wiki 不是 corroboration 的替代品。",
             "wiki contradicted 但仍 keep 的对象、主动 decision=defer 的对象以及没有其他 corroboration 的 wiki-only 对象会被最小范围暂缓；wiki unavailable 不会自动阻塞无关对象。",
             "每个 covered 维度必须有具体记录证据；证据不足时填 evidence_missing。",
             "先写 safe review，再运行 accept --validate-only；修复全部 invalid_schema 后才能正式 accept。",
@@ -1240,6 +1242,8 @@ def queue_status(
     source_input_summary = {
         "sourceFileArgumentCount": int(metadata.get("sourceFileArgumentCount") or 0),
         "sourceBatchFileArgumentCount": int(metadata.get("sourceBatchFileArgumentCount") or 0),
+        "levelMin": int(metadata.get("levelMin") or 0),
+        "levelMax": int(metadata.get("levelMax") or 0),
         "localSourceInputCount": local_source_input_count,
         "requestedSampleCount": requested_sample_count,
         "expectedSourceCount": (
@@ -1273,6 +1277,29 @@ def cleanup_completed_run(
     output_root = (runs_root / run_id).resolve()
     if not _is_relative_to(output_root, runs_root) or output_root.parent != runs_root:
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
+    staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
+    if not output_root.exists() and staging.exists():
+        # Recover a run left in the cleanup-staging directory by a previous
+        # interrupted cleanup (staging_removal_failed): rename it back before
+        # any not-found rejection so the run stays auditable and re-cleanable.
+        try:
+            staging.rename(output_root)
+        except OSError as exc:
+            return {
+                "status": "partial",
+                "errorCode": "research_run_cleanup_failed",
+                "detail": {
+                    "reason": "staging_restore_failed",
+                    "osError": _safe_os_error(exc),
+                    "retried": False,
+                    "hint": (
+                        "a previous cleanup moved the run directory to "
+                        f"{staging.name}; restoring it failed, likely because a "
+                        "process holds a handle inside it. Close such handles and "
+                        "re-run cleanup; the staging directory is preserved."
+                    ),
+                },
+            }
     db_path = output_root / QUEUE_DB_FILENAME
     if not db_path.is_file():
         return {"status": "rejected", "errorCode": "research_run_not_found"}
@@ -1324,23 +1351,44 @@ def cleanup_completed_run(
         shutil.rmtree(staging)
     except OSError as exc:
         try:
-            staging.rename(output_root)
+            shutil.rmtree(staging)
         except OSError:
-            pass
-        return {
-            "status": "partial",
-            "errorCode": "research_run_cleanup_failed",
-            "detail": {
-                "reason": "staging_removal_failed",
-                "osError": _safe_os_error(exc),
-                "retried": True,
-                "hint": (
-                    "the run directory was moved to staging (run dir may no longer exist under "
-                    "its original name); re-running cleanup reports research_run_not_found — "
-                    "contact a maintainer to restore the staging directory manually"
-                ),
-            },
-        }
+            try:
+                staging.rename(output_root)
+                return {
+                    "status": "partial",
+                    "errorCode": "research_run_cleanup_failed",
+                    "detail": {
+                        "reason": "staging_removal_failed",
+                        "osError": _safe_os_error(exc),
+                        "retried": True,
+                        "restoredFromStaging": True,
+                        "hint": (
+                            "the run directory was moved to staging and the staging "
+                            "removal failed twice; the directory was renamed back to its "
+                            "original name. Re-run cleanup after closing any open handles."
+                        ),
+                    },
+                }
+            except OSError:
+                return {
+                    "status": "partial",
+                    "errorCode": "research_run_cleanup_failed",
+                    "detail": {
+                        "reason": "staging_removal_failed",
+                        "osError": _safe_os_error(exc),
+                        "retried": True,
+                        "restoredFromStaging": False,
+                        "hint": (
+                            "the run directory was moved to staging and both the staging "
+                            "removal and the rename-back failed; the staging directory is "
+                            "preserved at "
+                            + str(staging)
+                            + ". Re-run cleanup after closing any open handles; it will "
+                            "attempt to restore the staging directory automatically."
+                        ),
+                    },
+                }
     return {
         "status": "cleaned",
         "taskKind": "research",
@@ -1682,6 +1730,17 @@ def _queue_report(
         counts[str(case.get("status") or "")] = counts.get(str(case.get("status") or ""), 0) + 1
     samples = [_safe_sample_for_report(case) for case in cases]
     source_input_summary = dict(source_input_summary or {})
+    level_min = int(source_input_summary.get("levelMin") or 0)
+    level_max = int(source_input_summary.get("levelMax") or 0)
+    sample_levels = [int(case.get("level") or 0) for case in cases if int(case.get("level") or 0)]
+    level_bias_note = ""
+    if level_min and level_max and level_max > level_min and sample_levels:
+        if all(level == level_max for level in sample_levels):
+            level_bias_note = (
+                f"Level filter {level_min}-{level_max} semantics: samples were selected "
+                "highest level first and all landed at the range maximum; use "
+                "--level-min == --level-max for an exact level."
+            )
     requested_sample_count = int(source_input_summary.get("requestedSampleCount") or 0)
     unavailable_count = counts.get("import_failed", 0)
     available_sample_count = max(0, len(samples) - unavailable_count)
@@ -1723,6 +1782,7 @@ def _queue_report(
             "Raw mature build material exists only in transient OS temp packets.",
             "Use inspect/read/search from the active lease to read bounded structured evidence.",
             "This script does not call any OpenAI, Claude, Gemini, or other model provider API.",
+            *([level_bias_note] if level_bias_note else []),
         ],
     }
     if status == "source_unavailable":
@@ -1807,6 +1867,8 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
         "promotedTransferPatternCount": int(case.get("promotedTransferPatternCount") or 0),
         "promotedTransferPatternIds": case.get("promotedTransferPatternIds") or [],
         "recordKindAdvisories": case.get("recordKindAdvisories") or [],
+        "uniqueGemDiagnostics": case.get("uniqueGemDiagnostics") or {},
+        "acceptanceCaveats": case.get("acceptanceCaveats") or [],
         "deferredCandidateCount": int(case.get("deferredCandidateCount") or 0),
     }
 
@@ -1843,6 +1905,8 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
             report.get("mechanicAuditUnauditedHighRiskRecordCount") or 0
         ),
         "mechanicAuditAdvisories": report.get("mechanicAuditAdvisories") or [],
+        "uniqueGemDiagnostics": report.get("uniqueGemDiagnostics") or {},
+        "acceptanceCaveats": report.get("caveats") or [],
         "unresolvedDeepRecordMentionCount": int(
             report.get("unresolvedDeepRecordMentionCount")
             or report.get("unresolvedDeepRecordComponentCount")
@@ -2240,8 +2304,8 @@ graph 等独立佐证。
 9. 禁止猜 key 路径：所有组件先 search_graph_components 再 resolve_graph_component；支持宝石的
    metadata 路径可能有 Items/Gem 与 Items/Gems 两种形式，猜错会被判 component_type_mismatch
    或 missing。
-10. silent / unavailable 必须沉淀：lookup_mechanic 返回 silent 或语料无文本的高价值机制
-    （Innervate、Charged Mark 充能率等）写入 caveat / verification task，不得丢弃。
+10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
+     证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task。
 11. 非 core 技能支持入记录：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
     技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
 12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
@@ -2551,7 +2615,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Deprecated compatibility option; research always runs one case at a time.",
     )
     queue_parser.add_argument("--league", default="current")
-    queue_parser.add_argument("--level-min", type=int, default=90)
+    queue_parser.add_argument(
+        "--level-min",
+        type=int,
+        default=90,
+        help=(
+            "Inclusive lower level bound. Level filters are ranges, not exact matches: "
+            "poe.ninja ladder rows are sampled highest level first, so a range like "
+            "95-100 deterministically returns level-100 builds unless fewer exist. Use "
+            "--level-min == --level-max for an exact level."
+        ),
+    )
     queue_parser.add_argument("--level-max", type=int, default=100)
     queue_parser.add_argument("--ascendancy", action="append", default=[])
     queue_parser.add_argument("--class", dest="ninja_classes", action="append", default=[])

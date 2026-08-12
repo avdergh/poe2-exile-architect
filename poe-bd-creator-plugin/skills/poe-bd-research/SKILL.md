@@ -56,7 +56,9 @@ description: Use when the user wants to collect, queue, analyze, or store mature
   例如 `--class "Blood Mage"` 会编码为 `class=Blood+Mage`。从网站 URL 取得的
   `--class "Blood+Mage"` 也会先归一为同一名称，不会二次编码成 `%2B`。collector 会对返回列表
   再做同名本地复核，其他升华不能占用请求的样本数量。它不是 PoB 基础职业字段。
-- `--level-min N` / `--level-max N`：默认 90-100。
+- `--level-min N` / `--level-max N`：默认 90-100。注意等级过滤是**区间**而非精确匹配：
+  poe.ninja 列表按等级从高到低采样，`95-100` 这类区间在 100 级样本充足时确定性地全部取到
+  100 级；要严格精确等级请令 `--level-min == --level-max`。status 报告在该情况出现时会加注记。
 - `--source-file PATH`：单个本地 PoB code/XML。
 - `--source-batch-file PATH`：本地批量文件；执行时仍一案一轮。
 - `--expected-source-count N`：多个本地附件的预期案例数；实际解析数量不符时不创建队列。
@@ -205,8 +207,8 @@ POE_RESEARCH_SUCCEEDED: no
 
    独立重建和组件解析完成后，机制校对（工具顺序、不得把 `A / B` 组件名拼成一次查询、
    每条 `mechanic_chain`/`resource_engine` 必须被 `mechanicAudit.affectedRecords` 精确引用且写
-   **最强因果结论**、revision-pinned sourceRef、独立佐证）按 claim 返回的 `workerPrompt` 的
-   Evidence First 执行。
+   **最强因果结论**；revision-pinned sourceRef 与独立佐证在 wiki 可用时提供，wiki 缺页是常态、
+   不要求标注）按 claim 返回的 `workerPrompt` 的 Evidence First 执行。
 
 4. 初步研究、memory 对照和组件解析完成后，读取当前 lease 的精确 review 合同：
 
@@ -277,13 +279,20 @@ POE_RESEARCH_SUCCEEDED: no
 `tree_data_missing` 表示无法计数，允许保留暂缓但须在报告中说明；packet 缺失时需重新 queue。
 
 每案还必须报告 `mechanicAuditEntryCount`、`mechanicAuditPinnedRevisionCount`、
-`mechanicAuditLiveEvidenceStatus` 和 `mechanicAuditUnauditedHighRiskRecordCount`。只要提交了审计但
-固定 Wiki 修订数为 0，就必须明确写“Wiki 审计未实际取得 live evidence”，不能把结构化
-`mechanicAudit` 存在或 `acceptanceMode=clean` 描述成 Wiki 校对成功。
+`mechanicAuditLiveEvidenceStatus` 和 `mechanicAuditUnauditedHighRiskRecordCount`。wiki 佐证是
+mechanicAudit 的**可选项**：`pinnedRevisionCount=0` / `liveEvidenceStatus=unavailable_or_unused`
+属于常态（论坛 BD 的机制结论通常没有 wiki 页面对应），不需要额外标注，也不能因为缺 wiki 佐证
+而降低结论采纳。`mechanicAuditUnauditedHighRiskRecordCount` 只统计**入选 payload** 的
+`mechanic_chain`/`resource_engine` 记录未被**有效且 accepted** 的审计条目引用的数量：被非法或
+defer 的审计条目引用、或本身已被审计过滤掉的记录不计入 audited。
 
 每案还必须报告 `uniqueGemDiagnostics`：`uniqueGemCandidates`（来源中的 lineage/暗金宝石）、
-`unlabeledUniqueGemNames`（被提及但未标注 unique 身份）与 `uniqueGemStatusUnknownNames`（语料无法
-确认，不阻塞）。`unlabeledUniqueGemNames` 非空时，不得把该案描述为暗金身份已全部标注。
+`unlabeledUniqueGemNames`（被提及但未标注 unique 身份，advisory 不阻塞）、
+`corpusMissingGemNames`（语料无法确认 unique/lineage 状态的真宝石名，advisory 不阻塞）与
+`nonGemSkillNames`（nameSource 非 gem_name 的内部技能名，已被排除出宝石诊断，advisory 仅提示）。
+`unlabeledUniqueGemNames` 非空时，不得把该案描述为暗金身份已全部标注；图缺失的暗金珠宝若只在
+prose 提及而未声明为组件，会出现在 `proseMentionedWithoutComponentNames` advisory 中——应将其
+声明为组件（允许 unresolved）使覆盖计数可见。
 
 `deferredCandidateCount=0` 只表示 pattern/candidate 没有暂缓，不代表所有深度记录组件都已解析。
 最终汇报必须区分 `unresolvedDeepRecordMentionCount` 与 `unresolvedUniqueComponentCount`。兼容字段
@@ -323,7 +332,8 @@ POE_RESEARCH_SUCCEEDED: no
   状态枚举（`supports`/`contradicts`/`silent`/`unavailable`/`keep`/`revise`/`defer`）与"wiki 冲突仍
   keep、主动 defer、无独立 corroboration 的 wiki-only 对象最小范围暂缓"以 review-contract 的
   allowedValues/rules 为准。`mechanic_chain` / `resource_engine` 未被 mechanicAudit 引用会在
-  acceptance 报告为 advisory 计数（`mechanicAuditAdvisories`），不阻塞。
+  acceptance 报告为 advisory 计数（`mechanicAuditAdvisories`），不阻塞。audit 条目的 wiki 佐证
+  缺失属常态，不产生 advisory、不影响采纳。
 - 中文 `content` 原则上不超过 400 字，英文不超过 250 个单词。独立结论必须拆分；不可拆分的核心
   机制链才允许填写 `lengthExceptionReason` 后少量超出。
 - `rotation` 必须描述玩家操作顺序并写
@@ -336,7 +346,10 @@ POE_RESEARCH_SUCCEEDED: no
   （"based on their Lowest Resistance"）、元素地面交互（Wind Skills / Elemental Ground）、
   implicit "Allocates <passive>"、"Grants Skill: Level N <skill>"、Surpassing 额外投射、
   "X% chance to not remove Charges but still count as consuming them"。签名词缀驱动的审计必须带
-  revision-pinned `lookup_mechanic` sourceRef 和至少一项独立佐证。
+  **至少一种 corroboration**（source_artifact / pinned_pob_static / typed_graph /
+  typed_support_compatibility / local_mechanics / judge_readback，acceptance 门禁会暂缓完全
+  无 corroboration 的条目），并尽量带 `lookup_mechanic` 的可追溯 sourceRef；wiki 不可用时以
+  样本证据与引擎读回为准，不需要因此标注或降级。
 - 暗金宝石（unique skill/support gem、unique jewel）与普通宝石不同：unique support gem 自带固定
   词缀（如 Ailith's Chimes / Uhtred's 系列），unique jewel 常带位置化效果。凡案例使用暗金宝石，
   必须在记录中标注其 unique 身份：unique support gem 的节点类型是 support_gem，组件 role 必须保持

@@ -349,12 +349,20 @@ def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
             continue
         enabled_gems = [gem for gem in item.get("gems") or [] if gem.get("enabled")]
         active_skills = [
-            {"name": str(gem.get("name") or ""), "skillId": str(gem.get("skillId") or "")}
+            {
+                "name": str(gem.get("name") or ""),
+                "skillId": str(gem.get("skillId") or ""),
+                "nameSource": str(gem.get("nameSource") or "gem_name"),
+            }
             for gem in enabled_gems
             if not gem.get("isSupport") and str(gem.get("name") or "")
         ]
         supports = [
-            {"name": str(gem.get("name") or ""), "gemId": str(gem.get("gemId") or "")}
+            {
+                "name": str(gem.get("name") or ""),
+                "gemId": str(gem.get("gemId") or ""),
+                "nameSource": str(gem.get("nameSource") or "gem_name"),
+            }
             for gem in enabled_gems
             if gem.get("isSupport") and str(gem.get("name") or "")
         ]
@@ -564,11 +572,19 @@ def _skill_items(root: ET.Element) -> list[dict[str, Any]]:
                 ).strip()
                 if not name:
                     continue
+                name_source = (
+                    "gem_name"
+                    if gem.get("nameSpec")
+                    else "internal_id"
+                    if gem.get("skillId")
+                    else "gem_id"
+                )
                 gems.append(
                     {
                         "name": name,
                         "skillId": str(gem.get("skillId") or ""),
                         "gemId": str(gem.get("gemId") or ""),
+                        "nameSource": name_source,
                         "level": _optional_int(gem.get("level")),
                         "quality": _optional_int(gem.get("quality")),
                         "enabled": _xml_bool(gem.get("enabled"), default=True),

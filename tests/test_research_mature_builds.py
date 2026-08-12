@@ -1758,7 +1758,11 @@ def test_research_packet_builds_safe_active_skill_evidence_manifest():
         ["Blasphemy"],
     ]
     assert manifest["activeSkillGroups"][0]["supports"] == [
-        {"name": "Controlled Destruction", "gemId": "SupportGemControlledDestruction"}
+        {
+            "name": "Controlled Destruction",
+            "gemId": "SupportGemControlledDestruction",
+            "nameSource": "gem_name",
+        }
     ]
     assert manifest["noRawMatureBuildMaterial"] is True
     serialized = json.dumps(manifest, ensure_ascii=False)
