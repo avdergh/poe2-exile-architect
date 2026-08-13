@@ -2851,7 +2851,17 @@ def _confirmed_review_component_resolutions(
     graph_service: graph_tools.GraphQueryService,
     review: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    """Collect stable-key lookups that this review explicitly resolved against the current graph."""
+    """Collect stable-key lookups that this review explicitly resolved against the current graph.
+
+    A component qualifies when it carries an explicit ``componentKey``: either the resolver
+    query is the key itself (key-authored lookup), or the key was resolved elsewhere in the
+    same review (name-authored component whose key is already proven by a sibling component).
+    The qualifying key is re-resolved against the current graph and only accepted when the
+    graph resolves to exactly that key, so a stale or invented key never passes here. The
+    caller still enforces ``_resolver_candidate`` (key must be a candidate of the component's
+    display name) before this confirmation is consulted, so a name pointing at the wrong
+    variant cannot be confirmed through this path either.
+    """
 
     components = [
         component
@@ -2861,8 +2871,7 @@ def _confirmed_review_component_resolutions(
     confirmed: dict[str, dict[str, Any]] = {}
     for component in components:
         component_key = str(component.get("componentKey") or "").strip()
-        resolver_query = str(component.get("resolverQuery") or "").strip()
-        if not component_key or resolver_query != component_key or component_key in confirmed:
+        if not component_key or component_key in confirmed:
             continue
         result = graph_service.run_tool(
             "resolve_graph_component",

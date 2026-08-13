@@ -87,6 +87,12 @@ def cleanup_expired_packets(
     temp_root: Path | None = None,
     now: str | datetime | None = None,
 ) -> dict[str, Any]:
+    """Remove expired transient packets.
+
+    Packets are short-lived by design: queued packets get a long TTL (24h) so they survive
+    waiting time; claimed packets are rebuilt on claim with the lease's own TTL, so an
+    expired packet simply means the case lease expired too and the case can be reclaimed.
+    """
     root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
     current = _parse_time(now) if now is not None else datetime.now(timezone.utc)
     removed = 0

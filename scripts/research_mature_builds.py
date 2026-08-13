@@ -72,7 +72,7 @@ def queue_cases(
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
     temp_root: str | Path | None = None,
-    ttl_seconds: int = 7200,
+    ttl_seconds: int = 24 * 60 * 60,
     current_patch: str | None = None,
     passive_tree_version: str | None = None,
     pob_version_or_commit: str | None = None,
@@ -96,6 +96,13 @@ def queue_cases(
     if not dry_run and db_path.exists() and not resume:
         raise FileExistsError(
             "research queue already exists; use --resume with the same --output-dir"
+        )
+
+    if resume and not dry_run:
+        return _resume_queue_cases(
+            output_root=output_root,
+            db_path=db_path,
+            effective_temp_root=effective_temp_root,
         )
 
     source_file_values = list(source_files or [])
@@ -215,6 +222,7 @@ def queue_cases(
             packet_id = ""
             packet_safe_hash = ""
         else:
+            _write_quarantine_case(output_root, case)
             packet = _prepare_packet(
                 case,
                 temp_root=effective_temp_root,
@@ -255,6 +263,7 @@ def claim_case(
     queue_db_path: str | Path | None = None,
     lease_seconds: int = 7200,
     lease_owner: str = "current_researcher_agent",
+    temp_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Atomically lease one case while preventing concurrent active research."""
     db_path = _queue_db_path(Path(output_dir), queue_db_path)
@@ -316,6 +325,12 @@ def claim_case(
         )
         claimed = conn.execute("SELECT * FROM cases WHERE id = ?", (int(row["id"]),)).fetchone()
         conn.commit()
+    _rebuild_packet_for_claim(
+        row=claimed,
+        output_root=Path(output_dir),
+        temp_root=temp_root,
+        lease_seconds=lease_seconds,
+    )
     result = _claim_payload(
         dict(claimed),
         lease_token=lease_token,
@@ -884,6 +899,17 @@ def accept_case(
         conn.commit()
     if cur.rowcount != 1:
         raise ValueError("lease was modified before accept could be committed")
+    if accepted:
+        # The case is durably recorded: its transient packet is no longer needed. Best-effort
+        # cleanup so a file-lock hiccup never turns a successful accept into an error.
+        try:
+            effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+            research_packet.cleanup_packets_by_safe_hashes(
+                {str(row["packet_safe_hash"])},
+                temp_root=effective_temp_root,
+            )
+        except (OSError, ValueError):
+            pass
     result = {
         "status": status,
         "sampleId": sample_id,
@@ -1066,6 +1092,17 @@ def retry_accept_case(
         conn.commit()
     if cur.rowcount != 1:
         raise ValueError("rejected case was modified before retry accept could be committed")
+    if accepted:
+        # The case is durably recorded: its transient packet is no longer needed. Best-effort
+        # cleanup so a file-lock hiccup never turns a successful retry accept into an error.
+        try:
+            effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+            research_packet.cleanup_packets_by_safe_hashes(
+                {str(row["packet_safe_hash"])},
+                temp_root=effective_temp_root,
+            )
+        except (OSError, ValueError):
+            pass
     result = {
         "status": status,
         "sampleId": str(row["sample_id"]),
@@ -1571,6 +1608,148 @@ def _case_for_valid_lease(db_path: Path, lease_token: str) -> sqlite3.Row:
     return row
 
 
+def _refresh_packet_expiry(
+    *,
+    temp_root: Path,
+    packet_safe_hash: str,
+    ttl_seconds: int,
+) -> bool:
+    """Rewrite an existing packet's expiry to now + ttl; returns True when rewritten.
+
+    The safe hash does not include ``expiresAt`` (see research_packet.build_research_packet),
+    so rewriting the expiry keeps the packet identity stable while aligning its lifetime with
+    the caller's TTL (e.g. a claim's lease duration).
+    """
+    expires = datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl_seconds or 1)))
+    expires_iso = expires.isoformat(timespec="seconds")
+    for packet_path in temp_root.glob(f"{research_packet.PACKET_PREFIX}*/packet.json"):
+        try:
+            payload = json.loads(packet_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(payload.get("safeHash") or "") != str(packet_safe_hash):
+            continue
+        payload["expiresAt"] = expires_iso
+        packet_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        return True
+    return False
+
+
+def _rebuild_packet_for_claim(
+    *,
+    row: sqlite3.Row,
+    output_root: Path,
+    temp_root: str | Path | None,
+    lease_seconds: int,
+) -> None:
+    """Ensure the claimed case's packet lives exactly as long as the lease.
+
+    A claimed case studies from its packet; the packet should live as long as the lease so an
+    expired packet always coincides with an expired (reclaimable) lease. When the packet still
+    exists (e.g. the queued 24h packet), its expiry is rewritten to the lease duration; when
+    it is missing, it is rebuilt from the run-local quarantine with the lease TTL. The safe
+    hash stays stable (version context comes from the durable queue metadata).
+    """
+    effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+    packet_safe_hash = str(row["packet_safe_hash"])
+    if packet_safe_hash and _refresh_packet_expiry(
+        temp_root=effective_temp_root,
+        packet_safe_hash=packet_safe_hash,
+        ttl_seconds=lease_seconds,
+    ):
+        return
+    db_path = _queue_db_path(output_root, None)
+    quarantine = _quarantine_dir(output_root)
+    quarantine_path = quarantine / f"{str(row['source_hash'])}.json"
+    if not quarantine_path.exists():
+        return
+    try:
+        payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
+        raw = str(payload.get("rawImportCode") or "")
+    except (OSError, ValueError):
+        return
+    if not raw:
+        return
+    version_context = _queue_version_context(db_path)
+    case = legacy_batch._case_from_source(
+        raw,
+        source_hash=str(row["source_hash"]),
+        sample_id=str(row["sample_id"]),
+        source_type=str(row["source_type"]),
+        league=str(row["league"]),
+        row={},
+    )
+    packet = _prepare_packet(
+        case,
+        temp_root=effective_temp_root,
+        ttl_seconds=max(1, int(lease_seconds or 1)),
+        current_patch=version_context["gamePatch"],
+        passive_tree_version=version_context["passiveTreeVersion"],
+        pob_version_or_commit=version_context["pobVersionOrCommit"],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE cases
+               SET packet_id = ?,
+                   packet_safe_hash = ?,
+                   updated_at = ?
+             WHERE sample_id = ?
+            """,
+            (
+                str(packet["packetId"]),
+                str(packet["packetSafeHash"]),
+                _now_iso(),
+                str(row["sample_id"]),
+            ),
+        )
+        conn.commit()
+
+
+def _quarantine_dir(output_root: Path) -> Path:
+    """Return the run-local quarantine directory for raw source material.
+
+    This is intentionally separate from the transient OS temp packet root: the quarantine
+    lives next to the queue db inside the run directory (gitignored, removed with the run),
+    so a lost or expired packet can be rebuilt from it while the case is still queued.
+    """
+    return Path(output_root) / "quarantine"
+
+
+def _write_quarantine_case(output_root: Path, case: dict[str, Any]) -> Path:
+    """Persist the raw source material of one queued case into the run-local quarantine.
+
+    Content-addressed by ``sourceHash`` (db-unique), with ``sampleId`` stored inside for
+    cross-checks. Idempotent: an existing file with the same hash is left untouched.
+    """
+    quarantine = _quarantine_dir(output_root)
+    quarantine.mkdir(parents=True, exist_ok=True)
+    source_hash = str(case.get("sourceHash") or "").strip()
+    if not source_hash:
+        raise ValueError("case is missing sourceHash; cannot quarantine raw source material")
+    target = quarantine / f"{source_hash}.json"
+    if target.exists():
+        return target
+    payload = {
+        "sampleId": str(case.get("sampleId") or ""),
+        "sourceHash": source_hash,
+        "sourceHashRef": str(case.get("sourceHashRef") or ""),
+        "sourceType": str(case.get("sourceType") or ""),
+        "league": str(case.get("league") or ""),
+        "className": str(case.get("className") or ""),
+        "ascendancy": str(case.get("ascendancy") or ""),
+        "level": str(case.get("level") or ""),
+        "mainSkill": str(case.get("mainSkill") or ""),
+        "rawImportCode": str(case.get("_rawImportCode") or ""),
+        "rawXml": str(case.get("_rawXml") or ""),
+    }
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
 def _prepare_packet(
     case: dict[str, Any],
     *,
@@ -1630,6 +1809,126 @@ def _prepare_packet(
     )
     packet = result["packet"]
     return {"packetId": str(packet["packetId"]), "packetSafeHash": str(packet["safeHash"])}
+
+
+def _resume_queue_cases(
+    *,
+    output_root: Path,
+    db_path: Path,
+    effective_temp_root: Path,
+) -> dict[str, Any]:
+    """Resume an existing queue by rebuilding missing transient packets.
+
+    Resume no longer refetches poe.ninja samples. Every queued/claimed case whose transient
+    packet is missing is rebuilt from the run-local quarantine (raw material backup written
+    at queue time). A case with neither a live packet nor a quarantine backup is deleted:
+    its raw material is unrecoverable and we do not depend on any particular sample.
+    """
+    if not db_path.exists():
+        report = _queue_report(
+            status="resume_failed",
+            db_path=db_path,
+            requested_worker_count=1,
+            cases=[],
+            dry_run=False,
+            source_input_summary={
+                "levelMin": 0,
+                "levelMax": 0,
+                "requestedSampleCount": 0,
+                "expectedSourceCount": None,
+            },
+        )
+        report["safeError"] = "resume requires the --output-dir returned by the original queue run"
+        _assert_safe_payload(report)
+        return report
+
+    version_context = _queue_version_context(db_path)
+    quarantine = _quarantine_dir(output_root)
+    rows = _fetch_cases(db_path)
+    active_rows = [
+        row
+        for row in rows
+        if str(row.get("status") or "") in {"queued", "claimed", "accepting", "acceptance_rejected"}
+    ]
+    rebuilt = 0
+    intact = 0
+    removed = 0
+    for row in active_rows:
+        packet_safe_hash = str(row.get("packetSafeHash") or "")
+        if packet_safe_hash:
+            try:
+                _load_packet_by_safe_hash(effective_temp_root, packet_safe_hash)
+                intact += 1
+                continue
+            except FileNotFoundError:
+                pass
+        source_hash = str(row.get("sourceHash") or "")
+        raw = None
+        quarantine_path = quarantine / f"{source_hash}.json"
+        if quarantine_path.exists():
+            try:
+                payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
+                raw = str(payload.get("rawImportCode") or "")
+            except (OSError, ValueError):
+                raw = None
+        if not raw:
+            # Raw material is unrecoverable; the case cannot be studied and we do not
+            # depend on it, so drop it instead of blocking the queue.
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "DELETE FROM cases WHERE sample_id = ?",
+                    (str(row.get("sampleId") or ""),),
+                )
+                conn.commit()
+            removed += 1
+            continue
+        case = legacy_batch._case_from_source(
+            raw,
+            source_hash=source_hash,
+            sample_id=str(row.get("sampleId") or ""),
+            source_type=str(row.get("sourceType") or "poe_ninja_import_code"),
+            league=str(row.get("league") or "unknown"),
+            row={},
+        )
+        _write_quarantine_case(output_root, case)
+        packet = _prepare_packet(
+            case,
+            temp_root=effective_temp_root,
+            ttl_seconds=24 * 60 * 60,
+            current_patch=version_context["gamePatch"],
+            passive_tree_version=version_context["passiveTreeVersion"],
+            pob_version_or_commit=version_context["pobVersionOrCommit"],
+        )
+        now = _now_iso()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE cases
+                   SET packet_id = ?,
+                       packet_safe_hash = ?,
+                       updated_at = ?
+                 WHERE sample_id = ?
+                """,
+                (
+                    str(packet["packetId"]),
+                    str(packet["packetSafeHash"]),
+                    now,
+                    str(row.get("sampleId") or ""),
+                ),
+            )
+            conn.commit()
+        rebuilt += 1
+
+    report = queue_status(output_dir=output_root, queue_db_path=db_path)
+    report["status"] = "resumed"
+    report["resumeSummary"] = {
+        "activeCaseCount": len(active_rows),
+        "packetIntactCount": intact,
+        "packetRebuiltCount": rebuilt,
+        "unrecoverableCaseCount": removed,
+    }
+    _assert_safe_payload(report)
+    return report
 
 
 def _load_packet_by_safe_hash(temp_root: Path, packet_safe_hash: str) -> dict[str, Any]:
@@ -1779,7 +2078,7 @@ def _queue_report(
         "noRawMatureBuildMaterial": True,
         "caveats": [
             "The queue stores only safe metadata, leases, and packet safe hashes.",
-            "Raw mature build material exists only in transient OS temp packets.",
+            "Raw mature build material exists only in run-local quarantine and transient OS temp packets.",
             "Use inspect/read/search from the active lease to read bounded structured evidence.",
             "This script does not call any OpenAI, Claude, Gemini, or other model provider API.",
             *([level_bias_note] if level_bias_note else []),
@@ -2238,7 +2537,7 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 - 禁止使用 subagent，不要转交给其他 agent；当前案例正式 accept 前不得领取下一案。
 - 所有后续脚本命令都必须携带最初 queue 返回的 `--output-dir <runDir>`，不得使用默认共享目录。
 - 不要读源码或临时构造 service 绕过 MCP、lease 或 acceptance 边界。
-- 原始 PoB/XML 只能留在 transient packet，不得写入聊天、safe review 或 durable memory。
+- 原始 PoB/XML 只能留在 run 内 quarantine 与 transient packet，不得写入聊天、safe review 或 durable memory。
 - 最终只报告 safe artifact、验收状态和安全错误。
 
 ## Case
@@ -2635,7 +2934,7 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument("--sample-start-index", type=int, default=1)
     queue_parser.add_argument("--resume", action="store_true")
     queue_parser.add_argument("--dry-run", action="store_true")
-    queue_parser.add_argument("--ttl-seconds", type=int, default=7200)
+    queue_parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
     queue_parser.add_argument("--current-patch")
     queue_parser.add_argument("--passive-tree-version")
     queue_parser.add_argument("--pob-version-or-commit")

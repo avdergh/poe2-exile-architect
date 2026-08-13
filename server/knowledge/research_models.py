@@ -557,9 +557,9 @@ class DeepResearchRecordProposal(StrictModel):
                 "typed_payload.supportPackages"
             )
         if packages is not None:
-            if not isinstance(packages, list) or not packages or len(packages) > 12:
+            if not isinstance(packages, list) or len(packages) > 12:
                 raise ValueError(
-                    "typed_payload.supportPackages must be a non-empty list with at most 12 entries"
+                    "typed_payload.supportPackages must be a list with at most 12 entries"
                 )
             mentioned_skills = {
                 mention.component_key
@@ -577,7 +577,10 @@ class DeepResearchRecordProposal(StrictModel):
                 support_keys = package.get("supportKeys")
                 if not isinstance(skill_key, str) or skill_key not in mentioned_skills:
                     raise ValueError(
-                        "typed_payload.supportPackages skillKey must reference a resolved skill in the same record"
+                        "typed_payload.supportPackages skillKey must reference a resolved skill "
+                        f"in the same record (unknown skillKey={skill_key!r}; resolved skills: "
+                        + ", ".join(sorted(mentioned_skills))
+                        + ")"
                     )
                 if (
                     not isinstance(support_keys, list)
@@ -594,7 +597,16 @@ class DeepResearchRecordProposal(StrictModel):
                     for value in support_keys
                 ):
                     raise ValueError(
-                        "typed_payload.supportPackages supportKeys must reference resolved support gem components in the same record"
+                        "typed_payload.supportPackages supportKeys must reference resolved "
+                        "support gem components in the same record (unknown supportKeys: "
+                        + ", ".join(
+                            repr(value)
+                            for value in support_keys
+                            if not value.startswith("support:") or value not in physical_supports
+                        )
+                        + "; resolved supports: "
+                        + ", ".join(sorted(physical_supports))
+                        + ")"
                     )
                 identity = (skill_key, tuple(sorted(support_keys)))
                 if identity in normalized_packages:
@@ -607,13 +619,9 @@ class DeepResearchRecordProposal(StrictModel):
                 )
         support_exceptions = self.typed_payload.get("supportCoverageExceptions")
         if support_exceptions is not None:
-            if (
-                not isinstance(support_exceptions, list)
-                or not support_exceptions
-                or len(support_exceptions) > 12
-            ):
+            if not isinstance(support_exceptions, list) or len(support_exceptions) > 12:
                 raise ValueError(
-                    "typed_payload.supportCoverageExceptions must be a non-empty list with at most 12 entries"
+                    "typed_payload.supportCoverageExceptions must be a list with at most 12 entries"
                 )
             mentioned_skills = {
                 mention.component_key

@@ -77,7 +77,7 @@ def build_researcher_batch_report(
     sample_start_index: int = 1,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     temp_root: str | Path | None = None,
-    ttl_seconds: int = 3600,
+    ttl_seconds: int = 24 * 60 * 60,
     current_patch: str = "unknown",
     passive_tree_version: str = "unknown",
     browser_driver: Any | None = None,
@@ -973,7 +973,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mark-accepted-packet-safe-hash")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--temp-root")
-    parser.add_argument("--ttl-seconds", type=int, default=3600)
+    parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
     parser.add_argument("--current-patch", default="unknown")
     parser.add_argument("--passive-tree-version", default="unknown")
     parser.add_argument("--json-output", default=str(JSON_OUTPUT))

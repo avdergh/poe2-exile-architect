@@ -2047,3 +2047,358 @@ def test_research_packet_inspect_exposes_jewel_counts_without_raw_xml():
     serialized = json.dumps(inspected, ensure_ascii=False)
     assert "<Tree" not in serialized
     assert "rawXml" not in serialized
+
+
+def test_queue_persists_quarantine_and_resume_rebuilds_missing_packets(tmp_path):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "samples.txt"
+    batch_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+        + "\n---POB-SAMPLE---\n"
+        + _sample_code("SparkPlayer", ascendancy="Stormweaver", level=96),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp"
+
+    queued = research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+    )
+    assert queued["status"] == "queued"
+    assert queued["sampleCount"] == 2
+
+    quarantine = output_dir / "quarantine"
+    quarantine_files = list(quarantine.glob("*.json"))
+    assert len(quarantine_files) == 2
+    for file in quarantine_files:
+        payload = json.loads(file.read_text(encoding="utf-8"))
+        assert payload["rawImportCode"]
+        assert payload["sampleId"]
+        assert payload["sourceHash"]
+
+    db_path = output_dir / "poe_bd_research_queue.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        hashes_before = {
+            str(row["packet_safe_hash"])
+            for row in conn.execute("SELECT packet_safe_hash FROM cases")
+            if str(row["packet_safe_hash"])
+        }
+    assert len(hashes_before) == 2
+
+    # Destroy every transient packet, then resume: packets must be rebuilt from quarantine
+    # without fetching new samples.
+    for packet_dir in temp_root.glob("poe-bd-creator-research-packet-*"):
+        for child in packet_dir.rglob("*"):
+            if child.is_file():
+                child.unlink()
+    resumed = research_mature_builds.queue_cases(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+        resume=True,
+    )
+    assert resumed["status"] == "resumed"
+    assert resumed["resumeSummary"]["packetRebuiltCount"] == 2
+    assert resumed["resumeSummary"]["packetIntactCount"] == 0
+    assert resumed["resumeSummary"]["unrecoverableCaseCount"] == 0
+    assert resumed["sampleCount"] == 2
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        hashes_after = {
+            str(row["packet_safe_hash"])
+            for row in conn.execute("SELECT packet_safe_hash FROM cases")
+            if str(row["packet_safe_hash"])
+        }
+    assert hashes_after == hashes_before
+
+
+def test_resume_drops_unrecoverable_cases_without_quarantine(tmp_path):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "samples.txt"
+    batch_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+        + "\n---POB-SAMPLE---\n"
+        + _sample_code("SparkPlayer", ascendancy="Stormweaver", level=96),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-drop"
+
+    queued = research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+    )
+    assert queued["sampleCount"] == 2
+
+    # Remove the quarantine AND all packets: the raw material is unrecoverable.
+    for file in (output_dir / "quarantine").glob("*.json"):
+        file.unlink()
+    for packet_dir in temp_root.glob("poe-bd-creator-research-packet-*"):
+        for child in packet_dir.rglob("*"):
+            if child.is_file():
+                child.unlink()
+
+    resumed = research_mature_builds.queue_cases(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+        resume=True,
+    )
+    assert resumed["status"] == "resumed"
+    assert resumed["resumeSummary"]["unrecoverableCaseCount"] == 2
+    assert resumed["sampleCount"] == 0
+
+    db_path = output_dir / "poe_bd_research_queue.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
+    assert remaining == 0
+
+
+def test_accept_removes_transient_packet_after_success(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "samples.txt"
+    batch_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-accept-cleanup"
+
+    queued = research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+    )
+    assert queued["sampleCount"] == 1
+
+    claim = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claim["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claim)
+
+    def fake_accept_deep_review_candidates(**kwargs):
+        return {
+            "status": "accepted",
+            "acceptedPatternCount": 0,
+            "recordKindCounts": {},
+            "caseCoverage": {
+                "supports": "covered",
+                "rotation": "covered",
+                "passiveAscendancy": "covered",
+                "gearRoles": "covered",
+                "resourceDefense": "covered",
+            },
+            "caseCoverageGapCount": 0,
+            "caseCoverageGaps": [],
+            "singleComponentObservationCount": 0,
+            "createdBuildFamilyCount": 1,
+            "addedBuildFamilyEvidenceCount": 1,
+            "recordKindAdvisories": [],
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "accepted"},
+            "deepRecordWrite": {"status": "accepted"},
+            "acceptedDeepRecordCount": 0,
+            "acceptedBuildFamilyKeys": ["bf-fixture"],
+        }
+
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
+        fake_accept_deep_review_candidates,
+    )
+    accepted = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claim["leaseToken"],
+        review_file=review_file,
+    )
+    assert accepted["status"] == "accepted"
+
+    remaining = [
+        p
+        for p in temp_root.glob("poe-bd-creator-research-packet-*/packet.json")
+        if claim["packetSafeHash"] in p.read_text(encoding="utf-8")
+    ]
+    assert remaining == []
+
+
+def test_cleanup_expired_packets_removes_expired_packets(tmp_path):
+    from server.knowledge import research_packet
+    from datetime import datetime, timedelta, timezone
+
+    temp_root = tmp_path / "packets"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    research_packet.build_research_packet(
+        {"safeMetadata": {}, "rawContext": {}},
+        persist_for_transport=True,
+        ttl_seconds=1,
+        temp_root=temp_root,
+    )
+    later = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(timespec="seconds")
+
+    # An expired packet is removed.
+    cleaned = research_packet.cleanup_expired_packets(temp_root=temp_root, now=later)
+    assert cleaned["removed"] == 1
+    assert not list(temp_root.glob("poe-bd-creator-research-packet-*"))
+
+    # A not-yet-expired packet survives when cleaned at the current time.
+    research_packet.build_research_packet(
+        {"safeMetadata": {}, "rawContext": {}},
+        persist_for_transport=True,
+        ttl_seconds=3600,
+        temp_root=temp_root,
+    )
+    kept = research_packet.cleanup_expired_packets(temp_root=temp_root)
+    assert kept["removed"] == 0
+    assert list(temp_root.glob("poe-bd-creator-research-packet-*"))  # packet2 survives
+
+
+def test_claim_rebuilds_missing_packet_from_quarantine(tmp_path):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "samples.txt"
+    batch_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-claim-rebuild"
+
+    research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+    )
+
+    # Destroy the queued packet; claim must rebuild it from quarantine with lease TTL.
+    for packet_dir in temp_root.glob("poe-bd-creator-research-packet-*"):
+        for child in packet_dir.rglob("*"):
+            if child.is_file():
+                child.unlink()
+
+    claimed = research_mature_builds.claim_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_seconds=1800,
+    )
+    assert claimed["status"] == "claimed"
+    assert claimed["packetSafeHash"]
+
+    rebuilt = [
+        p
+        for p in temp_root.glob("poe-bd-creator-research-packet-*/packet.json")
+        if claimed["packetSafeHash"] in p.read_text(encoding="utf-8")
+    ]
+    assert len(rebuilt) == 1
+    packet = json.loads(rebuilt[0].read_text(encoding="utf-8"))
+    assert packet["safeHash"] == claimed["packetSafeHash"]
+
+
+def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path):
+    from datetime import datetime, timezone
+
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "samples.txt"
+    batch_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    temp_root = tmp_path.parent / "poe-research-temp-claim-expiry"
+
+    research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+        worker_count=5,
+        ttl_seconds=24 * 60 * 60,
+    )
+
+    # The queued packet exists with a 24h TTL; claim must rewrite its expiry to the lease TTL.
+    queued_packets = list(temp_root.glob("poe-bd-creator-research-packet-*/packet.json"))
+    assert len(queued_packets) == 1
+    queued = json.loads(queued_packets[0].read_text(encoding="utf-8"))
+
+    claimed = research_mature_builds.claim_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_seconds=1800,
+    )
+    assert claimed["status"] == "claimed"
+
+    packets = list(temp_root.glob("poe-bd-creator-research-packet-*/packet.json"))
+    assert len(packets) == 1  # expiry rewritten in place, no duplicate packet dir
+    packet = json.loads(packets[0].read_text(encoding="utf-8"))
+    assert packet["safeHash"] == queued["safeHash"]
+    assert packet["safeHash"] == claimed["packetSafeHash"]
+
+    expires = datetime.fromisoformat(packet["expiresAt"])
+    now = datetime.now(timezone.utc)
+    remaining = (expires - now).total_seconds()
+    # Lease is 1800s; allow a few seconds of execution slack on either side.
+    assert 1700 <= remaining <= 1900
+
+
+def test_empty_support_coverage_exceptions_list_is_treated_as_absent():
+    from server.knowledge import research_models
+
+    record = research_models.DeepResearchRecordProposal(
+        research_group_id="research:fixture",
+        record_kind="mechanic_chain",
+        title="聚焦机制链",
+        summary="只记录一个机制问题。",
+        content="这条记录只解释一个主要机制问题及其成立条件。",
+        content_language="zh-CN",
+        length_exception_reason=None,
+        component_keys=["skill:SparkPlayer"],
+        component_mentions=[
+            {
+                "candidate_name": "Spark",
+                "component_key": "skill:SparkPlayer",
+                "resolver_query": "skill:SparkPlayer",
+                "resolution_status": "resolved",
+                "expected_node_types": ["active_skill"],
+                "scope": "player",
+                "role": "primary_damage",
+            }
+        ],
+        source_case_refs=["source-hash:fixture"],
+        safe_evidence_refs=["evidence:fixture"],
+        conditions=[],
+        failure_conditions=[],
+        typed_payload={
+            "knowledgeShape": "state_causal_chain",
+            "supportCoverageExceptions": [],
+        },
+        class_key="class:sorceress",
+        ascendancy_key="ascendancy:sorceress:stormweaver",
+        extraction_method_version="deep_research_mvp_v1",
+        record_schema_version=1,
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+        pob_version_or_commit="0.22.0",
+        visibility="creator_visible",
+        split="train_context",
+        knowledge_scope="global_seed",
+        status="valid",
+        copy_safety_state="passed",
+    )
+    assert record.typed_payload["supportCoverageExceptions"] == []

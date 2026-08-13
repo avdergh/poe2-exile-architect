@@ -43,7 +43,7 @@ def build_acceptance_report(
     source_files: list[str | Path],
     *,
     temp_root: str | Path | None = None,
-    ttl_seconds: int = 3600,
+    ttl_seconds: int = 24 * 60 * 60,
     current_patch: str = "unknown",
     passive_tree_version: str = "unknown",
 ) -> tuple[dict[str, Any], list[dict[str, Path]]]:
@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-file", action="append", required=True)
     parser.add_argument("--current-patch", default="unknown")
     parser.add_argument("--passive-tree-version", default="unknown")
-    parser.add_argument("--ttl-seconds", type=int, default=3600)
+    parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
     args = parser.parse_args(argv)
     report, _transient = build_acceptance_report(
         [Path(value) for value in args.source_file],
