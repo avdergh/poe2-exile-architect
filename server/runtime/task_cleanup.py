@@ -16,13 +16,25 @@ from server.learning import service as learning_service
 TaskKind = Literal["generation", "research", "learning_campaign"]
 
 
-def cleanup_completed_task_runtime(*, task_kind: TaskKind, task_id: str) -> dict[str, Any]:
-    """Remove private task state while preserving memories, seeds, and exported files."""
+def cleanup_completed_task_runtime(
+    *,
+    task_kind: TaskKind,
+    task_id: str,
+    allow_rejected: bool = False,
+) -> dict[str, Any]:
+    """Remove private task state while preserving memories, seeds, and exported files.
+
+    ``allow_rejected`` is a research-run opt-in that permits cleanup when the run also
+    contains ``acceptance_rejected`` cases blocked by source-data gaps; the default stays
+    strict (all cases accepted).
+    """
 
     if task_kind == "generation":
         return _cleanup_generation(task_id)
     if task_kind == "research":
-        return research_mature_builds.cleanup_completed_run(run_id=task_id)
+        return research_mature_builds.cleanup_completed_run(
+            run_id=task_id, allow_rejected=allow_rejected
+        )
     if task_kind == "learning_campaign":
         return _cleanup_learning_campaign(task_id)
     return _rejected("invalid_task_kind")

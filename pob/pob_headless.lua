@@ -1780,6 +1780,20 @@ function methods.eval_items(p)
 	return { results = out }
 end
 
+-- Read-only: dump the programmatically generated unique item texts (Data/Uniques/Special/
+-- Generated.lua fills data.uniques.generated at engine boot). Each entry is the canonical
+-- PoB unique text block; the physical-graph exporter persists them so the static block parser
+-- can ingest them without re-evaluating Lua.
+function methods.dump_generated_uniques(p)
+	p = p or {}
+	local uniques = data.uniques.generated or {}
+	local out = {}
+	for i = 1, #uniques do
+		out[#out + 1] = tostring(uniques[i])
+	end
+	return { uniqueCount = #out, uniques = out }
+end
+
 -- Read-only: return a gem's per-level requirements (levelRequirement + attribute weights) so the
 -- leveled-build kernel can decide whether a skill is usable at a given character level. The
 -- corpus has no reliable gem level data; PoB owns the real levelRequirement curve. Never mutates

@@ -420,10 +420,11 @@ def build_researcher_prompt_package(
         "Do not print the final JSON.\n"
         f"5. Keep explanatory strings in {language}; schema field names and enum values remain in "
         "English.\n\n"
-        "## YOUR FIRST MOVE\n"
-        "Begin immediately with STEP 1: inspect the case and read skills, gear, passives, config, "
-        "and build sections to completion before reconstructing the build. "
-        "Do not query durable memory until that initial working model is complete.\n"
+    "## YOUR FIRST MOVE\n"
+    "Begin immediately with STEP 1: inspect the case and read skills, gear, jewels, passives, "
+    "config, and build sections to completion before reconstructing the build. The jewels "
+    "section contains only tree jewels (the gear section keeps them for per-slot review). "
+    "Do not query durable memory until that initial working model is complete.\n"
     )
     return {
         "ok": True,

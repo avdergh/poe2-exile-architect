@@ -186,7 +186,7 @@ POE_RESEARCH_SUCCEEDED: no
    <research-cli> inspect --output-dir <runDir> --lease-token <leaseToken>
    ```
 
-   再按 `skills -> gear -> passives -> config -> build` 顺序读取；若 `complete=false`，使用返回的
+   再按 `skills -> gear -> jewels -> passives -> config -> build` 顺序读取；若 `complete=false`，使用返回的
    `nextCursor` 继续读取同一分区：
 
    ```bash
@@ -264,7 +264,7 @@ POE_RESEARCH_SUCCEEDED: no
    ```
 
 7. 只有最终 status 显示全部请求案例均为 `accepted` 后，调用
-   `cleanup_completed_task_runtime(task_kind="research", task_id=<queue 返回的 runId>)`。它删除 queue、
+   `cleanup_completed_task_runtime(task_kind="research", task_id=<queue 返回的 runId>, allow_rejected=<true 仅当 run 含永远无法 accept 的 rejected 案例且知识已入库>)`。它删除 queue、
    safe review、acceptance 报告和对应 transient packet，但保留已经写入的 Research Memory。若任务
    尚未全部 accepted，工具会拒绝清理，不能手工删目录绕过。
 

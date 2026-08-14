@@ -81,14 +81,29 @@ def test_research_cleanup_dispatches_by_safe_run_id(monkeypatch):
     monkeypatch.setattr(
         task_cleanup.research_mature_builds,
         "cleanup_completed_run",
-        lambda *, run_id: {"status": "cleaned", "taskId": run_id},
+        lambda *, run_id, allow_rejected=False: {
+            "status": "cleaned",
+            "taskId": run_id,
+            "allowRejected": allow_rejected,
+        },
     )
 
     result = task_cleanup.cleanup_completed_task_runtime(
         task_kind="research", task_id="20260805-010203-abcd"
     )
 
-    assert result == {"status": "cleaned", "taskId": "20260805-010203-abcd"}
+    assert result == {
+        "status": "cleaned",
+        "taskId": "20260805-010203-abcd",
+        "allowRejected": False,
+    }
+
+    result_with_opt_in = task_cleanup.cleanup_completed_task_runtime(
+        task_kind="research",
+        task_id="20260805-010203-abcd",
+        allow_rejected=True,
+    )
+    assert result_with_opt_in["allowRejected"] is True
 
 
 def test_research_cleanup_removes_run_and_exact_transient_packets(monkeypatch, tmp_path):
@@ -450,3 +465,47 @@ def test_research_cleanup_staging_removal_failed_restores_dir(monkeypatch, tmp_p
     assert result["detail"]["reason"] == "staging_removal_failed"
     assert result["detail"]["restoredFromStaging"] is True
     assert output_root.exists()
+
+
+def test_research_cleanup_allow_rejected_opt_in(monkeypatch, tmp_path):
+    run_id = "20260805-010203-abcd"
+    output_root = tmp_path / ".poe-bd-research" / "runs" / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    (output_root / "acceptance").mkdir(parents=True)
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "h1",
+                "accepted_deep_record_count": 2,
+            },
+            {
+                "status": "acceptance_rejected",
+                "packetSafeHash": "h2",
+                "accepted_deep_record_count": 0,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+
+    strict = research_mature_builds.cleanup_completed_run(run_id=run_id)
+    assert strict["status"] == "rejected"
+    assert strict["errorCode"] == "completed_research_run_required"
+    assert output_root.exists()
+
+    relaxed = research_mature_builds.cleanup_completed_run(run_id=run_id, allow_rejected=True)
+    assert relaxed["status"] == "cleaned"
+    assert not output_root.exists()

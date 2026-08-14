@@ -300,6 +300,9 @@ def _pob_static_ingestions(
         )
 
     unique_paths = sorted((pob_root / "Data" / "Uniques").glob("**/*.lua"))
+    exported_uniques_dir = REPO_ROOT / "data" / "physical_graph" / "uniques"
+    if exported_uniques_dir.is_dir():
+        unique_paths = sorted([*unique_paths, *exported_uniques_dir.glob("*.lua")])
     if unique_paths:
         source = physical_graph.GraphSource(
             source_id=POB_UNIQUES_SOURCE_ID,

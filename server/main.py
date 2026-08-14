@@ -1155,13 +1155,19 @@ def query_public_learning_memory(
 def cleanup_completed_task_runtime(
     task_kind: Literal["generation", "research", "learning_campaign"],
     task_id: str,
+    allow_rejected: bool = False,
 ) -> dict[str, Any]:
     """Delete one completed task's private runtime state after its durable result is safe.
 
     Learning Memory, Research Memory, release seeds, and user-exported files are never deleted.
     Active, unreviewed, unexported, paused, or still-referenced tasks fail closed.
+    ``allow_rejected`` is a research opt-in: permits cleanup when the run also contains
+    acceptance_rejected cases blocked by source-data gaps (at least one case must still
+    hold accepted durable records). Default stays strict.
     """
-    return task_cleanup.cleanup_completed_task_runtime(task_kind=task_kind, task_id=task_id)
+    return task_cleanup.cleanup_completed_task_runtime(
+        task_kind=task_kind, task_id=task_id, allow_rejected=allow_rejected
+    )
 
 
 @mcp.tool()
@@ -2797,12 +2803,12 @@ def relevant_uniques(limit: int = 15) -> dict[str, Any]:
             "equip_item / equip_jewel and measure the real delta. Unique jewels are common "
             "build-definers a rare-only build misses — and radius/Time-Lost jewels are "
             "positional: rank sockets with evaluate_jewel_socket before committing. Data "
-            "caveat: the bundled unique-jewel table is missing the PoE2 Time-Lost series "
-            "(those uniques live in Uniques/Special/Generated.lua, which the corpus extractor "
-            "does not ingest), and Historic timeless jewels (base 'Timeless Jewel', e.g. Heroic "
-            "Tragedy/Undying Hate) are excluded from candidates because the pinned engine's "
-            "conquered rule is a no-op. Verify any jewel text against the engine. Every number "
-            "must come from the engine."
+            "caveat: the bundled corpus unique-jewel table is missing the PoE2 Time-Lost series "
+            "(the physical graph ingests the 8 uniques generated in Uniques/Special/"
+            "Generated.lua, but the corpus text table still lacks them), and Historic timeless "
+            "jewels (base 'Timeless Jewel', e.g. Heroic Tragedy/Undying Hate) are excluded "
+            "from candidates because the pinned engine's conquered rule is a no-op. Verify any "
+            "jewel text against the engine. Every number must come from the engine."
         ),
     }
 

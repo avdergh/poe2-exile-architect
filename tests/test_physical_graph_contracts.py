@@ -3228,6 +3228,53 @@ Implicits: 1
     assert result.facts["base_item_name"] == "Bloodstone Amulet"
 
 
+def test_ingest_exported_generated_uniques_blocks(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    exported = repo_root / "data" / "physical_graph" / "uniques" / "generated_uniques.lua"
+    if not exported.exists():
+        pytest.skip(
+            "exported generated uniques not present; run scripts/export_generated_uniques.py"
+        )
+    source = pg.GraphSource(
+        source_id="pob:uniques",
+        kind="pob_unique_text",
+        source_file="generated_uniques.lua",
+        expected_count=8,
+    )
+    ingestion = pg.ingest_uniques(
+        exported,
+        source=source,
+        known_base_nodes={},
+        known_base_aliases=(),
+    )
+    keys = {node.stable_key for node in ingestion.nodes}
+    for name in (
+        "against_the_darkness",
+        "flesh_crucible",
+        "from_nothing",
+        "grip_of_kulemak",
+        "heart_of_the_well",
+        "loreweave",
+        "megalomaniac",
+        "prism_of_belief",
+    ):
+        assert f"unique:pob:{name}" in keys, f"missing generated unique {name}"
+
+    snapshot = pg.build_snapshot(
+        sources=(source,),
+        nodes=ingestion.nodes,
+        edges=ingestion.edges,
+        aliases=ingestion.aliases,
+        id_mappings=ingestion.id_mappings,
+        requirement_facts=ingestion.requirement_facts,
+    )
+    resolved = pg.resolve_candidates(snapshot, "Heart of the Well")
+    assert resolved["status"] == "resolved"
+    assert resolved["resolved_key"] == "unique:pob:heart_of_the_well"
+    missing = pg.resolve_candidates(snapshot, "Soul Hope")
+    assert missing["status"] == "missing"
+
+
 def test_build_phase2_fixed_sample_bundle_covers_multiple_acceptance_families():
     source = _source()
     gem = pg.GraphNode(

@@ -268,6 +268,7 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     assert prompt_payload["recommendedReadOrder"] == [
         "skills",
         "gear",
+        "jewels",
         "passives",
         "config",
         "build",
@@ -1877,6 +1878,11 @@ def test_research_packet_captures_tree_jewels_via_sockets_mapping():
     assert counts["embeddedJewelCount"] == 0
     assert counts["socketedJewelCount"] == 1
     assert research_packet.jewel_advisories(packet, sections=sections) == []
+    assert len(sections["jewels"]) == 1
+    assert sections["jewels"][0]["name"] == "Rapture Curio"
+    assert sections["jewels"][0]["socketSource"] == "tree_socket"
+    assert sections["jewels"][0]["slot"] == f"Jewel {socket_ids[0]}"
+    assert research_packet.RESEARCH_SECTIONS.index("jewels") == 2
     inspected = research_packet.inspect_packet(packet)
     assert inspected["unslottedItemCount"] == 1
     assert "Spare Staff" in inspected["unslottedItemNames"]
@@ -2402,3 +2408,147 @@ def test_empty_support_coverage_exceptions_list_is_treated_as_absent():
         copy_safety_state="passed",
     )
     assert record.typed_payload["supportCoverageExceptions"] == []
+
+
+def test_canonical_review_artifact_identity_reports_mismatch_details(tmp_path):
+    from scripts import research_mature_builds as rmb
+
+    review = tmp_path / "review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "safeArtifactOnly": True,
+                "artifactIdentity": {
+                    "sampleId": "case:other",
+                    "caseRef": "source-hash:other",
+                    "safeEvidenceRef": "evidence:deadbeefdeadbeef",
+                    "packetSafeHash": "deadbeef" * 8,
+                },
+                "deepResearchRecords": [],
+                "candidateReviews": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as exc:
+        rmb._canonical_review_artifact_identity(
+            review_file=review,
+            sample_id="case:target",
+            source_hash_ref="source-hash:target",
+            packet_safe_hash="a" * 64,
+        )
+    message = str(exc.value)
+    assert "artifactIdentity does not match the current lease" in message
+    assert "sampleId expected='case:target' actual='case:other'" in message
+    assert "caseRef expected='source-hash:target' actual='source-hash:other'" in message
+    assert "packetSafeHash" in message
+
+
+def test_identity_resolvability_hint_resolves_renamed_ascendancy(tmp_path):
+    from scripts import research_mature_builds as rmb
+
+    hint = rmb._identity_resolvability_hint(ascendancy="Lich", main_skill="Chaos Bolt")
+    assert hint["ascendancyCanonicalKey"] == "ascendancy:witch:abyssal_lich"
+    assert hint["ascendancyResolvable"] is True
+
+    unknown = rmb._identity_resolvability_hint(ascendancy="No Such Ascendancy 42", main_skill="")
+    assert unknown["ascendancyResolvable"] is False
+    assert unknown["ascendancyCanonicalKey"] is None
+    assert unknown["primarySkillResolvable"] is False
+
+
+def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-temp-only-record",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+    calls: list[dict] = []
+
+    def fake_accept(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "accepted",
+            "acceptedDeepRecordCount": 1,
+            "recordKindCounts": {},
+            "caseCoverage": {
+                "supports": "covered",
+                "rotation": "covered",
+                "passiveAscendancy": "covered",
+                "gearRoles": "covered",
+                "resourceDefense": "covered",
+            },
+            "caseCoverageGapCount": 0,
+            "caseCoverageGaps": [],
+            "deferredCandidateCount": 0,
+        }
+
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
+        fake_accept,
+    )
+
+    result = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+        validation_only=True,
+        only_record=0,
+    )
+
+    assert result["singleRecordValidation"]["recordIndex"] == 0
+    assert "note" in result["singleRecordValidation"]
+    payload = calls[0]["review_payload"]
+    assert len(payload["deepResearchRecords"]) == 1
+
+
+def test_accept_only_record_guards_out_of_range_and_non_validation(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-temp-only-record-guard",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+
+    with pytest.raises(ValueError, match="out of range"):
+        research_mature_builds.accept_case(
+            output_dir=output_dir,
+            lease_token=claimed["leaseToken"],
+            review_file=claimed["reviewFile"],
+            memory_db_path=tmp_path / "m1.sqlite",
+            validation_only=True,
+            only_record=5,
+        )
+    with pytest.raises(ValueError, match="only supported together with --validate-only"):
+        research_mature_builds.accept_case(
+            output_dir=output_dir,
+            lease_token=claimed["leaseToken"],
+            review_file=claimed["reviewFile"],
+            memory_db_path=tmp_path / "m2.sqlite",
+            validation_only=False,
+            only_record=0,
+        )

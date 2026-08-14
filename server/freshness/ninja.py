@@ -47,6 +47,11 @@ _LEAGUE_URL = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _PRIVATE_NAME = re.compile(r"PL\d+", re.IGNORECASE)
 _PRIVATE_URL = re.compile(r"pl\d+", re.IGNORECASE)
 _EXCLUDED_TOKENS = {"HC", "SSF", "RUTHLESS", "STANDARD"}
+# poe.ninja lists temporary event/race leagues (Exilecon qualifiers, Boss Kill
+# Races, ...) inside buildLeagues alongside the real trade leagues, e.g.
+# "Exilecon 2026 PoE2 Qualifier #2" with url "eventssf". They are not current
+# softcore trade leagues and must never win newest-league selection.
+_EVENT_TOKENS = {"EXILECON", "QUALIFIER", "RACE", "TOURNAMENT", "EVENT"}
 
 
 class NinjaParseError(PayloadParseError, ValueError):
@@ -174,7 +179,8 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
     ]
     newest_names = {league.name.casefold() for league, _ in newest}
     if len(newest_names) > 1:
-        raise NinjaParseError("ambiguous newest poe.ninja league candidates")
+        candidates = ", ".join(sorted(f"{league.name} ({league.url})" for league, _ in newest))
+        raise NinjaParseError("ambiguous newest poe.ninja league candidates: " + candidates)
     selected_league, selected_entry = max(
         newest,
         key=lambda candidate: (candidate[1].version, candidate[0].url),
@@ -295,7 +301,9 @@ def _is_excluded_league(
         return True
     token_text = f"{names} {url.replace('-', ' ')}"
     tokens = {token.upper() for token in re.findall(r"[A-Za-z0-9]+", token_text)}
-    return bool(tokens & _EXCLUDED_TOKENS)
+    if tokens & _EXCLUDED_TOKENS:
+        return True
+    return bool(tokens & _EVENT_TOKENS)
 
 
 def _snapshot_date(version: str) -> date:

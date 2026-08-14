@@ -486,6 +486,15 @@ class DeepResearchRecordProposal(StrictModel):
     status: Literal["valid", "needs_revalidation", "stale", "deprecated", "quarantined"] = "valid"
     copy_safety_state: Literal["passed", "needs_review", "rejected"] = "passed"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _summary_length_hint(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            summary = data.get("summary")
+            if isinstance(summary, str) and len(summary) > 280:
+                raise ValueError(f"summary {len(summary)}/280 exceeds 280 characters; shorten it")
+        return data
+
     @model_validator(mode="after")
     def _content_budget(self) -> "DeepResearchRecordProposal":
         has_cjk = bool(re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]", self.content))
@@ -493,17 +502,19 @@ class DeepResearchRecordProposal(StrictModel):
             raise ValueError("CJK content must use content_language=zh-CN for character budgeting")
         if self.content_language == "zh-CN":
             length = len(re.sub(r"\s+", "", self.content))
-            over_budget = length > 400
+            budget = 400
             budget_name = "400 Chinese characters"
         else:
             length = len(re.findall(r"\b[\w'-]+\b", self.content, flags=re.UNICODE))
-            over_budget = length > 250
+            budget = 250
             budget_name = "250 English words"
-        if over_budget and not str(self.length_exception_reason or "").strip():
+        if length > budget and not str(self.length_exception_reason or "").strip():
             raise ValueError(
-                f"content exceeds {budget_name}; split the record or provide "
+                f"content {length}/{budget} exceeds {budget_name}; split the record or provide "
                 "length_exception_reason for an indivisible mechanism chain"
             )
+        if len(self.summary) > 280:
+            raise ValueError(f"summary {len(self.summary)}/280 exceeds 280 characters; shorten it")
         return self
 
     @model_validator(mode="after")

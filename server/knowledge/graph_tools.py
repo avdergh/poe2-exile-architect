@@ -532,12 +532,22 @@ class GraphQueryService:
                 "source_coverage_gap",
                 candidate_endpoint_names=[typed_input.query],
             )
+            search_candidates = pg.search_candidates(
+                self.snapshot,
+                typed_input.query,
+                limit=5,
+            ).get("candidate_keys", [])
             facts = {
                 "query": typed_input.query,
                 "expected_node_types": sorted(expected_node_types),
                 "scope": typed_input.scope,
                 "candidate_keys": candidate_keys,
                 "candidates": candidates,
+                "searchCandidates": [
+                    self._candidate_summary(key)
+                    for key in search_candidates
+                    if key in self._nodes_by_key
+                ],
                 "endpointAssessment": endpoint_assessment,
             }
         else:
@@ -556,7 +566,13 @@ class GraphQueryService:
             source_refs=source_refs,
             evidence_path=self._evidence_path(nodes=candidate_keys, source_refs=source_refs),
             confidence=1.0 if status == "resolved" else 0.5 if status == "ambiguous" else 0.0,
-            caveats=["ambiguous_alias"] if status == "ambiguous" else [],
+            caveats=(
+                ["ambiguous_alias"]
+                if status == "ambiguous"
+                else ["candidate_discovery_only"]
+                if facts.get("searchCandidates")
+                else []
+            ),
             context=_context_payload(typed_input.context),
             endpoint_assessment=endpoint_assessment,
         )

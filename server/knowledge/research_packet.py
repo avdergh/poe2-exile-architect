@@ -17,7 +17,7 @@ from .. import paths
 
 PACKET_PREFIX = "poe-bd-creator-research-packet-"
 MAX_TTL_SECONDS = 24 * 60 * 60
-RESEARCH_SECTIONS = ("skills", "gear", "passives", "config", "build")
+RESEARCH_SECTIONS = ("skills", "gear", "jewels", "passives", "config", "build")
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 MAX_RESPONSE_CHARS = 12_000
@@ -541,13 +541,24 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
         raise ValueError("transient research packet contains invalid PoB XML") from exc
+    gear_items = _gear_items(root)
     return {
         "skills": _skill_items(root),
-        "gear": _gear_items(root),
+        "gear": gear_items,
         "passives": _passive_items(root),
         "config": _config_items(root),
         "build": _build_items(root),
+        "jewels": _tree_socket_jewels(gear_items),
     }
+
+
+def _tree_socket_jewels(gear_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tree-socketed jewels (socketSource == "tree_socket") as a dedicated section.
+
+    The gear section keeps these items too (jewel_counts relies on them); this view is a
+    convenience for researchers who only need the tree jewels and their affix text.
+    """
+    return [item for item in gear_items if item.get("socketSource") == "tree_socket"]
 
 
 def _skill_items(root: ET.Element) -> list[dict[str, Any]]:

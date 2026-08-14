@@ -233,8 +233,67 @@ def test_parse_ninja_snapshot_rejects_ambiguous_newest_current_candidates():
         {"leagueName": "Secrets of the Atlas", "leagueUrl": "secrets", "total": 77}
     )
 
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(ValueError, match=r"ambiguous.*Secrets of the Atlas \(secrets\)"):
         parse_ninja_snapshot(index_json, build_index_json)
+
+
+def test_parse_ninja_snapshot_excludes_event_qualifier_league_from_newest_selection():
+    index_json, build_index_json = snapshot_fixture()
+    index_json["buildLeagues"].append(
+        {
+            "name": "Exilecon 2026 PoE2 Qualifier #2",
+            "displayName": "Exilecon 2026 PoE2 Qualifier #2",
+            "url": "eventssf",
+            "hardcore": False,
+        }
+    )
+    index_json["snapshotVersions"].append(
+        {
+            "name": "Exilecon 2026 PoE2 Qualifier #2",
+            "url": "eventssf",
+            "version": "1710-20260624-25922",
+            "passiveTree": "PassiveTree-0.5",
+        }
+    )
+    build_index_json["leagueBuilds"].append(
+        {"leagueName": "Exilecon 2026 PoE2 Qualifier #2", "leagueUrl": "eventssf", "total": 77}
+    )
+
+    snapshot = parse_ninja_snapshot(index_json, build_index_json)
+
+    assert snapshot.league_url == "runesofaldur"
+    assert snapshot.sample_size == 124302
+
+
+def test_parse_ninja_snapshot_excludes_race_event_league_from_newest_selection():
+    index_json, build_index_json = snapshot_fixture()
+    index_json["buildLeagues"].append(
+        {
+            "name": "0.4.0 Act 4 Boss Kill Race",
+            "displayName": "0.4.0 Act 4 Boss Kill Race",
+            "url": "act4bosskillrace2ssf",
+            "hardcore": False,
+        }
+    )
+    index_json["snapshotVersions"].append(
+        {
+            "name": "0.4.0 Act 4 Boss Kill Race",
+            "url": "act4bosskillrace2ssf",
+            "version": "0328-20260624-40125",
+            "passiveTree": "PassiveTree-0.5",
+        }
+    )
+    build_index_json["leagueBuilds"].append(
+        {
+            "leagueName": "0.4.0 Act 4 Boss Kill Race",
+            "leagueUrl": "act4bosskillrace2ssf",
+            "total": 218,
+        }
+    )
+
+    snapshot = parse_ninja_snapshot(index_json, build_index_json)
+
+    assert snapshot.league_url == "runesofaldur"
 
 
 def test_parse_ninja_snapshot_rejects_missing_snapshot_for_only_candidate():

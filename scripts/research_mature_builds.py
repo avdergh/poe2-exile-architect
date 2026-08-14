@@ -31,7 +31,14 @@ from scripts import run_phase45_researcher_batch as legacy_batch  # noqa: E402
 from scripts import run_phase4_deep_review_acceptance as acceptance  # noqa: E402
 from server import paths  # noqa: E402
 from server.freshness import providers as freshness_providers  # noqa: E402
-from server.knowledge import copy_safety, research_identity, research_models, research_packet  # noqa: E402
+from server.knowledge import (  # noqa: E402
+    copy_safety,
+    graph_seed,
+    graph_tools,
+    research_identity,
+    research_models,
+    research_packet,
+)
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
 RUNS_DIRNAME = "runs"
@@ -694,6 +701,7 @@ def render_review_contract(
             "同一 researchGroupId 的记录必须使用同一个 ascendancyKey，并且只把一个核心主技能标为 primary_damage。",
             "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 身份。clear_skill、boss_skill、triggered_payload 由程序自动参与 Family；trigger_host 不自动参与身份（换宿主视为变体），身份级 trigger host 必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会参与 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
+            "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
             "gearRoles covered 必须有 gear_synergy，并在 typedPayload.gearResponsibilities 说明已解析武器/暗金的具体职责；只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
@@ -794,6 +802,7 @@ def accept_case(
     acceptance_output_dir: str | Path | None = None,
     temp_root: str | Path | None = None,
     validation_only: bool = False,
+    only_record: int | None = None,
 ) -> dict[str, Any]:
     """Validate or accept a safe Researcher proposal for the current lease."""
     output_root = Path(output_dir)
@@ -821,6 +830,20 @@ def accept_case(
         temp_root=temp_root,
     )
     if validation_only:
+        review_payload_for_run = review_payload
+        single_record: int | None = None
+        if only_record is not None:
+            records = review_payload_for_run.get("deepResearchRecords") or []
+            if not 0 <= only_record < len(records):
+                raise ValueError(
+                    f"--only-record {only_record} out of range; the review has "
+                    f"{len(records)} deep records"
+                )
+            review_payload_for_run = {
+                **review_payload_for_run,
+                "deepResearchRecords": [records[only_record]],
+            }
+            single_record = only_record
         report = acceptance.accept_deep_review_candidates(
             db_path=Path(memory_db_path),
             json_output=output_root / "unused-validation-report.json",
@@ -829,13 +852,22 @@ def accept_case(
             version_context=version_context,
             source_skill_manifest=source_skill_manifest,
             jewel_counts=jewel_counts,
-            review_payload=review_payload,
+            review_payload=review_payload_for_run,
             require_deep_records=True,
             validation_only=True,
         )
         result = _validation_only_result(report, sample_id=sample_id)
+        if single_record is not None:
+            result["singleRecordValidation"] = {
+                "recordIndex": single_record,
+                "note": "Only this record was validated; caseCoverage, Family identity and "
+                "deferred counts reflect the single-record slice, not the full review.",
+            }
         _assert_safe_payload(result)
         return result
+
+    if only_record is not None:
+        raise ValueError("--only-record is only supported together with --validate-only")
 
     accept_dir = (
         Path(acceptance_output_dir) if acceptance_output_dir else output_root / "acceptance"
@@ -1305,8 +1337,15 @@ def cleanup_completed_run(
     *,
     run_id: str,
     temp_root: str | Path | None = None,
+    allow_rejected: bool = False,
 ) -> dict[str, Any]:
-    """Delete one fully accepted Research run while preserving its durable Research Memory."""
+    """Delete one fully accepted Research run while preserving its durable Research Memory.
+
+    ``allow_rejected`` permits cleanup when the run also contains ``acceptance_rejected``
+    cases (e.g. cases blocked by source-data gaps that can never be accepted). It is an
+    explicit opt-in: at least one case must still hold accepted durable records, and the
+    default stays strict.
+    """
 
     if not isinstance(run_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
@@ -1341,7 +1380,8 @@ def cleanup_completed_run(
     if not db_path.is_file():
         return {"status": "rejected", "errorCode": "research_run_not_found"}
     rows = _fetch_cases(db_path)
-    if not rows or any(str(row.get("status") or "") != "accepted" for row in rows):
+    allowed_statuses = {"accepted", "acceptance_rejected"} if allow_rejected else {"accepted"}
+    if not rows or any(str(row.get("status") or "") not in allowed_statuses for row in rows):
         return {"status": "rejected", "errorCode": "completed_research_run_required"}
     if not any(
         int(row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0) > 0
@@ -2339,6 +2379,50 @@ def _compact_accept_result(result: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _identity_resolvability_hint(*, ascendancy: str, main_skill: str) -> dict[str, Any]:
+    """Best-effort identity resolvability pre-check for a claimed case.
+
+    Advisory only: a failed graph load or unresolved display name never blocks the
+    claim; the formal identity gate still lives in accept. Renamed ascendancies
+    (e.g. Witch "Lich" -> "Abyssal Lich") resolve through graph aliases, so the
+    canonical key hint prevents researcher-side mislabelling.
+    """
+    hint: dict[str, Any] = {
+        "ascendancyCanonicalKey": None,
+        "ascendancyResolvable": False,
+        "primarySkillResolvable": False,
+    }
+    ascendancy_name = str(ascendancy or "").strip()
+    main_skill_name = str(main_skill or "").strip()
+    try:
+        index_path = graph_seed.ensure_installed()
+        service = graph_tools.service_from_snapshot_index(str(index_path))
+    except Exception:
+        return hint
+    try:
+        if ascendancy_name:
+            result = service.run_tool(
+                "resolve_graph_component",
+                {"query": ascendancy_name, "expected_node_types": ["ascendancy"]},
+            )
+            if result.get("status") == "resolved":
+                resolved = (result.get("resolvedSubject") or {}).get("stableKey") or ""
+                hint["ascendancyCanonicalKey"] = str(resolved) or None
+                hint["ascendancyResolvable"] = True
+    except Exception:
+        pass
+    try:
+        if main_skill_name:
+            result = service.run_tool(
+                "resolve_graph_component",
+                {"query": main_skill_name},
+            )
+            hint["primarySkillResolvable"] = result.get("status") == "resolved"
+    except Exception:
+        pass
+    return hint
+
+
 def _claim_payload(
     row: dict[str, Any],
     *,
@@ -2356,6 +2440,10 @@ def _claim_payload(
         lease_token=lease_token,
         review_file=review_file,
     )
+    identity_hint = _identity_resolvability_hint(
+        ascendancy=str(row["ascendancy"]),
+        main_skill=str(row["main_skill"]),
+    )
     return {
         "status": "claimed",
         "queueKind": "poe_bd_research_external_agent_queue",
@@ -2369,6 +2457,7 @@ def _claim_payload(
         "level": int(row["level"] or 0),
         "mainSkill": str(row["main_skill"]),
         "mainSkillAuthority": "programmatic_snapshot_non_authoritative",
+        **identity_hint,
         "leaseToken": lease_token,
         "leaseExpiresAt": str(row["lease_expires_at"]),
         "reviewFile": review_file,
@@ -2443,17 +2532,32 @@ def _canonical_review_artifact_identity(
             "safeEvidenceRef": expected_evidence_ref,
             "packetSafeHash": packet_safe_hash,
         }
-        if not isinstance(artifact_identity, dict) or any(
-            str(artifact_identity.get(key) or "") != value
+        if not isinstance(artifact_identity, dict):
+            raise ValueError(
+                "review artifactIdentity does not match the current lease; "
+                "expected an object, got " + str(type(artifact_identity).__name__)
+            )
+        mismatched = {
+            key: {"expected": value, "actual": str(artifact_identity.get(key) or "")}
             for key, value in expected_identity.items()
-        ):
-            raise ValueError("review artifactIdentity does not match the current lease")
+            if str(artifact_identity.get(key) or "") != value
+        }
+        if mismatched:
+            detail = ", ".join(
+                f"{key} expected={item['expected']!r} actual={item['actual']!r}"
+                for key, item in sorted(mismatched.items())
+            )
+            raise ValueError("review artifactIdentity does not match the current lease; " + detail)
     elif not entries or any(
         str(item.get("caseRef") or "") != source_hash_ref
         or expected_evidence_ref not in _review_evidence_refs(item)
         for item in entries
     ):
-        raise ValueError("review artifact identity does not match the current lease")
+        raise ValueError(
+            "review artifact identity does not match the current lease; expected "
+            f"caseRef={source_hash_ref!r} and safeEvidenceRef={expected_evidence_ref!r} "
+            "on every deepResearchRecord/candidateReview"
+        )
     if not entries:
         raise ValueError("review artifact must contain at least one record or candidate")
 
@@ -2550,8 +2654,9 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 - safeReviewFile: {review_file}（相对当前 --output-dir）
 
 ## Evidence First
-先运行 inspect，再按 skills、gear、passives、config、build 顺序把每个分区分页读完；complete=false
-时继续使用 nextCursor。search 只能定位具体线索，不能替代完整分区读取。
+先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；complete=false
+时继续使用 nextCursor。jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对照）；search 只能定位
+具体线索，不能替代完整分区读取。
 技能、天赋和装备效果必须来自当前案例证据或工具事实；允许保留有价值的推断，但必须明确标为推断，
 不能把模型记忆中的免疫、转换、触发或缩放效果写成已证实事实。
 
@@ -2586,12 +2691,15 @@ graph 等独立佐证。
 3. Spirit/reservation 预算：评估所有 persistent buff（光环/战旗/常驻技能）的 Spirit 预留总量与
    来源（装备/升华），写入资源闭环记录。
 4. support 打包：每个启用技能组的 supports 必须完整打包进 skill_package/mechanic_chain 的
-   supportPackages，或经 supportCoverageExceptions 声明；被 evidence 记录提及的组不得遗留
-   ≥2 个未打包辅助。
+   supportPackages，或经 supportCoverageExceptions 声明；Family 身份记录（skill_package/
+   mechanic_chain）覆盖的核心技能组不得遗留 ≥2 个未打包辅助（rotation 等非身份记录提及的
+   组由 source 侧检查覆盖，不要求在同一记录内打包）。
 5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，以 review 内
    组合 fixed-point 校验（support_skill_group_candidates，模拟 PoB 技能组实际生效性）为准；
    独立 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。机制细节
-   以 corpus/wiki/来源文本为准，不得凭名字推断。
+   以 corpus/wiki/来源文本为准，不得凭名字推断。注意：来源组静态校验对"同一句精确提到技能与
+   辅助名"的记录整条 defer（unsupported_source_skill_support_pair），声明某技能时不要在同一句
+   提及静态不兼容的辅助。
 6. Memory 对照用 stable key：查询前先 search_graph_components + resolve_graph_component 解析
    ascendancy/class，再以 stable key 过滤 query_research_memory；检查
    familyRecordCoverage / familyRecordIndex / familyPremiseCatalog 并逐条对照既有同族知识。
@@ -2959,8 +3067,19 @@ def main(argv: list[str] | None = None) -> int:
     _add_queue_location_args(read_parser)
     read_parser.add_argument("--lease-token", required=True)
     read_parser.add_argument("--section", required=True, choices=research_packet.RESEARCH_SECTIONS)
-    read_parser.add_argument("--cursor", type=int, default=0)
-    read_parser.add_argument("--limit", type=int, default=research_packet.DEFAULT_PAGE_SIZE)
+    read_parser.add_argument(
+        "--cursor",
+        type=int,
+        default=0,
+        help="page cursor: the previous response's nextCursor (0 starts at the first page)",
+    )
+    read_parser.add_argument(
+        "--limit",
+        type=int,
+        default=research_packet.DEFAULT_PAGE_SIZE,
+        help="requested page size; the response may return fewer items when a large entry "
+        "hits the response character budget (use nextCursor to continue)",
+    )
     read_parser.add_argument(
         "--node-type",
         default=None,
@@ -2993,6 +3112,13 @@ def main(argv: list[str] | None = None) -> int:
     accept_parser.add_argument("--memory-db-path", default=str(DEFAULT_MEMORY_DB_PATH))
     accept_parser.add_argument("--acceptance-output-dir")
     accept_parser.add_argument("--validate-only", action="store_true")
+    accept_parser.add_argument(
+        "--only-record",
+        type=int,
+        default=None,
+        help="Validate a single deep record by index (requires --validate-only); "
+        "caseCoverage/Family/deferred counts reflect the single-record slice.",
+    )
     accept_parser.add_argument(
         "--compact",
         action="store_true",
@@ -3145,6 +3271,7 @@ def main(argv: list[str] | None = None) -> int:
                 acceptance_output_dir=args.acceptance_output_dir,
                 temp_root=args.temp_root,
                 validation_only=args.validate_only,
+                only_record=args.only_record,
             )
             if getattr(args, "compact", False) and _should_compact_report(result):
                 result = _compact_accept_result(result)

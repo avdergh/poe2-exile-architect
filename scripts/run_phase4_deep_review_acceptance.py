@@ -3952,7 +3952,7 @@ def _evaluate_case_coverage(
         advisories.append(
             "Source active skills named in skill/mechanic/rotation conclusions were omitted from "
             "structured components: "
-            + ", ".join(omitted_skills)
+            + _bounded_join_diagnostics(omitted_skills)
             + ". Review their role and support ownership; this diagnostic does not decide whether "
             "they are Family identity skills."
         )
@@ -3964,7 +3964,7 @@ def _evaluate_case_coverage(
     if omitted_supports:
         advisories.append(
             "Source supports named in conclusions were omitted from structured support components: "
-            + ", ".join(omitted_supports)
+            + _bounded_join_diagnostics(omitted_supports)
             + ". Text-only mentions stay advisory; coverage blocking only applies when an evidence "
             "record (skill_package/mechanic_chain/rotation) already structured the group's active "
             "skill while at least two of its supports remain completely unpackaged."
@@ -3983,12 +3983,23 @@ def _evaluate_case_coverage(
     if unsupported_pairs:
         advisories.append(
             "Static support contracts rejected source single-active-skill socket pairs: "
-            + ", ".join(unsupported_pairs)
+            + _bounded_join_diagnostics(unsupported_pairs)
             + ". Acceptance defers only records that submit the same stable-key pair or state "
             "the exact source names together in one claim; identical display names can resolve "
             "to different active-skill keys."
         )
     return coverage, advisories
+
+
+def _bounded_join_diagnostics(items: list[str], *, limit: int = 700) -> str:
+    """Join diagnostic entries with a hard length bound so program-generated
+    acceptance caveats can never trip the copy-safety long-prose gate."""
+    if not items:
+        return ""
+    text = ", ".join(items)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip(", ") + f", ... +{len(items)} entries total"
 
 
 def _support_packages_cover_core_skill_groups(

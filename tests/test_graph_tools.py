@@ -788,3 +788,22 @@ def test_run_phase3_graph_tool_benchmark_script_writes_artifacts():
                 report_path.unlink()
         else:
             report_path.write_bytes(previous_report.encode("utf-8"))
+
+
+def test_resolve_graph_component_missing_attaches_search_candidates_discovery_only():
+    service = _service()
+    # "Lightning Arrow" exists as skill+gem, but a keystone-only resolve is missing; the
+    # missing hint should still surface the lexical candidates as discovery-only.
+    result = service.run_tool(
+        "resolve_graph_component",
+        {"query": "Lightning Arrow", "expected_node_types": ["keystone"]},
+    )
+
+    assert result["status"] == "missing"
+    assert result["facts"]["endpointAssessment"]["classification"] == "source_coverage_gap"
+    assert result["caveats"] == ["candidate_discovery_only"]
+    search_candidates = result["facts"].get("searchCandidates") or []
+    assert any(
+        candidate.get("stableKey") == "skill:LightningArrowPlayer"
+        for candidate in search_candidates
+    )

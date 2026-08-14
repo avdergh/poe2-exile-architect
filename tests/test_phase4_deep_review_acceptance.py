@@ -2510,6 +2510,26 @@ def test_source_support_name_match_does_not_collapse_distinct_stable_skill_keys(
     assert support_key in support_advisory
 
 
+def test_bounded_diagnostic_caveats_never_trip_copy_safety_long_prose():
+    pairs = [
+        {
+            "skillName": f"Skill {index}",
+            "skillKey": f"skill:Metadata/Items/Gems/ActiveSkill{index}",
+            "supportName": f"Support {index}",
+            "supportKey": f"support:Metadata/Items/Gems/SupportGem{index}",
+        }
+        for index in range(60)
+    ]
+    _, advisories = run_phase4_deep_review_acceptance._evaluate_case_coverage(
+        review={"caseCoverage": {}},
+        accepted_records=[],
+        source_evidence_diagnostics={"unsupportedSourceSupportPairs": pairs},
+    )
+    support_advisory = next(item for item in advisories if "Static support contracts" in item)
+    assert len(support_advisory) <= 1200
+    assert "+60 entries total" in support_advisory
+
+
 def test_origin_family_requires_confirmed_identity_record():
     rotation = {
         "record_kind": "rotation",
