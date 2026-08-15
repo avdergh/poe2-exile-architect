@@ -178,6 +178,7 @@ def _validate_seed(path: Path) -> dict[str, Any]:
             "patternCount": con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[
                 0
             ],
+            "edgeCount": con.execute("SELECT count(*) FROM research_semantic_edges").fetchone()[0],
             "observationCount": con.execute(
                 "SELECT count(*) FROM research_build_design_observations"
             ).fetchone()[0],

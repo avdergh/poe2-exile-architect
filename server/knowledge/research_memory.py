@@ -1067,11 +1067,7 @@ class ResearchMemoryService:
             is None
         ]
         family_keys = sorted(
-            {
-                family.key
-                for family in families_by_group.values()
-                if family is not None
-            }
+            {family.key for family in families_by_group.values() if family is not None}
         )
         sibling_hints: list[dict[str, Any]] = []
         if family_keys and self.db_path and os.path.exists(self.db_path):

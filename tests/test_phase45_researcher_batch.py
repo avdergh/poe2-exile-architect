@@ -35,7 +35,7 @@ class _FakeBrowser:
 
     def fetch_html(self, url: str) -> str:
         self.urls.append(url)
-        return self.pages[url]
+        return self.pages.get(url, "<html><body></body></html>")
 
 
 def test_researcher_batch_collects_filters_dedupes_and_prepares_one_case(tmp_path):
@@ -854,6 +854,242 @@ def test_researcher_batch_current_league_does_not_fall_back_to_standard_hc_or_ss
     monkeypatch.setattr(run_phase45_researcher_batch, "_fetch_json", fake_fetch_json)
 
     assert run_phase45_researcher_batch._resolve_league_url("current") == "runesofaldur"
+
+
+def test_researcher_batch_skips_ledger_characters_and_paginates_to_new_limit(tmp_path):
+    code_a = _sample_code("LightningArrowPlayer", ascendancy="Stormweaver", level=100)
+    code_b = _sample_code("SparkPlayer", ascendancy="Stormweaver", level=100)
+    code_c = _sample_code("PlasmaBlastPlayer", ascendancy="Stormweaver", level=100)
+    page1_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=90&max-level=100"
+    page2_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=90&max-level=100&page=2"
+    browser = _FakeBrowser(
+        {
+            page1_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>100<img alt="Stormweaver" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctB/CharB">CharB</a></td>
+      <td><div>100<img alt="Stormweaver" /></div></td></tr>
+</body></html>
+""",
+            page2_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctC/CharC">CharC</a></td>
+      <td><div>100<img alt="Stormweaver" /></div></td></tr>
+</body></html>
+""",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB": _build_page(code_b),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctC/CharC": _build_page(code_c),
+        }
+    )
+    from server.knowledge import research_intake_ledger
+
+    ledger_path = tmp_path / "ledger.sqlite"
+    research_intake_ledger.record_case(
+        ledger_path,
+        league="runesofaldur",
+        character_ref=research_intake_ledger.character_ref("acctA", "CharA"),
+        source_hash="already-researched",
+    )
+    stats: dict = {}
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=2,
+        level_min=90,
+        level_max=100,
+        ascendancies=[],
+        browser_driver=browser,
+        intake_ledger_path=ledger_path,
+        collector_stats=stats,
+    )
+
+    assert [case["sampleId"] for case in cases] == [
+        "case:phase45-researcher-001",
+        "case:phase45-researcher-002",
+    ]
+    assert [case["ascendancy"] for case in cases] == ["Stormweaver", "Stormweaver"]
+    assert all(case["characterRef"].startswith("character-hash:") for case in cases)
+    assert stats["pagesFetched"] == 2
+    assert stats["skippedAlreadyResearched"] == 1
+    detail_fetches = [url for url in browser.urls if "/character/" in url]
+    assert detail_fetches == [
+        "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB",
+        "https://poe.ninja/poe2/builds/runesofaldur/character/acctC/CharC",
+    ]
+
+
+def test_researcher_batch_without_ledger_fetches_previously_seen_characters(tmp_path):
+    code_a = _sample_code("LightningArrowPlayer", ascendancy="Stormweaver", level=100)
+    list_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=90&max-level=100"
+    browser = _FakeBrowser(
+        {
+            list_url: """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>100<img alt="Stormweaver" /></div></td></tr>
+</body></html>
+""",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+        }
+    )
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=90,
+        level_max=100,
+        ascendancies=[],
+        browser_driver=browser,
+    )
+
+    assert len(cases) == 1
+    assert cases[0]["sampleId"] == "case:phase45-researcher-001"
+    assert cases[0]["characterRef"].startswith("character-hash:")
+
+
+def test_researcher_batch_pagination_never_exceeds_requested_limit(tmp_path):
+    page1_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95"
+    page2_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&page=2"
+    pages: dict[str, str] = {}
+
+    def _row(account: str, name: str) -> str:
+        return (
+            f'<tr><td><a href="/poe2/builds/runesofaldur/character/{account}/{name}">{name}</a></td>'
+            f'<td><div>95<img alt="Deadeye" /></div></td></tr>'
+        )
+
+    page1_rows = "".join(_row(f"acctA{i}", f"CharA{i}") for i in range(4))
+    page2_rows = "".join(_row(f"acctB{i}", f"CharB{i}") for i in range(6))
+    pages[page1_url] = f"<html><body>{page1_rows}</body></html>"
+    pages[page2_url] = f"<html><body>{page2_rows}</body></html>"
+    for account, name in (
+        *[(f"acctA{i}", f"CharA{i}") for i in range(4)],
+        *[(f"acctB{i}", f"CharB{i}") for i in range(6)],
+    ):
+        pages[f"https://poe.ninja/poe2/builds/runesofaldur/character/{account}/{name}"] = (
+            _build_page(_sample_code(f"Skill{account}{name}", ascendancy="Deadeye", level=95))
+        )
+    browser = _FakeBrowser(pages)
+    stats: dict = {}
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=5,
+        level_min=95,
+        level_max=95,
+        ascendancies=["Deadeye"],
+        browser_driver=browser,
+        collector_stats=stats,
+    )
+
+    assert len(cases) == 5
+    assert [case["sampleId"] for case in cases] == [
+        f"case:phase45-researcher-{i:03d}" for i in range(1, 6)
+    ]
+    assert stats["pagesFetched"] == 2
+    detail_fetches = [url for url in browser.urls if "/character/" in url]
+    assert len(detail_fetches) == 5
+    assert detail_fetches[-1].endswith("/character/acctB0/CharB0")
+
+
+def test_researcher_batch_stops_when_a_page_repeats_already_seen_characters():
+    code_a = _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+    code_b = _sample_code("SparkPlayer", ascendancy="Deadeye", level=95)
+    page1_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95"
+    page2_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&page=2"
+    same_rows = """
+<html><body>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a></td>
+      <td><div>95<img alt="Deadeye" /></div></td></tr>
+  <tr><td><a href="/poe2/builds/runesofaldur/character/acctB/CharB">CharB</a></td>
+      <td><div>95<img alt="Deadeye" /></div></td></tr>
+</body></html>
+"""
+    browser = _FakeBrowser(
+        {
+            page1_url: same_rows,
+            page2_url: same_rows,
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctB/CharB": _build_page(code_b),
+        }
+    )
+    stats: dict = {}
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=5,
+        level_min=95,
+        level_max=95,
+        ascendancies=[],
+        browser_driver=browser,
+        collector_stats=stats,
+    )
+
+    assert [case["sampleId"] for case in cases] == [
+        "case:phase45-researcher-001",
+        "case:phase45-researcher-002",
+    ]
+    assert stats["pagesFetched"] == 2
+    assert stats["skippedAlreadyResearched"] == 0
+    assert not any("page=3" in url for url in browser.urls)
+
+
+def test_researcher_batch_keeps_paginating_after_an_all_ledger_skipped_page(tmp_path):
+    code_a = _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+    code_d = _sample_code("PlasmaBlastPlayer", ascendancy="Deadeye", level=95)
+    page1_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95"
+    page2_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&page=2"
+    page3_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=95&max-level=95&page=3"
+
+    def _rows(*names: str) -> str:
+        return "".join(
+            f'<tr><td><a href="/poe2/builds/runesofaldur/character/acct{name}/Char{name}">Char{name}</a></td>'
+            f'<td><div>95<img alt="Deadeye" /></div></td></tr>'
+            for name in names
+        )
+
+    browser = _FakeBrowser(
+        {
+            page1_url: f"<html><body>{_rows('A')}</body></html>",
+            page2_url: f"<html><body>{_rows('B', 'C')}</body></html>",
+            page3_url: f"<html><body>{_rows('D')}</body></html>",
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctA/CharA": _build_page(code_a),
+            "https://poe.ninja/poe2/builds/runesofaldur/character/acctD/CharD": _build_page(code_d),
+        }
+    )
+    from server.knowledge import research_intake_ledger
+
+    ledger_path = tmp_path / "ledger.sqlite"
+    for name in ("B", "C"):
+        research_intake_ledger.record_case(
+            ledger_path,
+            league="runesofaldur",
+            character_ref=research_intake_ledger.character_ref(f"acct{name}", f"Char{name}"),
+            source_hash=f"seen-{name}",
+        )
+    stats: dict = {}
+
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur",
+        limit=2,
+        level_min=95,
+        level_max=95,
+        ascendancies=[],
+        browser_driver=browser,
+        intake_ledger_path=ledger_path,
+        collector_stats=stats,
+    )
+
+    assert [case["sampleId"] for case in cases] == [
+        "case:phase45-researcher-001",
+        "case:phase45-researcher-002",
+    ]
+    assert stats["pagesFetched"] == 3
+    assert stats["skippedAlreadyResearched"] == 2
+    assert any("page=3" in url for url in browser.urls)
+    assert browser.urls[-1].endswith("/character/acctD/CharD")
 
 
 def _sample_code(skill_id: str, *, ascendancy: str, level: int) -> str:

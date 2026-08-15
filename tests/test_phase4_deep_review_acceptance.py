@@ -114,6 +114,180 @@ def test_deep_review_acceptance_persists_focused_records_with_patterns(tmp_path)
         con.close()
 
 
+def test_deep_review_acceptance_persists_review_semantic_edges(tmp_path):
+    db_path = tmp_path / "memory.sqlite"
+    review_file = _write_review(
+        tmp_path,
+        filename="semantic-edges-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["semanticEdges"] = [
+        {
+            "source_key": "skill:ResolvedOnlyPlayer",
+            "target_key": "unique:FixtureIdentityItem",
+            "source_resolution": _resolution_evidence("skill:ResolvedOnlyPlayer"),
+            "target_resolution": _resolution_evidence("unique:FixtureIdentityItem"),
+            "edge_type": "enables_mechanic",
+            "rationale": "Fixture mechanism-level relationship from the reviewed sample.",
+            "source_case_refs": ["case:fixture-sample-001"],
+            "safe_evidence_refs": ["safe:fixture-sample-001"],
+            "game_patch": "0.5.4",
+            "passive_tree_version": "0_5",
+            "pob_version_or_commit": "unknown",
+            "status": "valid",
+            "confidence": "low",
+            "modelability": "partial",
+            "copy_safety_state": "passed",
+            "context_requirements": [
+                {"context_type": "verification_gate_requirement", "task": "Fixture verify."}
+            ],
+            "affected_component_keys": [
+                "skill:ResolvedOnlyPlayer",
+                "unique:FixtureIdentityItem",
+            ],
+            "visibility": "creator_visible",
+            "split": "train_context",
+            "knowledge_scope": "global_seed",
+            "directionality": "directional",
+        }
+    ]
+    review_file.write_text(json.dumps(review, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=db_path,
+        json_output=tmp_path / "semantic-edges-report.json",
+        md_output=tmp_path / "semantic-edges-report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "accepted"
+    assert report["acceptedSemanticEdgeCount"] == 1
+    assert report["durableWritePerformed"] is True
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT source_key, target_key, edge_type FROM research_semantic_edges"
+        ).fetchone()
+        assert row["source_key"] == "skill:ResolvedOnlyPlayer"
+        assert row["target_key"] == "unique:FixtureIdentityItem"
+        assert row["edge_type"] == "enables_mechanic"
+    finally:
+        con.close()
+
+
+def test_deep_review_acceptance_rejects_invalid_semantic_edges(tmp_path):
+    db_path = tmp_path / "memory.sqlite"
+    # Multi-component candidate so the pattern payload is non-empty: without the
+    # preview_visible gate the rejected report would list acceptedPatterns (and
+    # recordKindCounts) from candidates that were never persisted.
+    review_file = _write_review(
+        tmp_path,
+        filename="semantic-edges-invalid-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            },
+            {
+                "candidateName": "Fixture Identity Item",
+                "componentKey": "unique:FixtureIdentityItem",
+                "role": "unique_enabler",
+                "resolverQuery": "Fixture Identity Item",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["semanticEdges"] = [
+        {
+            "source_key": "skill:ResolvedOnlyPlayer",
+            "target_key": "unique:FixtureIdentityItem",
+            "edge_type": "synergizes_with",
+            "rationale": "Fixture relationship.",
+            "source_case_refs": ["case:fixture-sample-001"],
+            "game_patch": "0.5.4",
+            "passive_tree_version": "0_5",
+            "pob_version_or_commit": "unknown",
+            "status": "valid",
+            "confidence": "low",
+            "modelability": "partial",
+            "copy_safety_state": "passed",
+            "context_requirements": [
+                {"context_type": "verification_gate_requirement", "task": "Fixture verify."}
+            ],
+            "affected_component_keys": [
+                "skill:ResolvedOnlyPlayer",
+                "unique:FixtureIdentityItem",
+            ],
+            "visibility": "creator_visible",
+            "split": "train_context",
+            "knowledge_scope": "global_seed",
+            "directionality": "associative",
+        }
+    ]
+    review_file.write_text(json.dumps(review, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=db_path,
+        json_output=tmp_path / "semantic-edges-invalid-report.json",
+        md_output=tmp_path / "semantic-edges-invalid-report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["status"] == "rejected"
+    assert report["acceptedSemanticEdgeCount"] == 0
+    assert report["semanticEdgeWrite"]["status"] != "accepted"
+    assert report["durableWritePerformed"] is False
+    assert report["acceptedDeepRecordCount"] == 0
+    assert report["acceptedDeepRecords"] == []
+    assert report["acceptedBuildFamilyKeys"] == []
+    assert report["recordKindCounts"] == {}
+    assert report["acceptedPatternCount"] == 0
+    assert report["acceptedPatterns"] == []
+    assert report["acceptedTransferCandidateCount"] == 0
+    assert report["promotedTransferPatternCount"] == 0
+    assert report["promotedTransferPatternIds"] == []
+    assert report["siblingFamilyHints"] == []
+    # Pin that the zeroed previews come from the gate, not an empty payload: the
+    # pattern candidate validated and produced exactly one candidate id.
+    assert len(report["patternWrite"].get("candidatePatternIds") or []) == 1
+    con = mature_learning.connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM research_semantic_edges").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 0
+        assert (
+            con.execute("SELECT count(*) FROM research_build_design_observations").fetchone()[0]
+            == 0
+        )
+    finally:
+        con.close()
+
+
+def _resolution_evidence(key: str) -> dict[str, object]:
+    return {
+        "tool_name": "resolve_graph_component",
+        "status": "resolved",
+        "stable_key": key,
+        "snapshot_id": "snapshot:deep-review-fixture",
+        "evidence_path_nodes": [key],
+        "source_refs": ["fixture:deep_review"],
+    }
+
+
 def test_deep_review_acceptance_persists_revision_pinned_mechanic_evidence(tmp_path):
     db_path = tmp_path / "memory.sqlite"
     review_file = _write_review(

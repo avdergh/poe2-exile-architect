@@ -46,6 +46,8 @@ def test_researcher_prompt_is_tool_driven_not_plain_json_output():
     assert "propose_research_fragments" in text
     assert "propose_deep_research_records" in text
     assert "propose_semantic_edges" in text
+    assert "Mandatory semantic edges" in text
+    assert "at least 2 resolver-backed" in text
     assert "Return exactly one JSON object" not in text
 
 

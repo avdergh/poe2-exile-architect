@@ -59,6 +59,14 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - `--level-min N` / `--level-max N`：默认 90-100。注意等级过滤是**区间**而非精确匹配：
   poe.ninja 列表按等级从高到低采样，`95-100` 这类区间在 100 级样本充足时确定性地全部取到
   100 级；要严格精确等级请令 `--level-min == --level-max`。status 报告在该情况出现时会加注记。
+- 角色级去重：`queue` 按每用户本地 intake ledger（默认
+  `paths.user_data_dir()/research_intake.sqlite`，可用 `--intake-ledger` 覆盖）跳过本 league
+  已经研究过的角色（存 `character-hash:` 引用，明文角色名不落盘），并**自动分页继续抓取**
+  直到凑满 `limit` 个新案例或列表穷尽（单次最多 15 页）。queue 报告输出
+  `intakePagesFetched` / `intakeSkippedAlreadyResearched` / `intakeLedgerRecordedCount` /
+  `intakeLedgerSummary`；已研究角色会在最终汇报中如实说明，不要把它们当成新样本。正式 accept
+  后 ledger 记录晋升为 `accepted`，后续 queue 不再重复抓取同一角色；本地 `--source-file` /
+  `--source-batch-file` 输入不走 ledger。
 - `--source-file PATH`：单个本地 PoB code/XML。
 - `--source-batch-file PATH`：本地批量文件；执行时仍一案一轮。
 - `--expected-source-count N`：多个本地附件的预期案例数；实际解析数量不符时不创建队列。
@@ -100,7 +108,8 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 3. `[Phase 3/5] Research`：当前 Agent 只分析这个完整 BD。
 4. `[Phase 4/5] Accept`：把 safe proposal/review 交给 acceptance gate。
 5. `[Phase 5/5] Status`：分别报告 accepted patterns、accepted deep records、
-   transfer candidates/promotions、`unresolvedDeepRecordComponentCount`、deferred candidates 和 remaining。
+   accepted semantic edges、transfer candidates/promotions、
+   `unresolvedDeepRecordComponentCount`、deferred candidates 和 remaining。
 
 当调用方明确要求研究循环业务结果标记时，最终回答的最后一行必须且只能包含一个：
 

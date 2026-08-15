@@ -142,6 +142,300 @@ def test_queue_forwards_optional_ninja_class_filter(tmp_path, monkeypatch):
     assert legacy_status["sampleShortfallCount"] == 3
 
 
+def _ninja_case_for_queue(
+    *, source: str, account: str = "acctA", name: str = "CharA", league: str = "runesofaldur"
+) -> dict:
+    from scripts import run_phase45_researcher_batch as legacy_batch
+    from server.knowledge import research_intake_ledger
+
+    return legacy_batch._case_from_source(
+        source,
+        source_hash=legacy_batch._safe_hash(source),
+        sample_id="case:phase45-researcher-001",
+        source_type="poe_ninja_import_code",
+        league=league,
+        row={"account": account, "name": name},
+        character_ref=research_intake_ledger.character_ref(account, name),
+    )
+
+
+def test_queue_records_intake_ledger_and_reports_intake_counts(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+    from server.knowledge import research_intake_ledger
+
+    ledger_path = tmp_path / "intake-ledger.sqlite"
+    captured: dict = {}
+    character_ref = research_intake_ledger.character_ref("acctA", "CharA")
+
+    def fake_cases_from_ninja(**kwargs):
+        captured.update(kwargs)
+        return [
+            _ninja_case_for_queue(
+                source=_sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+            )
+        ]
+
+    monkeypatch.setattr(
+        research_mature_builds.legacy_batch,
+        "_cases_from_ninja",
+        fake_cases_from_ninja,
+    )
+    output_dir = tmp_path / "research"
+    queued = research_mature_builds.queue_cases(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=95,
+        level_max=95,
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-intake",
+        intake_ledger_path=ledger_path,
+    )
+
+    assert captured["intake_ledger_path"] == ledger_path
+    assert queued["status"] == "queued"
+    assert queued["queuedCount"] == 1
+    assert queued["intakePagesFetched"] == 0
+    assert queued["intakeSkippedAlreadyResearched"] == 0
+    assert queued["intakeLedgerRecordedCount"] == 1
+    assert queued["intakeLedgerSummary"]["used"] is True
+    assert queued["intakeLedgerSummary"]["totalRecords"] == 1
+    assert research_intake_ledger.seen_character_refs(ledger_path, "runesofaldur") == {
+        character_ref
+    }
+    assert (
+        research_mature_builds.queue_status(output_dir=output_dir)["intakeLedgerRecordedCount"] == 1
+    )
+    _assert_safe_payload(queued, tmp_path.parent)
+
+
+def test_queue_dry_run_reports_intake_but_never_writes_ledger(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    ledger_path = tmp_path / "intake-ledger-dry-run.sqlite"
+    stats_capture: dict = {}
+
+    def fake_cases_from_ninja(**kwargs):
+        stats = kwargs.get("collector_stats") or {}
+        stats["pagesFetched"] = 2
+        stats["pageRowsSeen"] = 5
+        stats["skippedAlreadyResearched"] = 3
+        stats_capture.update(stats)
+        return []
+
+    monkeypatch.setattr(
+        research_mature_builds.legacy_batch,
+        "_cases_from_ninja",
+        fake_cases_from_ninja,
+    )
+    queued = research_mature_builds.queue_cases(
+        league_url="runesofaldur",
+        limit=2,
+        level_min=95,
+        level_max=95,
+        output_dir=tmp_path / "dry-run-dir",
+        temp_root=tmp_path.parent / "poe-research-temp-intake-dry",
+        dry_run=True,
+        intake_ledger_path=ledger_path,
+    )
+
+    assert queued["status"] == "dry_run"
+    assert queued["intakePagesFetched"] == 2
+    assert queued["intakePageRowsSeen"] == 5
+    assert queued["intakeSkippedAlreadyResearched"] == 3
+    assert queued["intakeLedgerRecordedCount"] == 0
+    assert not ledger_path.exists()
+
+
+def test_queue_local_sources_never_touch_intake_ledger(tmp_path):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "intake-ledger-local.sqlite"
+    queued = research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=tmp_path / "research-local",
+        temp_root=tmp_path.parent / "poe-research-temp-intake-local",
+        intake_ledger_path=ledger_path,
+    )
+
+    assert queued["queuedCount"] == 1
+    assert queued["intakeLedgerRecordedCount"] == 0
+    assert queued["intakeLedgerSummary"] == {
+        "used": False,
+        "reason": "local_source_input",
+        "totalRecords": 0,
+        "byStatus": {},
+        "league": "",
+    }
+    assert not ledger_path.exists()
+
+
+def test_queue_accept_promotes_intake_ledger_record(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+    from server.knowledge import research_intake_ledger
+
+    ledger_path = tmp_path / "intake-ledger-accept.sqlite"
+    character_ref = research_intake_ledger.character_ref("acctA", "CharA")
+
+    def fake_cases_from_ninja(**kwargs):
+        return [
+            _ninja_case_for_queue(
+                source=_sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+            )
+        ]
+
+    monkeypatch.setattr(
+        research_mature_builds.legacy_batch,
+        "_cases_from_ninja",
+        fake_cases_from_ninja,
+    )
+    output_dir = tmp_path / "research-accept"
+    research_mature_builds.queue_cases(
+        league_url="runesofaldur",
+        limit=1,
+        level_min=95,
+        level_max=95,
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-intake-accept",
+        intake_ledger_path=ledger_path,
+    )
+    assert research_intake_ledger.summary(ledger_path, league="runesofaldur")["byStatus"] == {
+        "queued": 1
+    }
+
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+
+    def fake_accept_deep_review_candidates(**kwargs):
+        return {
+            "status": "accepted",
+            "acceptedPatternCount": 1,
+            "acceptedSemanticEdgeCount": 2,
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "accepted"},
+        }
+
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
+        fake_accept_deep_review_candidates,
+    )
+    accepted = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=review_file,
+        memory_db_path=tmp_path / "memory.sqlite",
+        intake_ledger_path=ledger_path,
+    )
+
+    assert accepted["status"] == "accepted"
+    assert accepted["acceptedSemanticEdgeCount"] == 2
+    import sqlite3
+
+    queue_db = research_mature_builds._queue_db_path(output_dir, None)
+    with sqlite3.connect(queue_db) as conn:
+        row = conn.execute(
+            "SELECT accepted_semantic_edge_count FROM cases WHERE sample_id = ?",
+            (claimed["sampleId"],),
+        ).fetchone()
+        assert row[0] == 2
+    assert research_intake_ledger.summary(ledger_path, league="runesofaldur")["byStatus"] == {
+        "accepted": 1
+    }
+    assert research_intake_ledger.seen_character_refs(ledger_path, "runesofaldur") == {
+        character_ref
+    }
+
+
+def test_queue_intake_summary_uses_resolved_league_for_current(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+    from server.knowledge import research_intake_ledger
+
+    ledger_path = tmp_path / "intake-ledger-current.sqlite"
+    character_ref = research_intake_ledger.character_ref("acctA", "CharA")
+    research_intake_ledger.record_case(
+        ledger_path,
+        league="runesofaldur",
+        character_ref=character_ref,
+        source_hash="old-run",
+    )
+
+    def fake_cases_from_ninja(**kwargs):
+        stats = kwargs.get("collector_stats") or {}
+        stats["resolvedLeague"] = "runesofaldur"
+        return []
+
+    monkeypatch.setattr(
+        research_mature_builds.legacy_batch,
+        "_cases_from_ninja",
+        fake_cases_from_ninja,
+    )
+    queued = research_mature_builds.queue_cases(
+        league_url="current",
+        limit=2,
+        level_min=95,
+        level_max=95,
+        output_dir=tmp_path / "research-current",
+        temp_root=tmp_path.parent / "poe-research-temp-current",
+        intake_ledger_path=ledger_path,
+    )
+
+    assert queued["intakeLedgerSummary"]["used"] is True
+    assert queued["intakeLedgerSummary"]["league"] == "runesofaldur"
+    assert queued["intakeLedgerSummary"]["totalRecords"] == 1
+    assert queued["intakeLedgerSummary"]["byStatus"] == {"queued": 1}
+
+
+def test_queue_status_returns_persisted_intake_ledger_summary_and_tolerates_old_db(
+    tmp_path, monkeypatch
+):
+    from scripts import research_mature_builds
+
+    ledger_path = tmp_path / "intake-ledger-status.sqlite"
+
+    def fake_cases_from_ninja(**kwargs):
+        stats = kwargs.get("collector_stats") or {}
+        stats["resolvedLeague"] = "runesofaldur"
+        return [
+            _ninja_case_for_queue(
+                source=_sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+            )
+        ]
+
+    monkeypatch.setattr(
+        research_mature_builds.legacy_batch,
+        "_cases_from_ninja",
+        fake_cases_from_ninja,
+    )
+    output_dir = tmp_path / "research-status"
+    research_mature_builds.queue_cases(
+        league_url="current",
+        limit=1,
+        level_min=95,
+        level_max=95,
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-status",
+        intake_ledger_path=ledger_path,
+    )
+
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+    assert status["intakeLedgerSummary"]["used"] is True
+    assert status["intakeLedgerSummary"]["league"] == "runesofaldur"
+    assert status["intakeLedgerSummary"]["totalRecords"] == 1
+    assert status["intakeLedgerRecordedCount"] == 1
+
+    with sqlite3.connect(output_dir / research_mature_builds.QUEUE_DB_FILENAME) as conn:
+        conn.execute("DELETE FROM metadata WHERE key = 'intakeLedgerSummary'")
+        conn.commit()
+    legacy_status = research_mature_builds.queue_status(output_dir=output_dir)
+    assert legacy_status["intakeLedgerSummary"] == {}
+
+
 def test_queue_cli_stops_when_live_source_has_no_usable_samples(tmp_path, capsys, monkeypatch):
     from scripts import research_mature_builds
 

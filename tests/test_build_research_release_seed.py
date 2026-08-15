@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -51,12 +52,64 @@ def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
         con.commit()
 
 
+def _insert_edge(db_path, *, scope: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute(
+            """
+            INSERT INTO research_semantic_edges(
+                edge_id, source_key, target_key, canonical_source_key, canonical_target_key,
+                edge_type, rationale, source_case_refs, safe_evidence_refs, game_patch,
+                passive_tree_version, pob_version_or_commit, status, confidence,
+                modelability, copy_safety_state, context_requirements,
+                affected_component_keys, visibility, split, knowledge_scope,
+                directionality, planner_visible, current_version_context,
+                created_at, last_seen_at, last_validated_at, superseded_by_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                f"edge:{scope}",
+                "skill:test",
+                "unique:test",
+                "skill:test",
+                "unique:test",
+                "enables_mechanic",
+                "安全关系摘要",
+                '["case-ref:test"]',
+                '["evidence-ref:test"]',
+                "0.5.4",
+                "0_5",
+                "0.22.0",
+                "valid",
+                "low",
+                "partial",
+                "passed",
+                json.dumps(
+                    [{"context_type": "verification_gate_requirement", "task": "安全验证"}],
+                    ensure_ascii=False,
+                ),
+                '["skill:test", "unique:test"]',
+                "creator_visible",
+                "train_context",
+                scope,
+                "directional",
+                1,
+                "{}",
+                now,
+                now,
+                now,
+            ),
+        )
+        con.commit()
+
+
 def test_build_release_seed_is_copy_safe_and_does_not_mutate_source(tmp_path):
     source = tmp_path / "mutable.sqlite"
     output = tmp_path / "release.sqlite"
     mature_learning.initialize_store(source)
     _insert_family_and_record(source, scope="global_seed", suffix="public")
     _insert_family_and_record(source, scope="local_user", suffix="private")
+    _insert_edge(source, scope="global_seed")
 
     report = release_seed.build_release_seed(
         source=source,
@@ -67,6 +120,7 @@ def test_build_release_seed_is_copy_safe_and_does_not_mutate_source(tmp_path):
     assert report["status"] == "built"
     assert report["recordCount"] == 2
     assert report["familyCount"] == 2
+    assert report["edgeCount"] == 1
     assert report["scopeCounts"] == {"global_seed": 1, "local_user": 1}
     assert output.is_file()
     with closing(sqlite3.connect(source)) as con:

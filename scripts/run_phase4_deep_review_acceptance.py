@@ -564,6 +564,11 @@ def accept_deep_review_candidates(
     )
     deferred.extend(deferred_records)
     deferred.extend(mechanic_audit_deferred)
+    edge_payload = {
+        "schema_version": 4,
+        "fragments": [],
+        "semantic_edges": review.get("semanticEdges") or [],
+    }
     service = research_memory.ResearchMemoryService(
         db_path=Path(db_path),
         graph_service=graph_service,
@@ -606,10 +611,12 @@ def accept_deep_review_candidates(
     if acceptance_gate_failed:
         payload = {"schema_version": 4, "build_design_observations": [], "patterns": []}
         deep_payload = {"schema_version": 5, "deep_research_records": []}
+        edge_payload = {"schema_version": 4, "fragments": [], "semantic_edges": []}
         accepted_summaries = []
         accepted_record_summaries = []
     has_pattern_payload = bool(payload["build_design_observations"] or payload["patterns"])
     has_deep_payload = bool(deep_payload["deep_research_records"])
+    has_edge_payload = bool(edge_payload["semantic_edges"])
     empty_pattern_result = {
         "status": "accepted",
         "observationIds": [],
@@ -634,6 +641,13 @@ def accept_deep_review_candidates(
         "noRawQuery": True,
         "noRawMatureBuildMaterial": True,
     }
+    empty_edge_result = {
+        "status": "accepted",
+        "edgeIds": [],
+        "validationOnly": validation_only,
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
     pattern_validation = (
         service.validate_build_patterns(payload) if has_pattern_payload else empty_pattern_result
     )
@@ -642,9 +656,13 @@ def accept_deep_review_candidates(
         if has_deep_payload
         else empty_deep_result
     )
+    edge_validation = (
+        service.validate_semantic_edges(edge_payload) if has_edge_payload else empty_edge_result
+    )
     all_payloads_valid = (
         pattern_validation.get("status") == "accepted"
         and deep_validation.get("status") == "accepted"
+        and edge_validation.get("status") == "accepted"
     )
     if validation_only:
         result = _pattern_validation_result(pattern_validation)
@@ -652,10 +670,15 @@ def accept_deep_review_candidates(
             deep_validation,
             deep_payload=deep_payload,
         )
+        edge_result = edge_validation
     elif not all_payloads_valid:
-        # Validate the complete acceptance unit before either durable writer runs.
+        # Validate the complete acceptance unit before any durable writer runs.
         result = pattern_validation
-        deep_result = deep_validation
+        deep_result = _deep_record_validation_result(
+            deep_validation,
+            deep_payload=deep_payload,
+        )
+        edge_result = edge_validation
     else:
         result = (
             service.propose_build_patterns(payload) if has_pattern_payload else empty_pattern_result
@@ -665,15 +688,32 @@ def accept_deep_review_candidates(
             if has_deep_payload
             else empty_deep_result
         )
+        edge_result = (
+            service.propose_semantic_edges(edge_payload) if has_edge_payload else empty_edge_result
+        )
     accepted = (
         result.get("status") == "accepted"
         and deep_result.get("status") == "accepted"
+        and edge_result.get("status") == "accepted"
         and not acceptance_gate_failed
     )
+    # Durable writes only happen in the propose branch; validation-only results and
+    # mixed-failure branches must never be reported as persisted.
+    preview_visible = (validation_only or all_payloads_valid) and not acceptance_gate_failed
+    durable_write_happened = (
+        not validation_only
+        and all_payloads_valid
+        and not acceptance_gate_failed
+        and bool(
+            result.get("observationIds")
+            or result.get("patternIds")
+            or deep_result.get("recordIds")
+            or edge_result.get("edgeIds")
+        )
+    )
+    records_visible = deep_result.get("status") == "accepted" and preview_visible
     persisted_record_summaries = (
-        _attach_deep_record_ids(accepted_record_summaries, deep_result)
-        if deep_result.get("status") == "accepted"
-        else []
+        _attach_deep_record_ids(accepted_record_summaries, deep_result) if records_visible else []
     )
     unresolved_component_mentions = [
         component
@@ -705,17 +745,20 @@ def accept_deep_review_candidates(
         "status": "accepted" if accepted else "rejected",
         "acceptanceMode": acceptance_mode,
         "validationOnly": validation_only,
-        "durableWritePerformed": not validation_only
-        and bool(
-            result.get("observationIds") or result.get("patternIds") or deep_result.get("recordIds")
-        ),
+        "durableWritePerformed": durable_write_happened,
         "safeArtifactOnly": True,
         "inputKind": "safe_deep_researcher_candidate_review",
         "inputReviewReportId": str(review.get("reportId") or ""),
         "patternWrite": result,
         "deepRecordWrite": deep_result,
+        "semanticEdgeWrite": edge_result,
+        "acceptedSemanticEdgeCount": len(
+            edge_result.get("edgeIds") or edge_result.get("candidateEdgeIds") or []
+        )
+        if edge_result.get("status") == "accepted" and preview_visible
+        else 0,
         "acceptedDeepRecordCount": len(deep_result.get("recordIds") or [])
-        if deep_result.get("status") == "accepted"
+        if records_visible
         else 0,
         "createdDeepRecordCount": int(deep_result.get("createdRecordCount") or 0)
         if deep_result.get("status") == "accepted"
@@ -733,9 +776,11 @@ def accept_deep_review_candidates(
         if deep_result.get("status") == "accepted"
         else 0,
         "acceptedBuildFamilyKeys": list(deep_result.get("buildFamilyKeys") or [])
-        if deep_result.get("status") == "accepted"
+        if records_visible
         else [],
-        "siblingFamilyHints": list(deep_result.get("siblingFamilyHints") or []),
+        "siblingFamilyHints": list(deep_result.get("siblingFamilyHints") or [])
+        if records_visible
+        else [],
         "acceptedDeepRecords": persisted_record_summaries,
         # Compatibility field: this has always counted mentions, not unique entities.
         "unresolvedDeepRecordComponentCount": len(unresolved_component_mentions),
@@ -781,34 +826,36 @@ def accept_deep_review_candidates(
         ),
         "recordKindAdvisories": record_kind_advisories,
         "acceptedPatternCount": len(result.get("patternIds") or [])
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
         "acceptedObservationCount": len(result.get("observationIds") or [])
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
-        "acceptedPatterns": accepted_summaries if result.get("status") == "accepted" else [],
+        "acceptedPatterns": (
+            accepted_summaries if result.get("status") == "accepted" and preview_visible else []
+        ),
         "acceptedTransferCandidateCount": sum(
             1 for item in accepted_summaries if item.get("transferScope") == "component"
         )
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
         "promotedTransferPatternCount": len(result.get("promotedPatternIds") or [])
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
         "promotedTransferPatternIds": list(result.get("promotedPatternIds") or [])
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else [],
         "singleComponentObservationCount": len(single_component_observations)
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
         "singleComponentObservations": single_component_observations
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else [],
         "caseOnlyObservationCount": len(case_only_observations)
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else 0,
         "caseOnlyObservations": case_only_observations
-        if result.get("status") == "accepted"
+        if result.get("status") == "accepted" and preview_visible
         else [],
         "deferredCandidateCount": len(deferred),
         "deferredCandidates": deferred,
@@ -3795,7 +3842,6 @@ def _source_skill_evidence_diagnostics(
     packaged_supports: set[str] = set()
     evidence_kinds = {"skill_package", "mechanic_chain", "rotation"}
     for record in records:
-        is_evidence = record.get("recordKind") in evidence_kinds
         for package in (record.get("typedPayload") or {}).get("supportPackages") or []:
             for support_key in package.get("supportKeys") or []:
                 tail = str(support_key).strip().rsplit("/", 1)[-1].casefold()

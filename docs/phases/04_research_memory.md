@@ -139,6 +139,31 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
   planner-visible、copy-safe context，并包含 `usedFragmentIds`、`usedSemanticEdgeIds`、
   `usedPatternIds` 和 verification tasks。
 
+## 语义边回填与每案建边
+
+存量语义边通过 `scripts/backfill_semantic_edges.py` 做确定性 T1 回填，只写以下可证明的
+关系形状，且全部走 `propose_semantic_edges`（copy-safety / resolver / 冲突门禁）：
+
+- transition_gate pattern → `requires_transition_gate`（target 优先级：transition_gate role >
+  keystone_transformer > unique_enabler > weapon_base）；
+- mechanic_chain record → `enables_mechanic`（generator→payoff、unique_enabler→primary_damage/payoff，
+  每记录 ≤2）；
+- failure_mode record → `creates_failure_risk_for`；
+- modelability_caveat record → `has_modelability_caveat`（每记录 ≤3）。
+
+脚本从当前注册物理图快照节点直接构建 resolver evidence；候选生成前先对 DB 做只读一致性
+快照副本（运行中的 MCP server 可能并发维护 store），保证单次运行确定性；离线做逆边/短环
+预检后分块（25）提交，`ON CONFLICT(edge_id) DO UPDATE` 幂等。单案例 cooccurrence pattern
+不提升为边（无跨 Family 证据）。全部回填边为 low/medium 置信度 advisory，使用前需
+PoB/Judge 复核。
+
+后续每案研究强制建边：worker brief 强制检查要求每案至少提交 2 条 resolver-backed
+semantic edge 写入 safe review 的 `semanticEdges`；acceptance gate（
+`run_phase4_deep_review_acceptance.py`）在正式 accept 时通过持久化版
+`propose_semantic_edges` 写入，报告 `acceptedSemanticEdgeCount` 并计入 queue case 状态。
+无法推导时必须说明原因，不得为凑数发明关系。MCP 的 `propose_semantic_edges` 仍是
+validate-only（acceptance 是唯一持久化写入方）。
+
 ## 安全边界
 
 - 项目不新增内部 OpenAI / Claude / Gemini provider loop；研究推理由 Codex、Claude Code、
@@ -202,6 +227,12 @@ init-review → accept --validate-only → accept → status）以 `/poe-bd-rese
   `--expected-source-count`、`--resume`、`--dry-run`、`--output-dir`；
 - `--class` 同时接受空格名称和 poe.ninja URL 中的 `+` 分隔形式，编码前统一归一；列表返回后还会
   按同一升华名本地复核，非目标升华不得占用 `limit`；
+- poe.ninja 采集按角色级去重：每用户本地 intake ledger（`paths.user_data_dir()/research_intake.sqlite`，
+  可用 `--intake-ledger` 覆盖）记录已入队角色（`character-hash:` 引用，明文角色名不落盘），
+  `queue` 会跳过本 league 已研究角色并继续分页抓取列表，直到凑满 `limit` 个新案例或列表穷尽
+  （单次最多 15 页）；queue 报告输出 `intakePagesFetched` / `intakeSkippedAlreadyResearched` /
+  `intakeLedgerRecordedCount` / `intakeLedgerSummary`。正式 accept 后 ledger 记录晋升为 `accepted`，
+  后续 queue 不再重复抓取同一角色；本地 source-file 输入不走 ledger；
 - batch mode 仍必须一案一轮：一个 Researcher prompt 只包含一个完整 BD；
 - 默认不复用上一案的 transient evidence，避免前一个样本污染后一个样本；
 - `/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、

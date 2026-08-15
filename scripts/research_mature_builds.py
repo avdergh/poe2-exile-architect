@@ -36,6 +36,7 @@ from server.knowledge import (  # noqa: E402
     graph_seed,
     graph_tools,
     research_identity,
+    research_intake_ledger,
     research_models,
     research_packet,
 )
@@ -45,6 +46,7 @@ RUNS_DIRNAME = "runs"
 QUEUE_DB_FILENAME = "poe_bd_research_queue.sqlite"
 DEFAULT_TEMP_DIRNAME = "poe-bd-creator-research-packets"
 DEFAULT_MEMORY_DB_PATH = paths.mature_learning_path()
+DEFAULT_INTAKE_LEDGER_PATH = research_intake_ledger.default_ledger_path()
 
 RAW_MARKERS = (
     "eNrt",
@@ -86,12 +88,16 @@ def queue_cases(
     browser_driver: Any | None = None,
     resume: bool = False,
     dry_run: bool = False,
+    intake_ledger_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create or resume a safe mature-build research queue."""
     del worker_count  # Deprecated compatibility input; execution is always serial.
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     db_path = _queue_db_path(output_root, queue_db_path)
+    effective_ledger = (
+        Path(intake_ledger_path) if intake_ledger_path is not None else DEFAULT_INTAKE_LEDGER_PATH
+    )
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
     effective_temp_root.mkdir(parents=True, exist_ok=True)
     research_packet.cleanup_expired_packets(temp_root=effective_temp_root)
@@ -116,6 +122,11 @@ def queue_cases(
     source_batch_file_values = list(source_batch_files or [])
     normalized_ninja_classes = legacy_batch._normalize_ninja_classes(ninja_classes or [])
     local_sources = legacy_batch._local_sources(source_file_values, source_batch_file_values)
+    collector_stats: dict[str, Any] = {
+        "pagesFetched": 0,
+        "pageRowsSeen": 0,
+        "skippedAlreadyResearched": 0,
+    }
     source_input_summary = {
         "sourceFileArgumentCount": len(source_file_values),
         "sourceBatchFileArgumentCount": len(source_batch_file_values),
@@ -130,6 +141,10 @@ def queue_cases(
         "expectedSourceCount": (
             max(0, int(expected_source_count)) if expected_source_count is not None else None
         ),
+        "intakePagesFetched": 0,
+        "intakePageRowsSeen": 0,
+        "intakeSkippedAlreadyResearched": 0,
+        "intakeLedgerRecordedCount": 0,
     }
     if expected_source_count is not None:
         if not source_file_values and not source_batch_file_values:
@@ -157,12 +172,19 @@ def queue_cases(
             ascendancies=ascendancies or [],
             browser_driver=browser_driver,
             ninja_classes=normalized_ninja_classes,
+            intake_ledger_path=effective_ledger,
+            collector_stats=collector_stats,
         )
     )
     _normalize_sample_ids(cases, sample_start_index=sample_start_index)
     source_input_summary["uniqueLocalCaseCount"] = len(cases) if local_sources else 0
     source_input_summary["duplicateLocalSourceCount"] = (
         max(0, len(local_sources) - len(cases)) if local_sources else 0
+    )
+    source_input_summary["intakePagesFetched"] = int(collector_stats.get("pagesFetched") or 0)
+    source_input_summary["intakePageRowsSeen"] = int(collector_stats.get("pageRowsSeen") or 0)
+    source_input_summary["intakeSkippedAlreadyResearched"] = int(
+        collector_stats.get("skippedAlreadyResearched") or 0
     )
 
     if dry_run:
@@ -173,6 +195,11 @@ def queue_cases(
             cases=[_safe_case_row_from_case(case) for case in cases],
             dry_run=True,
             source_input_summary=source_input_summary,
+            intake_ledger_summary=_intake_ledger_summary(
+                effective_ledger,
+                league=(str(collector_stats.get("resolvedLeague") or "") or league_url),
+                local_sources=local_sources,
+            ),
         )
         _assert_safe_payload(report)
         return report
@@ -207,6 +234,12 @@ def queue_cases(
             "uniqueLocalCaseCount": str(source_input_summary["uniqueLocalCaseCount"]),
             "duplicateLocalSourceCount": str(source_input_summary["duplicateLocalSourceCount"]),
             "requestedSampleCount": str(source_input_summary["requestedSampleCount"]),
+            "intakePagesFetched": str(source_input_summary["intakePagesFetched"]),
+            "intakePageRowsSeen": str(source_input_summary["intakePageRowsSeen"]),
+            "intakeSkippedAlreadyResearched": str(
+                source_input_summary["intakeSkippedAlreadyResearched"]
+            ),
+            "intakeLedgerRecordedCount": str(source_input_summary["intakeLedgerRecordedCount"]),
             "queueStatus": (
                 ""
                 if any(case.get("status") == "pending" for case in cases)
@@ -224,6 +257,7 @@ def queue_cases(
 
     inserted = 0
     skipped_duplicates = 0
+    ledger_recorded = 0
     for case in cases:
         if case.get("status") != "pending":
             packet_id = ""
@@ -248,6 +282,35 @@ def queue_cases(
         was_inserted = _insert_case_if_absent(db_path, row)
         inserted += 1 if was_inserted else 0
         skipped_duplicates += 0 if was_inserted else 1
+        character_ref = str(case.get("characterRef") or "").strip()
+        if was_inserted and character_ref.startswith("character-hash:"):
+            if research_intake_ledger.record_case(
+                effective_ledger,
+                league=str(case.get("league") or league_url),
+                character_ref=character_ref,
+                source_hash=str(case.get("sourceHash") or ""),
+                level=int(case.get("level") or 0),
+                ascendancy=str(case.get("ascendancy") or ""),
+                main_skill=str(case.get("mainSkill") or ""),
+                sample_id=str(case.get("sampleId") or ""),
+            ):
+                ledger_recorded += 1
+    source_input_summary["intakeLedgerRecordedCount"] = ledger_recorded
+    resolved_league = str(collector_stats.get("resolvedLeague") or "") or league_url
+    intake_ledger_summary = _intake_ledger_summary(
+        effective_ledger,
+        league=resolved_league,
+        local_sources=local_sources,
+    )
+    _write_metadata(
+        db_path,
+        {
+            "intakeLedgerRecordedCount": str(ledger_recorded),
+            "intakeLedgerSummary": json.dumps(
+                intake_ledger_summary, ensure_ascii=False, sort_keys=True
+            ),
+        },
+    )
 
     report = queue_status(
         output_dir=output_root,
@@ -259,6 +322,7 @@ def queue_cases(
         ),
         inserted_count=inserted,
         duplicate_count=skipped_duplicates,
+        intake_ledger_summary=intake_ledger_summary,
     )
     _assert_safe_payload(report)
     return report
@@ -551,6 +615,7 @@ def render_review_contract(
             "mechanicAudit": [],
             "deepResearchRecords": [],
             "candidateReviews": [],
+            "semanticEdges": [],
         },
         "allowedValues": {
             "caseCoverage": sorted(acceptance.CASE_COVERAGE_STATUSES),
@@ -806,6 +871,7 @@ def accept_case(
     temp_root: str | Path | None = None,
     validation_only: bool = False,
     only_record: int | None = None,
+    intake_ledger_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate or accept a safe Researcher proposal for the current lease."""
     output_root = Path(output_dir)
@@ -908,6 +974,7 @@ def accept_case(
                    acceptance_status = ?,
                    accepted_pattern_count = ?,
                    accepted_deep_record_count = ?,
+                   accepted_semantic_edge_count = ?,
                    unresolved_deep_record_component_count = ?,
                    research_quality_summary = ?,
                    deferred_candidate_count = ?
@@ -923,6 +990,7 @@ def accept_case(
                 str(report.get("status") or ""),
                 int(report.get("acceptedPatternCount") or 0),
                 int(report.get("acceptedDeepRecordCount") or 0),
+                int(report.get("acceptedSemanticEdgeCount") or 0),
                 int(report.get("unresolvedDeepRecordComponentCount") or 0),
                 json.dumps(_research_quality_summary(report), ensure_ascii=False, sort_keys=True),
                 int(report.get("deferredCandidateCount") or 0),
@@ -945,12 +1013,25 @@ def accept_case(
             )
         except (OSError, ValueError):
             pass
+        # Promote the character's intake-ledger record so future queues skip it.
+        if str(row["character_ref"] or "").startswith("character-hash:"):
+            effective_ledger = (
+                Path(intake_ledger_path)
+                if intake_ledger_path is not None
+                else DEFAULT_INTAKE_LEDGER_PATH
+            )
+            research_intake_ledger.mark_accepted(
+                effective_ledger,
+                league=str(row["league"] or ""),
+                character_ref=str(row["character_ref"] or ""),
+            )
     result = {
         "status": status,
         "sampleId": sample_id,
         "packetSafeHash": str(row["packet_safe_hash"]),
         "acceptedPatternCount": int(report.get("acceptedPatternCount") or 0),
         "acceptedDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
+        "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
@@ -965,6 +1046,7 @@ def accept_case(
         "deferredReasonCounts": report.get("deferredReasonCounts") or {},
         "patternWrite": report.get("patternWrite") or {},
         "deepRecordWrite": report.get("deepRecordWrite") or {},
+        "semanticEdgeWrite": report.get("semanticEdgeWrite") or {},
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1044,6 +1126,7 @@ def retry_accept_case(
     memory_db_path: str | Path = DEFAULT_MEMORY_DB_PATH,
     acceptance_output_dir: str | Path | None = None,
     temp_root: str | Path | None = None,
+    intake_ledger_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Retry acceptance for a previously rejected safe review artifact."""
     output_root = Path(output_dir)
@@ -1103,6 +1186,7 @@ def retry_accept_case(
                    acceptance_status = ?,
                    accepted_pattern_count = ?,
                    accepted_deep_record_count = ?,
+                   accepted_semantic_edge_count = ?,
                    unresolved_deep_record_component_count = ?,
                    research_quality_summary = ?,
                    deferred_candidate_count = ?
@@ -1117,6 +1201,7 @@ def retry_accept_case(
                 str(report.get("status") or ""),
                 int(report.get("acceptedPatternCount") or 0),
                 int(report.get("acceptedDeepRecordCount") or 0),
+                int(report.get("acceptedSemanticEdgeCount") or 0),
                 int(report.get("unresolvedDeepRecordComponentCount") or 0),
                 json.dumps(_research_quality_summary(report), ensure_ascii=False, sort_keys=True),
                 int(report.get("deferredCandidateCount") or 0),
@@ -1138,12 +1223,25 @@ def retry_accept_case(
             )
         except (OSError, ValueError):
             pass
+        # Promote the character's intake-ledger record so future queues skip it.
+        if str(row["character_ref"] or "").startswith("character-hash:"):
+            effective_ledger = (
+                Path(intake_ledger_path)
+                if intake_ledger_path is not None
+                else DEFAULT_INTAKE_LEDGER_PATH
+            )
+            research_intake_ledger.mark_accepted(
+                effective_ledger,
+                league=str(row["league"] or ""),
+                character_ref=str(row["character_ref"] or ""),
+            )
     result = {
         "status": status,
         "sampleId": str(row["sample_id"]),
         "packetSafeHash": str(row["packet_safe_hash"]),
         "acceptedPatternCount": int(report.get("acceptedPatternCount") or 0),
         "acceptedDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
+        "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
@@ -1158,6 +1256,7 @@ def retry_accept_case(
         "deferredReasonCounts": report.get("deferredReasonCounts") or {},
         "patternWrite": report.get("patternWrite") or {},
         "deepRecordWrite": report.get("deepRecordWrite") or {},
+        "semanticEdgeWrite": report.get("semanticEdgeWrite") or {},
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1292,6 +1391,7 @@ def queue_status(
     status_override: str | None = None,
     inserted_count: int | None = None,
     duplicate_count: int | None = None,
+    intake_ledger_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     db_path = _queue_db_path(Path(output_dir), queue_db_path)
     _init_db(db_path)
@@ -1323,7 +1423,19 @@ def queue_status(
         ),
         "uniqueLocalCaseCount": int(metadata.get("uniqueLocalCaseCount") or 0),
         "duplicateLocalSourceCount": int(metadata.get("duplicateLocalSourceCount") or 0),
+        "intakePagesFetched": int(metadata.get("intakePagesFetched") or 0),
+        "intakePageRowsSeen": int(metadata.get("intakePageRowsSeen") or 0),
+        "intakeSkippedAlreadyResearched": int(metadata.get("intakeSkippedAlreadyResearched") or 0),
+        "intakeLedgerRecordedCount": int(metadata.get("intakeLedgerRecordedCount") or 0),
     }
+    persisted_intake_summary: dict[str, Any] = {}
+    if intake_ledger_summary is None:
+        try:
+            persisted = json.loads(str(metadata.get("intakeLedgerSummary") or "{}"))
+            if isinstance(persisted, dict):
+                persisted_intake_summary = persisted
+        except (json.JSONDecodeError, TypeError):
+            persisted_intake_summary = {}
     return _queue_report(
         status=status_override or persisted_status or "ok",
         db_path=db_path,
@@ -1333,6 +1445,9 @@ def queue_status(
         duplicate_count=duplicate_count,
         dry_run=False,
         source_input_summary=source_input_summary,
+        intake_ledger_summary=(
+            intake_ledger_summary if intake_ledger_summary is not None else persisted_intake_summary
+        ),
     )
 
 
@@ -1496,6 +1611,7 @@ def _init_db(db_path: Path) -> None:
                 source_type TEXT NOT NULL,
                 source_hash TEXT NOT NULL UNIQUE,
                 source_hash_ref TEXT NOT NULL,
+                character_ref TEXT NOT NULL DEFAULT '',
                 league TEXT NOT NULL,
                 level INTEGER NOT NULL,
                 class_name TEXT NOT NULL,
@@ -1513,6 +1629,7 @@ def _init_db(db_path: Path) -> None:
                 acceptance_status TEXT,
                 accepted_pattern_count INTEGER NOT NULL DEFAULT 0,
                 accepted_deep_record_count INTEGER NOT NULL DEFAULT 0,
+                accepted_semantic_edge_count INTEGER NOT NULL DEFAULT 0,
                 unresolved_deep_record_component_count INTEGER NOT NULL DEFAULT 0,
                 research_quality_summary TEXT NOT NULL DEFAULT '{}',
                 deferred_candidate_count INTEGER NOT NULL DEFAULT 0
@@ -1522,9 +1639,16 @@ def _init_db(db_path: Path) -> None:
             """
         )
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(cases)")}
+        if "character_ref" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN character_ref TEXT NOT NULL DEFAULT ''")
         if "accepted_deep_record_count" not in columns:
             conn.execute(
                 "ALTER TABLE cases ADD COLUMN accepted_deep_record_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "accepted_semantic_edge_count" not in columns:
+            conn.execute(
+                "ALTER TABLE cases ADD COLUMN accepted_semantic_edge_count "
+                "INTEGER NOT NULL DEFAULT 0"
             )
         if "unresolved_deep_record_component_count" not in columns:
             conn.execute(
@@ -1563,10 +1687,10 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
             """
             INSERT OR IGNORE INTO cases(
                 sample_id, status, source_type, source_hash, source_hash_ref,
-                league, level, class_name, ascendancy, main_skill, safe_error,
-                packet_id, packet_safe_hash, created_at, updated_at
+                character_ref, league, level, class_name, ascendancy, main_skill,
+                safe_error, packet_id, packet_safe_hash, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["sampleId"],
@@ -1574,6 +1698,7 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
                 row["sourceType"],
                 row["sourceHash"],
                 row["sourceHashRef"],
+                row["characterRef"],
                 row["league"],
                 int(row["level"]),
                 row["className"],
@@ -1607,6 +1732,7 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
                 "sourceType": str(row["source_type"]),
                 "sourceHash": str(row["source_hash"]),
                 "sourceHashRef": str(row["source_hash_ref"]),
+                "characterRef": str(row["character_ref"] or ""),
                 "league": str(row["league"]),
                 "level": int(row["level"] or 0),
                 "className": str(row["class_name"]),
@@ -1621,6 +1747,7 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
                 "acceptanceStatus": str(row["acceptance_status"] or ""),
                 "acceptedPatternCount": int(row["accepted_pattern_count"] or 0),
                 "acceptedDeepRecordCount": int(row["accepted_deep_record_count"] or 0),
+                "acceptedSemanticEdgeCount": int(row["accepted_semantic_edge_count"] or 0),
                 "unresolvedDeepRecordComponentCount": int(
                     row["unresolved_deep_record_component_count"] or 0
                 ),
@@ -2044,6 +2171,7 @@ def _safe_case_row_from_case(
         "sourceType": legacy_batch._safe_text(case.get("sourceType")),
         "sourceHash": legacy_batch._safe_text(case.get("sourceHash")),
         "sourceHashRef": legacy_batch._safe_text(case.get("sourceHashRef")),
+        "characterRef": legacy_batch._safe_text(case.get("characterRef")),
         "league": legacy_batch._safe_text(case.get("league")),
         "level": int(case.get("level") or 0),
         "className": legacy_batch._safe_text(case.get("className")),
@@ -2066,6 +2194,7 @@ def _queue_report(
     inserted_count: int | None = None,
     duplicate_count: int | None = None,
     source_input_summary: dict[str, Any] | None = None,
+    intake_ledger_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for case in cases:
@@ -2106,6 +2235,15 @@ def _queue_report(
         "workerReusePolicy": "fresh_lease_bound_sections_per_case_no_evidence_reuse",
         "insertedCount": inserted_count,
         "duplicateCount": duplicate_count,
+        "intakePagesFetched": int(source_input_summary.get("intakePagesFetched") or 0),
+        "intakePageRowsSeen": int(source_input_summary.get("intakePageRowsSeen") or 0),
+        "intakeSkippedAlreadyResearched": int(
+            source_input_summary.get("intakeSkippedAlreadyResearched") or 0
+        ),
+        "intakeLedgerRecordedCount": int(
+            source_input_summary.get("intakeLedgerRecordedCount") or 0
+        ),
+        "intakeLedgerSummary": intake_ledger_summary or {},
         "sourceFileArgumentCount": int(source_input_summary.get("sourceFileArgumentCount") or 0),
         "sourceBatchFileArgumentCount": int(
             source_input_summary.get("sourceBatchFileArgumentCount") or 0
@@ -2140,6 +2278,33 @@ def _queue_report(
             }
         )
     return report
+
+
+def _intake_ledger_summary(
+    ledger_path: Path,
+    *,
+    league: str,
+    local_sources: list[str],
+) -> dict[str, Any]:
+    """Safe cross-run intake-dedup snapshot for queue reports.
+
+    Local source-file queues never touch the character ledger.
+    """
+    if local_sources:
+        return {
+            "used": False,
+            "reason": "local_source_input",
+            "totalRecords": 0,
+            "byStatus": {},
+            "league": "",
+        }
+    summary = research_intake_ledger.summary(ledger_path, league=str(league or ""))
+    return {
+        "used": True,
+        "league": str(league or ""),
+        "totalRecords": int(summary.get("totalRecords") or 0),
+        "byStatus": summary.get("byStatus") or {},
+    }
 
 
 def _source_input_count_mismatch_report(
@@ -2184,6 +2349,7 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
         "acceptanceMode": legacy_batch._safe_text(case.get("acceptanceMode")),
         "acceptedPatternCount": int(case.get("acceptedPatternCount") or 0),
         "acceptedDeepRecordCount": int(case.get("acceptedDeepRecordCount") or 0),
+        "acceptedSemanticEdgeCount": int(case.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(case.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(case.get("updatedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(case.get("addedDeepRecordEvidenceCount") or 0),
@@ -2218,6 +2384,7 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
 def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "acceptanceMode": legacy_batch._safe_text(report.get("acceptanceMode")),
+        "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
@@ -2299,6 +2466,7 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
         "queueStateChanged": False,
         "wouldAcceptPatternCount": int(report.get("acceptedPatternCount") or 0),
         "wouldAcceptDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
+        "wouldAcceptSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "unresolvedDeepRecordComponentCount": int(
             report.get("unresolvedDeepRecordComponentCount") or 0
         ),
@@ -2318,6 +2486,7 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
         "deferredCandidates": report.get("deferredCandidates") or [],
         "patternValidation": report.get("patternWrite") or {},
         "deepRecordValidation": report.get("deepRecordWrite") or {},
+        "semanticEdgeValidation": report.get("semanticEdgeWrite") or {},
         "noRawMatureBuildMaterial": True,
     }
 
@@ -2374,8 +2543,10 @@ def _compact_accept_result(result: dict[str, Any]) -> dict[str, Any]:
         "sourceEvidenceDiagnostics",
         "patternWrite",
         "deepRecordWrite",
+        "semanticEdgeWrite",
         "patternValidation",
         "deepRecordValidation",
+        "semanticEdgeValidation",
         "deferredCandidates",
     ):
         out.pop(key, None)
@@ -2682,7 +2853,7 @@ lookup_mechanic 返回的 revision-pinned sourceRef。Wiki 只作校对证据，
 graph 等独立佐证。
 
 ## Mandatory Checks
-以下十三项是提交前的强制自检，缺一不可：
+以下十五项是提交前的强制自检，缺一不可：
 1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
    lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 保持 support_modifier——
    unique support gem 的节点类型是 support_gem，使用 unique_enabler role 会被解析校验拒绝——并在
@@ -2729,6 +2900,12 @@ graph 等独立佐证。
      secondary_skill / generator / control_skill / trigger_host 不自动参与，身份级的这类组件
      必须显式写入 familyCoreSkillKeys（仅限 skill_package/mechanic_chain）。写错会产生 sibling
      家族分裂，验收报告 deepRecordWrite.siblingFamilyHints 会提示，按提示复刻既有家族身份。
+ 15. 语义边闭环：每案至少提交 2 条 resolver-backed semantic edge 写入 review.semanticEdges
+     （edge_type 限 enables_mechanic / scales_with / mitigates_weakness_of /
+     creates_failure_risk_for / requires_transition_gate / has_modelability_caveat /
+     synergizes_with；两端都必须先用 resolve_graph_component 解析并携带
+     source_resolution / target_resolution 证据）。无法推导时在 review 的
+     deferredCandidateCount / 结论中说明原因，不得为凑数发明关系。
 
 ## Research Goal
 重建并分别记录：
@@ -3053,6 +3230,12 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument("--resume", action="store_true")
     queue_parser.add_argument("--dry-run", action="store_true")
     queue_parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
+    queue_parser.add_argument(
+        "--intake-ledger",
+        default=None,
+        help="Override the per-user research intake dedup ledger (character-level "
+        "cross-run dedup for poe.ninja collection). Default: user data dir.",
+    )
     queue_parser.add_argument("--current-patch")
     queue_parser.add_argument("--passive-tree-version")
     queue_parser.add_argument("--pob-version-or-commit")
@@ -3135,6 +3318,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Return a compact acceptance summary; automatically falls back to the full report "
         "when any candidate is deferred or validation failed.",
     )
+    accept_parser.add_argument(
+        "--intake-ledger",
+        default=None,
+        help="Override the per-user research intake dedup ledger updated on accept.",
+    )
 
     retry_accept_parser = subparsers.add_parser("retry-accept")
     _add_queue_location_args(retry_accept_parser)
@@ -3142,6 +3330,7 @@ def main(argv: list[str] | None = None) -> int:
     retry_accept_parser.add_argument("--review-file", required=True)
     retry_accept_parser.add_argument("--memory-db-path", default=str(DEFAULT_MEMORY_DB_PATH))
     retry_accept_parser.add_argument("--acceptance-output-dir")
+    retry_accept_parser.add_argument("--intake-ledger", default=None)
     retry_accept_parser.add_argument("--compact", action="store_true")
 
     review_budget_parser = subparsers.add_parser("review-budget")
@@ -3175,6 +3364,7 @@ def main(argv: list[str] | None = None) -> int:
                 pob_version_or_commit=args.pob_version_or_commit,
                 resume=args.resume,
                 dry_run=args.dry_run,
+                intake_ledger_path=args.intake_ledger,
             )
             if run_id is not None:
                 _attach_run_location(report, run_id=run_id, run_dir=output_dir)
@@ -3282,6 +3472,7 @@ def main(argv: list[str] | None = None) -> int:
                 temp_root=args.temp_root,
                 validation_only=args.validate_only,
                 only_record=args.only_record,
+                intake_ledger_path=args.intake_ledger,
             )
             if getattr(args, "compact", False) and _should_compact_report(result):
                 result = _compact_accept_result(result)
@@ -3296,6 +3487,7 @@ def main(argv: list[str] | None = None) -> int:
                 memory_db_path=args.memory_db_path,
                 acceptance_output_dir=args.acceptance_output_dir,
                 temp_root=args.temp_root,
+                intake_ledger_path=args.intake_ledger,
             )
             if getattr(args, "compact", False) and _should_compact_report(result):
                 result = _compact_accept_result(result)

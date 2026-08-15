@@ -28,12 +28,23 @@ NINJA_LIST_MAX_RETRIES = 2
 from scripts import run_judge_ninja_samples  # noqa: E402
 from server.compute import pob_code  # noqa: E402
 from server.freshness import ninja as freshness_ninja  # noqa: E402
-from server.knowledge import copy_safety, pob_xml_meta, research_packet, research_prompt  # noqa: E402
+from server.knowledge import (  # noqa: E402
+    copy_safety,
+    pob_xml_meta,
+    research_intake_ledger,
+    research_packet,
+    research_prompt,
+)
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "phase45_researcher_batch"
 STATE_FILENAME = "phase45_researcher_batch_state.json"
 JSON_OUTPUT = REPO_ROOT / "phase45_researcher_batch_report.json"
 MD_OUTPUT = REPO_ROOT / "phase45_researcher_batch_report.md"
+
+# Bounded pagination: poe.ninja list pages are sampled highest level first, so
+# filling a limit with fresh (not-yet-researched) characters can require walking
+# several pages. The cap prevents an unbounded crawl when a league is exhausted.
+NINJA_LIST_MAX_PAGES = 15
 
 RAW_MARKERS = (
     "eNrt",
@@ -299,49 +310,114 @@ def _cases_from_ninja(
     ascendancies: list[str],
     browser_driver: Any | None,
     ninja_classes: list[str] | None = None,
+    intake_ledger_path: str | Path | None = None,
+    collector_stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """Collect cases from poe.ninja, paginating until the requested limit of
+    *new* characters is reached.
+
+    ``intake_ledger_path`` (when provided) enables cross-run dedup: characters
+    already queued for this league are skipped before their detail pages are
+    fetched, and the collector keeps fetching list pages until ``limit`` fresh
+    cases exist or the list is exhausted (bounded by NINJA_LIST_MAX_PAGES).
+    ``collector_stats`` (when provided) receives safe counts for queue reports.
+    """
     resolved_league = _resolve_league_url(league_url)
     browser = browser_driver or run_judge_ninja_samples.PlaywrightHtmlDriver()
     normalized_ninja_classes = _normalize_ninja_classes(ninja_classes or [])
-    query: list[tuple[str, str]] = [
-        ("min-level", str(level_min)),
-        ("max-level", str(level_max)),
-    ]
-    query.extend(("class", value) for value in normalized_ninja_classes)
-    list_url = f"https://poe.ninja/poe2/builds/{resolved_league}?{urlencode(query)}"
-    rows: list[dict[str, Any]] = []
-    for _attempt in range(NINJA_LIST_MAX_RETRIES + 1):
-        list_html = browser.fetch_html(list_url)
-        rows = run_judge_ninja_samples.extract_character_links_from_rendered_html(
-            list_html,
-            league_url=resolved_league,
-        )
-        if rows:
-            break
     wanted_ascendancies = {item.casefold() for item in ascendancies if item.strip()}
     wanted_ninja_classes = {item.casefold() for item in normalized_ninja_classes}
-    filtered = []
-    for row in rows:
-        level = int(row.get("level") or 0)
-        ascendancy = _normalize_ninja_class(row.get("ascendancy"))
-        if level < level_min or level > level_max:
-            continue
-        if wanted_ascendancies and ascendancy.casefold() not in wanted_ascendancies:
-            continue
-        if wanted_ninja_classes and ascendancy.casefold() not in wanted_ninja_classes:
-            continue
-        filtered.append(row)
-    sampled = run_judge_ninja_samples.sample_rows(
-        filtered,
-        target_count=len(filtered),
-        minimum_per_ascendancy=1,
+    ledger_seen = (
+        research_intake_ledger.seen_character_refs(intake_ledger_path, resolved_league)
+        if intake_ledger_path is not None
+        else set()
     )
-    return _payload_cases_from_rows(
-        sampled,
-        league_url=resolved_league,
-        browser_driver=browser,
-        target_count=limit,
-    )
+    stats = collector_stats if collector_stats is not None else {}
+    stats["resolvedLeague"] = resolved_league
+    stats.setdefault("pagesFetched", 0)
+    stats.setdefault("pageRowsSeen", 0)
+    stats.setdefault("skippedAlreadyResearched", 0)
+    target = None if limit is None else max(0, int(limit))
+    if target == 0:
+        return []
+    cases: list[dict[str, Any]] = []
+    seen_characters: set[tuple[str, str]] = set()
+    seen_identity_hashes: set[str] = set()
+    for page in range(1, NINJA_LIST_MAX_PAGES + 1):
+        if target is not None and len(cases) >= target:
+            break
+        query: list[tuple[str, str]] = [
+            ("min-level", str(level_min)),
+            ("max-level", str(level_max)),
+        ]
+        query.extend(("class", value) for value in normalized_ninja_classes)
+        if page > 1:
+            query.append(("page", str(page)))
+        list_url = f"https://poe.ninja/poe2/builds/{resolved_league}?{urlencode(query)}"
+        rows: list[dict[str, Any]] = []
+        for _attempt in range(NINJA_LIST_MAX_RETRIES + 1):
+            try:
+                list_html = browser.fetch_html(list_url)
+                rows = run_judge_ninja_samples.extract_character_links_from_rendered_html(
+                    list_html,
+                    league_url=resolved_league,
+                )
+            except run_judge_ninja_samples.NinjaSampleError:
+                rows = []
+            if rows:
+                break
+        stats["pagesFetched"] = int(stats.get("pagesFetched") or 0) + 1
+        if not rows:
+            break
+        stats["pageRowsSeen"] = int(stats.get("pageRowsSeen") or 0) + len(rows)
+        filtered: list[dict[str, Any]] = []
+        passed_filters = 0
+        in_run_duplicates = 0
+        for row in rows:
+            level = int(row.get("level") or 0)
+            ascendancy = _normalize_ninja_class(row.get("ascendancy"))
+            if level < level_min or level > level_max:
+                continue
+            if wanted_ascendancies and ascendancy.casefold() not in wanted_ascendancies:
+                continue
+            if wanted_ninja_classes and ascendancy.casefold() not in wanted_ninja_classes:
+                continue
+            passed_filters += 1
+            key = (str(row.get("account") or ""), str(row.get("name") or ""))
+            if not key[0] or not key[1] or key in seen_characters:
+                if key[0] and key[1] and key in seen_characters:
+                    in_run_duplicates += 1
+                continue
+            seen_characters.add(key)
+            ref = research_intake_ledger.character_ref(key[0], key[1])
+            if ref in ledger_seen:
+                stats["skippedAlreadyResearched"] = (
+                    int(stats.get("skippedAlreadyResearched") or 0) + 1
+                )
+                continue
+            filtered.append(row)
+        if passed_filters and in_run_duplicates == passed_filters:
+            # Every filter-passing row was already seen this run: poe.ninja
+            # ignored the page parameter and returned identical content.
+            break
+        if not filtered:
+            continue
+        sampled = run_judge_ninja_samples.sample_rows(
+            filtered,
+            target_count=len(filtered),
+            minimum_per_ascendancy=1,
+        )
+        cases.extend(
+            _payload_cases_from_rows(
+                sampled,
+                league_url=resolved_league,
+                browser_driver=browser,
+                target_count=(None if target is None else max(0, target - len(cases))),
+                seen_identity_hashes=seen_identity_hashes,
+                case_start_index=len(cases) + 1,
+            )
+        )
+    return cases
 
 
 def _normalize_ninja_classes(values: list[str]) -> list[str]:
@@ -368,13 +444,20 @@ def _payload_cases_from_rows(
     league_url: str,
     browser_driver: Any,
     target_count: int | None = None,
+    seen_identity_hashes: set[str] | None = None,
+    case_start_index: int = 1,
 ) -> list[dict[str, Any]]:
     target = None if target_count is None else max(0, int(target_count))
     if target == 0:
         return []
     cases: list[dict[str, Any]] = []
-    seen_identity_hashes: set[str] = set()
+    identity_hashes = set() if seen_identity_hashes is None else seen_identity_hashes
+    next_index = max(1, int(case_start_index))
     for row in rows:
+        if target is not None and len(cases) >= target:
+            break
+        account = str(row.get("account") or "")
+        name = str(row.get("name") or "")
         character_url = str(
             row.get("url") or run_judge_ninja_samples.build_character_url(league_url, row)
         )
@@ -387,22 +470,23 @@ def _payload_cases_from_rows(
             continue
         source = str(extracted["importCode"]).strip()
         identity_hash = _identity_hash(source)
-        if identity_hash in seen_identity_hashes:
+        if identity_hash in identity_hashes:
             continue
-        seen_identity_hashes.add(identity_hash)
+        identity_hashes.add(identity_hash)
         source_hash = _safe_hash(source)
         cases.append(
             _case_from_source(
                 source,
                 source_hash=source_hash,
-                sample_id=f"case:phase45-researcher-{len(cases) + 1:03d}",
+                sample_id=f"case:phase45-researcher-{next_index + len(cases):03d}",
                 source_type="poe_ninja_import_code",
                 league=league_url,
                 row=row,
+                character_ref=(
+                    research_intake_ledger.character_ref(account, name) if account and name else ""
+                ),
             )
         )
-        if target is not None and len(cases) >= target:
-            break
     return cases
 
 
@@ -533,6 +617,7 @@ def _case_from_source(
     source_type: str,
     league: str,
     row: dict[str, Any],
+    character_ref: str = "",
 ) -> dict[str, Any]:
     try:
         xml = _source_to_xml(source)
@@ -554,6 +639,7 @@ def _case_from_source(
         "sourceType": source_type,
         "sourceHash": source_hash,
         "sourceHashRef": f"source-hash:{source_hash[:16]}",
+        "characterRef": _safe_text(character_ref or ""),
         "league": _safe_text(league),
         "level": level,
         "className": class_name,

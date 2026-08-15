@@ -303,6 +303,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   material，并转换为 quarantine-only payload row。
 - `server/knowledge/mature_pobb_payload.py`：把 pobb.in 链接或 raw build source 导入为
   quarantine-only payload row。
+- `server/knowledge/research_intake_ledger.py`：每用户本地角色级 research intake 去重 ledger
+  （user-data SQLite，只存 `character-hash:` 引用和安全元数据）；queue 按 (league, character_ref)
+  跳过已入队角色并分页凑满新案例，accept 后晋升为 `accepted`。
 
 ### Comparative Learning 层
 
@@ -347,6 +350,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 ### Scripts 和 Data
 
 - `scripts/run_mature_source_probe.py`：本地 source-probe report 辅助脚本。它不运行 LLM。
+- `scripts/backfill_semantic_edges.py`：存量 Research Memory 的确定性 T1 语义边回填脚本
+  （transition_gate / mechanic_chain / failure_mode / modelability_caveat → typed edges）。
+  从只读一致性快照副本派生候选，离线去重与逆边/短环预检后分块经 `propose_semantic_edges`
+  持久化；`--dry-run / --validate / --apply` 三模式，幂等。单案例 cooccurrence 不提升。
 - `scripts/run_judge_user_samples.py`：Phase 1 真实 PoB code transient 验收脚本。输出
   sanitized report，不持久化 raw PoB code/XML；允许输出 `judgeSelectedSkill` 摘要以便审查
   buff/战旗/辅助技能导致的 0 DPS 误读，但禁止输出完整 gem/support links。输入支持整文件
