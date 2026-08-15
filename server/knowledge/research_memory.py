@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -1065,6 +1066,25 @@ class ResearchMemoryService:
             and research_identity.knowledge_key(record, families_by_group[record.research_group_id])
             is None
         ]
+        family_keys = sorted(
+            {
+                family.key
+                for family in families_by_group.values()
+                if family is not None
+            }
+        )
+        sibling_hints: list[dict[str, Any]] = []
+        if family_keys and self.db_path and os.path.exists(self.db_path):
+            try:
+                con = mature_learning.connect(self.db_path)
+                try:
+                    sibling_hints = _sibling_family_hints(con, set(family_keys))
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                # Sibling hints are an enhancement; a missing/uninitialized store must not
+                # turn an otherwise valid validation into a failure.
+                sibling_hints = []
         return {
             "status": "accepted",
             "validationOnly": True,
@@ -1074,6 +1094,8 @@ class ResearchMemoryService:
             "deepResearchRecordCount": len(output.deep_research_records),
             "unkeyedRecordCount": len(unkeyed_records),
             "unkeyedRecordTitles": unkeyed_records,
+            "buildFamilyKeys": family_keys,
+            "siblingFamilyHints": sibling_hints,
             "nextStep": "Write the validated candidates to the leased safe review and run accept.",
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,

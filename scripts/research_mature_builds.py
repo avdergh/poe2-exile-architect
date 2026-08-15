@@ -725,6 +725,9 @@ def render_review_contract(
             "单案例不得提交 transferScope=global。公用知识由后端依据跨 Family 证据晋升，且最高只到 likely_pattern。",
             "不要为了产出公用知识而强行标记 component；不确定时保持 family。",
             "support 配对以 review 内的组合 fixed-point 校验为准（support_skill_group_candidates，模拟 PoB 技能组实际生效性）；独立的 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。",
+            "resolverQuery 必须是可解析查询：完整 stable key、id-mapping external_id、归一化 alias 或归一化显示名（如 Blood Mage、The Hammer of Faith）。不得把 key 尾段（如 snake_case 带撇号形式 beira's_anguish、hysseg's_claw）当作 resolverQuery——它必然解析失败，且失败时组件会被排除出 gearResponsibilities 等引用。",
+            "多实体/兵种类技能（Skeletal*/Spectre/Companion 等）的 stable key 通常为 Summon* 复数形式（如 skill:SummonSkeletalStormMagesPlayer）；同类宝石可能同时存在 Command*/Summon* 双端点，先 search_graph_components 再 resolve，不要凭直觉猜 key。",
+            "Family 身份决策清单：clear_skill / boss_skill / triggered_payload 自动参与副技能集合；secondary_skill / generator / control_skill / trigger_host 不自动参与——身份级的这类组件必须显式写入 typedPayload.familyCoreSkillKeys（仅限 skill_package/mechanic_chain 记录）。写错参与集合会产生 sibling 家族分裂，验收报告 deepRecordWrite.siblingFamilyHints 会提示，必须按提示复刻既有家族身份。",
         ],
         "versionContext": version_context,
         "nextActions": ["init-review", "edit_review", "accept --validate-only", "accept"],
@@ -2708,17 +2711,24 @@ graph 等独立佐证。
    "条件 → 来源组件 → 验证状态"；无来源的假设必须写成 modelability caveat，不得静默采纳。
 8. 装备全覆盖盘点：每个装备槽位（含暗金/黄装/药剂/护符）必须在记录中出现——结构化组件、
    content 文本或显式 not_applicable 三选一；写 review 前成表自查。
-9. 禁止猜 key 路径：所有组件先 search_graph_components 再 resolve_graph_component；支持宝石的
-   metadata 路径可能有 Items/Gem 与 Items/Gems 两种形式，猜错会被判 component_type_mismatch
-   或 missing。
-10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
+ 9. 禁止猜 key 路径：所有组件先 search_graph_components 再 resolve_graph_component；支持宝石的
+    metadata 路径可能有 Items/Gem 与 Items/Gems 两种形式，猜错会被判 component_type_mismatch
+    或 missing。resolverQuery 必须是可解析查询（完整 stable key / id-mapping / 归一化 alias /
+    归一化显示名），不要把 key 尾段（如 snake_case 带撇号形式）当查询；多实体/兵种类技能
+    （Skeletal*/Spectre/Companion）key 通常为 Summon* 复数形式，可能同时存在 Command*/Summon*
+    双端点。
+ 10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
      证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task。
-11. 非 core 技能支持入记录：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
-    技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
-12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
-    是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
-13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
-    search_graph_components 再定性为 source gap；图中已存在但未 search 的组件不得误报 gap。
+ 11. 非 core 技能支持入记录：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
+     技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
+ 12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
+     是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
+ 13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
+     search_graph_components 再定性为 source gap；图中已存在但未 search 的组件不得误报 gap。
+ 14. Family 身份决策清单：clear_skill / boss_skill / triggered_payload 自动参与副技能集合；
+     secondary_skill / generator / control_skill / trigger_host 不自动参与，身份级的这类组件
+     必须显式写入 familyCoreSkillKeys（仅限 skill_package/mechanic_chain）。写错会产生 sibling
+     家族分裂，验收报告 deepRecordWrite.siblingFamilyHints 会提示，按提示复刻既有家族身份。
 
 ## Research Goal
 重建并分别记录：

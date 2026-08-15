@@ -735,6 +735,7 @@ def accept_deep_review_candidates(
         "acceptedBuildFamilyKeys": list(deep_result.get("buildFamilyKeys") or [])
         if deep_result.get("status") == "accepted"
         else [],
+        "siblingFamilyHints": list(deep_result.get("siblingFamilyHints") or []),
         "acceptedDeepRecords": persisted_record_summaries,
         # Compatibility field: this has always counted mentions, not unique entities.
         "unresolvedDeepRecordComponentCount": len(unresolved_component_mentions),
@@ -882,6 +883,19 @@ def accept_deep_review_candidates(
             *coverage_advisories,
             *record_kind_advisories,
             *mechanic_audit_diagnostics["advisories"],
+            *(
+                [
+                    "Advisory: a BuildFamily was created "
+                    + ", ".join(list(deep_result.get("buildFamilyKeys") or []))
+                    + " but no deep record was written for it (empty shell). Check the family "
+                    "identity derivation and sibling hints before relying on this family."
+                ]
+                if deep_result.get("status") == "accepted"
+                and int(deep_result.get("createdBuildFamilyCount") or 0) > 0
+                and int(deep_result.get("createdRecordCount") or 0) == 0
+                and (deep_result.get("buildFamilyKeys") or [])
+                else []
+            ),
         ],
     }
     if not validation_only:
@@ -2610,6 +2624,11 @@ def _filter_records_with_unsupported_structured_support_packages(
             kept_records.append(record)
             kept_summaries.append(summary)
             continue
+        pair_summary = "; ".join(
+            f"{item['skillName']}[{item['skillKey']}] + {item['supportName']}[{item['supportKey']}]"
+            f" (excluded: {item['excludedReason']})"
+            for item in unsupported_pairs[:5]
+        )
         deferred.append(
             {
                 "titleZh": summary["titleZh"],
@@ -2622,7 +2641,11 @@ def _filter_records_with_unsupported_structured_support_packages(
                     "typedPayload.supportPackages explicitly assigns each support to an active "
                     "skill, and the static fixed-point contract rejects at least one submitted "
                     "pair. This check validates the Researcher claim and does not infer ownership "
-                    "for an unstructured multi-active source group."
+                    "for an unstructured multi-active source group.",
+                    "Unsupported pairs: " + pair_summary + ". Fix: move each rejected support into "
+                    "the supportPackages entry of the active skill it actually links to in the "
+                    "source group (meta hosts must not own the supports of their socketed skill), "
+                    "or remove it from supportPackages and describe it in content only.",
                 ],
                 "candidateKind": "deep_research_record",
             }
@@ -2679,6 +2702,13 @@ def _resolve_component(
         {"query": query, "expected_node_types": expected_node_types, "scope": scope},
     )
     status = str(result.get("status") or "")
+    direct_candidates = sorted(
+        {
+            str(value)
+            for value in (result.get("facts") or {}).get("candidate_keys") or []
+            if str(value)
+        }
+    )
     if status == "resolved":
         resolved_key = str((result.get("resolvedSubject") or {}).get("stableKey") or "")
         if not component_key or resolved_key == component_key:
@@ -2696,6 +2726,7 @@ def _resolve_component(
             "candidateName": candidate_name,
             "resolverStatus": status,
             "resolvedKey": resolved_key,
+            "candidateKeys": direct_candidates,
             "expectedNodeTypes": expected_node_types,
             "scope": scope,
         }
@@ -2703,11 +2734,6 @@ def _resolve_component(
     source_key = str((source_resolution or {}).get("componentKey") or "")
     source_result = (source_resolution or {}).get("resolverResult")
     source_key_allowed = not expected_node_types or "active_skill" in expected_node_types
-    direct_candidates = {
-        str(value)
-        for value in (result.get("facts") or {}).get("candidate_keys") or []
-        if str(value)
-    }
     source_matches_direct_result = status != "ambiguous" or source_key in direct_candidates
     if (
         source_key
@@ -2723,6 +2749,7 @@ def _resolve_component(
                 "candidateName": candidate_name,
                 "resolverStatus": status,
                 "sourceManifestKey": source_key,
+                "candidateKeys": direct_candidates,
                 "expectedNodeTypes": expected_node_types,
                 "scope": scope,
             }
@@ -2741,6 +2768,7 @@ def _resolve_component(
                 "componentKey": "",
                 "candidateName": candidate_name,
                 "resolverStatus": status,
+                "candidateKeys": direct_candidates,
                 "expectedNodeTypes": expected_node_types,
                 "scope": scope,
             }
@@ -2752,6 +2780,7 @@ def _resolve_component(
                 "componentKey": component_key,
                 "candidateName": candidate_name,
                 "resolverStatus": status,
+                "candidateKeys": direct_candidates,
                 "expectedNodeTypes": expected_node_types,
                 "scope": scope,
             }
@@ -3760,9 +3789,9 @@ def _source_skill_evidence_diagnostics(
         return {**empty, "available": True}
 
     records = _deep_record_reviews(review)
+    core_skill_mention_names = _core_skill_mention_names(records)
     structured_skills: set[str] = set()
     structured_supports: set[str] = set()
-    evidence_structured_skills: set[str] = set()
     packaged_supports: set[str] = set()
     evidence_kinds = {"skill_package", "mechanic_chain", "rotation"}
     for record in records:
@@ -3783,8 +3812,6 @@ def _source_skill_evidence_diagnostics(
                 structured_supports.add(name)
             elif component_key.startswith("skill:") or component.get("role") != "support_modifier":
                 structured_skills.add(name)
-                if is_evidence:
-                    evidence_structured_skills.add(name)
     evidence_records = [record for record in records if record.get("recordKind") in evidence_kinds]
     record_text_parts: dict[str, list[str]] = {}
     for record in evidence_records:
@@ -3864,10 +3891,8 @@ def _source_skill_evidence_diagnostics(
                     "recordKinds": record_kinds,
                 }
             )
-        active_in_evidence = any(
-            name.casefold() in evidence_structured_skills for name in active_names
-        )
-        if active_in_evidence and len(support_names) >= 2:
+        active_in_core = any(name.casefold() in core_skill_mention_names for name in active_names)
+        if active_in_core and len(support_names) >= 2:
             unstructured_supports = [
                 name
                 for name, gem_id in zip(support_names, support_gem_ids)
@@ -3966,8 +3991,9 @@ def _evaluate_case_coverage(
             "Source supports named in conclusions were omitted from structured support components: "
             + _bounded_join_diagnostics(omitted_supports)
             + ". Text-only mentions stay advisory; coverage blocking only applies when an evidence "
-            "record (skill_package/mechanic_chain/rotation) already structured the group's active "
-            "skill while at least two of its supports remain completely unpackaged."
+            "record (skill_package/mechanic_chain/rotation) already structured the active skill of a "
+            "Family-core skill group while at least two of its supports remain completely "
+            "unpackaged. Non-core skill groups are diagnostic-only."
         )
     unsupported_pairs = [
         (
@@ -4002,15 +4028,18 @@ def _bounded_join_diagnostics(items: list[str], *, limit: int = 700) -> str:
     return text[:limit].rstrip(", ") + f", ... +{len(items)} entries total"
 
 
-def _support_packages_cover_core_skill_groups(
-    accepted_records: list[dict[str, Any]],
-) -> bool:
+def _core_skill_identity_keys(records: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Map each research group to its Family-core skill stable keys.
+
+    Shared by the supports coverage check and the structured-omission closure so both
+    checks reason about the same core skill set (primary/clear/boss/triggered payload
+    components, automatic family skills, and explicit familyCoreSkillKeys).
+    """
     records_by_group: dict[str, list[dict[str, Any]]] = {}
-    for item in accepted_records:
+    for item in records:
         records_by_group.setdefault(str(item.get("researchGroupId") or ""), []).append(item)
-    if not records_by_group:
-        return False
-    for group_records in records_by_group.values():
+    per_group: dict[str, set[str]] = {}
+    for group_id, group_records in records_by_group.items():
         identity_records = [
             item
             for item in group_records
@@ -4031,7 +4060,7 @@ def _support_packages_cover_core_skill_groups(
             }
             for item in identity_records
         ]
-        core_skill_keys = {
+        keys = {
             str(component.get("componentKey") or "")
             for item in identity_records
             for component in item.get("components") or []
@@ -4039,15 +4068,47 @@ def _support_packages_cover_core_skill_groups(
             in {"primary_damage", "clear_skill", "boss_skill", "triggered_payload"}
             and str(component.get("componentKey") or "").startswith("skill:")
         }
-        core_skill_keys.update(
-            research_identity.automatic_family_skill_keys(normalized_identity_records)
-        )
-        core_skill_keys.update(
+        keys.update(research_identity.automatic_family_skill_keys(normalized_identity_records))
+        keys.update(
             str(value)
             for item in identity_records
             for value in (item.get("typedPayload") or {}).get("familyCoreSkillKeys") or []
             if str(value).startswith("skill:")
         )
+        per_group[group_id] = keys
+    return per_group
+
+
+def _core_skill_mention_names(records: list[dict[str, Any]]) -> set[str]:
+    """casefolded candidate names of Family-core skill components across the review."""
+    per_group_keys = _core_skill_identity_keys(records)
+    name_by_key: dict[str, str] = {}
+    for item in records:
+        for component in item.get("components") or []:
+            key = str(component.get("componentKey") or "")
+            name = str(component.get("candidateName") or "").strip()
+            if key and name:
+                name_by_key.setdefault(key, name)
+    names: set[str] = set()
+    for keys in per_group_keys.values():
+        for key in keys:
+            name = name_by_key.get(key)
+            if name:
+                names.add(name.casefold())
+    return names
+
+
+def _support_packages_cover_core_skill_groups(
+    accepted_records: list[dict[str, Any]],
+) -> bool:
+    per_group_keys = _core_skill_identity_keys(accepted_records)
+    records_by_group: dict[str, list[dict[str, Any]]] = {}
+    for item in accepted_records:
+        records_by_group.setdefault(str(item.get("researchGroupId") or ""), []).append(item)
+    if not records_by_group:
+        return False
+    for group_id, group_records in records_by_group.items():
+        core_skill_keys = per_group_keys.get(group_id, set())
         package_supports: dict[str, set[str]] = {}
         exceptions: set[str] = set()
         for item in group_records:
@@ -4361,7 +4422,14 @@ def _safe_evidence_refs(payload: dict[str, Any]) -> list[str]:
 
 
 def _load_safe_json(path: Path, *, expected_safe: bool) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"safe review file failed to parse as UTF-8 JSON: {path} "
+            f"({type(exc).__name__}: {exc}); if the file carries a UTF-8 BOM, re-save it "
+            "without BOM (utf-8-sig compatible)"
+        ) from exc
     if not isinstance(payload, dict):
         raise ValueError(f"safe artifact must be a JSON object: {path}")
     if expected_safe:

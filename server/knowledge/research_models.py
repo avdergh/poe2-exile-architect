@@ -745,8 +745,23 @@ class DeepResearchRecordProposal(StrictModel):
                     or len(responsibility["responsibility"]) > 240
                     or responsibility["componentKey"] in seen_gear_keys
                 ):
+                    unresolved_gear = [
+                        str(mention.component_key or "") or str(mention.candidate_name or "")
+                        for mention in self.component_mentions
+                        if mention.role in {"unique_enabler", "gear_base", "weapon_base"}
+                        and not mention.component_key
+                        and (mention.candidate_name or mention.component_key)
+                    ]
                     raise ValueError(
                         "typed_payload.gearResponsibilities entries must reference resolved gear and provide a canonical responsibility type"
+                        + (
+                            "; unresolved gear components: "
+                            + ", ".join(sorted(set(unresolved_gear))[:5])
+                            + " - set resolverQuery to a resolvable query (full stable key, id-mapping, "
+                            "normalized alias, or display name like 'The Hammer of Faith'), not the key tail"
+                            if unresolved_gear
+                            else ""
+                        )
                     )
                 seen_gear_keys.add(responsibility["componentKey"])
         return self

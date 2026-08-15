@@ -1422,6 +1422,76 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
             {
                 "candidateName": "Flash Grenade",
                 "componentKey": "skill:FlashGrenadePlayer",
+                "role": "clear_skill",
+                "resolverQuery": "Flash Grenade",
+            },
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    record = review["deepResearchRecords"][0]
+    record["recordKind"] = "rotation"
+    record["content"] = "先投 Flash Grenade 控制，再以 Explosive Grenade 输出。"
+    record["typedPayload"] = {"knowledgeShape": "player_action_sequence"}
+    review["deepResearchRecords"].append(
+        {
+            "sampleId": record["sampleId"],
+            "researchGroupId": record["researchGroupId"],
+            "caseRef": record["caseRef"],
+            "safeEvidenceRef": record.get("safeEvidenceRef") or "evidence:test",
+            "recordKind": "skill_package",
+            "title": "身份包",
+            "summary": "身份记录",
+            "content": "主技能与清图技能。",
+            "components": record["components"],
+            "conditions": [],
+            "failureConditions": [],
+            "typedPayload": {"knowledgeShape": "state_causal_chain"},
+        }
+    )
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:4",
+                    "activeSkills": [{"name": "Flash Grenade", "skillId": "FlashGrenadePlayer"}],
+                    "supports": [
+                        {"name": "Freeze", "gemId": "SupportGemGlaciation"},
+                        {"name": "Frost Nexus", "gemId": "SupportGemFrostNexus"},
+                        {"name": "Defy II", "gemId": "SupportGemDefyTwo"},
+                        {"name": "Cooldown Recovery II", "gemId": "SupportGemIngenuityTwo"},
+                        {"name": "Bhatair's Vengeance", "gemId": "SupportGemBhatairsVengeance"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
+
+
+def test_source_support_diagnostics_non_core_group_does_not_block(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="evidence-noncore-unpackaged-supports-review.json",
+        components=[
+            {
+                "candidateName": "Flash Grenade",
+                "componentKey": "skill:FlashGrenadePlayer",
                 "role": "control_skill",
                 "resolverQuery": "Flash Grenade",
             },
@@ -1445,6 +1515,22 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
     record["recordKind"] = "rotation"
     record["content"] = "先投 Flash Grenade 控制，再以 Explosive Grenade 输出。"
     record["typedPayload"] = {"knowledgeShape": "player_action_sequence"}
+    review["deepResearchRecords"].append(
+        {
+            "sampleId": record["sampleId"],
+            "researchGroupId": record["researchGroupId"],
+            "caseRef": record["caseRef"],
+            "safeEvidenceRef": record.get("safeEvidenceRef") or "evidence:test",
+            "recordKind": "skill_package",
+            "title": "身份包",
+            "summary": "身份记录",
+            "content": "主技能与清图技能。",
+            "components": record["components"],
+            "conditions": [],
+            "failureConditions": [],
+            "typedPayload": {"knowledgeShape": "state_causal_chain"},
+        }
+    )
     diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
         review=review,
         source_skill_manifest={
@@ -1464,8 +1550,8 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
         },
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
-    assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["unrepresentedActiveSkillGroupCount"] == 0
 
 
 def test_source_support_diagnostics_allow_shared_support_in_evidence_group(tmp_path):
