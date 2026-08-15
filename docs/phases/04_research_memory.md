@@ -205,6 +205,10 @@ Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆�
 `--resume` 是独立恢复模式，不绑定到 50 个样本；恢复时必须同时提供原始 `queue` 返回的
 `--output-dir <runDir>`。
 
+**显式意图优先于预检菜单**：用户明确给出案例数量或分析意图（例如“抓 5 个案例来分析”）时，
+直接按 `--limit N` 执行完整流程（真实入队、逐案研究、accept），不得推荐或执行 `--dry-run`
+预检——预检不产生任何知识，只用于用户无参数且明确想先验证链路时。
+
 等价的底层脚本入口与逐案流程（queue → claim → inspect/read/search → review-contract →
 init-review → accept --validate-only → accept → status）以 `/poe-bd-research` skill 的
 `逐案流程` 为唯一执行事实源，本文档不再复述命令；完整参数见
