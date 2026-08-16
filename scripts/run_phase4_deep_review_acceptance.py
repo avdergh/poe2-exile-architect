@@ -2610,6 +2610,14 @@ def _filter_records_with_unsupported_source_supports(
                 )
                 and not same_name_different_skill_key
             )
+            triggering_segment = ""
+            if exact_same_statement:
+                for segment in claim_segments:
+                    if _text_mentions_exact_name(
+                        segment, str(item.get("skillName") or "")
+                    ) and _text_mentions_exact_name(segment, str(item.get("supportName") or "")):
+                        triggering_segment = _bounded_diagnostic_text(segment)
+                        break
             if structured_pair or exact_same_statement:
                 matched.append(
                     {
@@ -2617,6 +2625,7 @@ def _filter_records_with_unsupported_source_supports(
                         "matchedBy": (
                             "structured_components" if structured_pair else "exact_same_statement"
                         ),
+                        "triggeringSegment": triggering_segment,
                     }
                 )
         if not matched:
@@ -4154,6 +4163,15 @@ def _bounded_join_diagnostics(items: list[str], *, limit: int = 700) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip(", ") + f", ... +{len(items)} entries total"
+
+
+def _bounded_diagnostic_text(text: str, *, limit: int = 80) -> str:
+    """Bound a single diagnostic excerpt so a reviewer can locate the offending
+    statement without leaking unbounded prose into acceptance artifacts."""
+    normalized = " ".join(str(text).split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit] + "…"
 
 
 def _core_skill_identity_keys(records: list[dict[str, Any]]) -> dict[str, set[str]]:

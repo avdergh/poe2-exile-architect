@@ -95,6 +95,175 @@ def test_queue_refuses_to_overwrite_an_existing_queue(tmp_path):
     assert research_mature_builds.queue_status(output_dir=output_dir)["queuedCount"] == 1
 
 
+def test_queue_re_research_rebuilds_prior_run_cases_as_supplement(tmp_path, capsys, monkeypatch):
+    from scripts import research_mature_builds
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    code = research_mature_builds.main(["queue", "--source-file", str(source_file)])
+    assert code == 0
+    prior_report = json.loads(capsys.readouterr().out)
+    prior_run_dir = tmp_path / Path(prior_report["runDir"])
+    with sqlite3.connect(prior_run_dir / research_mature_builds.QUEUE_DB_FILENAME) as conn:
+        prior_sample_id = conn.execute("SELECT sample_id FROM cases").fetchone()[0]
+
+    code = research_mature_builds.main(
+        [
+            "queue",
+            "--re-research",
+            str(prior_run_dir),
+            "--supplement-focus",
+            "补录骷髅军团配装与资源账本",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reSupplementCaseCount"] == 1
+    assert report["reSupplementSkippedUnrecoverableCount"] == 0
+    run_dir = tmp_path / Path(report["runDir"])
+    assert run_dir != prior_run_dir
+    status = research_mature_builds.queue_status(output_dir=run_dir)
+    assert status["queuedCount"] == 1
+    with sqlite3.connect(run_dir / research_mature_builds.QUEUE_DB_FILENAME) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT supplement, supplement_context, source_hash, sample_id FROM cases"
+        ).fetchone()
+    assert row["supplement"] == 1
+    assert row["supplement_context"] == "补录骷髅军团配装与资源账本"
+    assert row["source_hash"]
+    assert row["sample_id"] == prior_sample_id
+
+
+def test_queue_re_research_requires_prior_queue_db(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    with pytest.raises(ValueError, match="re-research run directory has no"):
+        research_mature_builds.queue_cases(
+            re_research_run_dir=tmp_path / "missing",
+            output_dir=tmp_path / "out",
+            temp_root=tmp_path / "temp",
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        research_mature_builds.queue_cases(
+            re_research_run_dir=tmp_path / "missing",
+            source_files=[tmp_path / "sample.txt"],
+            output_dir=tmp_path / "out2",
+            temp_root=tmp_path / "temp2",
+        )
+
+
+def test_cases_from_prior_run_skips_rows_without_quarantine_material(tmp_path):
+    from scripts import research_mature_builds
+
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    db_path = prior / research_mature_builds.QUEUE_DB_FILENAME
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sample_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_hash TEXT NOT NULL UNIQUE,
+                source_hash_ref TEXT NOT NULL,
+                character_ref TEXT NOT NULL DEFAULT '',
+                league TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                class_name TEXT NOT NULL,
+                ascendancy TEXT NOT NULL,
+                main_skill TEXT NOT NULL,
+                safe_error TEXT NOT NULL,
+                packet_id TEXT NOT NULL,
+                packet_safe_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO cases(sample_id, status, source_type, source_hash, source_hash_ref, "
+            "league, level, class_name, ascendancy, main_skill, safe_error, packet_id, "
+            "packet_safe_hash, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "case:with-quarantine",
+                "accepted",
+                "local_pob_code_file",
+                "hash-with-material",
+                "source-hash:hash-with",
+                "league-x",
+                95,
+                "Ranger",
+                "Deadeye",
+                "LightningArrowPlayer",
+                "",
+                "packet-id",
+                "packet-hash",
+                "2026-01-01T00:00:00",
+                "2026-01-01T00:00:00",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO cases(sample_id, status, source_type, source_hash, source_hash_ref, "
+            "league, level, class_name, ascendancy, main_skill, safe_error, packet_id, "
+            "packet_safe_hash, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "case:without-quarantine",
+                "accepted",
+                "local_pob_code_file",
+                "hash-without-material",
+                "source-hash:hash-without",
+                "league-x",
+                95,
+                "Ranger",
+                "Deadeye",
+                "LightningArrowPlayer",
+                "",
+                "packet-id",
+                "packet-hash",
+                "2026-01-01T00:00:00",
+                "2026-01-01T00:00:00",
+            ),
+        )
+    quarantine = prior / "quarantine"
+    quarantine.mkdir()
+    payload = {
+        "sampleId": "case:with-quarantine",
+        "sourceHash": "hash-with-material",
+        "rawImportCode": _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+    }
+    (quarantine / "hash-with-material.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+    cases, skipped = research_mature_builds._cases_from_prior_run(
+        prior, supplement_focus="聚焦清单"
+    )
+    assert skipped == 1
+    assert len(cases) == 1
+    assert cases[0]["sampleId"] == "case:with-quarantine"
+    assert cases[0]["supplement"] is True
+    assert cases[0]["supplementContext"] == "聚焦清单"
+    assert cases[0]["sourceHash"] == "hash-with-material"
+
+
 def test_queue_forwards_optional_ninja_class_filter(tmp_path, monkeypatch):
     from scripts import research_mature_builds
 

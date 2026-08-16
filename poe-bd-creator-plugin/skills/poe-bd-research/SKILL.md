@@ -319,13 +319,12 @@ prose 提及而未声明为组件，会出现在 `proseMentionedWithoutComponent
 `workerPrompt` 与当前 lease 的 `review-contract` 已覆盖研究顺序、Family 身份、案例覆盖、迁移范围和
 结构化字段合同。这里仅保留二者未完整表达的补充检查；冲突时以运行时合同为准。
 
-- 补充研究（对同一 source 案例的追加 run，例如补录珠宝、暗金或 Spirit 维度）必须**复刻首轮
-  identity 记录结构**：Family 核心技能组件（primary_damage，以及自动参与身份的
-  clear_skill / boss_skill / triggered_payload 组件和 typedPayload.familyCoreSkillKeys）必须与首轮
-  完全一致。Family key 由 (ascendancy, primary, secondary) 确定性推导，遗漏任一 secondary 身份
-  组件就会产生 sibling family 分裂——同一个 BD 的知识会分散到多个档案夹，系统只有提示不会自动
-  合并。无法确认首轮身份结构时，先用 `query_research_memory` 的 familyRecordCoverage 核对既有
-  Family 的 secondary 集合，再写 identity 记录。
+- 补充研究（对同一 source 案例的追加 run，例如补录珠宝、暗金或 Spirit 维度）无需手动复刻身份：
+  accept 按 (ascendancy, primary_skill_keys 集合) 自动归入既有 Family（join/expand +
+  family_merge_log），clear_skill / boss_skill / triggered_payload 自动副技能与 trigger-host
+  不参与身份，同源宝石变体经 skill_equivalence 归一为同一身份；不会产生 sibling 分裂。
+  无法确认既有 Family 的 primary 集合时，先用 `query_research_memory` 的 familyRecordCoverage
+  核对，再写身份记录。
 - **更正既有入库结论**按以下优先级执行（三者都做对，错误结论不会与正确结论并存）：
   1) 首选：对同一知识用**相同的标题**在同 case 下重跑 accept——系统按 (case、类型、标题、来源)
      识别为同一条记录并原地更新；
@@ -407,10 +406,4 @@ Boss 时的续接风险，以及装备与局部天赋如何支撑资源。应拆
 失败模式等聚焦记录。
 
 浅层反例：“该案例堆叠投射物、暴击、元素伤害和能量护盾，建议在 PoB 中继续验证。”这类文字没有
-具体组件、因果、操作顺序或职责分工，只能作为 open question，不能成为主要 durable output。- ???????? source ????? run??????????? Spirit ?????**????
-  identity ????**?Family ?? = ?? + ????????role=primary_damage ??? skill
-  ???clear_skill / boss_skill / triggered_payload ?????? trigger-host ?????????
-  ???????????????? Family?accept ??????????????????
-  sibling ???????? gem ?????????????????/????????????
-  ?????? Family ?????? `query_research_memory` ? familyRecordCoverage ???
-
+具体组件、因果、操作顺序或职责分工，只能作为 open question，不能成为主要 durable output。

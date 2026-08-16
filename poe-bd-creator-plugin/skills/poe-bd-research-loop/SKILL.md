@@ -110,7 +110,7 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 
 修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md；真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
 
-修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录（相同 PoB 文本重新 queue + accept）或 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
+修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录（相同 PoB 文本重新 queue + accept；CLI 用 `research_mature_builds.py queue --re-research <旧run目录> [--supplement-focus ...]` 从旧 run 的 quarantine 重建案例为补充研究轮，accept 要求 created+updated ≥1 否则判定无效）或 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
 
 最终必须单独输出一行 `POE_FIX_DATA_REPAIRED: yes` 或 `POE_FIX_DATA_REPAIRED: no`。只有实际写入、更新、重建或替换了修正后仍保留在数据库中的研究数据时才输出 yes；纯代码、测试、notes、artifact 修改，或只删除错误数据而没有保留修正版时输出 no。
 ```

@@ -3142,6 +3142,8 @@ def test_single_active_source_group_defers_exact_unstructured_unsupported_claim(
     deferred = report["deferredCandidates"][0]
     assert deferred["reason"] == "unsupported_source_skill_support_pair"
     assert deferred["unsupportedPairs"][0]["matchedBy"] == "exact_same_statement"
+    assert "Charge Profusion II" in deferred["unsupportedPairs"][0]["triggeringSegment"]
+    assert "Ice Strike" in deferred["unsupportedPairs"][0]["triggeringSegment"]
 
 
 def test_deep_record_id_attachment_uses_ordered_write_mapping():

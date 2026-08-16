@@ -89,8 +89,16 @@ def queue_cases(
     resume: bool = False,
     dry_run: bool = False,
     intake_ledger_path: str | Path | None = None,
+    re_research_run_dir: str | Path | None = None,
+    supplement_focus: str = "",
 ) -> dict[str, Any]:
-    """Create or resume a safe mature-build research queue."""
+    """Create or resume a safe mature-build research queue.
+
+    ``re_research_run_dir`` points at a completed research run whose cases are re-queued as
+    local supplement research (the same source hash is re-studied to close gaps, marked
+    ``supplement=true``). Raw material is rebuilt from the prior run's quarantine; cases
+    without quarantine material are skipped.
+    """
     del worker_count  # Deprecated compatibility input; execution is always serial.
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -120,6 +128,18 @@ def queue_cases(
 
     source_file_values = list(source_files or [])
     source_batch_file_values = list(source_batch_files or [])
+    if re_research_run_dir is not None:
+        if source_file_values or source_batch_file_values:
+            raise ValueError(
+                "--re-research cannot be combined with --source-file/--source-batch-file"
+            )
+        if resume:
+            raise ValueError("--re-research cannot be combined with --resume")
+        prior_run_root = Path(re_research_run_dir)
+        if not (prior_run_root / QUEUE_DB_FILENAME).exists():
+            raise ValueError(
+                f"--re-research run directory has no {QUEUE_DB_FILENAME}: {re_research_run_dir}"
+            )
     normalized_ninja_classes = legacy_batch._normalize_ninja_classes(ninja_classes or [])
     local_sources = legacy_batch._local_sources(source_file_values, source_batch_file_values)
     collector_stats: dict[str, Any] = {
@@ -131,6 +151,9 @@ def queue_cases(
         "sourceFileArgumentCount": len(source_file_values),
         "sourceBatchFileArgumentCount": len(source_batch_file_values),
         "localSourceInputCount": len(local_sources),
+        "reResearchRunDir": _display_path(Path(re_research_run_dir)) if re_research_run_dir else "",
+        "reSupplementCaseCount": 0,
+        "reSupplementSkippedUnrecoverableCount": 0,
         "levelMin": max(0, int(level_min or 0)),
         "levelMax": max(0, int(level_max or 0)),
         "requestedSampleCount": (
@@ -158,22 +181,34 @@ def queue_cases(
             )
             _assert_safe_payload(report)
             return report
-    cases = (
-        legacy_batch._cases_from_sources(
-            local_sources,
-            sample_start_index=sample_start_index,
+    re_research_cases: list[dict[str, Any]] = []
+    if re_research_run_dir is not None:
+        re_research_cases, re_unrecoverable = _cases_from_prior_run(
+            Path(re_research_run_dir),
+            supplement_focus=supplement_focus,
         )
-        if local_sources
-        else legacy_batch._cases_from_ninja(
-            league_url=league_url,
-            limit=limit,
-            level_min=level_min,
-            level_max=level_max,
-            ascendancies=ascendancies or [],
-            browser_driver=browser_driver,
-            ninja_classes=normalized_ninja_classes,
-            intake_ledger_path=effective_ledger,
-            collector_stats=collector_stats,
+        source_input_summary["reSupplementCaseCount"] = len(re_research_cases)
+        source_input_summary["reSupplementSkippedUnrecoverableCount"] = re_unrecoverable
+    cases = (
+        re_research_cases
+        if re_research_run_dir is not None
+        else (
+            legacy_batch._cases_from_sources(
+                local_sources,
+                sample_start_index=sample_start_index,
+            )
+            if local_sources
+            else legacy_batch._cases_from_ninja(
+                league_url=league_url,
+                limit=limit,
+                level_min=level_min,
+                level_max=level_max,
+                ascendancies=ascendancies or [],
+                browser_driver=browser_driver,
+                ninja_classes=normalized_ninja_classes,
+                intake_ledger_path=effective_ledger,
+                collector_stats=collector_stats,
+            )
         )
     )
     _normalize_sample_ids(cases, sample_start_index=sample_start_index)
@@ -286,6 +321,7 @@ def queue_cases(
             and source_hash in studied_source_hashes
             and not dry_run
             and not local_sources
+            and not re_research_run_dir
         ):
             # The same mature build (byte-identical PoB text) was already researched and
             # accepted into durable memory; re-queueing it would duplicate knowledge and
@@ -343,6 +379,17 @@ def queue_cases(
         duplicate_count=skipped_duplicates,
         intake_ledger_summary=intake_ledger_summary,
     )
+    if re_research_run_dir is not None:
+        # Re-research is a single queue-action fact, not persisted queue metadata: overlay
+        # it on the queue report so the supplement round is visible without polluting
+        # later queue_status reads.
+        report["reResearchRunDir"] = str(source_input_summary.get("reResearchRunDir") or "")
+        report["reSupplementCaseCount"] = int(
+            source_input_summary.get("reSupplementCaseCount") or 0
+        )
+        report["reSupplementSkippedUnrecoverableCount"] = int(
+            source_input_summary.get("reSupplementSkippedUnrecoverableCount") or 0
+        )
     _assert_safe_payload(report)
     return report
 
@@ -787,7 +834,7 @@ def render_review_contract(
             "同一 researchGroupId 的记录必须使用同一个 ascendancyKey，并且只把一个核心主技能标为 primary_damage。",
             "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 身份。clear_skill、boss_skill、triggered_payload 由程序自动参与 Family；trigger_host 不自动参与身份（换宿主视为变体），身份级 trigger host 必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会参与 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
-            "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
+            "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发；被拒的 unsupportedPairs 会带 triggeringSegment 引用触发句，先改句再重验。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
             "gearRoles covered 必须有 gear_synergy，并在 typedPayload.gearResponsibilities 说明已解析武器/暗金的具体职责；只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
@@ -982,6 +1029,20 @@ def accept_case(
         _finish_accepting_after_exception(db_path, row=row, lease_token=lease_token)
         raise
     accepted = str(report.get("status") or "") == "accepted"
+    supplement_no_gain = False
+    if (
+        accepted
+        and int(row["supplement"] or 0)
+        and (
+            int(report.get("createdDeepRecordCount") or 0)
+            + int(report.get("updatedDeepRecordCount") or 0)
+        )
+        == 0
+    ):
+        # A supplement round that produced no durable record delta adds no knowledge; do
+        # not consume the lease as a successful acceptance.
+        supplement_no_gain = True
+        accepted = False
     status = "accepted" if accepted else "acceptance_rejected"
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
@@ -1069,6 +1130,15 @@ def accept_case(
         "patternWrite": report.get("patternWrite") or {},
         "deepRecordWrite": report.get("deepRecordWrite") or {},
         "semanticEdgeWrite": report.get("semanticEdgeWrite") or {},
+        "supplement": int(row["supplement"] or 0),
+        "supplementNoGain": supplement_no_gain,
+        "supplementNoGainReason": (
+            "Supplement research produced no created or updated deep record; the case was "
+            "not accepted. Add at least one genuinely new or corrected record (the same "
+            "knowledge key updates in place) and re-run accept."
+            if supplement_no_gain
+            else ""
+        ),
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1191,9 +1261,23 @@ def retry_accept_case(
             require_deep_records=True,
         )
     except Exception:
-        _finish_retry_accepting_after_exception(db_path, row=row)
+        _finish_accepting_after_exception(db_path, row=row, lease_token="")
         raise
     accepted = str(report.get("status") or "") == "accepted"
+    supplement_no_gain = False
+    if (
+        accepted
+        and int(row["supplement"] or 0)
+        and (
+            int(report.get("createdDeepRecordCount") or 0)
+            + int(report.get("updatedDeepRecordCount") or 0)
+        )
+        == 0
+    ):
+        # A supplement round that produced no durable record delta adds no knowledge; do
+        # not consume the retry as a successful acceptance.
+        supplement_no_gain = True
+        accepted = False
     status = "accepted" if accepted else "acceptance_rejected"
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
@@ -1279,6 +1363,15 @@ def retry_accept_case(
         "patternWrite": report.get("patternWrite") or {},
         "deepRecordWrite": report.get("deepRecordWrite") or {},
         "semanticEdgeWrite": report.get("semanticEdgeWrite") or {},
+        "supplement": int(row["supplement"] or 0),
+        "supplementNoGain": supplement_no_gain,
+        "supplementNoGainReason": (
+            "Supplement research produced no created or updated deep record; the case was "
+            "not accepted. Add at least one genuinely new or corrected record (the same "
+            "knowledge key updates in place) and re-run accept."
+            if supplement_no_gain
+            else ""
+        ),
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1862,6 +1955,10 @@ def _init_db(db_path: Path) -> None:
             conn.execute(
                 "ALTER TABLE cases ADD COLUMN research_quality_summary TEXT NOT NULL DEFAULT '{}'"
             )
+        if "supplement" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN supplement INTEGER NOT NULL DEFAULT 0")
+        if "supplement_context" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN supplement_context TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -1891,9 +1988,10 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
             INSERT OR IGNORE INTO cases(
                 sample_id, status, source_type, source_hash, source_hash_ref,
                 character_ref, league, level, class_name, ascendancy, main_skill,
-                safe_error, packet_id, packet_safe_hash, created_at, updated_at
+                safe_error, packet_id, packet_safe_hash, supplement, supplement_context,
+                created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["sampleId"],
@@ -1910,6 +2008,8 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
                 row["safeError"],
                 row["packetId"],
                 row["packetSafeHash"],
+                int(row.get("supplement") or 0),
+                str(row.get("supplementContext") or ""),
                 now,
                 now,
             ),
@@ -2384,7 +2484,66 @@ def _safe_case_row_from_case(
         "safeError": legacy_batch._safe_text(case.get("safeError")),
         "packetId": legacy_batch._safe_text(packet_id),
         "packetSafeHash": legacy_batch._safe_text(packet_safe_hash),
+        "supplement": 1 if case.get("supplement") else 0,
+        "supplementContext": legacy_batch._safe_text(case.get("supplementContext")),
     }
+
+
+def _cases_from_prior_run(
+    prior_run_root: Path,
+    *,
+    supplement_focus: str = "",
+) -> tuple[list[dict[str, Any]], int]:
+    """Re-queue completed cases of a prior run as local supplement research.
+
+    Every case row of the prior run (any status) is rebuilt from its run-local quarantine
+    raw material and marked ``supplement=true``; rows whose quarantine material is missing
+    are skipped (their raw source is unrecoverable). Supplement cases keep the prior
+    ``sampleId`` for traceability and chain the ``supplementContext`` focus text.
+    """
+    prior_db = prior_run_root / QUEUE_DB_FILENAME
+    prior_quarantine = _quarantine_dir(prior_run_root)
+    cases: list[dict[str, Any]] = []
+    skipped = 0
+    with sqlite3.connect(prior_db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT sample_id, source_hash, source_hash_ref, source_type, character_ref,
+                   league, level, class_name, ascendancy, main_skill
+              FROM cases
+             ORDER BY id
+            """
+        ).fetchall()
+    for row in rows:
+        source_hash = str(row["source_hash"] or "").strip()
+        if not source_hash:
+            skipped += 1
+            continue
+        quarantine_path = prior_quarantine / f"{source_hash}.json"
+        raw = ""
+        if quarantine_path.exists():
+            try:
+                payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
+                raw = str(payload.get("rawImportCode") or "")
+            except (OSError, ValueError):
+                raw = ""
+        if not raw:
+            skipped += 1
+            continue
+        case = legacy_batch._case_from_source(
+            raw,
+            source_hash=source_hash,
+            sample_id=str(row["sample_id"] or ""),
+            source_type=str(row["source_type"] or "local_pob_code_file"),
+            league=str(row["league"] or "unknown"),
+            row={},
+            character_ref=str(row["character_ref"] or ""),
+        )
+        case["supplement"] = True
+        case["supplementContext"] = str(supplement_focus or "").strip()
+        cases.append(case)
+    return cases, skipped
 
 
 def _queue_report(
@@ -2461,6 +2620,11 @@ def _queue_report(
         "uniqueLocalCaseCount": int(source_input_summary.get("uniqueLocalCaseCount") or 0),
         "duplicateLocalSourceCount": int(
             source_input_summary.get("duplicateLocalSourceCount") or 0
+        ),
+        "reResearchRunDir": str(source_input_summary.get("reResearchRunDir") or ""),
+        "reSupplementCaseCount": int(source_input_summary.get("reSupplementCaseCount") or 0),
+        "reSupplementSkippedUnrecoverableCount": int(
+            source_input_summary.get("reSupplementSkippedUnrecoverableCount") or 0
         ),
         "samples": samples,
         "dryRun": bool(dry_run),
@@ -3074,8 +3238,25 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
     ascendancy = str(row["ascendancy"])
     level = int(row["level"] or 0)
     main_skill = str(row["main_skill"] or "")
+    supplement = int(row["supplement"] or 0)
+    supplement_context = str(row["supplement_context"] or "")
+    supplement_section = ""
+    if supplement:
+        supplement_section = (
+            "\n## Supplement Research\n"
+            "- 这是对同一来源案例的补充研究轮（前一轮已验收入库）。身份记录会由 accept 自动归入"
+            "既有 Family（join/expand + family_merge_log），无需手动复刻首轮身份结构；"
+            "clear_skill / boss_skill / triggered_payload 自动副技能与 trigger-host 不参与身份。\n"
+            "- 先查询既有 Family 知识（query_research_memory 的 familyRecordCoverage / "
+            "familyRecordIndex / familyPremiseCatalog），只补缺口，不得重复已有结论；"
+            "同一知识命中 knowledge_key 会原地更新，不产生新记录。\n"
+            "- 本轮必须产生至少一条新增或更新记录（created+updated ≥ 1），否则 accept 会判定"
+            "补充轮无效。\n"
+            + (f"- 本轮聚焦清单：{supplement_context}\n" if supplement_context else "")
+        )
     return f"""你正在执行 PoE2 mature build Researcher 流程，只负责当前 leased case。
 这是当前案例的安全导航 brief。
+{supplement_section}
 
 ## Runtime Boundary
 - 这是产品运行态，不要修改源码、测试、文档、schema 或安装配置。
@@ -3139,7 +3320,8 @@ graph 等独立佐证。
    组合 fixed-point 校验（support_skill_group_candidates，模拟 PoB 技能组实际生效性）为准；
    独立 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。机制细节
    以 corpus/wiki/来源文本为准，不得凭名字推断。注意：来源组静态校验对"同一句精确提到技能与
-   辅助名"的记录整条 defer（unsupported_source_skill_support_pair），声明某技能时不要在同一句
+   辅助名"的记录整条 defer（unsupported_source_skill_support_pair）；validate-only 的
+   deferred.unsupportedPairs 会带 triggeringSegment 引用触发句，声明某技能时不要在同一句
    提及静态不兼容的辅助。
 6. Memory 对照用 stable key：查询前先 search_graph_components + resolve_graph_component 解析
    ascendancy/class，再以 stable key 过滤 query_research_memory；检查
@@ -3218,6 +3400,9 @@ component_type_mismatch、错误 role/query 和其他可修复问题先做一次
 def _normalize_sample_ids(cases: list[dict[str, Any]], *, sample_start_index: int) -> None:
     index = max(1, int(sample_start_index))
     for case in cases:
+        if case.get("supplement"):
+            # Supplement research keeps the prior run's sample id for traceability.
+            continue
         source_hash = str(case.get("sourceHash") or "").strip()
         if source_hash:
             case["sampleId"] = f"case:poe-bd-research-{source_hash[:16]}"
@@ -3500,6 +3685,21 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument("--sample-start-index", type=int, default=1)
     queue_parser.add_argument("--resume", action="store_true")
     queue_parser.add_argument("--dry-run", action="store_true")
+    queue_parser.add_argument(
+        "--re-research",
+        default=None,
+        metavar="RUN_DIR",
+        help="Re-queue every case of a completed research run as local supplement research "
+        "(same source re-studied to close gaps). Raw material is rebuilt from that run's "
+        "quarantine; cases are marked supplement=true and accept enforces a created+updated "
+        ">= 1 gate.",
+    )
+    queue_parser.add_argument(
+        "--supplement-focus",
+        default="",
+        help="Optional focus checklist injected into the supplement-round worker brief "
+        "(e.g. '骷髅军团各宝宝配装、资源账本').",
+    )
     queue_parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
     queue_parser.add_argument(
         "--intake-ledger",
@@ -3636,6 +3836,8 @@ def main(argv: list[str] | None = None) -> int:
                 resume=args.resume,
                 dry_run=args.dry_run,
                 intake_ledger_path=args.intake_ledger,
+                re_research_run_dir=args.re_research,
+                supplement_focus=args.supplement_focus,
             )
             if run_id is not None:
                 _attach_run_location(report, run_id=run_id, run_dir=output_dir)

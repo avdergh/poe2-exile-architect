@@ -209,43 +209,41 @@ def build_researcher_prompt_package(
         "- If the insight is genuinely new, proceed to Step 3 and then submit it with the "
         "dedupeQueryRef.\n\n"
         "## STEP 3: Resolve Physical Keys (Mandatory)\n"
-        "Use candidate discovery and stable confirmation as separate operations. For descriptive "
-        "phrases, call search_graph_components with the concrete candidate name plus expected "
-        "node types and scope=player for player-used skills; do not send phrases such as "
-        "'Bonestorm active spell skill' as the component "
-        "name. Then confirm the chosen stable key with resolve_graph_component. Lexical or future "
-        "semantic similarity may discover candidates, but it never authorizes an endpoint.\n"
+        "Candidate discovery and stable confirmation are separate operations: "
+        "search_graph_components (concrete candidate name + expected node types, scope=player "
+        "for player-used skills) discovers; resolve_graph_component with the chosen name "
+        "confirms. Lexical or future semantic similarity may discover candidates, but it "
+        "never authorizes an endpoint.\n"
         "Before constructing ANY semantic edge, you MUST first call graph_tool_query with "
         'tool_name="resolve_graph_component" for every source and target entity: every skill, '
-        "support, unique item, passive, notable, ascendancy, or other graph component you plan to "
-        "reference.\n"
-        "- You are FORBIDDEN from calling propose_semantic_edges with a key that has not been "
-        "explicitly validated by the resolver.\n"
-        "- You are FORBIDDEN from using display names, aliases, or invented strings as endpoints. "
-        "Use only resolver-returned stable_key values.\n\n"
+        "support, unique item, passive, notable, ascendancy, or other graph component you "
+        "plan to reference. You are FORBIDDEN from calling propose_semantic_edges with a key "
+        "that has not been explicitly validated by the resolver, and FORBIDDEN from using "
+        "display names, aliases, or invented strings as endpoints: use only resolver-returned "
+        "stable_key values.\n"
         "secondary endpoint resolution is mandatory for every concrete mechanism entity that "
         "participates in a proposed edge: heralds, supports, charges, ailment skills/mechanics, "
-        "companion skills, reservation/spirit components, projectile delivery skills, or cooldown "
-        "support-like components. abstract layer labels such as elemental ailment layer, companion "
-        "layer, or defense reservation layer are not graph endpoints; convert them into concrete "
-        "resolver queries or keep them as caveats / verification tasks.\n\n"
-        "Bounded endpoint repair protocol: if resolve_graph_component returns ambiguous, you may "
-        "make at most 2 narrowed resolver attempts using explicit type/context clues from the "
-        "packet or previous resolver candidates. If it is still ambiguous, record "
-        "requires_manual_endpoint_mapping and do not submit an edge for that endpoint. You must "
-        "never choose the most likely candidate. If resolution is missing or reports "
-        "source_coverage_gap, emit a static source refresh request / verification task and do not "
-        "treat the endpoint as hallucinated.\n\n"
-        "Resolver failure classification matters. Do not label unresolved mature-build entities as "
-        "hallucinations just because the current graph cannot resolve them. If graph_tool_query "
-        "returns graph_snapshot_unavailable or a proposal rejection reports source_coverage_gap, "
-        "treat the entity as not assessed and requiring static source review / graph refresh. You "
-        "still must not submit semantic edges for unresolved endpoints.\n\n"
-        "For each semantic edge, include compact endpoint resolution evidence for both endpoints: "
-        "source_resolution and target_resolution with tool_name=resolve_graph_component, "
-        "status=resolved, stable_key, snapshot_id, evidence_path_nodes, and source_refs. The backend "
-        "will reject missing, mismatched, or stale resolver evidence. Map resolver output fields "
-        "directly: resolvedSubject.stableKey -> stable_key, snapshotId -> snapshot_id, "
+        "companion skills, reservation/spirit components, projectile delivery skills, or "
+        "cooldown support-like components. abstract layer labels such as elemental ailment "
+        "layer, companion layer, or defense reservation layer are not graph endpoints; "
+        "convert them into concrete resolver queries or keep them as caveats / verification "
+        "tasks.\n"
+        "Bounded endpoint repair protocol: if resolve_graph_component returns ambiguous, you "
+        "may make at most 2 narrowed resolver attempts using explicit type/context clues from "
+        "the packet or previous resolver candidates; if still ambiguous, record "
+        "requires_manual_endpoint_mapping and do not submit an edge for that endpoint; never "
+        "choose the most likely candidate. Missing resolution or source_coverage_gap -> emit "
+        "a static source refresh request / verification task. Do not label unresolved "
+        "mature-build entities as hallucinations just because the current graph cannot "
+        "resolve them: graph_snapshot_unavailable or a proposal rejection reporting "
+        "source_coverage_gap means not assessed and requiring static source review / graph "
+        "refresh; you still must not submit semantic edges for unresolved endpoints.\n"
+        "For each semantic edge, include compact endpoint resolution evidence for both "
+        "endpoints: source_resolution and target_resolution with "
+        "tool_name=resolve_graph_component, status=resolved, stable_key, snapshot_id, "
+        "evidence_path_nodes, and source_refs; the backend will reject missing, mismatched, "
+        "or stale resolver evidence. Map resolver output fields directly: "
+        "resolvedSubject.stableKey -> stable_key, snapshotId -> snapshot_id, "
         "evidencePath.nodes -> evidence_path_nodes, and sourceRefs -> source_refs.\n\n"
         "## STEP 4: Submit Focused Deep Records and Derived Indexes\n"
         "First call propose_deep_research_records with schema_version=5. One research case should "
@@ -287,6 +285,23 @@ def build_researcher_prompt_package(
         '"record_schema_version":1,"game_patch":"...","passive_tree_version":"...",'
         '"pob_version_or_commit":"...","visibility":"creator_visible",'
         '"split":"train_context","knowledge_scope":"global_seed"}]}\n'
+        "- Direct MCP payload shape for propose_semantic_edges (structure-only skeleton; "
+        "endpoints are resolver-returned stable_key values, every non-optional field is "
+        "required, context_requirements must state the applicability condition):\n"
+        '  {"schema_version":5,"semantic_edges":[{"source_key":"skill:...",'
+        '"target_key":"unique:...","edge_type":"enables_mechanic",'
+        '"source_resolution":{"tool_name":"resolve_graph_component","status":"resolved",'
+        '"stable_key":"skill:...","snapshot_id":"...","evidence_path_nodes":[...],'
+        '"source_refs":[...]},"target_resolution":{...same shape...},'
+        '"rationale":"<one concrete causal/role sentence>",'
+        '"source_case_refs":["case:..."],"safe_evidence_refs":["evidence:..."],'
+        '"game_patch":"...","passive_tree_version":"...","pob_version_or_commit":"...",'
+        '"status":"valid","confidence":"medium","modelability":"full",'
+        '"copy_safety_state":"passed",'
+        '"context_requirements":[{"context_type":"verification_gate_requirement",'
+        '"task":"<what must be verified before relying on this edge>"}],'
+        '"affected_component_keys":["skill:...","unique:..."],"visibility":"creator_visible",'
+        '"split":"train_context","knowledge_scope":"global_seed","directionality":"directional"}]}\n'
         "- First extract BuildDesignObservation objects into build_design_observations before "
         "forcing graph edges. Observations should describe BD design axes: identity, "
         "character_shell, primary_skill_package, secondary_skill_package, passive_tree_shape, "

@@ -452,7 +452,11 @@ case 研究都应执行：
 Research Memory 的 durable writer 只有 accept。修正既有记录两条路径：
 
 - **同 case 补录（新 research run + accept）**：用与最初完全相同的 PoB 文本重新 queue
-  （sampleId/sourceHashRef 相同 → researchGroupId 相同）；补录记录保持旧记录的
+  （sampleId/sourceHashRef 相同 → researchGroupId 相同）；CLI 支持
+  `research_mature_builds.py queue --re-research <旧run目录> [--supplement-focus ...]`：
+  从旧 run 的 quarantine 重建每个案例为补充研究轮（本地来源路径，绕过 already-studied
+  跳过，case 标记 `supplement=true`，accept 要求 created+updated ≥ 1，否则判定补充轮无效
+  不消耗验收）。补录记录保持旧记录的
   `title / recordKind / researchGroupId / source_case_refs` 不变时，`_persist_deep_record`
   会命中 `_existing_deep_record_id` 并原地 UPDATE 覆盖（`updatedDeepRecordCount` 计数）；
   identity 变化（knowledge_key 改变）时同一 UPDATE 会清理旧 key 的孤儿 evidence，不产生
