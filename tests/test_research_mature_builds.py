@@ -433,7 +433,15 @@ def test_queue_status_returns_persisted_intake_ledger_summary_and_tolerates_old_
         conn.execute("DELETE FROM metadata WHERE key = 'intakeLedgerSummary'")
         conn.commit()
     legacy_status = research_mature_builds.queue_status(output_dir=output_dir)
-    assert legacy_status["intakeLedgerSummary"] == {}
+    # The queue-time snapshot is gone, but the live ledger re-read still reports the
+    # promoted rows (accepts never touched this ledger, so the row stays queued).
+    assert legacy_status["intakeLedgerSummary"] == {
+        "used": True,
+        "league": "runesofaldur",
+        "totalRecords": 1,
+        "byStatus": {"queued": 1},
+    }
+    assert legacy_status["intakeLedgerSource"] == "live"
 
 
 def test_queue_cli_stops_when_live_source_has_no_usable_samples(tmp_path, capsys, monkeypatch):

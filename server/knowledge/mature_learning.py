@@ -587,6 +587,7 @@ CREATE TABLE IF NOT EXISTS research_build_families (
     build_family_key TEXT PRIMARY KEY,
     ascendancy_key TEXT NOT NULL,
     primary_skill_key TEXT NOT NULL,
+    primary_skill_keys TEXT NOT NULL DEFAULT '[]',
     secondary_skill_keys TEXT NOT NULL,
     evidence_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -671,6 +672,29 @@ CREATE TABLE IF NOT EXISTS research_decay_events (
     changed_component_keys TEXT NOT NULL,
     new_version_context TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_equivalence (
+    key_a TEXT NOT NULL,
+    key_b TEXT NOT NULL,
+    method TEXT NOT NULL,
+    rationale TEXT NOT NULL DEFAULT '',
+    game_patch TEXT,
+    status TEXT NOT NULL DEFAULT 'valid',
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (key_a, key_b)
+);
+
+CREATE TABLE IF NOT EXISTS family_merge_log (
+    merge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_family_key TEXT NOT NULL,
+    dst_family_key TEXT NOT NULL,
+    dst_primary_skill_keys TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    moved INTEGER NOT NULL DEFAULT 0,
+    deprecated INTEGER NOT NULL DEFAULT 0,
+    merged_at TEXT NOT NULL
 );
 """
 
@@ -825,9 +849,9 @@ def schema_version(con: sqlite3.Connection) -> int:
 def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
     _add_column_if_missing(
         con,
-        "research_dedupe_queries",
-        "request_contract",
-        "TEXT NOT NULL DEFAULT '{}'",
+        "research_build_families",
+        "primary_skill_keys",
+        "TEXT NOT NULL DEFAULT '[]'",
     )
     _add_column_if_missing(
         con,

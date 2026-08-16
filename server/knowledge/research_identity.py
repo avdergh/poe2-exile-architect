@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -159,30 +158,51 @@ def kind_identity_roles() -> dict[str, dict[str, object]]:
 @dataclass(frozen=True)
 class BuildFamilyIdentity:
     ascendancy_key: str
-    primary_skill_key: str
-    secondary_skill_keys: tuple[str, ...]
+    primary_skill_keys: tuple[str, ...]
+    secondary_skill_keys: tuple[str, ...] = ()
+
+    @property
+    def primary_skill_key(self) -> str:
+        """Primary representative skill (first, for legacy single-value consumers)."""
+        return self.primary_skill_keys[0] if self.primary_skill_keys else ""
 
     @property
     def key(self) -> str:
+        """Identity key: ascendancy + the full primary-skill SET.
+
+        Secondary skills and trigger hosts are deliberately excluded: they are knowledge
+        inside the family, not identity. Two families compare equal when their canonical
+        primary sets compare equal (see ``skill_equivalence``).
+        """
         return (
             "bf-"
             + _stable_hash(
                 {
                     "ascendancy_key": self.ascendancy_key,
-                    "primary_skill_key": self.primary_skill_key,
-                    "secondary_skill_keys": list(self.secondary_skill_keys),
+                    "primary_skill_keys": list(self.primary_skill_keys),
                 }
             )[:20]
         )
 
 
 def infer_build_family(
-    records: Iterable[Any], *, allow_dominant_primary: bool = False
+    records: Iterable[Any],
+    *,
+    allow_dominant_primary: bool = False,
+    allow_multi_primary: bool = True,
 ) -> BuildFamilyIdentity | None:
     """Infer a high-confidence family from one case/research group.
 
-    Family identity deliberately excludes supports, items, defenses, and resources. Ambiguous
-    ascendancy or primary-skill evidence is left unclassified instead of guessed.
+    Family identity is ``ascendancy + the SET of primary-damage skills``: every skill a
+    researcher declares as primary damage participates (e.g. a CoC build may declare both
+    Comet and Spark). Automatic secondary roles (clear/boss/triggered-payload) and trigger
+    hosts never participate in identity; they are kept as metadata only. Ambiguous
+    ascendancy or empty primary evidence is left unclassified instead of guessed.
+
+    ``allow_multi_primary=False`` keeps the legacy fail-closed ambiguity semantics for
+    lightweight identity evidence (e.g. Phase 7 blind-create profiles): more than one
+    distinct primary skill there means the identity is ambiguous and must not be adopted.
+    Durable research accepts keep the set semantics (``allow_multi_primary=True``).
     """
 
     rows = list(records)
@@ -199,38 +219,34 @@ def infer_build_family(
         for row in rows
         if str(_value(row, "record_kind", "") or "") not in FAMILY_NON_AUTHORIZING_RECORD_KINDS
     ]
-    primary_counts = Counter(
+    primary_keys = {
         key
         for row in primary_rows
         for key in _role_component_keys(row, PRIMARY_ROLES)
         if _is_skill_key(key)
-    )
-    if not primary_counts:
-        primary_counts = Counter(
+    }
+    if not primary_keys:
+        primary_keys = {
             key
             for row in primary_rows
             for key in _role_component_keys(row, PRIMARY_FALLBACK_ROLES)
             if _is_skill_key(key)
-        )
-    if len(ascendancies) != 1 or not primary_counts:
+        }
+    if len(ascendancies) != 1 or not primary_keys:
         return None
-    if len(primary_counts) == 1:
-        primary_key = next(iter(primary_counts))
-    elif allow_dominant_primary:
-        ranked = primary_counts.most_common()
-        if ranked[0][1] < 2 or ranked[0][1] < ranked[1][1] * 2:
-            return None
-        primary_key = ranked[0][0]
-    else:
+    if len(primary_keys) > 1 and not allow_multi_primary:
         return None
     secondary = set(automatic_family_skill_keys(identity_rows))
-    secondary.discard(primary_key)
+    secondary -= primary_keys
     secondary.update(
-        key for row in identity_rows for key in family_core_skill_keys(row) if key != primary_key
+        key
+        for row in identity_rows
+        for key in family_core_skill_keys(row)
+        if key not in primary_keys
     )
     return BuildFamilyIdentity(
         ascendancy_key=next(iter(ascendancies)),
-        primary_skill_key=primary_key,
+        primary_skill_keys=tuple(sorted(primary_keys)),
         secondary_skill_keys=tuple(sorted(secondary)),
     )
 

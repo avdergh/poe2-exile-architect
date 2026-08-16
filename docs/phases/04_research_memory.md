@@ -65,11 +65,14 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   组件；兼容字段 `unresolvedDeepRecordComponentCount` 继续表示 mention 次数。
 - `createdDeepRecordCount`、`updatedDeepRecordCount` 与 `addedDeepRecordEvidenceCount` 分开报告；
   同一 Family 的同知识再次出现时优先追加证据，不重复制造近义正文。
-- Family 自动使用 clear/boss/triggered-payload；trigger-host 是投送手段而不是身份（同一 payload
-  换 host 视为变体），只有显式声明进 `familyCoreSkillKeys` 才参与 Family 身份；普通 secondary 只
-  作为变体；不得在 `familyCoreSkillKeys` 重复声明自动角色，其他核心副技能才显式声明。
-  `skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持不同知识单元。
-  无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。
+- Family 身份 = 升华 + 主输出技能**集合**（研究者声明的 `primary_damage` 角色技能，可多个）。
+  自动副技能（clear/boss/triggered-payload）、trigger-host（同一 payload 换 host 视为变体）、
+  `familyCoreSkillKeys` 一律**不参与身份**，只作 Family 内元数据。技能名按 gem 等价规范化后比较
+  （同一宝石授予的弹药/直击变体视为同一技能，见 `skill_equivalence.py`）。
+  `skill_package` / `mechanic_chain` 记录必须声明至少一个 `primary_damage` 组件；
+  身份相同的新研究自动归入既有 Family（不新建 sibling 档案），超集主技能集合会扩展既有 Family
+  并合并其记录。`skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持
+  不同知识单元。无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。
   `unkeyedDeepRecordCount > 0` 时只能报告 partial，不能报告 clean。
 - 签名词缀（极端掷骰 "Rolls only the minimum or maximum Damage value"、最低抗性伤害、元素地面
   交互、implicit "Allocates <passive>"、"Grants Skill: Level N"、Surpassing 额外投射、充能保留
@@ -77,11 +80,17 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 - 跨设计轴罕见同现（如混沌伤害节点、荆棘与中毒机会并存）无法闭环时建 `open_question` 记录结构化
   疑点；`modelability_caveat` 只用于“机制存在但 PoB 未建模/未证实”的情况。`read` 输出的
   cross-axis advisory 只作提示，不参与验收 gate。
-- Family key 稳定性跟踪（P3 验证阶段）：`accept` 输出新增 `siblingFamilyHints`——当新写入的
-  Family 与既有 Family 共享 ascendancy+primary 但 secondary 集合不同时列出提示，用于观察
-  “自动/变体 secondary 导致同族分裂”的实际频率。若分裂成为系统性问题，再评估 key 重构
-  （key 只含 ascendancy+primary+familyCoreSkillKeys，自动 secondary 降为元数据）；任何 key
-  变更必须先跑 `backfill_deep_research_knowledge` 迁移并覆盖测试，不得静默自动合并身份。
+- Family 归并（2026-08 起）：`scripts/merge_build_families.py` 按集合包含规则全量重构存量档案
+  （dry-run → validate → apply，迭代到收敛，apply 前整库备份，合并写 `family_merge_log`；
+  回滚 = apply 前快照恢复，日志仅审计）。入库自动归入与合并共用 `_resolve_family_target` /
+  `_merge_family_records`；merge 后必须 bump `BUILD_FAMILY_BACKFILL_VERSION` 触发
+  `backfill_deep_research_knowledge` 重推 knowledge_key（记录迁移保留原 knowledge_key，
+  由 backfill 统一重算 canonical）。**backfill 重推会用新身份公式重建档案，可能与既有档案
+  产生同 canonical 重复（同一宝石的不同变体技能 key 不同但等价），因此完整顺序是
+  merge → backfill → 再跑一次 merge 收敛**；收敛后用
+  `scripts/reconcile_orphan_records.py` 处理孤儿记录（join 挂回 / new 建档 / 无身份降级为
+  待复核，expand 不自动执行；可疑身份组用 `--skip-group` 跳过留人工确认）。任何 key
+  变更必须先跑 backfill 迁移并覆盖测试，不得静默自动合并身份。
 - 已知数据缺口（unique jewels）：语料 unique 表来自 `pob/PathOfBuilding-PoE2/src/Data/Uniques/*.lua`
   的非递归 glob 摄入，存在三个具体缺口：
   1. **PoE2 Time-Lost 系列缺失**——其 unique 条目位于 `Uniques/Special/Generated.lua`

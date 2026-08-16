@@ -3509,6 +3509,24 @@ def _structural_schema_issues(
             )
         )
 
+    memory_use = review.get("memoryUse")
+    if not isinstance(memory_use, dict):
+        groups.append(
+            (
+                "",
+                "research_case",
+                [
+                    _container_issue(
+                        ["memoryUse"],
+                        "deep review memoryUse must be an object documenting the memory "
+                        "comparison queries run before writing (query text, parameters and "
+                        "hit families); a review without it cannot be audited for "
+                        "research-memory grounding",
+                    )
+                ],
+            )
+        )
+
     candidates = review.get("candidateReviews") or []
     if not isinstance(candidates, list):
         groups.append(
@@ -4301,6 +4319,7 @@ def _record_kind_advisories(records: list[dict[str, Any]]) -> list[str]:
         "rotation": "player_action_sequence",
         "mechanic_chain": "state_causal_chain",
     }
+    identity_kinds_requiring_primary = {"skill_package", "mechanic_chain"}
     advisories: list[str] = []
     for item in records:
         kind = str(item.get("recordKind") or "")
@@ -4313,6 +4332,16 @@ def _record_kind_advisories(records: list[dict[str, Any]]) -> list[str]:
                 f"{item.get('title')}: {kind} should declare "
                 f"typedPayload.knowledgeShape={expected}; actual={actual or 'missing'}."
             )
+        if kind in identity_kinds_requiring_primary:
+            mentions = item.get("component_mentions") or []
+            has_primary = any(
+                str(mention.get("role") or "") == "primary_damage" for mention in mentions
+            )
+            if not has_primary:
+                advisories.append(
+                    f"{item.get('title')}: {kind} identity record should declare at least one "
+                    "primary_damage component (family identity = ascendancy + primary-skill set)."
+                )
     return advisories
 
 

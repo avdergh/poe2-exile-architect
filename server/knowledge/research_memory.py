@@ -9,13 +9,14 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from . import copy_safety
 from . import graph_tools
 from . import mature_learning
 from . import research_identity
 from . import research_models
+from . import skill_equivalence
 from ..freshness import providers as freshness_providers
 
 SHORT_CYCLE_MAX_DEPTH = 3
@@ -29,7 +30,7 @@ DIRECTIONAL_EDGE_TYPES = {
 }
 VALID_REVALIDATION_TARGET_KINDS = {"fragment", "semantic_edge", "build_pattern"}
 VALID_REVALIDATION_OUTCOMES = {"still_valid", "invalidated", "changed_scope", "needs_review"}
-BUILD_FAMILY_BACKFILL_VERSION = "6"
+BUILD_FAMILY_BACKFILL_VERSION = "7"
 RESEARCH_MEMORY_SCOPE_WEIGHTS = {
     "exact_family": 1.0,
     "same_primary_skill": 0.9,
@@ -641,6 +642,32 @@ class ResearchMemoryService:
         class_key = str(class_key or "").strip() or None
         game_patch = str(game_patch or "").strip() or None
         passive_tree_version = str(passive_tree_version or "").strip() or None
+        if ascendancy_key and not ascendancy_key.startswith("ascendancy:"):
+            return research_models.public_error(
+                "invalid_identity_parameter",
+                [
+                    "ascendancy_key must use the stable form 'ascendancy:<class>:<ascendancy>' "
+                    f"(got '{ascendancy_key}'); a bare display name cannot match stored keys."
+                ],
+            )
+        if primary_skill_key:
+            if not primary_skill_key.startswith(("skill:", "gem:")):
+                return research_models.public_error(
+                    "invalid_identity_parameter",
+                    [
+                        "primary_skill_key must use a stable form 'skill:<InternalSkillId>' "
+                        f"or a gem component key (got '{primary_skill_key}'); display names "
+                        "cannot match stored keys."
+                    ],
+                )
+            if any(char.isspace() for char in primary_skill_key):
+                return research_models.public_error(
+                    "invalid_identity_parameter",
+                    [
+                        "primary_skill_key must not contain spaces; use the engine stable key "
+                        f"like 'skill:DetonateDeadPlayer' (got '{primary_skill_key}')."
+                    ],
+                )
         if detail_level == "family" and not (class_key and game_patch and passive_tree_version):
             return research_models.public_error(
                 "family_discovery_requires_exact_context",
@@ -740,6 +767,11 @@ class ResearchMemoryService:
                 selected_family_keys = sorted(
                     {str(row["build_family_key"]) for row in record_rows if row["build_family_key"]}
                 )
+                # Natural-language queries that name a skill/gem should also surface the
+                # families whose primary set contains that skill, even when their record
+                # text (often Chinese) does not contain the query term verbatim.
+                gem_family_keys = self._query_family_keys_by_gem_name(con, query)
+                selected_family_keys = sorted(set(selected_family_keys) | gem_family_keys)
                 family_rows = self._query_build_family_rows(
                     con,
                     ascendancy_key=None,
@@ -1265,16 +1297,62 @@ class ResearchMemoryService:
                 group_id: research_identity.infer_build_family(records)
                 for group_id, records in records_by_group.items()
             }
+            family_relations: dict[str, tuple[str, str | None]] = {}
             for group_id, family in families_by_group.items():
                 if family is None:
                     continue
-                created_build_family_count += int(
-                    con.execute(
-                        "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                        (family.key,),
-                    ).fetchone()
-                    is None
-                )
+                target, relation, src_key = self._resolve_family_target(con, family=family)
+                if relation == "expand" and src_key is not None:
+                    if (
+                        con.execute(
+                            "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                            (src_key,),
+                        ).fetchone()
+                        is None
+                    ):
+                        # The source family was already relocated by an earlier group in
+                        # this payload; joining the expanded target directly is equivalent
+                        # (records are keyed by knowledge key, not by family mount).
+                        relation = "join"
+                        src_key = None
+                    else:
+                        merge_result = self._merge_family_records(
+                            con,
+                            src_family_key=src_key,
+                            dst_identity=target,
+                            now=now,
+                        )
+                        con.execute(
+                            """
+                            INSERT INTO family_merge_log(
+                                src_family_key, dst_family_key, dst_primary_skill_keys,
+                                relation, moved, deprecated, merged_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                src_key,
+                                merge_result["dst_family_key"],
+                                _json(list(target.primary_skill_keys)),
+                                "expand",
+                                merge_result["moved"],
+                                merge_result["deprecated"],
+                                now,
+                            ),
+                        )
+                families_by_group[group_id] = target
+                family_relations[group_id] = (relation, src_key)
+            for group_id, family in families_by_group.items():
+                if family is None:
+                    continue
+                relation, _src_key = family_relations.get(group_id, ("new", None))
+                if relation != "expand":
+                    created_build_family_count += int(
+                        con.execute(
+                            "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                            (family.key,),
+                        ).fetchone()
+                        is None
+                    )
                 sources = sorted(
                     {
                         source
@@ -1661,6 +1739,283 @@ class ResearchMemoryService:
             "superseded_by_id": None,
         }
 
+    def _resolve_family_target(
+        self,
+        con: sqlite3.Connection,
+        *,
+        family: research_identity.BuildFamilyIdentity,
+    ) -> tuple[research_identity.BuildFamilyIdentity, str, str | None]:
+        """Decide where a newly inferred identity belongs among existing families.
+
+        Comparison happens on canonical primary-skill SETS (gem-equivalence expanded,
+        plus model-confirmed equivalences from the ``skill_equivalence`` table).
+        Returns ``(target_identity, relation, src_family_key)`` with relation in
+        ``{"join", "expand", "new"}``:
+
+        - ``join``: an existing family with an identical or superset canonical primary
+          set already exists; the new knowledge joins it (no new family is created).
+        - ``expand``: the new identity is a strict superset of an existing family's
+          primary set; the existing family's records must be relocated into the expanded
+          identity first (``_merge_family_records``), then the new knowledge joins.
+        - ``new``: no containment relationship; a new family is created.
+        """
+        idx = skill_equivalence.SkillEquivalenceIndex.shared()
+        canon_new = self._canonical_identity_set(con, family.primary_skill_keys, idx=idx)
+        rows = con.execute(
+            """
+            SELECT build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                   secondary_skill_keys, evidence_count
+            FROM research_build_families
+            WHERE ascendancy_key = ?
+            ORDER BY evidence_count DESC, build_family_key
+            """,
+            (family.ascendancy_key,),
+        ).fetchall()
+        for row in rows:
+            existing_keys = _loads(row["primary_skill_keys"], None)
+            if not existing_keys:
+                existing_keys = (
+                    [str(row["primary_skill_key"] or "")] if row["primary_skill_key"] else []
+                )
+            if not existing_keys:
+                continue
+            existing_identity = research_identity.BuildFamilyIdentity(
+                ascendancy_key=str(row["ascendancy_key"]),
+                primary_skill_keys=tuple(sorted(existing_keys)),
+                secondary_skill_keys=tuple(sorted(_loads(row["secondary_skill_keys"], []))),
+            )
+            canon_existing = self._canonical_identity_set(con, existing_keys, idx=idx)
+            if canon_new == canon_existing or canon_new <= canon_existing:
+                return existing_identity, "join", None
+            if canon_existing <= canon_new:
+                merged = sorted(set(existing_keys) | set(family.primary_skill_keys))
+                expanded = research_identity.BuildFamilyIdentity(
+                    ascendancy_key=family.ascendancy_key,
+                    primary_skill_keys=tuple(merged),
+                    secondary_skill_keys=tuple(
+                        sorted(
+                            set(existing_identity.secondary_skill_keys)
+                            | set(family.secondary_skill_keys)
+                        )
+                    ),
+                )
+                return expanded, "expand", str(row["build_family_key"])
+        return family, "new", None
+
+    @staticmethod
+    def _canonical_identity_set(
+        con: sqlite3.Connection,
+        skill_keys: Iterable[str],
+        *,
+        idx: skill_equivalence.SkillEquivalenceIndex | None = None,
+    ) -> frozenset[str]:
+        """Canonical primary-set token with gem AND model-confirmed equivalence applied.
+
+        Deterministic gem equivalence (same granting gem -> same token) is applied first;
+        then any ``skill_equivalence`` rows (model-confirmed renames/aliases) union their
+        canonical tokens into one equivalence class. Unresolvable ``key:`` tokens are
+        skipped by the model layer (they cannot be trusted as aliases).
+        """
+        index = idx or skill_equivalence.SkillEquivalenceIndex.shared()
+        canon = index.canonical_set(skill_keys)
+        if not canon:
+            return canon
+        rows = con.execute(
+            "SELECT key_a, key_b FROM skill_equivalence WHERE status = 'valid'"
+        ).fetchall()
+        if not rows:
+            return canon
+        parent: dict[str, str] = {}
+
+        def find(token: str) -> str:
+            while parent.get(token, token) != token:
+                token = parent[token]
+            return token
+
+        def union(a: str, b: str) -> None:
+            root_a, root_b = find(a), find(b)
+            if root_a != root_b:
+                parent[max(root_a, root_b)] = min(root_a, root_b)
+
+        for key_a, key_b in rows:
+            token_a = index.canonical_key(str(key_a))
+            token_b = index.canonical_key(str(key_b))
+            if token_a.startswith("key:") or token_b.startswith("key:"):
+                continue
+            union(token_a, token_b)
+        return frozenset({find(token) for token in canon})
+
+    def _merge_family_records(
+        self,
+        con: sqlite3.Connection,
+        *,
+        src_family_key: str,
+        dst_identity: research_identity.BuildFamilyIdentity,
+        now: str,
+        merge_log: list[dict[str, Any]] | None = None,
+        dst_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Relocate every record of ``src_family_key`` under ``dst_identity``.
+
+        Knowledge keys are preserved (knowledge identity is stable across family
+        relocation); only the family mount point changes. When the destination already
+        holds a live record with the same knowledge key, the richer record survives and
+        the other is deprecated (``superseded_by_id``) with its evidence re-hung.
+
+        ``dst_key`` pins the destination family key (used when joining an existing family
+        whose stored key is authoritative); when omitted the identity key is used (the
+        expand path, where the primary set changed and a new key is required).
+
+        Returns ``{"moved": n, "deprecated": n, "dst_family_key": key}``.
+        """
+        dst_key = str(dst_key or dst_identity.key)
+        src_key = str(src_family_key)
+        if src_key == dst_key:
+            raise ValueError(f"family merge requires distinct families (src == dst == {src_key})")
+        src_sources = sorted(
+            {
+                str(row[0])
+                for row in con.execute(
+                    "SELECT DISTINCT source_case_ref FROM research_build_family_evidence "
+                    "WHERE build_family_key = ?",
+                    (src_key,),
+                ).fetchall()
+            }
+        )
+        dst_exists = (
+            con.execute(
+                "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                (dst_key,),
+            ).fetchone()
+            is not None
+        )
+        if not dst_exists:
+            con.execute(
+                """
+                INSERT INTO research_build_families(
+                    build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                    secondary_skill_keys, evidence_count, created_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    dst_key,
+                    dst_identity.ascendancy_key,
+                    dst_identity.primary_skill_key,
+                    _json(list(dst_identity.primary_skill_keys)),
+                    _json(list(dst_identity.secondary_skill_keys)),
+                    now,
+                    now,
+                ),
+            )
+        for source_ref in src_sources:
+            con.execute(
+                """
+                INSERT INTO research_build_family_evidence(
+                    build_family_key, source_case_ref, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (dst_key, source_ref, now, now),
+            )
+        moved = 0
+        deprecated = 0
+        rows = con.execute(
+            "SELECT * FROM deep_research_records WHERE build_family_key = ?",
+            (src_key,),
+        ).fetchall()
+        for row in rows:
+            record_id = str(row["record_id"])
+            knowledge_key = row["knowledge_key"]
+            if knowledge_key:
+                occupant = con.execute(
+                    """
+                    SELECT record_id, status FROM deep_research_records
+                    WHERE knowledge_key = ? AND build_family_key = ?
+                      AND status IN ('valid', 'needs_revalidation')
+                    LIMIT 1
+                    """,
+                    (knowledge_key, dst_key),
+                ).fetchone()
+                if occupant is not None and str(occupant["record_id"]) != record_id:
+                    occupant_row = con.execute(
+                        "SELECT * FROM deep_research_records WHERE record_id = ?",
+                        (str(occupant["record_id"]),),
+                    ).fetchone()
+                    candidate = research_identity.record_quality(row)
+                    incumbent = research_identity.record_quality(occupant_row)
+                    if candidate > incumbent:
+                        con.execute(
+                            """
+                            UPDATE deep_research_records
+                            SET status = 'deprecated', superseded_by_id = ?
+                            WHERE record_id = ?
+                            """,
+                            (record_id, str(occupant["record_id"])),
+                        )
+                        con.execute(
+                            "UPDATE deep_research_records SET build_family_key = ? WHERE record_id = ?",
+                            (dst_key, record_id),
+                        )
+                        deprecated += 1
+                        moved += 1
+                    else:
+                        con.execute(
+                            """
+                            UPDATE deep_research_records
+                            SET status = 'deprecated', superseded_by_id = ?, build_family_key = ?
+                            WHERE record_id = ?
+                            """,
+                            (record_id, str(occupant["record_id"]), dst_key),
+                        )
+                        deprecated += 1
+                    continue
+            con.execute(
+                "UPDATE deep_research_records SET build_family_key = ? WHERE record_id = ?",
+                (dst_key, record_id),
+            )
+            moved += 1
+        con.execute(
+            """
+            UPDATE research_build_families
+            SET evidence_count = (
+                SELECT count(*) FROM research_build_family_evidence
+                WHERE build_family_key = ?
+            ), last_seen_at = ?
+            WHERE build_family_key = ?
+            """,
+            (dst_key, now, dst_key),
+        )
+        con.execute(
+            "DELETE FROM research_build_families WHERE build_family_key = ?",
+            (src_key,),
+        )
+        pattern_rows = con.execute(
+            "SELECT pattern_id, origin_family_keys FROM research_build_patterns "
+            "WHERE origin_family_keys LIKE ?",
+            (f"%{src_key}%",),
+        ).fetchall()
+        for pattern_row in pattern_rows:
+            origin = _loads(pattern_row["origin_family_keys"], [])
+            if src_key in origin:
+                origin = [dst_key if key == src_key else key for key in origin]
+                con.execute(
+                    "UPDATE research_build_patterns SET origin_family_keys = ? WHERE pattern_id = ?",
+                    (_json(origin), str(pattern_row["pattern_id"])),
+                )
+        if merge_log is not None:
+            merge_log.append(
+                {
+                    "src_family_key": src_key,
+                    "dst_family_key": dst_key,
+                    "dst_primary_skill_keys": list(dst_identity.primary_skill_keys),
+                    "moved": moved,
+                    "deprecated": deprecated,
+                    "at": now,
+                }
+            )
+        return {"moved": moved, "deprecated": deprecated, "dst_family_key": dst_key}
+
     def _upsert_build_family(
         self,
         con: sqlite3.Connection,
@@ -1672,15 +2027,16 @@ class ResearchMemoryService:
         con.execute(
             """
             INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
-                evidence_count, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, 0, ?, ?)
+                build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                secondary_skill_keys, evidence_count, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(build_family_key) DO UPDATE SET last_seen_at = excluded.last_seen_at
             """,
             (
                 family.key,
                 family.ascendancy_key,
                 family.primary_skill_key,
+                _json(list(family.primary_skill_keys)),
                 _json(list(family.secondary_skill_keys)),
                 now,
                 now,
@@ -2600,6 +2956,45 @@ class ResearchMemoryService:
         params.append(limit)
         return list(con.execute(sql, params).fetchall())
 
+    def _query_family_keys_by_gem_name(
+        self,
+        con: sqlite3.Connection,
+        query: str,
+    ) -> set[str]:
+        """Return family keys whose primary set matches a gem named in ``query``.
+
+        Uses the deterministic gem index: the query is normalized and compared against gem
+        display names; the granting gem's skills are then matched against stored
+        ``primary_skill_keys``. This fixes recall for queries like "detonate dead" whose
+        stored record text is Chinese and would otherwise never match.
+        """
+        if not query or not query.strip():
+            return set()
+        idx = skill_equivalence.SkillEquivalenceIndex.shared()
+        normalized = skill_equivalence.normalize_name(query)
+        if not normalized:
+            return set()
+        candidate_skills: set[str] = set()
+        for skill_id, display in idx.display_names_by_skill().items():
+            canon_display = skill_equivalence.normalize_name(display)
+            if canon_display and (normalized in canon_display or canon_display in normalized):
+                candidate_skills.add(skill_id)
+        for gem_name, granted in idx.granted_skills_by_gem().items():
+            if normalized in skill_equivalence.normalize_name(gem_name):
+                candidate_skills.update(granted)
+        if not candidate_skills:
+            return set()
+        result: set[str] = set()
+        for row in con.execute(
+            "SELECT build_family_key, primary_skill_keys FROM research_build_families"
+        ).fetchall():
+            stored = _loads(row["primary_skill_keys"], None)
+            if not stored:
+                continue
+            if any(str(item).split(":", 1)[-1] in candidate_skills for item in stored):
+                result.add(str(row["build_family_key"]))
+        return result
+
     def _query_build_family_rows(
         self,
         con: sqlite3.Connection,
@@ -2855,11 +3250,19 @@ class ResearchMemoryService:
         for row in family_rows:
             family_key = str(row["build_family_key"])
             record_kind_counts = counts_by_family.get(family_key, {})
+            primary_keys = _loads(row["primary_skill_keys"], None)
+            if not primary_keys:
+                primary_keys = (
+                    [str(row["primary_skill_key"] or "")] if row["primary_skill_key"] else []
+                )
             results.append(
                 {
                     "buildFamilyKey": family_key,
                     "ascendancyKey": row["ascendancy_key"],
-                    "primarySkillKey": row["primary_skill_key"],
+                    "primarySkillKey": (
+                        primary_keys[0] if primary_keys else str(row["primary_skill_key"] or "")
+                    ),
+                    "primarySkillKeys": primary_keys,
                     "secondarySkillKeys": _loads(row["secondary_skill_keys"], []),
                     "evidenceCount": int(row["evidence_count"] or 0),
                     "deepRecordCount": sum(record_kind_counts.values()),
@@ -3890,7 +4293,14 @@ class ResearchMemoryService:
         if inverse:
             return research_models.rejection(
                 "semantic_cycle_or_conflict",
-                facts={"maxDepthChecked": SHORT_CYCLE_MAX_DEPTH},
+                facts={
+                    "maxDepthChecked": SHORT_CYCLE_MAX_DEPTH,
+                    "conflictKind": "inverse_edge",
+                    "conflictEdgeType": edge.edge_type,
+                    "conflictSourceKey": edge.source_key,
+                    "conflictTargetKey": edge.target_key,
+                    "conflictingExistingEdgeId": str(inverse["edge_id"]),
+                },
             )
 
         cycle = con.execute(
@@ -3899,6 +4309,7 @@ class ResearchMemoryService:
                 SELECT target_key, 1
                 FROM research_semantic_edges
                 WHERE source_key = ?
+                  AND edge_type = ?
                   AND visibility = ?
                   AND split = ?
                   AND knowledge_scope = ?
@@ -3909,6 +4320,7 @@ class ResearchMemoryService:
                 FROM research_semantic_edges e
                 JOIN walk ON e.source_key = walk.node
                 WHERE walk.depth < ?
+                  AND e.edge_type = ?
                   AND e.visibility = ?
                   AND e.split = ?
                   AND e.knowledge_scope = ?
@@ -3919,10 +4331,12 @@ class ResearchMemoryService:
             """,
             (
                 edge.target_key,
+                edge.edge_type,
                 edge.visibility,
                 edge.split,
                 edge.knowledge_scope,
                 SHORT_CYCLE_MAX_DEPTH,
+                edge.edge_type,
                 edge.visibility,
                 edge.split,
                 edge.knowledge_scope,
@@ -3932,7 +4346,13 @@ class ResearchMemoryService:
         if cycle:
             return research_models.rejection(
                 "semantic_cycle_or_conflict",
-                facts={"maxDepthChecked": SHORT_CYCLE_MAX_DEPTH},
+                facts={
+                    "maxDepthChecked": SHORT_CYCLE_MAX_DEPTH,
+                    "conflictKind": "short_cycle",
+                    "conflictEdgeType": edge.edge_type,
+                    "conflictSourceKey": edge.source_key,
+                    "conflictTargetKey": edge.target_key,
+                },
             )
         return None
 
@@ -4420,17 +4840,21 @@ def _historical_family_hints(
 def _sibling_family_hints(
     con: sqlite3.Connection, build_family_keys: set[str]
 ) -> list[dict[str, Any]]:
-    """Advisory hints when a written family shares ascendancy+primary with another stored family.
+    """Advisory hints when a written family overlaps an existing family's identity.
 
-    This is the verification mechanism for family-key stability: a new family key that differs
-    only by automatic/variant secondary skills signals possible identity splitting. It is
-    advisory-only and never gates acceptance.
+    Identity is the canonical primary-skill SET (gem-equivalence expanded), so hints
+    compare sets rather than the legacy single ``primary_skill_key``: a new family whose
+    canonical set equals, contains, or is contained by an existing family's set is
+    flagged with the relationship so the researcher can confirm the automatic join
+    behaviour (accept already joins; these hints are the visibility layer).
+    Advisory-only and never gates acceptance.
     """
     hints: list[dict[str, Any]] = []
+    idx = skill_equivalence.SkillEquivalenceIndex.shared()
     for family_key in sorted(build_family_keys):
         row = con.execute(
             """
-            SELECT ascendancy_key, primary_skill_key
+            SELECT build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys
             FROM research_build_families
             WHERE build_family_key = ?
             """,
@@ -4438,25 +4862,52 @@ def _sibling_family_hints(
         ).fetchone()
         if row is None:
             continue
+        new_keys = _loads(row["primary_skill_keys"], None)
+        if not new_keys:
+            new_keys = [str(row["primary_skill_key"] or "")] if row["primary_skill_key"] else []
+        if not new_keys:
+            continue
+        canon_new = idx.canonical_set(new_keys)
         siblings = con.execute(
             """
-            SELECT build_family_key, secondary_skill_keys
+            SELECT build_family_key, primary_skill_key, primary_skill_keys, secondary_skill_keys
             FROM research_build_families
-            WHERE ascendancy_key = ? AND primary_skill_key = ?
+            WHERE ascendancy_key = ?
               AND build_family_key != ?
             ORDER BY evidence_count DESC, build_family_key
-            LIMIT 5
+            LIMIT 10
             """,
-            (row["ascendancy_key"], row["primary_skill_key"], family_key),
+            (row["ascendancy_key"], family_key),
         ).fetchall()
         for sibling in siblings:
+            sibling_keys = _loads(sibling["primary_skill_keys"], None)
+            if not sibling_keys:
+                sibling_keys = (
+                    [str(sibling["primary_skill_key"] or "")]
+                    if sibling["primary_skill_key"]
+                    else []
+                )
+            if not sibling_keys:
+                continue
+            canon_existing = idx.canonical_set(sibling_keys)
+            if not (canon_new & canon_existing):
+                continue
+            if canon_new == canon_existing:
+                relation = "identical"
+            elif canon_new < canon_existing:
+                relation = "subset_of_existing"
+            elif canon_existing < canon_new:
+                relation = "superset_of_existing"
+            else:
+                relation = "overlap"
             hints.append(
                 {
                     "familyKey": family_key,
                     "ascendancyKey": row["ascendancy_key"],
-                    "primarySkillKey": row["primary_skill_key"],
+                    "primarySkillKeys": new_keys,
+                    "relation": relation,
                     "siblingFamilyKey": str(sibling["build_family_key"]),
-                    "siblingSecondarySkillKeys": _loads(sibling["secondary_skill_keys"], []),
+                    "siblingPrimarySkillKeys": sibling_keys,
                 }
             )
     return hints

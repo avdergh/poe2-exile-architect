@@ -239,7 +239,11 @@ def queue_cases(
             "intakeSkippedAlreadyResearched": str(
                 source_input_summary["intakeSkippedAlreadyResearched"]
             ),
+            "intakeSkippedAlreadyStudied": str(
+                source_input_summary.get("intakeSkippedAlreadyStudied") or 0
+            ),
             "intakeLedgerRecordedCount": str(source_input_summary["intakeLedgerRecordedCount"]),
+            "intakeLedgerPath": str(Path(effective_ledger).resolve()),
             "queueStatus": (
                 ""
                 if any(case.get("status") == "pending" for case in cases)
@@ -258,6 +262,8 @@ def queue_cases(
     inserted = 0
     skipped_duplicates = 0
     ledger_recorded = 0
+    studied_source_hashes = _studied_source_hashes()
+    skipped_already_studied = 0
     for case in cases:
         if case.get("status") != "pending":
             packet_id = ""
@@ -274,6 +280,18 @@ def queue_cases(
             )
             packet_id = str(packet["packetId"])
             packet_safe_hash = str(packet["packetSafeHash"])
+        source_hash = str(case.get("sourceHash") or "").strip()
+        if (
+            source_hash
+            and source_hash in studied_source_hashes
+            and not dry_run
+            and not local_sources
+        ):
+            # The same mature build (byte-identical PoB text) was already researched and
+            # accepted into durable memory; re-queueing it would duplicate knowledge and
+            # split families. Skip it and report the count truthfully.
+            skipped_already_studied += 1
+            continue
         row = _safe_case_row_from_case(
             case,
             packet_id=packet_id,
@@ -296,6 +314,7 @@ def queue_cases(
             ):
                 ledger_recorded += 1
     source_input_summary["intakeLedgerRecordedCount"] = ledger_recorded
+    source_input_summary["intakeSkippedAlreadyStudied"] = skipped_already_studied
     resolved_league = str(collector_stats.get("resolvedLeague") or "") or league_url
     intake_ledger_summary = _intake_ledger_summary(
         effective_ledger,
@@ -613,6 +632,7 @@ def render_review_contract(
                 "resourceDefense": "evidence_missing",
             },
             "mechanicAudit": [],
+            "memoryUse": {"queries": []},
             "deepResearchRecords": [],
             "candidateReviews": [],
             "semanticEdges": [],
@@ -758,6 +778,7 @@ def render_review_contract(
             "supports of non-Family-core skill groups must appear in record content or secondary supportPackages, not just compatibility checks",
             "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
             "any unresolved count requires a per-name search_graph_components before declaring a source gap",
+            "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity)",
         ],
         "rules": [
             "只能使用 allowedValues 中的枚举；不得自造 role、axis 或 patternType。",
@@ -832,6 +853,7 @@ def init_review(
             "resourceDefense": "evidence_missing",
         },
         "mechanicAudit": [],
+        "memoryUse": {"queries": []},
         "deepResearchRecords": [],
         "candidateReviews": [],
     }
@@ -1428,26 +1450,34 @@ def queue_status(
         "intakeSkippedAlreadyResearched": int(metadata.get("intakeSkippedAlreadyResearched") or 0),
         "intakeLedgerRecordedCount": int(metadata.get("intakeLedgerRecordedCount") or 0),
     }
-    persisted_intake_summary: dict[str, Any] = {}
+    intake_ledger_source = "snapshot"
+    if intake_ledger_summary is None:
+        try:
+            league_hint = str(rows[0]["league"] or "") if rows else ""
+            live_summary = _live_intake_ledger_summary(metadata, league_hint=league_hint)
+            if live_summary is not None:
+                intake_ledger_summary = live_summary
+                intake_ledger_source = "live"
+        except Exception:  # noqa: BLE001 - report falls back to the queue-time snapshot
+            intake_ledger_summary = None
     if intake_ledger_summary is None:
         try:
             persisted = json.loads(str(metadata.get("intakeLedgerSummary") or "{}"))
-            if isinstance(persisted, dict):
-                persisted_intake_summary = persisted
+            if isinstance(persisted, dict) and persisted:
+                intake_ledger_summary = persisted
         except (json.JSONDecodeError, TypeError):
-            persisted_intake_summary = {}
+            intake_ledger_summary = None
     return _queue_report(
         status=status_override or persisted_status or "ok",
         db_path=db_path,
-        requested_worker_count=int(metadata.get("requestedWorkerCount") or 1),
+        requested_worker_count=1,
         cases=rows,
+        dry_run=False,
         inserted_count=inserted_count,
         duplicate_count=duplicate_count,
-        dry_run=False,
         source_input_summary=source_input_summary,
-        intake_ledger_summary=(
-            intake_ledger_summary if intake_ledger_summary is not None else persisted_intake_summary
-        ),
+        intake_ledger_summary=intake_ledger_summary,
+        intake_ledger_source=intake_ledger_source,
     )
 
 
@@ -2195,6 +2225,7 @@ def _queue_report(
     duplicate_count: int | None = None,
     source_input_summary: dict[str, Any] | None = None,
     intake_ledger_summary: dict[str, Any] | None = None,
+    intake_ledger_source: str = "snapshot",
 ) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for case in cases:
@@ -2240,10 +2271,14 @@ def _queue_report(
         "intakeSkippedAlreadyResearched": int(
             source_input_summary.get("intakeSkippedAlreadyResearched") or 0
         ),
+        "intakeSkippedAlreadyStudied": int(
+            source_input_summary.get("intakeSkippedAlreadyStudied") or 0
+        ),
         "intakeLedgerRecordedCount": int(
             source_input_summary.get("intakeLedgerRecordedCount") or 0
         ),
         "intakeLedgerSummary": intake_ledger_summary or {},
+        "intakeLedgerSource": intake_ledger_source,
         "sourceFileArgumentCount": int(source_input_summary.get("sourceFileArgumentCount") or 0),
         "sourceBatchFileArgumentCount": int(
             source_input_summary.get("sourceBatchFileArgumentCount") or 0
@@ -2280,6 +2315,41 @@ def _queue_report(
     return report
 
 
+def _studied_source_hashes() -> set[str]:
+    """Return source-hash values already durably researched in the mature-learning store.
+
+    Matches on the byte-identical PoB text hash stored in record ``source_case_refs``
+    (``source-hash:<sha>``). This catches the historical-duplicate case that the
+    character-level intake ledger cannot (accounts are not persisted for older runs).
+    """
+    try:
+        from server.knowledge import mature_learning
+
+        db = mature_learning.mature_learning_path()
+        if not Path(db).is_file():
+            return set()
+        con = mature_learning.connect(db)
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT source_case_refs FROM deep_research_records"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - queue proceeds without the historical index
+        return set()
+    studied: set[str] = set()
+    for row in rows:
+        try:
+            refs = json.loads(str(row[0] or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            refs = []
+        for ref in refs if isinstance(refs, list) else []:
+            text = str(ref or "")
+            if text.startswith("source-hash:"):
+                studied.add(text[len("source-hash:") :])
+    return studied
+
+
 def _intake_ledger_summary(
     ledger_path: Path,
     *,
@@ -2305,6 +2375,30 @@ def _intake_ledger_summary(
         "totalRecords": int(summary.get("totalRecords") or 0),
         "byStatus": summary.get("byStatus") or {},
     }
+
+
+def _live_intake_ledger_summary(
+    metadata: dict[str, Any], *, league_hint: str = ""
+) -> dict[str, Any] | None:
+    """Re-read the per-user intake ledger at report time.
+
+    ``queue_status`` historically served the queue-time snapshot, which stays ``queued``
+    forever even after accepts promoted the rows. Live re-read makes the final status
+    truthful; the queue-time snapshot remains the fallback when the ledger is missing.
+    """
+    league = (str(metadata.get("league") or "").strip()) or league_hint
+    ledger_path = str(metadata.get("intakeLedgerPath") or "").strip()
+    if ledger_path:
+        try:
+            return _intake_ledger_summary(Path(ledger_path), league=league, local_sources=False)
+        except Exception:  # noqa: BLE001 - snapshot fallback below
+            return None
+    try:
+        return _intake_ledger_summary(
+            DEFAULT_INTAKE_LEDGER_PATH, league=league, local_sources=False
+        )
+    except Exception:  # noqa: BLE001 - snapshot fallback below
+        return None
 
 
 def _source_input_count_mismatch_report(
@@ -2896,16 +2990,20 @@ graph 等独立佐证。
      是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
  13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
      search_graph_components 再定性为 source gap；图中已存在但未 search 的组件不得误报 gap。
- 14. Family 身份决策清单：clear_skill / boss_skill / triggered_payload 自动参与副技能集合；
-     secondary_skill / generator / control_skill / trigger_host 不自动参与，身份级的这类组件
-     必须显式写入 familyCoreSkillKeys（仅限 skill_package/mechanic_chain）。写错会产生 sibling
-     家族分裂，验收报告 deepRecordWrite.siblingFamilyHints 会提示，按提示复刻既有家族身份。
- 15. 语义边闭环：每案至少提交 2 条 resolver-backed semantic edge 写入 review.semanticEdges
-     （edge_type 限 enables_mechanic / scales_with / mitigates_weakness_of /
-     creates_failure_risk_for / requires_transition_gate / has_modelability_caveat /
-     synergizes_with；两端都必须先用 resolve_graph_component 解析并携带
-     source_resolution / target_resolution 证据）。无法推导时在 review 的
-     deferredCandidateCount / 结论中说明原因，不得为凑数发明关系。
+  14. Family 身份决策清单：Family 身份 = 升华 + 主输出技能集合（role=primary_damage 的
+      skill 组件，可多个；CoC/Spellslinger 等触发宿主、clear_skill / boss_skill /
+      triggered_payload 自动副技能一律不参与身份）。skill_package / mechanic_chain
+      记录必须声明至少一个 primary_damage 组件；同一 BD 的多个主输出技能都要声明。
+      身份相同的档案会自动归入既有 Family（无需也不得新建 sibling 档案）。
+  15. 语义边闭环：每案至少提交 2 条 resolver-backed semantic edge 写入 review.semanticEdges
+      （edge_type 限 enables_mechanic / scales_with / mitigates_weakness_of /
+      creates_failure_risk_for / requires_transition_gate / has_modelability_caveat /
+      synergizes_with；两端都必须先用 resolve_graph_component 解析并携带
+      source_resolution / target_resolution 证据）。无法推导时在 review 的
+      deferredCandidateCount / 结论中说明原因，不得为凑数发明关系。
+  16. 记忆对照留痕：review 顶层 memoryUse 必须存在（对象，至少含 queries 数组）。逐条记录
+      本案例写 review 前执行的 query_research_memory 查询（查询文本、参数、命中的档案）；
+      没有执行任何查询的案例写空数组 queries: [] 并在 queries 的说明字段注明原因。
 
 ## Research Goal
 重建并分别记录：

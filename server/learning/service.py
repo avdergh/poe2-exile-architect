@@ -343,7 +343,7 @@ def submit_profile(
         if error:
             return _rejected(error)
         assert case is not None
-        family = research_identity.infer_build_family(identity_records)
+        family = research_identity.infer_build_family(identity_records, allow_multi_primary=False)
         if family is None:
             return _fail_case(campaign, case, operation_id, "ambiguous_build_family")
         if target_level != case["source"]["discoveredLevel"]:
@@ -496,7 +496,7 @@ def submit_create_result(
         artifact_metadata = _artifact_metadata(artifact_id)
         if artifact_metadata is None:
             return _rejected("final_artifact_not_found_or_untrusted")
-        family = research_identity.infer_build_family(identity_records)
+        family = research_identity.infer_build_family(identity_records, allow_multi_primary=False)
         if family is None:
             case["createConsumed"] = True
             case["metrics"].update(

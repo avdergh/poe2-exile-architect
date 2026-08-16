@@ -660,7 +660,7 @@ def test_gear_knowledge_identity_normalizes_legacy_weapon_base_to_gear_base():
     )
 
 
-def test_build_family_identity_refuses_ambiguous_primary_skills():
+def test_build_family_identity_uses_full_primary_skill_set():
     first = _deep_record_payload()["deep_research_records"][0]
     first["ascendancy_key"] = "ascendancy:monk:martial_artist"
     first["component_mentions"] = [
@@ -669,7 +669,13 @@ def test_build_family_identity_refuses_ambiguous_primary_skills():
     second = json.loads(json.dumps(first))
     second["component_mentions"][0]["component_key"] = "skill:OtherPrimaryPlayer"
 
-    assert research_identity.infer_build_family([first, second]) is None
+    family = research_identity.infer_build_family([first, second])
+    assert family is not None
+    assert family.primary_skill_keys == (
+        "skill:LightningArrowPlayer",
+        "skill:OtherPrimaryPlayer",
+    )
+    assert family.primary_skill_key == "skill:LightningArrowPlayer"
 
 
 def test_historical_family_identity_can_repair_a_clearly_dominant_primary_role():
@@ -685,10 +691,13 @@ def test_historical_family_identity_can_repair_a_clearly_dominant_primary_role()
         record["component_mentions"] = [{"role": "primary_damage", "component_key": key}]
         records.append(record)
 
-    assert research_identity.infer_build_family(records) is None
     repaired = research_identity.infer_build_family(records, allow_dominant_primary=True)
     assert repaired is not None
     assert repaired.primary_skill_key == "skill:LightningArrowPlayer"
+    assert repaired.primary_skill_keys == (
+        "skill:LightningArrowPlayer",
+        "skill:OtherPrimaryPlayer",
+    )
 
 
 def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
@@ -1366,6 +1375,7 @@ def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path)
             "buildFamilyKey": first_result["buildFamilyKeys"][0],
             "ascendancyKey": "ascendancy:monk:martial_artist",
             "primarySkillKey": "skill:LightningArrowPlayer",
+            "primarySkillKeys": ["skill:LightningArrowPlayer"],
             "secondarySkillKeys": [],
             "evidenceCount": 2,
             "deepRecordCount": 1,
@@ -1562,9 +1572,10 @@ def test_sibling_family_hints_flag_same_primary_different_secondary(tmp_path):
         {
             "familyKey": "bf-beta",
             "ascendancyKey": "ascendancy:mercenary:gemling_legionnaire",
-            "primarySkillKey": "skill:TwisterPlayer",
+            "primarySkillKeys": ["skill:TwisterPlayer"],
+            "relation": "identical",
             "siblingFamilyKey": "bf-alpha",
-            "siblingSecondarySkillKeys": ["skill:FrostWallPlayer"],
+            "siblingPrimarySkillKeys": ["skill:TwisterPlayer"],
         }
     ]
 
@@ -1618,7 +1629,7 @@ def test_defense_engine_identity_keeps_distinct_unique_enablers_separate():
 
     family = research_identity.BuildFamilyIdentity(
         ascendancy_key="ascendancy:monk:martial_artist",
-        primary_skill_key="skill:LightningArrowPlayer",
+        primary_skill_keys=("skill:LightningArrowPlayer",),
         secondary_skill_keys=(),
     )
     first_proposal = research_models.DeepResearchRecordProposal.model_validate(first_record)
@@ -3915,7 +3926,7 @@ def test_backfill_relocates_drifted_rows_to_anchor_ids(tmp_path):
         # Change the stored role components so the recomputed identity (and thus the
         # canonical anchor id) differs from the creation-time one.
         mentions = [
-            {"role": "primary_damage", "component_key": "skill:LightningArrowPlayer"},
+            {"role": "primary_damage", "component_key": "skill:OtherPrimaryPlayer"},
             {"role": "clear_skill", "component_key": "skill:ClearSkillPlayer"},
             {"role": "support_modifier", "component_key": "support:Scattershot"},
         ]
@@ -4032,7 +4043,7 @@ def test_backfill_adopts_live_head_when_deprecated_husk_occupies_anchor(tmp_path
                 "resolver_query": "Lightning Arrow",
                 "expected_node_types": ["active_skill"],
                 "scope": "player",
-                "component_key": "skill:LightningArrowPlayer",
+                "component_key": "skill:OtherPrimaryPlayer",
                 "resolution_status": "resolved",
             },
             {
@@ -4155,7 +4166,7 @@ def test_backfill_replaces_quarantined_anchor_occupant(tmp_path):
                 "resolver_query": "Lightning Arrow",
                 "expected_node_types": ["active_skill"],
                 "scope": "player",
-                "component_key": "skill:LightningArrowPlayer",
+                "component_key": "skill:OtherPrimaryPlayer",
                 "resolution_status": "resolved",
             },
             {

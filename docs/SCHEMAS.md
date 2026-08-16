@@ -698,12 +698,13 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   知识单元，保存 title、summary、content、record kind、stable component keys、条件、失败条件、
   safe evidence、版本和作用域。中文 `content` 原则上不超过 400 字，英文原则上不超过 250 个单词；
   只有不可拆分的核心机制链可以携带 `length_exception_reason` 少量超出。
-- `BuildFamily`：只由已解析的 `ascendancy_key + primary_skill_key + sorted
-  secondary_skill_keys` 确定。clear/boss/triggered-payload，以及在同一技能包/机制链中与载荷成对的
-  trigger-host 自动作为核心副技能；普通 secondary 只是 Family 内工具或变体。其他确实定义流派的
-  generator/control 等技能通过
-  `typed_payload.familyCoreSkillKeys` 显式加入，且必须引用同一研究组已解析的 skill stable key。support、
-  暗金、装备、防御和资源方案不参与 Family 身份。
+- `BuildFamily`：由已解析的 `ascendancy_key + primary_skill_keys`（主输出技能**集合**）确定。
+  `primary_skill_keys` 是研究者声明为 `primary_damage` 角色的全部 skill stable key（CoC 双输出
+  构建可含多个）；`primary_skill_key` 保留第一个作为兼容单值。clear/boss/triggered-payload
+  自动副技能、trigger-host（CoC/Spellslinger 等）、`familyCoreSkillKeys` 均**不参与身份**，只作
+  Family 内元数据。技能名以 gem 等价规范化后比较（同一宝石授予的弹药/直击变体视为同一技能，
+  见 `server/knowledge/skill_equivalence.py`）。support、暗金、装备、防御和资源方案不参与 Family
+  身份。身份相同的档案自动归入既有 Family，不新建 sibling 档案。
 - `Canonical KnowledgeUnit`：`DeepResearchRecord` 通过 `BuildFamily + record_kind + kind-specific
   core component roles` 生成 `knowledge_key`。标题和正文只用于召回与选择更完整的代表文本，不能单独
   授权跨来源合并。`skill_package` 还必须通过 `typed_payload.supportPackages` 保存每个核心技能组的

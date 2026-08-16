@@ -2814,7 +2814,7 @@ def test_origin_family_requires_confirmed_identity_record():
     )
 
     assert without_identity == {}
-    assert with_identity == {"source-hash:fixture": "bf-9bad44ec97043db69f4d"}
+    assert with_identity == {"source-hash:fixture": "bf-cf7ade3dd9a77f638b59"}
 
 
 def test_single_active_source_group_defers_exact_unstructured_unsupported_claim(tmp_path):
@@ -4327,6 +4327,7 @@ def test_deep_review_acceptance_defers_invalid_candidate_but_accepts_valid_one(t
     review = {
         "reportId": "phase4-deep-researcher-candidate-review-v1",
         "safeArtifactOnly": True,
+        "memoryUse": {"queries": []},
         "candidateReviews": [bad_candidate, good_candidate],
     }
     review_file = tmp_path / "mixed-review.json"
@@ -4528,6 +4529,15 @@ def _write_review(
     review = {
         "reportId": "phase4-deep-researcher-candidate-review-v1",
         "safeArtifactOnly": True,
+        "memoryUse": {
+            "queries": [
+                {
+                    "query": "fixture query",
+                    "parameters": {"limit": 5},
+                    "hitFamilies": [],
+                }
+            ]
+        },
         "candidateReviews": [] if not components else [candidate],
         "deepResearchRecords": (
             [
