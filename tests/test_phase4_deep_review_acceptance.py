@@ -1987,6 +1987,89 @@ def test_unique_gem_diagnostics_labels_lineage_support_identity():
     assert "Bhatair's Vengeance" in diagnostics["unlabeledUniqueGemNames"]
 
 
+def test_unique_gem_identifier_matches_both_unique_id_forms():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    assert acceptance._is_unique_gem_identifier(skill_id="UniqueBreachLightningBoltPlayer")
+    assert acceptance._is_unique_gem_identifier(skill_id="UniqueSkillGemHeraldOfAshPlayer")
+    assert acceptance._is_unique_gem_identifier(
+        gem_id="Metadata/Items/Gem/SkillGemUniqueBreachLightningBolt"
+    )
+    assert acceptance._is_unique_gem_identifier(
+        gem_id="Metadata/Items/Gems/UniqueSkillGemHeraldOfAsh"
+    )
+    assert not acceptance._is_unique_gem_identifier(skill_id="LightningBoltPlayer")
+    assert not acceptance._is_unique_gem_identifier(
+        gem_id="Metadata/Items/Gems/SkillGemLightningBolt"
+    )
+    assert not acceptance._is_unique_gem_identifier(skill_id="", gem_id="")
+
+
+def test_unique_gem_diagnostics_recognizes_unique_main_skill_by_skill_id():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:0",
+                "activeSkills": [
+                    {
+                        "name": "Lightning Bolt",
+                        "skillId": "UniqueBreachLightningBoltPlayer",
+                    }
+                ],
+                "supports": [],
+            }
+        ]
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(
+        {"safeArtifactOnly": True, "deepResearchRecords": []}, manifest
+    )
+
+    assert "Lightning Bolt" in diagnostics["uniqueGemCandidates"]
+
+    mentioned = acceptance._unique_gem_diagnostics(
+        {
+            "safeArtifactOnly": True,
+            "deepResearchRecords": [
+                {
+                    "recordKind": "skill_package",
+                    "title": "Lightning Bolt CoC package",
+                    "summary": "uses Lightning Bolt",
+                    "content": "Lightning Bolt trigger loop",
+                    "components": [],
+                }
+            ],
+        },
+        manifest,
+    )
+    assert "Lightning Bolt" in mentioned["unlabeledUniqueGemNames"]
+
+
+def test_unique_gem_diagnostics_recognizes_unique_support_by_gem_id_prefix():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:0",
+                "activeSkills": [{"name": "Lightning Bolt", "skillId": "LightningBoltPlayer"}],
+                "supports": [
+                    {
+                        "name": "Earthbound",
+                        "gemId": "Metadata/Items/Gems/SkillGemUniqueEarthboundTriggeredSpark",
+                    }
+                ],
+            }
+        ]
+    }
+    diagnostics = acceptance._unique_gem_diagnostics(
+        {"safeArtifactOnly": True, "deepResearchRecords": []}, manifest
+    )
+
+    assert "Earthbound" in diagnostics["uniqueGemCandidates"]
+
+
 def test_unique_gem_diagnostics_exempts_open_question_but_not_enabler_role():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
@@ -2702,6 +2785,151 @@ def test_structured_support_packages_reject_cross_assigned_multi_active_supports
     assert corrected_payload["deep_research_records"] == [record]
     assert corrected_summaries == [summary]
     assert corrected_deferred == []
+
+
+def _endpoint_gem_graph(*, with_triggered: bool) -> gt.GraphQueryService:
+    source = pg.GraphSource(
+        source_id="fixture:endpoint-expansion",
+        kind="test_fixture",
+        source_file="tests/test_phase4_deep_review_acceptance.py",
+        claims=(pg.SourceClaim("passive_tree_version", "0_5"),),
+    )
+    gem = "gem:FixtureSkillGem"
+    buff_skill = "skill:FixtureSkillPlayer"
+    triggered_skill = "skill:TriggeredFixtureSkillPlayer"
+    support_key = "support:FixtureAttackSupport"
+    contract_key = "skill:FixtureAttackSupportContract"
+    nodes = [
+        pg.GraphNode(gem, "skill_gem", "Fixture Skill", (source.source_id,)),
+        pg.GraphNode(buff_skill, "active_skill", "Fixture Skill", (source.source_id,)),
+        pg.GraphNode(support_key, "support_gem", "Fixture Attack Support", (source.source_id,)),
+        pg.GraphNode(
+            contract_key, "active_skill", "Fixture Attack Support contract", (source.source_id,)
+        ),
+        pg.GraphNode("skill_type:attack", "skill_type", "Attack", (source.source_id,)),
+        pg.GraphNode("skill_type:buff", "skill_type", "Buff", (source.source_id,)),
+        pg.GraphNode("skill_type:triggered", "skill_type", "Triggered", (source.source_id,)),
+    ]
+    edges = [
+        pg.GraphEdge("has_type", buff_skill, "skill_type:buff", (source.source_id,)),
+        pg.GraphEdge("granted_by", buff_skill, gem, (source.source_id,)),
+        pg.GraphEdge("grants_skill", gem, buff_skill, (source.source_id,)),
+        pg.GraphEdge("grants_skill", support_key, contract_key, (source.source_id,)),
+    ]
+    if with_triggered:
+        nodes.append(
+            pg.GraphNode(
+                triggered_skill, "active_skill", "Triggered Fixture Skill", (source.source_id,)
+            )
+        )
+        edges.extend(
+            [
+                pg.GraphEdge("has_type", triggered_skill, "skill_type:attack", (source.source_id,)),
+                pg.GraphEdge(
+                    "has_type", triggered_skill, "skill_type:triggered", (source.source_id,)
+                ),
+                pg.GraphEdge("granted_by", triggered_skill, gem, (source.source_id,)),
+                pg.GraphEdge("grants_skill", gem, triggered_skill, (source.source_id,)),
+            ]
+        )
+    requirement_facts = (
+        pg.RequirementFact(
+            component_key=contract_key,
+            level_or_stage="support_contract",
+            requirements={
+                "allowed_types_expr": ["Attack"],
+                "excluded_types_expr": [],
+                "supports_gems_only": False,
+            },
+            source_refs=(source.source_id,),
+        ),
+    )
+    return gt.GraphQueryService.from_snapshot(
+        pg.GraphSnapshot(
+            snapshot_id="snapshot:endpoint-expansion",
+            created_at=datetime(2026, 7, 18, tzinfo=UTC),
+            sources=(source,),
+            nodes=tuple(nodes),
+            edges=tuple(edges),
+            aliases=(),
+            requirement_facts=requirement_facts,
+        )
+    )
+
+
+def test_structured_support_package_valid_when_any_gem_endpoint_matches(tmp_path):
+    graph_service = _endpoint_gem_graph(with_triggered=True)
+    record = {
+        "component_keys": ["skill:FixtureSkillPlayer", "support:FixtureAttackSupport"],
+        "component_mentions": [],
+        "typed_payload": {
+            "supportPackages": [
+                {
+                    "skillKey": "skill:FixtureSkillPlayer",
+                    "supportKeys": ["support:FixtureAttackSupport"],
+                }
+            ]
+        },
+    }
+    summary = {
+        "titleZh": "触发形态辅助归属",
+        "recordKind": "skill_package",
+        "sampleId": "fixture_sample_001",
+        "componentKeys": record["component_keys"],
+    }
+
+    kept_payload, kept_summaries, deferred = (
+        run_phase4_deep_review_acceptance._filter_records_with_unsupported_structured_support_packages(
+            graph_service=graph_service,
+            deep_payload={"schema_version": 5, "deep_research_records": [record]},
+            accepted_records=[summary],
+        )
+    )
+
+    assert deferred == []
+    assert kept_summaries == [summary]
+    assert kept_payload["deep_research_records"] == [record]
+
+
+def test_structured_support_package_defer_keeps_lightning_bolt_cdr_rejection(tmp_path):
+    graph_service = _endpoint_gem_graph(with_triggered=False)
+    record = {
+        "component_keys": ["skill:FixtureSkillPlayer", "support:FixtureAttackSupport"],
+        "component_mentions": [],
+        "typed_payload": {
+            "supportPackages": [
+                {
+                    "skillKey": "skill:FixtureSkillPlayer",
+                    "supportKeys": ["support:FixtureAttackSupport"],
+                }
+            ]
+        },
+    }
+    summary = {
+        "titleZh": "单形态技能辅助拒绝",
+        "recordKind": "skill_package",
+        "sampleId": "fixture_sample_001",
+        "componentKeys": record["component_keys"],
+    }
+
+    kept_payload, kept_summaries, deferred = (
+        run_phase4_deep_review_acceptance._filter_records_with_unsupported_structured_support_packages(
+            graph_service=graph_service,
+            deep_payload={"schema_version": 5, "deep_research_records": [record]},
+            accepted_records=[summary],
+        )
+    )
+
+    assert kept_payload["deep_research_records"] == []
+    assert kept_summaries == []
+    assert deferred[0]["reason"] == "unsupported_structured_skill_support_pair"
+    pair = deferred[0]["unsupportedPairs"][0]
+    assert pair["evaluationMode"] == "review_support_package_fixed_point"
+    assert pair["endpointKey"] == "skill:FixtureSkillPlayer"
+    assert pair["evaluatedSkillKeys"] == ["skill:FixtureSkillPlayer"]
+    assert pair["requiredTypesExpr"] == ["Attack"]
+    assert pair["excludedReason"] == "required_types_not_matched"
+    assert "attack" not in pair["endpointSkillTypes"]
 
 
 def test_source_support_name_match_does_not_collapse_distinct_stable_skill_keys():

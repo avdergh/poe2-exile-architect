@@ -332,6 +332,127 @@ def test_research_cleanup_staging_restore_failure_preserves_staging(monkeypatch,
     assert staging.exists()
 
 
+def test_research_cleanup_queues_delayed_retry_on_rename_failure_and_retries(monkeypatch, tmp_path):
+    import pathlib
+
+    run_id = "20260805-010203-abcd"
+    runs_root = tmp_path / ".poe-bd-research" / "runs"
+    output_root = runs_root / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    (output_root / "acceptance").mkdir()
+    (output_root / "acceptance" / "sample-acceptance.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "safe-hash",
+                "accepted_deep_record_count": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+
+    original_rename = pathlib.Path.rename
+    fail_rename = True
+
+    def flaky_rename(self, target):
+        if fail_rename and str(self) == str(output_root):
+            raise OSError(13, "Permission denied")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "rename", flaky_rename)
+
+    first = research_mature_builds.cleanup_completed_run(run_id=run_id)
+
+    assert first["status"] == "partial"
+    assert first["queuedDelayedRetry"] is True
+    assert output_root.exists()  # run left fully intact
+    queue_path = runs_root / "pending_cleanups.json"
+    assert queue_path.is_file()
+    queued = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert queued["items"][0]["runId"] == run_id
+    assert queued["items"][0]["evidence"]["acceptedDeepRecordCount"] == 1
+
+    fail_rename = False  # handle released: next cleanup drains the queue
+    second = research_mature_builds.cleanup_completed_run(run_id=run_id)
+
+    assert second["status"] == "cleaned"
+    assert second["delayedRetry"]["retried"] == 1
+    assert not output_root.exists()
+    assert (
+        not queue_path.is_file()
+        or json.loads(queue_path.read_text(encoding="utf-8"))["items"] == []
+    )
+
+
+def test_research_cleanup_drops_absent_run_from_delayed_queue(monkeypatch, tmp_path):
+    run_id = "20260805-010203-abcd"
+    other_run_id = "20260806-040506-ef01"
+    runs_root = tmp_path / ".poe-bd-research" / "runs"
+    runs_root.mkdir(parents=True)
+    queue_path = runs_root / "pending_cleanups.json"
+    queue_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": [
+                    {
+                        "runId": run_id,
+                        "queuedAt": "2026-08-16T00:00:00+00:00",
+                        "evidence": {"caseCount": 1, "acceptedDeepRecordCount": 1},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    other_root = runs_root / other_run_id
+    db_path = other_root / research_mature_builds.QUEUE_DB_FILENAME
+    db_path.parent.mkdir(parents=True)
+    db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_fetch_cases",
+        lambda _db_path: [
+            {
+                "status": "accepted",
+                "packetSafeHash": "safe-hash",
+                "accepted_deep_record_count": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+
+    result = research_mature_builds.cleanup_completed_run(run_id=other_run_id)
+
+    assert result["status"] == "cleaned"
+    assert result["delayedRetry"]["dropped"] == 1
+    queued = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert queued["items"] == []
+
+
 def test_research_queue_report_level_bias_note_when_all_samples_at_max(tmp_path):
     db_path = tmp_path / "queue.sqlite"
     cases = [

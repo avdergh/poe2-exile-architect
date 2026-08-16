@@ -1815,6 +1815,14 @@ class ResearchMemoryService:
         then any ``skill_equivalence`` rows (model-confirmed renames/aliases) union their
         canonical tokens into one equivalence class. Unresolvable ``key:`` tokens are
         skipped by the model layer (they cannot be trusted as aliases).
+
+        Unique-gem variants deliberately share the canonical token with their ordinary
+        version (``skill:UniqueBreachLightningBoltPlayer`` -> ``gem:lightningbolt`` like
+        ``skill:LightningBoltPlayer``): same-name skill variants are one family identity.
+        Their mechanical differences (cooldown/triggered) are preserved at the record/
+        evidence layer via the exact component key, never by splitting the identity.
+        Variants whose granting gem has no display name in the index stay on a distinct
+        ``key:`` token until a model-confirmed ``skill_equivalence`` row unions them.
         """
         index = idx or skill_equivalence.SkillEquivalenceIndex.shared()
         canon = index.canonical_set(skill_keys)
@@ -4270,7 +4278,7 @@ class ResearchMemoryService:
             return None
         inverse = con.execute(
             """
-            SELECT edge_id FROM research_semantic_edges
+            SELECT edge_id, source_key, target_key FROM research_semantic_edges
             WHERE source_key = ?
               AND target_key = ?
               AND edge_type = ?
@@ -4300,13 +4308,15 @@ class ResearchMemoryService:
                     "conflictSourceKey": edge.source_key,
                     "conflictTargetKey": edge.target_key,
                     "conflictingExistingEdgeId": str(inverse["edge_id"]),
+                    "conflictingExistingSourceKey": str(inverse["source_key"]),
+                    "conflictingExistingTargetKey": str(inverse["target_key"]),
                 },
             )
 
         cycle = con.execute(
             """
-            WITH RECURSIVE walk(node, depth) AS (
-                SELECT target_key, 1
+            WITH RECURSIVE walk(node, depth, path) AS (
+                SELECT target_key, 1, source_key || '>' || target_key
                 FROM research_semantic_edges
                 WHERE source_key = ?
                   AND edge_type = ?
@@ -4316,7 +4326,7 @@ class ResearchMemoryService:
                   AND directionality = 'directional'
                   AND planner_visible = 1
                 UNION ALL
-                SELECT e.target_key, walk.depth + 1
+                SELECT e.target_key, walk.depth + 1, walk.path || '>' || e.target_key
                 FROM research_semantic_edges e
                 JOIN walk ON e.source_key = walk.node
                 WHERE walk.depth < ?
@@ -4327,7 +4337,7 @@ class ResearchMemoryService:
                   AND e.directionality = 'directional'
                   AND e.planner_visible = 1
             )
-            SELECT 1 FROM walk WHERE node = ? LIMIT 1
+            SELECT path, depth FROM walk WHERE node = ? ORDER BY depth ASC LIMIT 1
             """,
             (
                 edge.target_key,
@@ -4352,6 +4362,8 @@ class ResearchMemoryService:
                     "conflictEdgeType": edge.edge_type,
                     "conflictSourceKey": edge.source_key,
                     "conflictTargetKey": edge.target_key,
+                    "cyclePath": str(cycle["path"]),
+                    "cycleDepth": int(cycle["depth"]),
                 },
             )
         return None

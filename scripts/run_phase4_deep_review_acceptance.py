@@ -270,6 +270,27 @@ def _review_declares_jewels(review: dict[str, Any]) -> bool:
     return False
 
 
+def _is_unique_gem_identifier(*, skill_id: str = "", gem_id: str = "") -> bool:
+    """Whether a manifest id proves a unique (lineage) gem without the corpus.
+
+    Matches both id forms found in the raw gem data: ``SkillGemUnique*`` (Breach-style
+    unique gems) and ``UniqueSkillGem*`` (Herald-style), plus the granted skill ids they
+    expose on activeSkills (``UniqueBreachLightningBoltPlayer`` etc.). Prefix matching
+    avoids substring false positives; the corpus is_lineage field stays the authority
+    when present.
+    """
+    if skill_id.startswith("Unique"):
+        return True
+    if gem_id.startswith("Metadata/Items/Gem/SkillGemUnique") or gem_id.startswith(
+        "Metadata/Items/Gems/SkillGemUnique"
+    ):
+        return True
+    # UniqueSkillGem* currently only occurs under the plural Metadata/Items/Gems/ path.
+    if gem_id.startswith("Metadata/Items/Gems/UniqueSkillGem"):
+        return True
+    return False
+
+
 def _unique_gem_diagnostics(
     review: dict[str, Any],
     source_skill_manifest: dict[str, Any] | None,
@@ -277,8 +298,11 @@ def _unique_gem_diagnostics(
     """Detect lineage (unique) support gems in the source and whether the review labeled them.
 
     Tri-state lookup: True/False from the corpus ``is_lineage`` field; unknown when the corpus
-    is unavailable or the gem name does not resolve (never blocks). Only names whose
-    ``nameSource`` is ``nameSpec`` are gem candidates: item/passive-granted skills fall back to
+    is unavailable or the gem name does not resolve (never blocks). Unique gems whose corpus
+    entry is missing are still recognized through their manifest ids (``SkillGemUnique*`` /
+    ``UniqueSkillGem*`` gem ids or ``Unique*`` granted skill ids), so a unique main-skill gem
+    is never silently treated as an ordinary gem. Only names whose ``nameSource`` is
+    ``nameSpec`` are gem candidates: item/passive-granted skills fall back to
     internal skill ids and are reported separately as ``nonGemSkillNames`` so they never pollute
     gem diagnostics. A lineage gem counts as labeled when any record mentions it inside an
     open_question/modelability_caveat record, or when the record prose explicitly labels its
@@ -297,6 +321,7 @@ def _unique_gem_diagnostics(
             "proseMentionedWithoutComponentNames": [],
         }
     gem_names: list[str] = []
+    unique_by_id: list[str] = []
     non_gem_names: list[str] = []
     for group in source_skill_manifest.get("activeSkillGroups") or []:
         if not isinstance(group, dict):
@@ -313,7 +338,12 @@ def _unique_gem_diagnostics(
                 gem_names.append(name)
             else:
                 non_gem_names.append(name)
-    unique_candidates: list[str] = []
+            if _is_unique_gem_identifier(
+                skill_id=str(item.get("skillId") or ""),
+                gem_id=str(item.get("gemId") or ""),
+            ):
+                unique_by_id.append(name)
+    unique_candidates: list[str] = list(dict.fromkeys(unique_by_id))
     corpus_missing_names: list[str] = []
     try:
         from server.knowledge import db as corpus_db
@@ -333,7 +363,7 @@ def _unique_gem_diagnostics(
         if gem is None:
             corpus_missing_names.append(name)
             continue
-        if gem.get("is_lineage") is True:
+        if gem.get("is_lineage") is True and name not in unique_candidates:
             unique_candidates.append(name)
     if not unique_candidates:
         return {
@@ -904,7 +934,9 @@ def accept_deep_review_candidates(
             *(
                 [
                     "Advisory: source skill names are internal ids rather than gem names "
-                    "(nameSource != gem_name) and were excluded from unique-gem diagnostics: "
+                    "(nameSource != gem_name); they do not participate in corpus gem lookup, "
+                    "but unique ids (Unique* skill ids / unique gem ids) are still recognized "
+                    "by the id channel: "
                     + ", ".join(unique_gem_diagnostics["nonGemSkillNames"])
                     + "."
                 ]
@@ -2640,40 +2672,72 @@ def _filter_records_with_unsupported_structured_support_packages(
             support_keys = [str(value) for value in package.get("supportKeys") or [] if str(value)]
             if not skill_key or not support_keys:
                 continue
-            try:
-                results = physical_graph.support_skill_group_candidates(
-                    snapshot=graph_service.snapshot,
-                    support_keys=support_keys,
-                    skill_key=skill_key,
-                )
-            except ValueError:
-                # Resolver/schema validation owns missing or mistyped endpoints. Unknown static
-                # contracts remain a Researcher caveat rather than an automatic rejection.
-                continue
-            for result in results:
-                if result.status != "unsupported":
+            # The Researcher may name any gem endpoint of the skill (buff, direct-hit or
+            # triggered variant). Judge the package against every endpoint of the same
+            # granting gem, matching the source-group evaluation semantics: a support that
+            # applies to any endpoint is valid, only all-endpoint unsupported is deferred.
+            endpoint_skill_keys = _active_gem_endpoint_keys(
+                snapshot=graph_service.snapshot,
+                skill_key=skill_key,
+            )
+            endpoint_results: dict[str, list[physical_graph.ComputedFactResult]] = {}
+            for endpoint_skill_key in endpoint_skill_keys:
+                try:
+                    endpoint_results[endpoint_skill_key] = list(
+                        physical_graph.support_skill_group_candidates(
+                            snapshot=graph_service.snapshot,
+                            support_keys=support_keys,
+                            skill_key=endpoint_skill_key,
+                        )
+                    )
+                except ValueError:
+                    # Resolver/schema validation owns missing or mistyped endpoints. Unknown
+                    # static contracts remain a Researcher caveat rather than a rejection.
                     continue
-                support_key = str(result.request.inputs.get("support_key") or "")
-                unsupported_pairs.append(
-                    {
-                        "skillKey": skill_key,
-                        "skillName": display_names.get(skill_key, skill_key),
-                        "supportKey": support_key,
-                        "supportName": display_names.get(support_key, support_key),
-                        "excludedReason": str(
-                            result.facts.get("excluded_reason") or "support_not_compatible"
-                        ),
-                        "sourceRefs": list(result.source_refs),
-                        "evaluationMode": "review_support_package_fixed_point",
-                    }
-                )
+            for support_key in support_keys:
+                outcomes = [
+                    (endpoint_skill_key, result)
+                    for endpoint_skill_key, results in endpoint_results.items()
+                    for result in results
+                    if str(result.request.inputs.get("support_key") or "") == support_key
+                ]
+                if any(result.status == "known" for _, result in outcomes):
+                    continue
+                rejected_endpoints = [
+                    (endpoint_skill_key, result)
+                    for endpoint_skill_key, result in outcomes
+                    if result.status == "unsupported"
+                ]
+                if not rejected_endpoints:
+                    continue
+                for endpoint_skill_key, result in rejected_endpoints:
+                    facts = result.facts
+                    unsupported_pairs.append(
+                        {
+                            "skillKey": skill_key,
+                            "skillName": display_names.get(skill_key, skill_key),
+                            "endpointKey": endpoint_skill_key,
+                            "evaluatedSkillKeys": endpoint_skill_keys,
+                            "supportKey": support_key,
+                            "supportName": display_names.get(support_key, support_key),
+                            "excludedReason": str(
+                                facts.get("excluded_reason") or "support_not_compatible"
+                            ),
+                            "requiredTypesExpr": list(facts.get("required_types_expr") or []),
+                            "excludedTypesExpr": list(facts.get("excluded_types_expr") or []),
+                            "endpointSkillTypes": list(facts.get("matched_skill_types") or []),
+                            "sourceRefs": list(result.source_refs),
+                            "evaluationMode": "review_support_package_fixed_point",
+                        }
+                    )
         if not unsupported_pairs:
             kept_records.append(record)
             kept_summaries.append(summary)
             continue
         pair_summary = "; ".join(
             f"{item['skillName']}[{item['skillKey']}] + {item['supportName']}[{item['supportKey']}]"
-            f" (excluded: {item['excludedReason']})"
+            f" (excluded: {item['excludedReason']}; requires {item['requiredTypesExpr'] or '?'}"
+            f" vs endpoint {item['endpointKey']} types {item['endpointSkillTypes'] or '?'})"
             for item in unsupported_pairs[:5]
         )
         deferred.append(

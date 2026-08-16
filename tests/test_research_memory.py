@@ -12,6 +12,7 @@ from server.knowledge import research_memory
 from server.knowledge import research_identity
 from server.knowledge import research_models
 from server.knowledge import research_packet
+from server.knowledge import skill_equivalence
 
 
 def _tables(con: sqlite3.Connection) -> set[str]:
@@ -804,6 +805,40 @@ def test_query_receipt_records_graph_backed_primary_skill_equivalence(tmp_path):
         "gem:Metadata/Items/Gems/SkillGemLightningArrow",
         "skill:LightningArrowPlayer",
     ]
+
+
+def test_canonical_identity_unique_variant_shares_family_token():
+    index = skill_equivalence.SkillEquivalenceIndex.shared()
+    assert index.canonical_key("skill:LightningBoltPlayer") == index.canonical_key(
+        "skill:UniqueBreachLightningBoltPlayer"
+    )
+    assert index.canonical_key("skill:SparkPlayer") == index.canonical_key(
+        "skill:UniqueEarthboundTriggeredSparkPlayer"
+    )
+    # Unique gems without a display-name match stay on a distinct key: token until a
+    # model-confirmed equivalence row unions them; never silently merged by name.
+    assert index.canonical_key("skill:UniqueSkillGemHeraldOfAshPlayer").startswith("key:")
+
+
+def test_canonical_identity_set_unions_model_equivalence_rows(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    research_memory.ResearchMemoryService(db_path=db_path)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "INSERT INTO skill_equivalence (key_a, key_b, method, rationale, game_patch, status, created_at, last_seen_at) "
+            "VALUES (?, ?, 'model_review', 'renamed across versions', '0_5', 'valid', datetime('now'), datetime('now'))",
+            ("skill:OldSkillPlayer", "skill:NewSkillPlayer"),
+        )
+        con.commit()
+        canon = research_memory.ResearchMemoryService._canonical_identity_set(
+            con, ["skill:OldSkillPlayer", "skill:NewSkillPlayer", "skill:LightningBoltPlayer"]
+        )
+        assert "skill:oldskillplayer" not in canon
+        assert "skill:newskillplayer" not in canon
+        assert "gem:lightningbolt" in canon
+    finally:
+        con.close()
 
 
 def test_query_receipt_is_immutable_when_later_research_changes_results(tmp_path):
@@ -3115,6 +3150,37 @@ def test_directional_short_cycle_detection_is_bounded_to_depth_three(tmp_path):
     assert cycle["status"] == "rejected"
     assert cycle["errorCode"] == "semantic_cycle_or_conflict"
     assert cycle["facts"]["maxDepthChecked"] == 3
+    assert cycle["facts"]["conflictKind"] == "short_cycle"
+    assert cycle["facts"]["cycleDepth"] == 2
+    assert cycle["facts"]["cyclePath"] == (
+        "skill:LightningArrowPlayer>support:Scattershot>passive:pob:0_5:100"
+    )
+
+
+def test_directional_inverse_edge_conflict_names_existing_edge_endpoints(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+
+    first = service.propose_semantic_edges(
+        _edge_payload("skill:LightningArrowPlayer", "support:Scattershot", "enables_mechanic")
+    )
+    assert first["status"] == "accepted"
+
+    inverse = service.propose_semantic_edges(
+        _edge_payload("support:Scattershot", "skill:LightningArrowPlayer", "enables_mechanic")
+    )
+
+    assert inverse["status"] == "rejected"
+    assert inverse["errorCode"] == "semantic_cycle_or_conflict"
+    facts = inverse["facts"]
+    assert facts["conflictKind"] == "inverse_edge"
+    assert facts["conflictingExistingEdgeId"] == first["edgeIds"][0]
+    assert facts["conflictingExistingSourceKey"] == "skill:LightningArrowPlayer"
+    assert facts["conflictingExistingTargetKey"] == "support:Scattershot"
+    assert facts["conflictSourceKey"] == "support:Scattershot"
+    assert facts["conflictTargetKey"] == "skill:LightningArrowPlayer"
 
 
 def test_non_valid_or_unsafe_semantic_edges_are_not_planner_visible(tmp_path):

@@ -4,6 +4,15 @@ Orphan sources: historical leftovers (family rows deleted without relocating rec
 backfill boundaries (records whose identity could not be re-derived kept their old family
 mount after the family was consolidated).
 
+Records with ``build_family_key IS NULL`` are deliberately OUT OF SCOPE: the only rows in
+that state are `deep_research_mvp_v1` trial-run leftovers (2026-07) that never passed
+acceptance and sit in ``quarantined``/``deprecated`` status with ``knowledge_key IS NULL``.
+They are not lost knowledge and must never be mounted onto a family here: mounting would
+mix never-accepted material into live family evidence counts and recall. The write path
+already treats quarantined rows as non-canonical (they can be dropped on collision), so
+leaving them untouched is the intended state. Recovering their content requires a fresh
+Research extraction, not a mount fix.
+
 Modes:
   --dry-run   analyse every orphan: derive identity by research group, resolve the target
               family via the same canonical-set logic as accept, and print a disposition

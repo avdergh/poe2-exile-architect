@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from scripts import build_learning_memory_release_seed as release_seed
 from server import paths
+from server.knowledge import mature_learning
 from server.learning import memory
 
 
@@ -33,6 +37,76 @@ def _lesson_payload(case_id: str = "case-release") -> dict[str, object]:
         "citedCorrectionIds": [],
         "newEvidenceRefs": [],
     }
+
+
+def _family_lesson_payload(family_key: str, case_id: str = "case-family") -> dict[str, object]:
+    payload = _lesson_payload(case_id)
+    payload["scope"] = "family"
+    payload["familyKey"] = family_key
+    payload["dimension"] = "skill_roles_supports"
+    payload["lesson"] = "Confirm secondary skill support ownership before endgame selection."
+    payload["recommendedCreateBehavior"] = "Audit support ownership before scaling."
+    return payload
+
+
+@pytest.fixture()
+def mature_db_with_family(tmp_path: Path, monkeypatch) -> str:
+    db_path = tmp_path / "mature.sqlite"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE research_build_families (build_family_key TEXT PRIMARY KEY)")
+        con.execute(
+            "INSERT INTO research_build_families (build_family_key) VALUES ('bf-live0000000000000000')"
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(mature_learning, "mature_learning_path", lambda: str(db_path.resolve()))
+    return str(db_path)
+
+
+def test_release_seed_rejects_active_lesson_with_unknown_family_key(
+    tmp_path: Path, mature_db_with_family
+) -> None:
+    source = tmp_path / "learning-memory.jsonl"
+    output = tmp_path / "learning-memory.seed.jsonl"
+    accepted = memory.propose_lesson(_family_lesson_payload("bf-dead0000000000000000"), path=source)
+    assert accepted["status"] == "accepted"
+
+    with pytest.raises(ValueError, match="unknown family key"):
+        release_seed.build_release_seed(source=source, output=output)
+
+    report = release_seed.build_release_seed(source=source, output=output, check_family_keys=False)
+    assert report["status"] == "built"
+
+
+def test_release_seed_keeps_deprecated_dead_key_lesson_as_history(
+    tmp_path: Path, mature_db_with_family
+) -> None:
+    source = tmp_path / "learning-memory.jsonl"
+    output = tmp_path / "learning-memory.seed.jsonl"
+    accepted = memory.propose_lesson(_family_lesson_payload("bf-dead0000000000000000"), path=source)
+    lesson_id = accepted["lesson"]["lessonId"]
+    deprecated = memory.append_correction(
+        {
+            "schemaVersion": 1,
+            "targetLessonId": lesson_id,
+            "action": "deprecate",
+            "reason": "Family key was consolidated away and no live family carries this identity.",
+            "triggerCaseId": "case-maintenance",
+            "safeEvidenceRefs": ["family:bf-dead0000000000000000"],
+            "afterLesson": None,
+            "replacementLessonId": None,
+        },
+        path=source,
+    )
+    assert deprecated["status"] == "corrected"
+
+    report = release_seed.build_release_seed(source=source, output=output)
+    assert report["status"] == "built"
+    check = report["familyKeyCheck"]
+    assert check["familyKeyCheck"] == "passed"
+    assert any("status=deprecated" in w for w in check["warnings"])
 
 
 def test_learning_memory_seed_preserves_lessons_and_corrections(tmp_path: Path) -> None:

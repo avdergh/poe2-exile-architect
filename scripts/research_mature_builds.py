@@ -1481,6 +1481,159 @@ def queue_status(
     )
 
 
+def _pending_cleanup_path(runs_root: Path) -> Path:
+    return runs_root / "pending_cleanups.json"
+
+
+def _read_pending_cleanups(runs_root: Path) -> list[dict[str, Any]]:
+    path = _pending_cleanup_path(runs_root)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _write_pending_cleanups(runs_root: Path, items: list[dict[str, Any]]) -> None:
+    path = _pending_cleanup_path(runs_root)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    payload = {"version": 1, "items": items}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _queue_pending_cleanup(runs_root: Path, *, run_id: str, evidence: dict[str, Any]) -> None:
+    items = [item for item in _read_pending_cleanups(runs_root) if item.get("runId") != run_id]
+    items.append(
+        {
+            "runId": run_id,
+            "queuedAt": _now_iso(),
+            "evidence": evidence,
+        }
+    )
+    _write_pending_cleanups(runs_root, items)
+
+
+def _drop_pending_cleanup(runs_root: Path, run_id: str) -> None:
+    items = [item for item in _read_pending_cleanups(runs_root) if item.get("runId") != run_id]
+    _write_pending_cleanups(runs_root, items)
+
+
+def _probe_locked_files(output_root: Path, *, max_depth: int = 3) -> list[str]:
+    """Best-effort diagnostic: which files inside the run directory currently refuse
+    a rename (a common signature of an open handle). Every probe is reverted
+    immediately; results are advisory only and may race with handle changes."""
+
+    locked: list[str] = []
+    probe_suffix = ".poe-bd-cleanup-probe"
+    root = output_root.resolve()
+
+    def walk(directory: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            entries = sorted(directory.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name.endswith(probe_suffix):
+                continue
+            if entry.is_dir():
+                walk(entry, depth + 1)
+                continue
+            try:
+                os.rename(entry, Path(str(entry) + probe_suffix))
+                os.rename(Path(str(entry) + probe_suffix), entry)
+            except OSError:
+                locked.append(str(entry))
+
+    walk(root, 0)
+    return locked
+
+
+def _delete_run_directory(output_root: Path, staging: Path) -> tuple[str, dict[str, Any]]:
+    """Delete the run directory through rename-aside + rmtree with rollback.
+
+    Returns ("cleaned", {}) when fully removed, or ("deferred", detail) when the
+    directory could not be removed and must stay untouched (the caller queues a
+    retry). The run directory (queue DB, reviews, acceptance reports) is only
+    touched as a whole via rename, so an interrupted cleanup can never leave the
+    run half-deleted and un-auditable.
+    """
+    for attempt in (1, 2, 3):
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+            output_root.rename(staging)
+            break
+        except OSError as exc:
+            if attempt < 3:
+                time.sleep(0.5)
+                continue
+            return (
+                "deferred",
+                {
+                    "reason": "directory_rename_failed",
+                    "osError": _safe_os_error(exc),
+                    "retried": True,
+                    "lockedFiles": _probe_locked_files(output_root),
+                    "hint": (
+                        "another process may hold a handle inside the run directory (for "
+                        "example a terminal or file explorer opened at this run directory, an "
+                        "editor that keeps the review/queue files open, or an antivirus scan); "
+                        "close such handles and re-run cleanup. The run was queued for a "
+                        "delayed retry and remains fully intact."
+                    ),
+                },
+            )
+    try:
+        shutil.rmtree(staging)
+    except OSError as exc:
+        try:
+            shutil.rmtree(staging)
+        except OSError:
+            try:
+                staging.rename(output_root)
+                return (
+                    "deferred",
+                    {
+                        "reason": "staging_removal_failed",
+                        "osError": _safe_os_error(exc),
+                        "retried": True,
+                        "restoredFromStaging": True,
+                        "hint": (
+                            "the run directory was moved to staging and the staging "
+                            "removal failed twice; the directory was renamed back to its "
+                            "original name. Re-run cleanup after closing any open handles."
+                        ),
+                    },
+                )
+            except OSError:
+                return (
+                    "deferred",
+                    {
+                        "reason": "staging_removal_failed",
+                        "osError": _safe_os_error(exc),
+                        "retried": True,
+                        "restoredFromStaging": False,
+                        "hint": (
+                            "the run directory was moved to staging and both the staging "
+                            "removal and the rename-back failed; the staging directory is "
+                            "preserved at "
+                            + str(staging)
+                            + ". Re-run cleanup after closing any open handles; it will "
+                            "attempt to restore the staging directory automatically."
+                        ),
+                    },
+                )
+    return "cleaned", {}
+
+
 def cleanup_completed_run(
     *,
     run_id: str,
@@ -1501,6 +1654,22 @@ def cleanup_completed_run(
     output_root = (runs_root / run_id).resolve()
     if not _is_relative_to(output_root, runs_root) or output_root.parent != runs_root:
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
+    # Every cleanup call first drains the delayed-retry queue so a run whose directory
+    # rename failed earlier gets cleaned as soon as the blocking handle is gone.
+    retried = _retry_pending_cleanups(runs_root)
+    if run_id in retried.get("retriedIds", []):
+        # The queued retry just cleaned this exact run (evidence was captured before any
+        # deletion); report it as cleaned instead of falling into not-found.
+        return {
+            "status": "cleaned",
+            "taskKind": "research",
+            "taskId": run_id,
+            "removedTransientPacketCount": 0,
+            "memoriesPreserved": True,
+            "userExportsPreserved": True,
+            "containsRawMaterial": False,
+            "delayedRetry": retried,
+        }
     staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
     if not output_root.exists() and staging.exists():
         # Recover a run left in the cleanup-staging directory by a previous
@@ -1537,6 +1706,15 @@ def cleanup_completed_run(
     ):
         return {"status": "rejected", "errorCode": "completed_research_run_required"}
     packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
+    evidence = {
+        "caseCount": len(rows),
+        "acceptedDeepRecordCount": sum(
+            int(row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0)
+            for row in rows
+        ),
+        "packetSafeHashes": sorted(packet_hashes),
+        "validatedAt": _now_iso(),
+    }
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
     packet_cleanup = research_packet.cleanup_packets_by_safe_hashes(
         packet_hashes,
@@ -1545,75 +1723,24 @@ def cleanup_completed_run(
     # Atomic delete: rename the whole run directory aside first, then remove the staging
     # directory. A failure rolls the original directory back so a partial cleanup can never
     # leave the run (queue, reviews, acceptance reports) half-deleted and un-auditable.
-    staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
-    for attempt in (1, 2, 3):
-        try:
-            if staging.exists():
-                shutil.rmtree(staging)
-            output_root.rename(staging)
-            break
-        except OSError as exc:
-            if attempt < 3:
-                time.sleep(0.5)
-                continue
-            return {
-                "status": "partial",
-                "errorCode": "research_run_cleanup_failed",
-                "detail": {
-                    "reason": "directory_rename_failed",
-                    "osError": _safe_os_error(exc),
-                    "retried": True,
-                    "hint": (
-                        "another process may hold a handle inside the run directory (for example "
-                        "a terminal or file explorer opened at this run directory, an editor that "
-                        "keeps the review/queue files open, or an antivirus scan); close such "
-                        "handles and re-run cleanup, or delete the run directory manually after "
-                        "confirming the task is fully accepted"
-                    ),
-                },
-            }
-    try:
-        shutil.rmtree(staging)
-    except OSError as exc:
-        try:
-            shutil.rmtree(staging)
-        except OSError:
-            try:
-                staging.rename(output_root)
-                return {
-                    "status": "partial",
-                    "errorCode": "research_run_cleanup_failed",
-                    "detail": {
-                        "reason": "staging_removal_failed",
-                        "osError": _safe_os_error(exc),
-                        "retried": True,
-                        "restoredFromStaging": True,
-                        "hint": (
-                            "the run directory was moved to staging and the staging "
-                            "removal failed twice; the directory was renamed back to its "
-                            "original name. Re-run cleanup after closing any open handles."
-                        ),
-                    },
-                }
-            except OSError:
-                return {
-                    "status": "partial",
-                    "errorCode": "research_run_cleanup_failed",
-                    "detail": {
-                        "reason": "staging_removal_failed",
-                        "osError": _safe_os_error(exc),
-                        "retried": True,
-                        "restoredFromStaging": False,
-                        "hint": (
-                            "the run directory was moved to staging and both the staging "
-                            "removal and the rename-back failed; the staging directory is "
-                            "preserved at "
-                            + str(staging)
-                            + ". Re-run cleanup after closing any open handles; it will "
-                            "attempt to restore the staging directory automatically."
-                        ),
-                    },
-                }
+    # When even the rename fails, the run is left fully intact and queued for a delayed
+    # retry on the next cleanup call (with the validation evidence captured above so the
+    # retry never re-reads a half-removed queue DB).
+    outcome, detail = _delete_run_directory(output_root, staging)
+    if outcome == "deferred":
+        _queue_pending_cleanup(
+            runs_root,
+            run_id=run_id,
+            evidence=evidence,
+        )
+        return {
+            "status": "partial",
+            "errorCode": "research_run_cleanup_failed",
+            "detail": detail,
+            "queuedDelayedRetry": True,
+            "delayedRetry": retried,
+        }
+    _drop_pending_cleanup(runs_root, run_id)
     return {
         "status": "cleaned",
         "taskKind": "research",
@@ -1622,7 +1749,53 @@ def cleanup_completed_run(
         "memoriesPreserved": True,
         "userExportsPreserved": True,
         "containsRawMaterial": False,
+        "delayedRetry": retried,
     }
+
+
+def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
+    """Retry queued cleanups whose directory rename previously failed.
+
+    Each queued item carries the validation evidence captured before any deletion, so a
+    retry never re-reads a queue DB that may already be gone. A run whose directory and
+    staging are both absent is considered fully cleaned and is dropped from the queue.
+    """
+    report: dict[str, Any] = {
+        "status": "ok",
+        "retried": 0,
+        "dropped": 0,
+        "stillPending": 0,
+        "retriedIds": [],
+    }
+    items = _read_pending_cleanups(runs_root)
+    if not items:
+        return report
+    for item in items:
+        run_id = str(item.get("runId") or "")
+        output_root = (runs_root / run_id).resolve()
+        if output_root.parent != runs_root:
+            _drop_pending_cleanup(runs_root, run_id)
+            report["dropped"] += 1
+            continue
+        staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
+        if not output_root.exists():
+            if not staging.exists():
+                _drop_pending_cleanup(runs_root, run_id)
+                report["dropped"] += 1
+                continue
+            try:
+                staging.rename(output_root)
+            except OSError:
+                report["stillPending"] += 1
+                continue
+        outcome, _detail = _delete_run_directory(output_root, staging)
+        if outcome == "cleaned":
+            _drop_pending_cleanup(runs_root, run_id)
+            report["retried"] += 1
+            report["retriedIds"].append(run_id)
+        else:
+            report["stillPending"] += 1
+    return report
 
 
 def _init_db(db_path: Path) -> None:

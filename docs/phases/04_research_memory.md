@@ -67,9 +67,14 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   同一 Family 的同知识再次出现时优先追加证据，不重复制造近义正文。
 - Family 身份 = 升华 + 主输出技能**集合**（研究者声明的 `primary_damage` 角色技能，可多个）。
   自动副技能（clear/boss/triggered-payload）、trigger-host（同一 payload 换 host 视为变体）、
-  `familyCoreSkillKeys` 一律**不参与身份**，只作 Family 内元数据。技能名按 gem 等价规范化后比较
-  （同一宝石授予的弹药/直击变体视为同一技能，见 `skill_equivalence.py`）。
-  `skill_package` / `mechanic_chain` 记录必须声明至少一个 `primary_damage` 组件；
+   `familyCoreSkillKeys` 一律**不参与身份**，只作 Family 内元数据。技能名按 gem 等价规范化后比较
+   （同一宝石授予的弹药/直击变体视为同一技能，见 `skill_equivalence.py`）。
+   独特宝石变体（如 `UniqueBreachLightningBoltPlayer`）与普通版共享同一家族身份 token
+   （同显示名归一到同一 `gem:` token），这是**有意语义**：同名技能的不同形态是一个 Family，
+   其机制差异（cooldown/triggered）由记录层精确 component key 保留，绝不通过拆分身份表达；
+   无显示名映射的独特变体（如部分 `UniqueSkillGem*`）保持独立 `key:` token，除非模型确认等价行。
+   不得把"加等价行"当作修复——对已确定性归一的变体写行是零行为变化。
+   `skill_package` / `mechanic_chain` 记录必须声明至少一个 `primary_damage` 组件；
   身份相同的新研究自动归入既有 Family（不新建 sibling 档案），超集主技能集合会扩展既有 Family
   并合并其记录。`skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持
   不同知识单元。无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。

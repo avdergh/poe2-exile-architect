@@ -1594,6 +1594,12 @@ def _support_skill_candidate_for_types(
             shared_tags=_shared_component_tags(
                 snapshot, normalized_support_key, normalized_skill_key
             ),
+            required_types_expr=_string_tuple(
+                contract_requirements.requirements.get("allowed_types_expr")
+            ),
+            excluded_types_expr=_string_tuple(
+                contract_requirements.requirements.get("excluded_types_expr")
+            ),
         )
 
     allowed_expr = _string_tuple(contract_requirements.requirements.get("allowed_types_expr"))
@@ -1618,6 +1624,8 @@ def _support_skill_candidate_for_types(
             shared_tags=_shared_component_tags(
                 snapshot, normalized_support_key, normalized_skill_key
             ),
+            required_types_expr=allowed_expr,
+            excluded_types_expr=excluded_expr,
         )
 
     required_match = not allowed_expr or _type_expression_matches(allowed_expr, skill_types)
@@ -1633,6 +1641,8 @@ def _support_skill_candidate_for_types(
             shared_tags=_shared_component_tags(
                 snapshot, normalized_support_key, normalized_skill_key
             ),
+            required_types_expr=allowed_expr,
+            excluded_types_expr=excluded_expr,
         )
 
     recommended = any(
@@ -4493,6 +4503,8 @@ def _support_candidate_result(
     excluded_reason: str | None,
     matched_skill_types: list[str] | tuple[str, ...],
     shared_tags: list[str] | tuple[str, ...],
+    required_types_expr: list[str] | tuple[str, ...] | None = None,
+    excluded_types_expr: list[str] | tuple[str, ...] | None = None,
 ) -> ComputedFactResult:
     facts: dict[str, Any] = {
         "support_key": support_key,
@@ -4503,6 +4515,10 @@ def _support_candidate_result(
     }
     if excluded_reason is not None:
         facts["excluded_reason"] = excluded_reason
+    if required_types_expr is not None:
+        facts["required_types_expr"] = list(required_types_expr)
+    if excluded_types_expr is not None:
+        facts["excluded_types_expr"] = list(excluded_types_expr)
     return ComputedFactResult(
         request=ComputedFactRequest(
             fact_type="support_skill_candidate",
