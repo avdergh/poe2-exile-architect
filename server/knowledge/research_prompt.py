@@ -42,12 +42,13 @@ extraction method, not an optional reading list.
    rotation, gear_synergy, passive_package, defense_engine, and resource_engine must name concrete
    components. Generic advice with no skill/item/passive/ascendancy/mechanic anchor is not a deep
    case finding.
-10. BuildFamily identity uses only confirmed skill_package and mechanic_chain evidence. Unverified
-    components mentioned in modelability_caveat, failure_mode, or open_question do not authorize
-    Family identity. clear_skill, boss_skill, and triggered_payload are core by role; do not repeat
-    them in typed_payload.familyCoreSkillKeys. A trigger host is NOT automatic Family identity
-    (swapping hosts is a variant): declare only an identity-defining trigger host explicitly in
-    typed_payload.familyCoreSkillKeys.
+10. The BuildFamily identity key is ascendancy + the primary_damage skill set and uses only
+    confirmed skill_package and mechanic_chain evidence. Unverified components mentioned in
+    modelability_caveat, failure_mode, or open_question do not belong to the Family and do not
+    authorize Family metadata.
+    clear_skill, boss_skill, and triggered_payload are inferred core secondary metadata; do not
+    repeat them in typed_payload.familyCoreSkillKeys. A Family-core trigger host must be declared
+    there explicitly. Secondary metadata never changes the Family identity key.
     For resource_engine records whose leech/flask/affix mechanism has no physical graph node, add
     precise lower_snake_case typed_payload.resourceMechanisms tags.
 
@@ -313,14 +314,14 @@ def build_researcher_prompt_package(
         "unique_enabler, transition_gate, passive_anchor, keystone_transformer, gear_base, weapon_base, "
         "scaling_stat, defense_layer, resource_engine, secondary_skill, triggered_payload, or "
         "control_skill.\n"
-        "- Family identity comes only from confirmed skill_package and mechanic_chain records. "
-        "Components mentioned only in a modelability_caveat do not belong to the Family. "
-        "clear_skill, boss_skill, and triggered_payload count automatically. Do not repeat those "
-        "keys in typed_payload.familyCoreSkillKeys or promote every secondary_skill. A trigger "
-        "host is NOT automatic Family identity (swapping hosts is a variant): declare only an "
-        "identity-defining trigger host explicitly in typed_payload.familyCoreSkillKeys, and put "
-        "only identity-defining resolved skill "
-        "keys there. For a resource_engine without a resolved "
+        "- The Family identity key is ascendancy + the primary_damage skill set from confirmed "
+        "skill_package/mechanic_chain records. Components mentioned only in a modelability_caveat "
+        "do not belong to the Family and do not authorize Family metadata. clear_skill, boss_skill, "
+        "and triggered_payload enter "
+        "core secondary metadata automatically; do not repeat them in "
+        "typed_payload.familyCoreSkillKeys or promote every secondary_skill. A Family-core trigger "
+        "host must be declared there explicitly. Secondary metadata does not alter the Family key. "
+        "For a resource_engine without a resolved "
         "resource component, add lower_snake_case typed_payload.resourceMechanisms such as "
         "mana_leech or mana_flask; prose alone cannot receive a canonical knowledge key.\n"
         "- REQUIRED EXTRACTION CHECKLIST: evaluate the following extraction modes for this one "
@@ -343,10 +344,10 @@ def build_researcher_prompt_package(
         "the single-pair support_skill_candidate query is candidate discovery only and defers to "
         "the combined check when they disagree. Successful component resolution is not "
         "compatibility evidence.\n"
-        "- Coverage: supports requires supportPackages for every confirmed Family core skill group, "
-        "including trigger hosts and triggered payloads, with at least two resolved supports per "
-        "group. Use supportCoverageExceptions only for an explicit source_coverage_gap or "
-        "not_applicable skill. passiveAscendancy requires an ascendancy_shell plus "
+        "- Coverage: every enabled source skill group requires exact supportPackages ownership or "
+        "a supportCoverageExceptions entry. Family primary and core-secondary groups additionally "
+        "need at least two resolved supports unless an explicit source_coverage_gap/not_applicable "
+        "exception applies. passiveAscendancy requires an ascendancy_shell plus "
         "typed_payload.ascendancyResponsibilities tied to a passive that physically belongs to that "
         "ascendancy. gearRoles requires a gear_synergy record with typed_payload.gearResponsibilities; "
         "a defensive convenience item alone is not full gear coverage. Identity-enabling gear or a "

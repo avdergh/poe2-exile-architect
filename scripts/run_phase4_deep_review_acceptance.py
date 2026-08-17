@@ -62,6 +62,9 @@ CASE_COVERAGE_DIMENSIONS = {
     "resourceDefense",
 }
 CASE_COVERAGE_STATUSES = {"covered", "evidence_missing", "not_applicable"}
+DISPOSED_SKILL_GROUP_STATES = frozenset(
+    {"packaged", "declared", "source_has_no_supports", "exempt_internal_id"}
+)
 
 MECHANIC_AUDIT_CLAIM_TYPES = {
     "behavior_or_trigger",
@@ -536,6 +539,9 @@ def accept_deep_review_candidates(
     source_evidence_diagnostics = _source_skill_evidence_diagnostics(
         review=review,
         source_skill_manifest=source_skill_manifest,
+        accepted_records=accepted_record_summaries,
+        graph_service=graph_service,
+        source_skill_resolutions=source_skill_resolutions,
     )
     source_evidence_diagnostics.update(source_support_compatibility)
     case_coverage, coverage_advisories = _evaluate_case_coverage(
@@ -553,6 +559,24 @@ def accept_deep_review_candidates(
         )
     )
     deferred_records.extend(gear_context_deferred)
+    if gear_context_deferred:
+        # Gear coverage can defer mechanic_chain records after the first coverage pass. Recompute
+        # support ownership against the records that can actually be persisted; otherwise a
+        # removed mechanic record could leave a ghost support package authorizing clean coverage.
+        source_evidence_diagnostics = _source_skill_evidence_diagnostics(
+            review=review,
+            source_skill_manifest=source_skill_manifest,
+            accepted_records=accepted_record_summaries,
+            graph_service=graph_service,
+            source_skill_resolutions=source_skill_resolutions,
+        )
+        source_evidence_diagnostics.update(source_support_compatibility)
+        case_coverage, coverage_advisories = _evaluate_case_coverage(
+            review=review,
+            accepted_records=accepted_record_summaries,
+            graph_service=graph_service,
+            source_evidence_diagnostics=source_evidence_diagnostics,
+        )
     blocked_pattern_dependencies = _blocked_pattern_dependencies(
         [
             *gear_context_deferred,
@@ -3899,10 +3923,77 @@ def _deep_record_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _source_identity_tokens(*values: Any) -> set[str]:
+    """Return exact, case-folded source/stable-key tokens without fuzzy inference."""
+
+    tokens: set[str] = set()
+    for value in values:
+        normalized = " ".join(str(value or "").split()).casefold()
+        if not normalized:
+            continue
+        tokens.add(normalized)
+        stable_tail = normalized.split(":", 1)[-1].rsplit("/", 1)[-1]
+        if stable_tail:
+            tokens.add(stable_tail)
+    return tokens
+
+
+def _source_group_skill_keys(
+    *,
+    active_skills: list[dict[str, Any]],
+    graph_service: graph_tools.GraphQueryService | None,
+    source_skill_resolutions: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Resolve the active-skill endpoints that can own one source socket group."""
+
+    keys: set[str] = set()
+    for active in active_skills:
+        if str(active.get("nameSource") or "gem_name").strip().casefold() != "gem_name":
+            continue
+        name = str(active.get("name") or "").strip()
+        resolved_key = str(
+            (source_skill_resolutions.get(name.casefold()) or {}).get("componentKey") or ""
+        )
+        skill_id = str(active.get("skillId") or "").strip()
+        candidate_key = (
+            skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}" if skill_id else ""
+        )
+        if not resolved_key and candidate_key:
+            if graph_service is None:
+                # Unit-level/source-shape diagnostics can still compare the exact PoB skill id.
+                resolved_key = candidate_key
+            else:
+                result = graph_service.run_tool(
+                    "resolve_graph_component",
+                    {
+                        "query": candidate_key,
+                        "expected_node_types": ["active_skill"],
+                        "scope": "player",
+                    },
+                )
+                candidate = str((result.get("resolvedSubject") or {}).get("stableKey") or "")
+                if result.get("status") == "resolved" and candidate == candidate_key:
+                    resolved_key = candidate
+        if not resolved_key:
+            continue
+        keys.add(resolved_key)
+        if graph_service is not None:
+            keys.update(
+                _active_gem_endpoint_keys(
+                    snapshot=graph_service.snapshot,
+                    skill_key=resolved_key,
+                )
+            )
+    return keys
+
+
 def _source_skill_evidence_diagnostics(
     *,
     review: dict[str, Any],
     source_skill_manifest: dict[str, Any] | None,
+    accepted_records: list[dict[str, Any]] | None = None,
+    graph_service: graph_tools.GraphQueryService | None = None,
+    source_skill_resolutions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     empty = {
         "available": False,
@@ -3913,8 +4004,11 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroupCount": 0,
         "unrepresentedActiveSkillGroups": [],
         "supportCoverageBlockedByStructuredOmission": False,
-        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
+        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
         "structuredMentionClosureEnforced": True,
+        "skillGroupDispositions": [],
+        "undisposedSkillGroupCount": 0,
+        "coreSkillGroupSupportGaps": [],
     }
     if not isinstance(source_skill_manifest, dict):
         return empty
@@ -3927,28 +4021,70 @@ def _source_skill_evidence_diagnostics(
         return {**empty, "available": True}
 
     records = _deep_record_reviews(review)
-    core_skill_mention_names = _core_skill_mention_names(records)
+    ownership_records = list(accepted_records) if accepted_records is not None else records
+    graph_display_names = {
+        node.stable_key: node.display_name
+        for node in (graph_service.snapshot.nodes if graph_service is not None else ())
+    }
     structured_skills: set[str] = set()
     structured_supports: set[str] = set()
-    packaged_supports: set[str] = set()
+    component_aliases_by_key: dict[str, set[str]] = {}
     evidence_kinds = {"skill_package", "mechanic_chain", "rotation"}
     for record in records:
-        for package in (record.get("typedPayload") or {}).get("supportPackages") or []:
-            for support_key in package.get("supportKeys") or []:
-                tail = str(support_key).strip().rsplit("/", 1)[-1].casefold()
-                if tail:
-                    packaged_supports.add(tail)
         for component in record.get("components") or []:
             name = str(component.get("candidateName") or "").strip().casefold()
             if not name:
                 continue
             component_key = str(component.get("componentKey") or "").strip()
+            if component_key:
+                component_aliases_by_key.setdefault(component_key, set()).add(name)
             if component_key.startswith("support:") or (
                 not component_key and component.get("role") == "support_modifier"
             ):
                 structured_supports.add(name)
             elif component_key.startswith("skill:") or component.get("role") != "support_modifier":
                 structured_skills.add(name)
+
+    represented_skill_keys: set[str] = set()
+    package_supports_by_skill: dict[str, set[str]] = {}
+    exception_skill_keys: set[str] = set()
+    for record in ownership_records:
+        components = [item for item in record.get("components") or [] if isinstance(item, dict)]
+        for component in components:
+            component_key = str(component.get("componentKey") or "")
+            if component_key.startswith("skill:"):
+                represented_skill_keys.add(component_key)
+        typed_payload = record.get("typedPayload") or {}
+        for package in typed_payload.get("supportPackages") or []:
+            if not isinstance(package, dict):
+                continue
+            skill_key = str(package.get("skillKey") or "")
+            if not skill_key.startswith("skill:"):
+                continue
+            package_supports_by_skill.setdefault(skill_key, set()).update(
+                str(value)
+                for value in package.get("supportKeys") or []
+                if str(value).startswith("support:")
+            )
+        for exception in typed_payload.get("supportCoverageExceptions") or []:
+            if not isinstance(exception, dict) or exception.get("reason") not in {
+                "source_coverage_gap",
+                "not_applicable",
+            }:
+                continue
+            skill_key = str(exception.get("skillKey") or "")
+            if not skill_key and str(exception.get("skillName") or "").strip():
+                wanted = str(exception.get("skillName") or "").strip().casefold()
+                candidates = {
+                    str(component.get("componentKey") or "")
+                    for component in components
+                    if str(component.get("candidateName") or "").strip().casefold() == wanted
+                    and str(component.get("componentKey") or "").startswith("skill:")
+                }
+                if len(candidates) == 1:
+                    skill_key = next(iter(candidates))
+            if skill_key.startswith("skill:"):
+                exception_skill_keys.add(skill_key)
     evidence_records = [record for record in records if record.get("recordKind") in evidence_kinds]
     record_text_parts: dict[str, list[str]] = {}
     for record in evidence_records:
@@ -3967,15 +4103,20 @@ def _source_skill_evidence_diagnostics(
     active_mentions: list[dict[str, Any]] = []
     support_mentions: list[dict[str, Any]] = []
     unrepresented_groups: list[dict[str, Any]] = []
+    skill_group_dispositions: list[dict[str, Any]] = []
     seen_active_names: set[str] = set()
     seen_support_names: set[str] = set()
-    support_blocked = False
+    source_skill_resolutions = source_skill_resolutions or {}
     for group in groups:
         group_ref = str(group.get("groupRef") or "")
-        active_names = [
-            str(item.get("name") or "").strip()
+        active_skills = [
+            item
             for item in group.get("activeSkills") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        active_names = [str(item.get("name") or "").strip() for item in active_skills]
+        active_name_sources = [
+            str(item.get("nameSource") or "gem_name").strip() for item in active_skills
         ]
         support_items = [
             item
@@ -3983,9 +4124,54 @@ def _source_skill_evidence_diagnostics(
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
         support_names = [str(item.get("name") or "").strip() for item in support_items]
-        support_gem_ids = [str(item.get("gemId") or "").strip() for item in support_items]
-        represented = any(name.casefold() in structured_skills for name in active_names)
-        if not represented:
+        group_skill_keys = _source_group_skill_keys(
+            active_skills=active_skills,
+            graph_service=graph_service,
+            source_skill_resolutions=source_skill_resolutions,
+        )
+        represented = bool(group_skill_keys & represented_skill_keys)
+        declared = bool(group_skill_keys & exception_skill_keys)
+        packaged_support_keys = {
+            support_key
+            for skill_key in group_skill_keys
+            for support_key in package_supports_by_skill.get(skill_key, set())
+        }
+        missing_support_names: list[str] = []
+        for support in support_items:
+            source_tokens = _source_identity_tokens(
+                support.get("gemId"),
+                support.get("name"),
+            )
+            packaged = any(
+                source_tokens
+                & _source_identity_tokens(
+                    support_key,
+                    graph_display_names.get(support_key),
+                    *(component_aliases_by_key.get(support_key) or ()),
+                )
+                for support_key in packaged_support_keys
+            )
+            if not packaged:
+                missing_support_names.append(str(support.get("name") or "").strip())
+
+        all_internal_ids = bool(active_names) and all(
+            source.strip().casefold() != "gem_name" for source in active_name_sources
+        )
+        exempt_internal_id = all_internal_ids and not support_items
+        if exempt_internal_id:
+            disposition = "exempt_internal_id"
+        elif not group_skill_keys or not represented:
+            disposition = "unrepresented"
+        elif declared:
+            disposition = "declared"
+        elif not support_items:
+            disposition = "source_has_no_supports"
+        elif not missing_support_names:
+            disposition = "packaged"
+        else:
+            disposition = "partially_packaged"
+
+        if disposition == "unrepresented":
             unrepresented_groups.append(
                 {
                     "groupRef": group_ref,
@@ -3993,6 +4179,18 @@ def _source_skill_evidence_diagnostics(
                     "supportCount": len(support_names),
                 }
             )
+        skill_group_dispositions.append(
+            {
+                "groupRef": group_ref,
+                "slot": str(group.get("slot") or ""),
+                "activeSkillNames": active_names,
+                "supportCount": len(support_names),
+                "represented": represented,
+                "exemptInternalId": exempt_internal_id,
+                "disposition": disposition,
+                "unrepresentedSupportNames": missing_support_names[:12],
+            }
+        )
         for name in active_names:
             normalized = name.casefold()
             if normalized in structured_skills or normalized in seen_active_names:
@@ -4028,17 +4226,11 @@ def _source_skill_evidence_diagnostics(
                     "recordKinds": record_kinds,
                 }
             )
-        active_in_core = any(name.casefold() in core_skill_mention_names for name in active_names)
-        if active_in_core and len(support_names) >= 2:
-            unstructured_supports = [
-                name
-                for name, gem_id in zip(support_names, support_gem_ids)
-                if name.casefold() not in structured_supports
-                and gem_id.casefold() not in packaged_supports
-            ]
-            if len(unstructured_supports) >= 2:
-                support_blocked = True
-
+    undisposed_groups = [
+        item
+        for item in skill_group_dispositions
+        if item["disposition"] not in DISPOSED_SKILL_GROUP_STATES
+    ]
     return {
         "available": True,
         "unstructuredSourceSkillMentionCount": len(active_mentions),
@@ -4048,9 +4240,12 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroupCount": len(unrepresented_groups),
         "unrepresentedActiveSkillGroups": unrepresented_groups[:12],
         "unrepresentedActiveSkillGroupsTruncated": len(unrepresented_groups) > 12,
-        "supportCoverageBlockedByStructuredOmission": support_blocked,
-        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
+        "supportCoverageBlockedByStructuredOmission": bool(undisposed_groups),
+        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
         "structuredMentionClosureEnforced": True,
+        "skillGroupDispositions": skill_group_dispositions,
+        "undisposedSkillGroupCount": len(undisposed_groups),
+        "coreSkillGroupSupportGaps": [],
     }
 
 
@@ -4075,11 +4270,16 @@ def _evaluate_case_coverage(
         raise ValueError("deep review caseCoverage has unknown dimensions: " + ", ".join(unknown))
     record_kinds = {str(item.get("recordKind") or "") for item in accepted_records}
     source_evidence_diagnostics = source_evidence_diagnostics or {}
+    core_gaps = _core_skill_group_support_gaps(accepted_records)
+    source_evidence_diagnostics["coreSkillGroupSupportGaps"] = core_gaps
+    undisposed_group_items = [
+        item
+        for item in source_evidence_diagnostics.get("skillGroupDispositions") or []
+        if item.get("disposition") not in DISPOSED_SKILL_GROUP_STATES
+    ]
     inferred = {
         "supports": _support_packages_cover_core_skill_groups(accepted_records)
-        and not source_evidence_diagnostics.get(
-            "supportCoverageBlockedByStructuredOmission", False
-        ),
+        and not undisposed_group_items,
         "rotation": "rotation" in record_kinds,
         "passiveAscendancy": _has_explicit_ascendancy_responsibility(
             accepted_records, graph_service=graph_service
@@ -4127,10 +4327,9 @@ def _evaluate_case_coverage(
         advisories.append(
             "Source supports named in conclusions were omitted from structured support components: "
             + _bounded_join_diagnostics(omitted_supports)
-            + ". Text-only mentions stay advisory; coverage blocking only applies when an evidence "
-            "record (skill_package/mechanic_chain/rotation) already structured the active skill of a "
-            "Family-core skill group while at least two of its supports remain completely "
-            "unpackaged. Non-core skill groups are diagnostic-only."
+            + ". A text/component mention proves the Researcher saw the support, but it does not "
+            "establish source-group ownership; only a matching supportPackages entry or a declared "
+            "coverage exception closes the group."
         )
     unsupported_pairs = [
         (
@@ -4150,6 +4349,27 @@ def _evaluate_case_coverage(
             + ". Acceptance defers only records that submit the same stable-key pair or state "
             "the exact source names together in one claim; identical display names can resolve "
             "to different active-skill keys."
+        )
+    if core_gaps:
+        advisories.append(
+            "Family core skill group(s) missing >=2 packaged supports: "
+            + _bounded_join_diagnostics(core_gaps)
+            + ". Primary skills and Family core secondary skills (clear/boss/triggered payload or "
+            "an explicitly recorded core skill) must package at least two supports or declare a "
+            "coverage exception. Core secondary skills do not alter the Family identity key."
+        )
+    undisposed_groups = [
+        str(item.get("groupRef") or "")
+        for item in undisposed_group_items
+        if str(item.get("groupRef") or "")
+    ]
+    if undisposed_groups:
+        advisories.append(
+            "Enabled skill group(s) have no closed support disposition (not fully packaged, not "
+            "declared via supportCoverageExceptions, not an empty source group, and not an exempt "
+            "internal-id placeholder): "
+            + _bounded_join_diagnostics(sorted(set(undisposed_groups)))
+            + ". Package their supports or declare them to close the coverage gap."
         )
     return coverage, advisories
 
@@ -4279,6 +4499,45 @@ def _support_packages_cover_core_skill_groups(
     return True
 
 
+def _core_skill_group_support_gaps(accepted_records: list[dict[str, Any]]) -> list[str]:
+    """Return Family-core skill keys whose enabled group lacks >=2 packaged supports.
+
+    Mirrors ``_support_packages_cover_core_skill_groups`` but reports *which* core skills
+    are missing packaged supports, so the supports-coverage gap is attributable (e.g. a
+    triggered_payload group like Flame Wall that is automatic core-secondary metadata without
+    altering the Family identity key).
+    """
+    per_group_keys = _core_skill_identity_keys(accepted_records)
+    records_by_group: dict[str, list[dict[str, Any]]] = {}
+    for item in accepted_records:
+        records_by_group.setdefault(str(item.get("researchGroupId") or ""), []).append(item)
+    gaps: list[str] = []
+    for group_id, group_records in records_by_group.items():
+        core_skill_keys = per_group_keys.get(group_id, set())
+        if not core_skill_keys:
+            continue
+        package_supports: dict[str, set[str]] = {}
+        exceptions: set[str] = set()
+        for item in group_records:
+            typed_payload = item.get("typedPayload") or {}
+            for package in typed_payload.get("supportPackages") or []:
+                if not isinstance(package, dict):
+                    continue
+                skill_key = str(package.get("skillKey") or "")
+                package_supports.setdefault(skill_key, set()).update(
+                    str(value) for value in package.get("supportKeys") or [] if str(value)
+                )
+            for exception in typed_payload.get("supportCoverageExceptions") or []:
+                if not isinstance(exception, dict):
+                    continue
+                if exception.get("reason") in {"source_coverage_gap", "not_applicable"}:
+                    exceptions.add(str(exception.get("skillKey") or ""))
+        for skill_key in sorted(core_skill_keys):
+            if len(package_supports.get(skill_key, set())) < 2 and skill_key not in exceptions:
+                gaps.append(skill_key)
+    return sorted(set(gaps))
+
+
 def _propagate_group_ascendancy_scope(deep_payload: dict[str, Any]) -> None:
     """Fill an unambiguous resolved ascendancy across one research group.
 
@@ -4406,19 +4665,23 @@ def _record_kind_advisories(records: list[dict[str, Any]]) -> list[str]:
     for item in records:
         kind = str(item.get("recordKind") or "")
         expected = expected_shapes.get(kind)
-        if not expected:
-            continue
-        actual = str((item.get("typedPayload") or {}).get("knowledgeShape") or "")
-        if actual != expected:
-            advisories.append(
-                f"{item.get('title')}: {kind} should declare "
-                f"typedPayload.knowledgeShape={expected}; actual={actual or 'missing'}."
-            )
+        if expected:
+            actual = str((item.get("typedPayload") or {}).get("knowledgeShape") or "")
+            if actual != expected:
+                advisories.append(
+                    f"{item.get('title')}: {kind} should declare "
+                    f"typedPayload.knowledgeShape={expected}; actual={actual or 'missing'}."
+                )
         if kind in identity_kinds_requiring_primary:
+            # Components come from the normalized deep-record payload (components[].role).
+            # component_mentions is a legacy/canonical view that the normalized path does not
+            # populate; fall back to it only when the primary components view is absent.
+            components = item.get("components")
             mentions = item.get("component_mentions") or []
             has_primary = any(
-                str(mention.get("role") or "") == "primary_damage" for mention in mentions
-            )
+                str(component.get("role") or "") == "primary_damage"
+                for component in (components or [])
+            ) or any(str(mention.get("role") or "") == "primary_damage" for mention in mentions)
             if not has_primary:
                 advisories.append(
                     f"{item.get('title')}: {kind} identity record should declare at least one "
@@ -4718,6 +4981,24 @@ def _markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## Quality Advisories", ""])
     lines.extend(f"- {item}" for item in report.get("caseCoverageAdvisories", []))
     lines.extend(f"- {item}" for item in report.get("recordKindAdvisories", []))
+    source_diagnostics = report.get("sourceEvidenceDiagnostics") or {}
+    undisposed_dispositions = [
+        item
+        for item in source_diagnostics.get("skillGroupDispositions") or []
+        if item.get("disposition") not in DISPOSED_SKILL_GROUP_STATES
+    ]
+    if undisposed_dispositions:
+        lines.extend(["", "## Skill Group Coverage Gaps", ""])
+        for disposition in undisposed_dispositions:
+            lines.extend(
+                [
+                    f"- {disposition.get('groupRef')} "
+                    f"[{', '.join(disposition.get('activeSkillNames') or [])}] "
+                    f"({disposition.get('disposition')})",
+                    f"  - unpackaged supports: "
+                    f"`{', '.join(disposition.get('unrepresentedSupportNames') or [])}`",
+                ]
+            )
     lines.extend(
         [
             "",

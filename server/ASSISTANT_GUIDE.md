@@ -155,9 +155,11 @@ on a documented tool-count cap.
   resource/defense engines, tradeoffs, failure conditions and modelability gaps before querying
   durable memory. The research skill owns the full depth checklist and calibrated examples.
 - Keep one resolved ascendancy and one `primary_damage` skill consistent across a research group.
-  `clear_skill`, `boss_skill`, `triggered_payload`, and a `trigger_host` delivering a triggered or primary payload are inferred Family
-  core skills and must not be repeated in `typedPayload.familyCoreSkillKeys`. Supports stay outside
-  Family identity, but `skill_package` records preserve ownership in `typedPayload.supportPackages`.
+  The Family identity key uses only the ascendancy and primary-skill set. `clear_skill`,
+  `boss_skill`, and `triggered_payload` are inferred Family-core secondary metadata and must not
+  be repeated in `typedPayload.familyCoreSkillKeys`; a Family-core `trigger_host` must be declared
+  there explicitly. These secondary keys do not alter the Family key. Every enabled source skill
+  group still needs explicit support ownership or a coverage exception.
 - `passiveAscendancy` coverage requires an ascendancy shell plus concrete resolved ascendancy
   responsibilities. Mutated random item instances are case-only evidence, excluded from normal
   creator retrieval and planner patterns.

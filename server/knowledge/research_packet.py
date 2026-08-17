@@ -399,20 +399,47 @@ def read_packet_section(
     cursor: int = 0,
     limit: int = DEFAULT_PAGE_SIZE,
     node_type: str | None = None,
+    exclude_routing: bool = False,
 ) -> dict[str, Any]:
     """Read one structured packet section with stable, character-bounded pagination.
 
     ``node_type`` filters the passives section by node kind (keystone/notable/jewel_socket/
     ascendancy/mastery, or ``normal`` for small nodes); it is ignored for other sections.
+    ``exclude_routing`` (passives + normal only) drops pure routing/attribute nodes whose
+    stats add no build signal (e.g. "+5 to any Attribute"), to cut low-information pagination.
     """
     normalized_section = str(section or "").strip().lower()
-    if normalized_section not in RESEARCH_SECTIONS:
+    if normalized_section not in RESEARCH_SECTIONS and normalized_section != "skill-groups":
         raise ValueError("section must be one of: " + ", ".join(RESEARCH_SECTIONS))
     start = max(0, int(cursor or 0))
     page_size = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
+    if normalized_section == "skill-groups":
+        manifest = build_skill_evidence_manifest(packet)
+        groups = manifest.get("activeSkillGroups") or []
+        page, next_cursor = _bounded_page(groups, start=start, limit=page_size)
+        result: dict[str, Any] = {
+            "status": "ok",
+            "section": normalized_section,
+            "cursor": start,
+            "limit": page_size,
+            "items": page,
+            "returnedCount": len(page),
+            "totalCount": len(groups),
+            "nextCursor": next_cursor,
+            "complete": next_cursor is None,
+            "noRawMatureBuildMaterial": True,
+        }
+        result["advisories"] = _cross_axis_advisories(packet)
+        return result
     items = _packet_sections(_unwrap_packet(packet))[normalized_section]
     if normalized_section == "passives" and str(node_type or "").strip():
         items = _filter_passive_items(items, str(node_type).strip())
+    if (
+        normalized_section == "passives"
+        and str(node_type or "").strip() == "normal"
+        and exclude_routing
+    ):
+        items = [item for item in items if not _is_pure_routing_passive(item)]
     page, next_cursor = _bounded_page(items, start=start, limit=page_size)
     result: dict[str, Any] = {
         "status": "ok",
@@ -445,6 +472,19 @@ def _filter_passive_items(items: list[dict[str, Any]], node_type: str) -> list[d
         for item in items
         if any(str(label).strip().casefold() == wanted for label in item.get("nodeTypes") or [])
     ]
+
+
+def _is_pure_routing_passive(item: dict[str, Any]) -> bool:
+    """True for normal nodes whose stats carry no build signal (pure routing/attribute nodes)."""
+    stats = [str(value) for value in (item.get("stats") or []) if str(value).strip()]
+    if not stats:
+        return True
+    return all(_is_any_attribute_stat(stat) for stat in stats)
+
+
+def _is_any_attribute_stat(stat: str) -> bool:
+    lowered = stat.strip().casefold()
+    return lowered == "+5 to any attribute" or lowered.startswith("+5 to any attribute")
 
 
 _RARE_DESIGN_AXES: dict[str, tuple[str, ...]] = {

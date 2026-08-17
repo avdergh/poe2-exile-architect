@@ -261,7 +261,7 @@ def test_trigger_host_and_payload_form_a_deterministic_family_pair():
     )
 
 
-def test_trigger_host_enters_family_identity_only_when_declared():
+def test_trigger_host_enters_family_secondary_metadata_only_when_declared():
     trigger_record = _deep_record_payload()["deep_research_records"][0]
     trigger_record["record_kind"] = "skill_package"
     trigger_record["ascendancy_key"] = "ascendancy:druid:oracle"
@@ -3769,11 +3769,12 @@ def _family_deep_payload(
     title: str = "投射物覆盖机制链",
     group: str = "research:la-safe",
     sources: tuple[str, ...] = ("case:la-safe",),
+    ascendancy_key: str = "ascendancy:monk:martial_artist",
 ) -> dict:
     payload = _deep_record_payload()
     record = payload["deep_research_records"][0]
     record["record_kind"] = "skill_package"
-    record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    record["ascendancy_key"] = ascendancy_key
     record["research_group_id"] = group
     record["title"] = title
     record["source_case_refs"] = list(sources)
@@ -3819,6 +3820,43 @@ def _drift_row_key(db_path: Path, record_id: str, drifted_key: str) -> None:
         con.commit()
     finally:
         con.close()
+
+
+def test_cross_family_duplicate_advisory_for_identical_component_set(tmp_path):
+    """Identical recordKind + skill component set persisted under another Build Family
+    yields an advisory-only cross-family hint on the second write (never blocks)."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(
+        db_path=db_path,
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode(
+                    "ascendancy:ranger:deadeye",
+                    "ascendancy",
+                    "Deadeye",
+                    ("fixture:phase4",),
+                )
+            ]
+        ),
+    )
+    first = service.propose_deep_research_records(_family_deep_payload())
+    assert first["status"] == "accepted"
+    assert first["createdRecordCount"] == 1
+    assert first["recordWrites"][0]["crossFamilyDuplicateAdvisories"] == []
+
+    second = service.propose_deep_research_records(
+        _family_deep_payload(
+            title="投射物覆盖机制链（Deadeye 变体）",
+            group="research:deadeye-safe",
+            sources=("case:deadeye-safe",),
+            ascendancy_key="ascendancy:ranger:deadeye",
+        )
+    )
+    assert second["status"] == "accepted"
+    assert second["createdRecordCount"] == 1
+    advisories = second["recordWrites"][0]["crossFamilyDuplicateAdvisories"]
+    assert len(advisories) == 1
+    assert "其他 Build Family" in advisories[0]
 
 
 def test_persist_adopts_drifted_anchor_row_by_record_id(tmp_path):

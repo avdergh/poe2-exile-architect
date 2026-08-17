@@ -858,7 +858,10 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert any("A / B" in rule for rule in contract["rules"])
     family_rules = [rule for rule in contract["rules"] if "BuildFamily" in rule]
     assert family_rules
-    assert any("trigger_host" in rule and "不自动参与身份" in rule for rule in family_rules)
+    assert any(
+        "trigger_host" in rule and "不自动进入" in rule and "不改变 key" in rule
+        for rule in family_rules
+    )
     assert not any(
         "trigger_host 由程序自动参与" in rule or "trigger_host roles" in rule
         for rule in contract["rules"]
@@ -954,6 +957,7 @@ def test_init_review_creates_pretty_utf8_skeleton_and_never_overwrites(tmp_path)
     }
     assert payload["deepResearchRecords"] == []
     assert payload["candidateReviews"] == []
+    assert payload["semanticEdges"] == []
     assert payload["mechanicAudit"] == []
 
     review_path.write_text(text.replace("evidence_missing", "covered", 1), encoding="utf-8")
@@ -2907,12 +2911,87 @@ def test_canonical_review_artifact_identity_reports_mismatch_details(tmp_path):
             sample_id="case:target",
             source_hash_ref="source-hash:target",
             packet_safe_hash="a" * 64,
+            version_context={
+                "gamePatch": "0.5.4",
+                "passiveTreeVersion": "0_5",
+                "pobVersionOrCommit": "0.22.0",
+            },
         )
     message = str(exc.value)
     assert "artifactIdentity does not match the current lease" in message
     assert "sampleId expected='case:target' actual='case:other'" in message
     assert "caseRef expected='source-hash:target' actual='source-hash:other'" in message
     assert "packetSafeHash" in message
+
+
+def test_canonical_review_artifact_identity_binds_semantic_edges_to_lease(tmp_path):
+    from scripts import research_mature_builds as rmb
+
+    packet_hash = "a" * 64
+    review = tmp_path / "semantic-edge-review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "safeArtifactOnly": True,
+                "artifactIdentity": {
+                    "sampleId": "case:target",
+                    "caseRef": "source-hash:target",
+                    "safeEvidenceRef": "evidence:" + packet_hash[:16],
+                    "packetSafeHash": packet_hash,
+                },
+                "deepResearchRecords": [{}],
+                "candidateReviews": [],
+                "semanticEdges": [
+                    {
+                        "source_case_refs": ["source-hash:<case>"],
+                        "safe_evidence_refs": ["evidence:<packet>"],
+                        "game_patch": "old-patch",
+                        "passive_tree_version": "old-tree",
+                        "pob_version_or_commit": "old-pob",
+                        "context_requirements": [
+                            {
+                                "context_type": "version_context",
+                                "game_patch": "old-patch",
+                                "passive_tree_version": "old-tree",
+                                "pob_version": "old-pob",
+                            },
+                            {
+                                "context_type": "lifecycle_stage_requirement",
+                                "stages": ["endgame_budget"],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    canonical = rmb._canonical_review_artifact_identity(
+        review_file=review,
+        sample_id="case:target",
+        source_hash_ref="source-hash:target",
+        packet_safe_hash=packet_hash,
+        version_context={
+            "gamePatch": "0.5.4",
+            "passiveTreeVersion": "0_5",
+            "pobVersionOrCommit": "0.22.0",
+        },
+    )
+
+    edge = canonical["semanticEdges"][0]
+    assert edge["source_case_refs"] == ["source-hash:target"]
+    assert edge["safe_evidence_refs"] == ["evidence:" + packet_hash[:16]]
+    assert edge["game_patch"] == "0.5.4"
+    assert edge["passive_tree_version"] == "0_5"
+    assert edge["pob_version_or_commit"] == "0.22.0"
+    assert edge["context_requirements"][0] == {
+        "context_type": "version_context",
+        "game_patch": "0.5.4",
+        "passive_tree_version": "0_5",
+        "pob_version": "0.22.0",
+    }
+    assert edge["context_requirements"][1]["context_type"] == ("lifecycle_stage_requirement")
 
 
 def test_identity_resolvability_hint_resolves_renamed_ascendancy(tmp_path):
@@ -3023,3 +3102,71 @@ def test_accept_only_record_guards_out_of_range_and_non_validation(tmp_path, mon
             validation_only=False,
             only_record=0,
         )
+
+
+def test_review_contract_discloses_semantic_edge_template(tmp_path):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("MirageDeadeyePlayer", ascendancy="Pathfinder", level=100),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-edge-contract"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-edge-contract",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    contract = research_mature_builds.render_review_contract(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+    )
+
+    template = contract["semanticEdgeTemplate"]
+    assert template["source_key"]
+    assert template["target_key"]
+    assert "enables_mechanic" in template["edge_type"]
+    assert "synergizes_with" in template["edge_type"]
+    assert template["source_resolution"]["tool_name"] == "resolve_graph_component"
+    assert template["source_resolution"]["status"] == "resolved"
+    assert "stable_key" in template["source_resolution"]
+    assert "evidence_path_nodes" in template["source_resolution"]
+    assert "snapshot_id" in template["source_resolution"]
+    assert "source_refs" in template["source_resolution"]
+    assert "target_resolution" in template
+    assert template["source_case_refs"] == [contract["artifactIdentity"]["caseRef"]]
+    assert template["safe_evidence_refs"] == [contract["artifactIdentity"]["safeEvidenceRef"]]
+    assert template["game_patch"] == contract["versionContext"]["gamePatch"]
+    assert template["passive_tree_version"] == contract["versionContext"]["passiveTreeVersion"]
+    assert template["pob_version_or_commit"] == contract["versionContext"]["pobVersionOrCommit"]
+    assert template["context_requirements"][0]["game_patch"] == template["game_patch"]
+    assert "affected_component_keys" in template
+    assert "directionality" in template
+
+
+def test_read_packet_section_skill_groups_from_rich_xml():
+    from server.knowledge import research_packet
+
+    packet = {"rawContext": {"rawXml": _rich_sample_xml()}}
+    groups = research_packet.read_packet_section(packet, section="skill-groups")
+
+    assert groups["status"] == "ok"
+    assert groups["section"] == "skill-groups"
+    active_names = {
+        str(item["activeSkills"][0]["name"]) for item in groups["items"] if item["activeSkills"]
+    }
+    assert {"Plasma Blast", "Bonestorm", "Blasphemy"} <= active_names
+
+
+def test_is_pure_routing_passive():
+    from server.knowledge import research_packet
+
+    assert research_packet._is_pure_routing_passive({"stats": ["+5 to any Attribute"]}) is True
+    assert research_packet._is_pure_routing_passive({"stats": []}) is True
+    assert (
+        research_packet._is_pure_routing_passive({"stats": ["10% increased Damage with Spears"]})
+        is False
+    )

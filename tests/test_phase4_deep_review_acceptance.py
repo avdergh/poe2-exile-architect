@@ -1246,8 +1246,8 @@ def test_support_coverage_checks_triggered_payload_and_declared_host_across_grou
         },
     ]
 
-    # The automatic core is SparkPlayer + the triggered payload CometPlayer; the trigger host
-    # is NOT automatic identity anymore.
+    # The automatic core-secondary set contains the triggered payload CometPlayer; the trigger
+    # host is not automatic metadata and the Family key remains SparkPlayer either way.
     assert not run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
 
     records[1]["typedPayload"] = {
@@ -1261,7 +1261,7 @@ def test_support_coverage_checks_triggered_payload_and_declared_host_across_grou
 
     assert run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
 
-    # A trigger host declared as Family identity must be packaged (or excepted) like any core skill.
+    # A trigger host explicitly retained as core-secondary metadata needs package/exception coverage.
     records[0]["typedPayload"]["familyCoreSkillKeys"] = ["skill:MetaCastOnCritPlayer"]
 
     assert not run_phase4_deep_review_acceptance._support_packages_cover_core_skill_groups(records)
@@ -1524,7 +1524,7 @@ def test_acceptance_resolves_name_based_support_ownership_before_schema_validati
     ]
 
 
-def test_source_skill_named_in_rotation_requires_structured_review_before_supports_covered(
+def test_source_skill_named_in_rotation_blocks_supports_until_group_is_structured(
     tmp_path,
 ):
     review_file = _write_review(
@@ -1582,9 +1582,9 @@ def test_source_skill_named_in_rotation_requires_structured_review_before_suppor
         source_evidence_diagnostics=diagnostics,
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
     assert diagnostics["unstructuredSourceSkillMentions"][0]["name"] == "Spark"
-    assert coverage["supports"] == "covered"
+    assert coverage["supports"] == "evidence_missing"
     assert any("Spark" in item for item in advisories)
 
 
@@ -1658,7 +1658,7 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
     assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
 
 
-def test_source_support_diagnostics_non_core_group_does_not_block(tmp_path):
+def test_source_support_diagnostics_non_core_group_blocks_until_packaged(tmp_path):
     review_file = _write_review(
         tmp_path,
         filename="evidence-noncore-unpackaged-supports-review.json",
@@ -1724,8 +1724,9 @@ def test_source_support_diagnostics_non_core_group_does_not_block(tmp_path):
         },
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
     assert diagnostics["unrepresentedActiveSkillGroupCount"] == 0
+    assert diagnostics["skillGroupDispositions"][0]["disposition"] == "partially_packaged"
 
 
 def test_source_support_diagnostics_allow_shared_support_in_evidence_group(tmp_path):
@@ -3313,6 +3314,53 @@ def test_pattern_cannot_bypass_a_deferred_mechanic_record(tmp_path):
         assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 0
     finally:
         con.close()
+
+
+def test_deferred_mechanic_record_cannot_leave_ghost_support_coverage(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="deferred-mechanic-support-coverage-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["caseCoverage"] = {
+        "supports": "covered",
+        "rotation": "evidence_missing",
+        "passiveAscendancy": "not_applicable",
+        "gearRoles": "evidence_missing",
+        "resourceDefense": "evidence_missing",
+    }
+    review["deepResearchRecords"][0]["typedPayload"] = {
+        "knowledgeShape": "state_causal_chain",
+        "supportCoverageExceptions": [
+            {
+                "skillKey": "skill:ResolvedOnlyPlayer",
+                "reason": "not_applicable",
+                "detail": "The source group does not accept ordinary supports.",
+            }
+        ],
+    }
+    review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+        validation_only=True,
+    )
+
+    assert report["deferredReasonCounts"]["insufficient_gear_context"] == 1
+    assert report["caseCoverage"]["supports"] == "evidence_missing"
 
 
 def test_deep_review_acceptance_advises_rotation_shape_mismatch(tmp_path):
@@ -5113,3 +5161,364 @@ def test_source_skill_id_resolutions_skips_internal_id_skills():
     assert set(resolutions) == {"bonestorm"}
     assert len(calls) == 1
     assert calls[0][1]["query"] == "skill:BonestormPlayer"
+
+
+def test_record_kind_advisory_not_raised_when_primary_component_present(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="primary-present-advisory-review.json",
+        components=[
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    records = run_phase4_deep_review_acceptance._deep_record_reviews(review)
+    assert records[0]["recordKind"] == "mechanic_chain"
+    assert any(
+        str(component.get("role") or "") == "primary_damage"
+        for component in records[0]["components"]
+    )
+    advisories = run_phase4_deep_review_acceptance._record_kind_advisories(records)
+    assert not any("primary_damage component" in item for item in advisories)
+
+
+def test_record_kind_advisory_checks_skill_package_without_knowledge_shape():
+    advisories = run_phase4_deep_review_acceptance._record_kind_advisories(
+        [
+            {
+                "recordKind": "skill_package",
+                "title": "Missing primary",
+                "typedPayload": {},
+                "components": [
+                    {
+                        "componentKey": "skill:UtilityPlayer",
+                        "role": "secondary_skill",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert any("primary_damage component" in item for item in advisories)
+
+
+def test_source_skill_diagnostics_dispositions_and_internal_id_exemption(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="dispositions-review.json",
+        components=[
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+            {
+                "candidateName": "Short Fuse I",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemExpedite",
+                "role": "support_modifier",
+                "resolverQuery": "Short Fuse I",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    record = review["deepResearchRecords"][0]
+    record["typedPayload"] = {
+        "knowledgeShape": "state_causal_chain",
+        "supportPackages": [
+            {
+                "skillKey": "skill:ExplosiveGrenadePlayer",
+                "supportKeys": [
+                    "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                    "support:Metadata/Items/Gem/SupportGemExpedite",
+                ],
+            }
+        ],
+    }
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:3",
+                    "activeSkills": [
+                        {"name": "Explosive Grenade", "skillId": "ExplosiveGrenadePlayer"}
+                    ],
+                    "supports": [
+                        {"name": "Defy II", "gemId": "SupportGemDefyTwo"},
+                        {"name": "Short Fuse I", "gemId": "SupportGemExpedite"},
+                    ],
+                },
+                {
+                    "groupRef": "skill-set:1:group:7",
+                    "activeSkills": [{"name": "Herald of Ash", "skillId": "HeraldOfAshPlayer"}],
+                    "supports": [
+                        {"name": "Vitality I", "gemId": "SupportGemVitality"},
+                        {"name": "Magnified Area II", "gemId": "SupportGemMagnifiedEffectTwo"},
+                    ],
+                },
+                {
+                    "groupRef": "skill-set:1:group:18",
+                    "activeSkills": [
+                        {
+                            "name": "ThornsPlayer",
+                            "skillId": "ThornsPlayer",
+                            "nameSource": "internal_id",
+                        }
+                    ],
+                    "supports": [],
+                },
+            ]
+        },
+    )
+
+    dispositions = {item["groupRef"]: item for item in diagnostics["skillGroupDispositions"]}
+    assert dispositions["skill-set:1:group:3"]["disposition"] == "packaged"
+    assert dispositions["skill-set:1:group:7"]["disposition"] == "unrepresented"
+    assert dispositions["skill-set:1:group:7"]["unrepresentedSupportNames"] == [
+        "Vitality I",
+        "Magnified Area II",
+    ]
+    assert dispositions["skill-set:1:group:18"]["exemptInternalId"] is True
+    assert dispositions["skill-set:1:group:18"]["disposition"] == "exempt_internal_id"
+    assert diagnostics["undisposedSkillGroupCount"] == 1
+    unrepresented = diagnostics["unrepresentedActiveSkillGroups"]
+    assert all("ThornsPlayer" not in item.get("activeSkillNames", []) for item in unrepresented)
+
+
+def test_source_skill_diagnostics_matches_canonical_skill_exception(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="canonical-support-exception-review.json",
+        components=[
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["typedPayload"] = {
+        "supportCoverageExceptions": [
+            {
+                "skillKey": "skill:ExplosiveGrenadePlayer",
+                "reason": "source_coverage_gap",
+                "detail": "The source exposes only one support in this group.",
+            }
+        ]
+    }
+
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:3",
+                    "activeSkills": [
+                        {"name": "Explosive Grenade", "skillId": "ExplosiveGrenadePlayer"}
+                    ],
+                    "supports": [{"name": "Defy II", "gemId": "SupportGemDefyTwo"}],
+                }
+            ]
+        },
+    )
+
+    disposition = diagnostics["skillGroupDispositions"][0]
+    assert disposition["disposition"] == "declared"
+    assert diagnostics["undisposedSkillGroupCount"] == 0
+
+
+def test_source_skill_diagnostics_does_not_treat_structured_support_as_packaged(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="structured-support-without-package-review.json",
+        components=[
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            },
+            {
+                "candidateName": "Defy II",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemDefyTwo",
+                "role": "support_modifier",
+                "resolverQuery": "Defy II",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["typedPayload"] = {}
+
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:3",
+                    "activeSkills": [
+                        {"name": "Explosive Grenade", "skillId": "ExplosiveGrenadePlayer"}
+                    ],
+                    "supports": [{"name": "Defy II", "gemId": "SupportGemDefyTwo"}],
+                }
+            ]
+        },
+    )
+
+    disposition = diagnostics["skillGroupDispositions"][0]
+    assert disposition["disposition"] == "partially_packaged"
+    assert disposition["unrepresentedSupportNames"] == ["Defy II"]
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+
+
+def test_source_skill_diagnostics_binds_packages_to_their_skill_group(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="support-package-group-ownership-review.json",
+        components=[
+            {
+                "candidateName": "Skill A",
+                "componentKey": "skill:SkillAPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Skill A",
+            },
+            {
+                "candidateName": "Skill B",
+                "componentKey": "skill:SkillBPlayer",
+                "role": "control_skill",
+                "resolverQuery": "Skill B",
+            },
+            {
+                "candidateName": "Support A",
+                "componentKey": "support:Metadata/Items/Gem/SupportGemA",
+                "role": "support_modifier",
+                "resolverQuery": "Support A",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["typedPayload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:SkillAPlayer",
+                "supportKeys": ["support:Metadata/Items/Gem/SupportGemA"],
+            }
+        ]
+    }
+
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:8",
+                    "activeSkills": [{"name": "Skill B", "skillId": "SkillBPlayer"}],
+                    "supports": [{"name": "Support B", "gemId": "SupportGemB"}],
+                }
+            ]
+        },
+    )
+
+    disposition = diagnostics["skillGroupDispositions"][0]
+    assert disposition["disposition"] == "partially_packaged"
+    assert disposition["unrepresentedSupportNames"] == ["Support B"]
+
+
+def test_internal_id_group_with_supports_is_not_auto_exempt():
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review={"safeArtifactOnly": True, "deepResearchRecords": []},
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:18",
+                    "activeSkills": [
+                        {
+                            "name": "GrantedInternalSkill",
+                            "skillId": "GrantedInternalSkill",
+                            "nameSource": "internal_id",
+                        }
+                    ],
+                    "supports": [{"name": "Support A", "gemId": "SupportGemA"}],
+                }
+            ]
+        },
+    )
+
+    disposition = diagnostics["skillGroupDispositions"][0]
+    assert disposition["exemptInternalId"] is False
+    assert disposition["disposition"] == "unrepresented"
+    assert diagnostics["undisposedSkillGroupCount"] == 1
+
+
+def test_core_skill_group_support_gaps_reports_triggered_payload_group():
+    gaps = run_phase4_deep_review_acceptance._core_skill_group_support_gaps(
+        [
+            {
+                "researchGroupId": "research:fixture_sample_001",
+                "recordKind": "mechanic_chain",
+                "components": [
+                    {
+                        "componentKey": "skill:ExplosiveGrenadePlayer",
+                        "role": "primary_damage",
+                    },
+                    {
+                        "componentKey": "skill:FlameWallPlayer",
+                        "role": "triggered_payload",
+                    },
+                ],
+                "typedPayload": {},
+            }
+        ]
+    )
+    assert "skill:ExplosiveGrenadePlayer" in gaps
+    assert "skill:FlameWallPlayer" in gaps
+
+
+def test_case_coverage_populates_structured_core_support_gaps():
+    records = [
+        {
+            "researchGroupId": "research:fixture_sample_001",
+            "recordKind": "mechanic_chain",
+            "components": [
+                {
+                    "componentKey": "skill:ExplosiveGrenadePlayer",
+                    "role": "primary_damage",
+                }
+            ],
+            "typedPayload": {},
+        }
+    ]
+    diagnostics = {"skillGroupDispositions": []}
+
+    coverage, _ = run_phase4_deep_review_acceptance._evaluate_case_coverage(
+        review={"caseCoverage": {"supports": "covered"}},
+        accepted_records=records,
+        source_evidence_diagnostics=diagnostics,
+    )
+
+    assert coverage["supports"] == "evidence_missing"
+    assert diagnostics["coreSkillGroupSupportGaps"] == ["skill:ExplosiveGrenadePlayer"]

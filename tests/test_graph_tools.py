@@ -807,3 +807,71 @@ def test_resolve_graph_component_missing_attaches_search_candidates_discovery_on
         candidate.get("stableKey") == "skill:LightningArrowPlayer"
         for candidate in search_candidates
     )
+
+
+def test_resolve_graph_component_batch_compact_preserves_evidence():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {
+            "keys": ["skill:LightningArrowPlayer", "gem:LightningArrow"],
+            "detail": "compact",
+        },
+    )
+
+    assert result["status"] == "ok"
+    assert result["queryFamily"] == "resolve_graph_component"
+    assert result["noRawQuery"] is True
+    resolutions = result["facts"]["resolutions"]
+    assert len(resolutions) == 2
+    by_query = {item["query"]: item for item in resolutions}
+    assert by_query["skill:LightningArrowPlayer"]["status"] == "resolved"
+    assert by_query["skill:LightningArrowPlayer"]["resolvedKey"] == "skill:LightningArrowPlayer"
+    assert (
+        "skill:LightningArrowPlayer" in by_query["skill:LightningArrowPlayer"]["evidencePathNodes"]
+    )
+    assert by_query["skill:LightningArrowPlayer"]["snapshotId"] == "snapshot:graph-tools"
+    assert "fixture:graph_tools" in by_query["skill:LightningArrowPlayer"]["sourceRefs"]
+    assert "envelopes" not in result["facts"]
+
+
+def test_resolve_graph_component_batch_full_includes_envelopes():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": ["skill:LightningArrowPlayer"], "detail": "full"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["facts"]["detail"] == "full"
+    assert "skill:LightningArrowPlayer" in result["facts"]["envelopes"]
+
+
+def test_resolve_graph_component_batch_surfaces_ambiguous_item_at_top_level():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": ["Lightning Arrow"], "detail": "compact"},
+    )
+
+    assert result["status"] == "partial"
+    assert result["confidence"] == 0.5
+    assert result["caveats"] == ["partial_resolution", "ambiguous_resolution"]
+    assert result["facts"]["resolutions"][0]["status"] == "ambiguous"
+    assert result["facts"]["resolutions"][0]["resolvedKey"] is None
+
+
+def test_resolve_graph_component_batch_uses_zero_confidence_for_missing_item():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": ["skill:DefinitelyMissingPlayer"], "detail": "compact"},
+    )
+
+    assert result["status"] == "partial"
+    assert result["confidence"] == 0.0
+    assert result["caveats"] == ["partial_resolution"]
+    assert result["facts"]["resolutions"][0]["status"] == "missing"
+
+
+def test_resolve_graph_component_batch_rejects_empty_keys():
+    result = _service().run_tool("resolve_graph_component", {"keys": []})
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"

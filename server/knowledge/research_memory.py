@@ -1416,6 +1416,9 @@ class ResearchMemoryService:
                         ),
                         "created": bool(persisted["created"]),
                         "evidenceAddedCount": int(persisted["evidence_added_count"]),
+                        "crossFamilyDuplicateAdvisories": list(
+                            persisted.get("crossFamilyDuplicateAdvisories") or []
+                        ),
                     }
                 )
                 if persisted["knowledge_key"]:
@@ -1541,6 +1544,8 @@ class ResearchMemoryService:
                     (existing_id,),
                 ).fetchone()
 
+        cross_family_advisories = self._cross_family_duplicate_advisories(con, record, family)
+
         evidence_added_count = 0
         if knowledge_key:
             evidence_added_count = self._upsert_deep_record_evidence(
@@ -1585,6 +1590,7 @@ class ResearchMemoryService:
                 "knowledge_key": knowledge_key,
                 "created": True,
                 "evidence_added_count": evidence_added_count,
+                "crossFamilyDuplicateAdvisories": cross_family_advisories,
             }
 
         record_id = str(existing["record_id"])
@@ -1681,7 +1687,54 @@ class ResearchMemoryService:
             "knowledge_key": knowledge_key,
             "created": False,
             "evidence_added_count": evidence_added_count,
+            "crossFamilyDuplicateAdvisories": cross_family_advisories,
         }
+
+    def _cross_family_duplicate_advisories(
+        self,
+        con: sqlite3.Connection,
+        record: research_models.DeepResearchRecordProposal,
+        family: research_identity.BuildFamilyIdentity | None,
+    ) -> list[str]:
+        """Advisory-only cross-Family duplicate hint (never blocks, never rewrites).
+
+        Flags only when another Build Family already holds a live record with the SAME
+        recordKind and the SAME skill component-key set. Same-conclusion knowledge across
+        families is otherwise a legitimate transferable pattern (transferablePatterns), so
+        this hint is intentionally narrow and never prevents writing.
+        """
+        if family is None or not record.component_keys:
+            return []
+        current_keys = sorted(
+            {str(key) for key in record.component_keys if str(key).startswith("skill:")}
+        )
+        if not current_keys:
+            return []
+        rows = con.execute(
+            """
+            SELECT record_id, build_family_key, title, component_keys
+            FROM deep_research_records
+            WHERE record_kind = ? AND superseded_by_id IS NULL AND status = 'valid'
+              AND build_family_key IS NOT NULL AND build_family_key != ?
+            """,
+            (str(record.record_kind), family.key),
+        ).fetchall()
+        advisories: list[str] = []
+        for row in rows:
+            stored_keys = sorted(
+                {
+                    str(key)
+                    for key in _loads(row["component_keys"], [])
+                    if str(key).startswith("skill:")
+                }
+            )
+            if stored_keys == current_keys:
+                advisories.append(
+                    f"同 recordKind + 完全相同 skill 组件集已存在于其他 Build Family "
+                    f"({row['build_family_key']} / {row['title']})。若属同一知识的跨 Family 变体，"
+                    f"这是合法可迁移记录（由 transferablePatterns 承载）；若为重复归档请复核。"
+                )
+        return advisories
 
     def _deep_record_values(
         self,

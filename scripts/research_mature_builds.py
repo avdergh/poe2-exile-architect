@@ -552,6 +552,7 @@ def read_case_section(
     cursor: int = 0,
     limit: int = research_packet.DEFAULT_PAGE_SIZE,
     node_type: str | None = None,
+    exclude_routing: bool = False,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
     temp_root: str | Path | None = None,
@@ -570,6 +571,7 @@ def read_case_section(
         cursor=cursor,
         limit=limit,
         node_type=node_type,
+        exclude_routing=exclude_routing,
     )
     result["sampleId"] = str(row["sample_id"])
     _assert_transient_view_payload(result, enforce_size=True)
@@ -698,7 +700,7 @@ def render_review_contract(
             "mechanicAuditCorroboration": sorted(acceptance.MECHANIC_AUDIT_CORROBORATION),
             "gearResponsibilityType": sorted(research_models.GEAR_RESPONSIBILITY_TYPES),
             "typedIdentityFields": {
-                "familyCoreSkillKeys": "resolved generator/control skill keys not already inferred from clear, boss, trigger host/payload roles",
+                "familyCoreSkillKeys": "resolved skill keys explicitly retained as Family-core secondary metadata when their role is not already inferred from clear/boss/triggered_payload; these keys do not change the Family identity key",
                 "resourceMechanisms": "lower_snake_case resource methods without graph nodes",
                 "supportPackages": "skillKey/supportKeys, or exact skillName/supportNames when resolver is unavailable",
                 "supportCoverageExceptions": "skillKey, or exact skillName when resolver is unavailable, plus source_coverage_gap/not_applicable detail",
@@ -721,7 +723,7 @@ def render_review_contract(
             },
             "familyCoreSkillKeys": {
                 "type": "list[str]",
-                "rule": "resolved skill stable keys (skill:...) that are not already inferred from clear/boss/triggered_payload roles; identity-defining trigger hosts must be declared here explicitly; no duplicates; do not put generator/consumer skills here unless they define Family identity",
+                "rule": "resolved skill stable keys (skill:...) that are not already inferred from clear/boss/triggered_payload roles; Family-core trigger hosts must be declared here explicitly; no duplicates; values enrich secondary metadata and support coverage but do not change the Family identity key",
             },
             "resourceMechanisms": {
                 "type": "list[str]",
@@ -811,18 +813,62 @@ def render_review_contract(
             "applicabilityRequirements": [],
             "exclusionConditions": [],
         },
+        "semanticEdgeTemplate": {
+            "source_key": "resolved skill:... / unique:pob:... / keystone:pob:0_5:... stable key",
+            "target_key": "resolved stable key of the other endpoint",
+            "edge_type": "enables_mechanic | scales_with | mitigates_weakness_of | creates_failure_risk_for | requires_transition_gate | has_modelability_caveat | synergizes_with",
+            "rationale": "一句可核查的因果/关系说明",
+            "source_resolution": {
+                "tool_name": "resolve_graph_component",
+                "status": "resolved",
+                "stable_key": "端点的 stable key（与 source_key 相同）",
+                "snapshot_id": "resolve 返回的 snapshotId",
+                "evidence_path_nodes": ["resolve 返回的 evidencePath.nodes（含本端点 stable key）"],
+                "source_refs": ["resolve 返回的 sourceRefs"],
+            },
+            "target_resolution": {
+                "tool_name": "resolve_graph_component",
+                "status": "resolved",
+                "stable_key": "端点的 stable key（与 target_key 相同）",
+                "snapshot_id": "resolve 返回的 snapshotId",
+                "evidence_path_nodes": ["resolve 返回的 evidencePath.nodes（含本端点 stable key）"],
+                "source_refs": ["resolve 返回的 sourceRefs"],
+            },
+            "source_case_refs": [artifact_identity["caseRef"]],
+            "safe_evidence_refs": [artifact_identity["safeEvidenceRef"]],
+            "game_patch": version_context["gamePatch"],
+            "passive_tree_version": version_context["passiveTreeVersion"],
+            "pob_version_or_commit": version_context["pobVersionOrCommit"],
+            "status": "valid",
+            "confidence": "medium",
+            "modelability": "partial",
+            "copy_safety_state": "passed",
+            "context_requirements": [
+                {
+                    "context_type": "version_context",
+                    "game_patch": version_context["gamePatch"],
+                    "passive_tree_version": version_context["passiveTreeVersion"],
+                    "pob_version": version_context["pobVersionOrCommit"],
+                }
+            ],
+            "affected_component_keys": ["source_key", "target_key"],
+            "visibility": "creator_visible",
+            "split": "train_context",
+            "knowledge_scope": "global_seed",
+            "directionality": "directional | associative（synergizes_with 必须 associative）",
+        },
         "mandatoryChecks": [
             "lineage/unique support gems must be labeled with their unique identity (support_modifier role with the lineage/unique identity stated in prose, or an open_question/modelability_caveat record; unique_enabler role fails resolver checks for support_gem nodes)",
             "allocated jewel sockets without socketed jewels require an explicit jewel-state declaration in the review",
             "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
-            "every enabled skill group's supports must be fully packaged in supportPackages or declared via supportCoverageExceptions",
+            "every enabled skill group's supports must be explicitly disposed: packaged in supportPackages (on any evidence record whose skill/support keys are resolved in that record) or declared via supportCoverageExceptions (source_coverage_gap/not_applicable); clear/boss/triggered_payload skills are automatically Family-core secondary skills, so their groups require coverage even though they do not alter the Family identity key",
             "support mechanism claims are judged by the review's combined fixed-point pairing check (support_skill_group_candidates, simulating the PoB group's effective compatibility); the single-pair support_skill_candidate query is candidate discovery only and defers to the combined check; never infer from the support name",
             "memory comparison must use stable keys: resolve ascendancy/class via search_graph_components + resolve_graph_component before filtering query_research_memory, and check familyRecordCoverage/familyRecordIndex/familyPremiseCatalog against existing same-family knowledge",
             "every packet condition* (EnemyChilled/EnemyBleeding/EnemyBlinded/EnemyIgnited/CritRecently/BeenHitRecently/usePowerCharges) must be traced in a 'condition -> source component -> verification status' table; unsourced assumptions become modelability caveats",
             "every gear slot must appear in the records: structured component, content text, or explicit not_applicable",
             "never guess stable-key paths: always search_graph_components then resolve_graph_component; support-gem metadata paths can be Items/Gem or Items/Gems",
             "silent or unavailable high-value mechanics (e.g. Innervate, Charged Mark charge rates) must be preserved in caveats/verification tasks, not dropped",
-            "supports of non-Family-core skill groups must appear in record content or secondary supportPackages, not just compatibility checks",
+            "supports of non-Family-core skill groups must be packaged in supportPackages or declared via supportCoverageExceptions, not just compatibility-checked or mentioned in content",
             "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
             "any unresolved count requires a per-name search_graph_components before declaring a source gap",
             "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity)",
@@ -832,7 +878,7 @@ def render_review_contract(
             "artifactIdentity、sampleId、researchGroupId、caseRef、safeEvidenceRef 和版本字段由当前 lease 注入；不要在记录或候选中重复抄写。",
             "role 表达组件在 BD 中的功能；节点类型由 resolver 证明，并按 componentRoleNodeTypeCompatibility 检查。",
             "同一 researchGroupId 的记录必须使用同一个 ascendancyKey，并且只把一个核心主技能标为 primary_damage。",
-            "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 身份。clear_skill、boss_skill、triggered_payload 由程序自动参与 Family；trigger_host 不自动参与身份（换宿主视为变体），身份级 trigger host 必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会参与 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
+            "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 归档。Family identity key 只由升华与 primary_damage 技能集合决定；clear_skill、boss_skill、triggered_payload 自动进入 Family 核心副技能元数据但不改变 key。trigger_host 不自动进入该元数据（换宿主视为变体），需要保留为 Family-core 时必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会授权 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
             "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发；被拒的 unsupportedPairs 会带 triggeringSegment 引用触发句，先改句再重验。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
@@ -860,7 +906,7 @@ def render_review_contract(
             "support 配对以 review 内的组合 fixed-point 校验为准（support_skill_group_candidates，模拟 PoB 技能组实际生效性）；独立的 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。",
             "resolverQuery 必须是可解析查询：完整 stable key、id-mapping external_id、归一化 alias 或归一化显示名（如 Blood Mage、The Hammer of Faith）。不得把 key 尾段（如 snake_case 带撇号形式 beira's_anguish、hysseg's_claw）当作 resolverQuery——它必然解析失败，且失败时组件会被排除出 gearResponsibilities 等引用。",
             "多实体/兵种类技能（Skeletal*/Spectre/Companion 等）的 stable key 通常为 Summon* 复数形式（如 skill:SummonSkeletalStormMagesPlayer）；同类宝石可能同时存在 Command*/Summon* 双端点，先 search_graph_components 再 resolve，不要凭直觉猜 key。",
-            "Family 身份决策清单：clear_skill / boss_skill / triggered_payload 自动参与副技能集合；secondary_skill / generator / control_skill / trigger_host 不自动参与——身份级的这类组件必须显式写入 typedPayload.familyCoreSkillKeys（仅限 skill_package/mechanic_chain 记录）。写错参与集合会产生 sibling 家族分裂，验收报告 deepRecordWrite.siblingFamilyHints 会提示，必须按提示复刻既有家族身份。",
+            "Family 决策清单：Family identity key = 升华 + primary_damage 技能集合；clear_skill / boss_skill / triggered_payload 自动进入核心副技能元数据，secondary_skill / generator / control_skill / trigger_host 不自动进入，需要保留时显式写入 typedPayload.familyCoreSkillKeys（仅限 skill_package/mechanic_chain 记录）。只有写错 primary 集合会产生 sibling Family；副技能集合错误会污染元数据与 support 覆盖，但不会改变 Family key。",
         ],
         "versionContext": version_context,
         "nextActions": ["init-review", "edit_review", "accept --validate-only", "accept"],
@@ -903,6 +949,7 @@ def init_review(
         "memoryUse": {"queries": []},
         "deepResearchRecords": [],
         "candidateReviews": [],
+        "semanticEdges": [],
     }
     try:
         with review_path.open("x", encoding="utf-8", newline="\n") as handle:
@@ -956,6 +1003,7 @@ def accept_case(
         lease_token=lease_token,
         source_hash_ref=str(row["source_hash_ref"]),
         packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=version_context,
     )
     source_skill_manifest = _optional_acceptance_skill_manifest(
         row=row,
@@ -1245,6 +1293,7 @@ def retry_accept_case(
         sample_id=str(row["sample_id"]),
         source_hash_ref=str(row["source_hash_ref"]),
         packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=version_context,
     )
     _begin_retry_accepting(db_path, row=row)
     slug = f"{_slug(str(row['sample_id']))}-{_slug(safe_review_file.stem)[-24:]}"
@@ -3089,6 +3138,7 @@ def _assert_review_file_for_lease(
     lease_token: str,
     source_hash_ref: str,
     packet_safe_hash: str,
+    version_context: dict[str, str],
 ) -> dict[str, Any]:
     resolved = review_file.resolve()
     reviews_root = (output_root / "reviews").resolve()
@@ -3109,6 +3159,7 @@ def _assert_review_file_for_lease(
         sample_id=sample_id,
         source_hash_ref=source_hash_ref,
         packet_safe_hash=packet_safe_hash,
+        version_context=version_context,
     )
 
 
@@ -3118,6 +3169,7 @@ def _canonical_review_artifact_identity(
     sample_id: str,
     source_hash_ref: str,
     packet_safe_hash: str,
+    version_context: dict[str, str],
 ) -> dict[str, Any]:
     payload = json.loads(review_file.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("safeArtifactOnly") is not True:
@@ -3183,6 +3235,38 @@ def _canonical_review_artifact_identity(
     for item in canonical.get("deepResearchRecords") or []:
         if isinstance(item, dict):
             item["researchGroupId"] = f"research:{sample_id}"
+    canonical_version_requirement = {
+        "context_type": "version_context",
+        "game_patch": version_context["gamePatch"],
+        "passive_tree_version": version_context["passiveTreeVersion"],
+        "pob_version": version_context["pobVersionOrCommit"],
+    }
+    for edge in canonical.get("semanticEdges") or []:
+        if not isinstance(edge, dict):
+            continue
+        edge["source_case_refs"] = [source_hash_ref]
+        edge["safe_evidence_refs"] = [expected_evidence_ref]
+        edge["game_patch"] = version_context["gamePatch"]
+        edge["passive_tree_version"] = version_context["passiveTreeVersion"]
+        edge["pob_version_or_commit"] = version_context["pobVersionOrCommit"]
+        requirements = edge.get("context_requirements")
+        if requirements is None:
+            requirements = []
+        elif not isinstance(requirements, list):
+            # Preserve the invalid caller shape so typed semantic-edge validation rejects it.
+            continue
+        retained_requirements = [
+            requirement
+            for requirement in requirements
+            if not (
+                isinstance(requirement, dict)
+                and requirement.get("context_type") == "version_context"
+            )
+        ]
+        edge["context_requirements"] = [
+            canonical_version_requirement,
+            *retained_requirements,
+        ]
     return canonical
 
 
@@ -3275,6 +3359,14 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 - packetSafeHash: {packet_safe_hash}
 - safeReviewFile: {review_file}（相对当前 --output-dir）
 
+## Research Quality First
+研究质量优先于速度与上下文预算：必须完整读取全部要求的分区，并为**每个启用技能组**给出明确处置
+（supportPackages 打包 / supportCoverageExceptions 声明；无 supports 的纯内部 id/占位组由验收自动豁免，
+带 supports 的内部组仍保持覆盖缺口），
+不得为了省 token 或上下文而缩减要求的步骤、砍掉非核心技能组、或把支持只写进正文而不打包。
+批量 resolve 与精简视图已降低上下文成本——不要因资源焦虑牺牲覆盖。缺失任何已要求步骤都会被
+accept 的 supports 覆盖缺口与逐组处置清单揭示。
+
 ## Evidence First
 先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；complete=false
 时继续使用 nextCursor。jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对照）；search 只能定位
@@ -3339,8 +3431,13 @@ graph 等独立佐证。
     双端点。
  10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
      证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task。
- 11. 非 core 技能支持入记录：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
-     技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
+ 11. 每个启用技能组的支持都必须显式处置：skill_package/mechanic_chain/rotation 等记录通过
+      typedPayload.supportPackages 打包，或用 supportCoverageExceptions 声明
+      source_coverage_gap / not_applicable；Gathering Storm / Herald of Ice / Tempest Bell 等
+      非 Family-core 组的支持也须打包或声明，不能只做兼容性检查或只写入正文。注意 clear_skill /
+      boss_skill / triggered_payload 技能（含 Spellslinger/触发宿主内嵌的载荷）自动进入 Family
+      核心副技能元数据但不改变 Family key；其技能组同样必须覆盖，否则 supports 会判
+      evidence_missing。
  12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
      是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
  13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
@@ -3757,7 +3854,12 @@ def main(argv: list[str] | None = None) -> int:
     read_parser = subparsers.add_parser("read")
     _add_queue_location_args(read_parser)
     read_parser.add_argument("--lease-token", required=True)
-    read_parser.add_argument("--section", required=True, choices=research_packet.RESEARCH_SECTIONS)
+    read_parser.add_argument(
+        "--section",
+        required=True,
+        choices=list(research_packet.RESEARCH_SECTIONS) + ["skill-groups"],
+        help="structured section; skill-groups returns every enabled skill group with its supports",
+    )
     read_parser.add_argument(
         "--cursor",
         type=int,
@@ -3775,6 +3877,13 @@ def main(argv: list[str] | None = None) -> int:
         "--node-type",
         default=None,
         help="passives only: keystone|notable|jewel_socket|ascendancy|mastery|normal",
+    )
+    read_parser.add_argument(
+        "--exclude-routing",
+        action="store_true",
+        default=False,
+        help="passives + --node-type normal only: drop pure routing/attribute nodes "
+        "(+5 to any Attribute) to reduce low-information pagination",
     )
 
     search_parser = subparsers.add_parser("search")
@@ -3918,6 +4027,7 @@ def main(argv: list[str] | None = None) -> int:
                     cursor=args.cursor,
                     limit=args.limit,
                     node_type=args.node_type,
+                    exclude_routing=args.exclude_routing,
                 )
             )
             return 0

@@ -321,8 +321,9 @@ prose 提及而未声明为组件，会出现在 `proseMentionedWithoutComponent
 
 - 补充研究（对同一 source 案例的追加 run，例如补录珠宝、暗金或 Spirit 维度）无需手动复刻身份：
   accept 按 (ascendancy, primary_skill_keys 集合) 自动归入既有 Family（join/expand +
-  family_merge_log），clear_skill / boss_skill / triggered_payload 自动副技能与 trigger-host
-  不参与身份，同源宝石变体经 skill_equivalence 归一为同一身份；不会产生 sibling 分裂。
+  family_merge_log）；Family key 只使用升华 + primary 技能集合。clear_skill / boss_skill /
+  triggered_payload 自动进入核心副技能元数据，trigger-host 需显式声明，但二者都不改变 Family
+  key；同源宝石变体经 skill_equivalence 归一为同一身份，不会产生 sibling 分裂。
   无法确认既有 Family 的 primary 集合时，先用 `query_research_memory` 的 familyRecordCoverage
   核对，再写身份记录。
 - **更正既有入库结论**按以下优先级执行（三者都做对，错误结论不会与正确结论并存）：

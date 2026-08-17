@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import networkx as nx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from . import physical_graph as pg
 
@@ -90,10 +90,18 @@ _CONTEXT_TYPE_TAGS = tuple(
 
 
 class ResolveGraphComponentInput(StrictModel):
-    query: str
+    query: str = Field(default="", max_length=240)
+    keys: list[str] = Field(default_factory=list, max_length=20)
+    detail: Literal["full", "compact"] = "full"
     expected_node_types: list[str] = Field(default_factory=list, max_length=12)
     scope: Literal["any", "player"] = "any"
     context: GraphToolContext | None = None
+
+    @model_validator(mode="after")
+    def _require_query_or_keys(self) -> "ResolveGraphComponentInput":
+        if not self.query.strip() and not self.keys:
+            raise ValueError("resolve_graph_component requires 'query' or a non-empty 'keys' list")
+        return self
 
 
 class SearchGraphComponentsInput(StrictModel):
@@ -302,6 +310,8 @@ class GraphQueryService:
             if query_family == "search_graph_components":
                 return self._search_graph_components(typed_input)
             if query_family == "resolve_graph_component":
+                if typed_input.keys:
+                    return self._resolve_graph_components_batch(typed_input)
                 return self._resolve_graph_component(typed_input)
             if query_family == "explain_graph_evidence":
                 return self._explain_graph_evidence(typed_input)
@@ -576,6 +586,86 @@ class GraphQueryService:
             context=_context_payload(typed_input.context),
             endpoint_assessment=endpoint_assessment,
         )
+
+    def _resolve_graph_components_batch(
+        self, typed_input: ResolveGraphComponentInput
+    ) -> dict[str, Any]:
+        """Resolve many stable keys in one call.
+
+        ``detail=compact`` returns only the evidence-preserving fields each resolution needs
+        (resolvedKey / nodeType / displayName / candidateKeys / evidencePathNodes / snapshotId /
+        sourceRefs) so bulk support/skill resolution stays cheap; ``detail=full`` also embeds
+        every full envelope. The four fields required for semantic-edge endpoint evidence
+        (stable_key, evidence_path_nodes, snapshot_id, source_refs) are always preserved.
+        """
+        resolutions: list[dict[str, Any]] = []
+        envelopes: dict[str, dict[str, Any]] = {}
+        for key in typed_input.keys:
+            envelope = self._resolve_graph_component(
+                ResolveGraphComponentInput(
+                    query=key,
+                    expected_node_types=typed_input.expected_node_types,
+                    scope=typed_input.scope,
+                    context=typed_input.context,
+                    detail="full",
+                )
+            )
+            envelopes[key] = envelope
+            resolved = envelope.get("resolvedSubject") or {}
+            evidence_path = envelope.get("evidencePath") or {}
+            resolutions.append(
+                {
+                    "query": key,
+                    "status": envelope.get("status"),
+                    "resolvedKey": (
+                        str(resolved.get("stableKey") or "")
+                        if envelope.get("status") == "resolved"
+                        else None
+                    ),
+                    "nodeType": str(resolved.get("nodeType") or "") if resolved else None,
+                    "displayName": str(resolved.get("displayName") or "") if resolved else None,
+                    "candidateKeys": list(
+                        (envelope.get("facts") or {}).get("candidate_keys") or []
+                    ),
+                    "evidencePathNodes": list(evidence_path.get("nodes") or []),
+                    "snapshotId": str(evidence_path.get("snapshotId") or self.snapshot.snapshot_id),
+                    "sourceRefs": list(envelope.get("sourceRefs") or []),
+                }
+            )
+        facts: dict[str, Any] = {
+            "keys": list(typed_input.keys),
+            "detail": typed_input.detail,
+            "resolutions": resolutions,
+        }
+        if typed_input.detail == "full":
+            facts["envelopes"] = {key: envelopes[key] for key in typed_input.keys}
+        unresolved = [item for item in resolutions if item["status"] != "resolved"]
+        caveats = ["partial_resolution"] if unresolved else []
+        if any(item["status"] == "ambiguous" for item in unresolved):
+            caveats.append("ambiguous_resolution")
+        aggregate_confidence = min(
+            1.0 if item["status"] == "resolved" else 0.5 if item["status"] == "ambiguous" else 0.0
+            for item in resolutions
+        )
+        return {
+            "toolName": "resolve_graph_component",
+            "queryFamily": "resolve_graph_component",
+            "snapshotId": self.snapshot.snapshot_id,
+            "status": "ok" if not unresolved else "partial",
+            "errorCode": None,
+            "resolvedSubject": None,
+            "facts": facts,
+            "evidencePath": self._evidence_path(),
+            "sourceRefs": sorted({ref for item in resolutions for ref in item["sourceRefs"]}),
+            "confidence": aggregate_confidence,
+            "caveats": caveats,
+            "contextPolicy": CONTEXT_POLICIES.get("resolve_graph_component", "none"),
+            "contextUsed": {},
+            "missingContext": [],
+            "contextCaveats": [],
+            "freshness": {"versionContext": self._version_context()},
+            "noRawQuery": True,
+        }
 
     def _search_graph_components(self, typed_input: SearchGraphComponentsInput) -> dict[str, Any]:
         discovery = pg.search_candidates(

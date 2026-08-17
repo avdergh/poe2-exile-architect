@@ -402,8 +402,9 @@ case 研究都应执行：
 5. **silent / unavailable 不丢结论**：`lookup_mechanic` 返回 silent 或语料无文本的机制，直接以
    样本证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task
    （wiki 佐证不是要求，论坛 BD 多数机制没有对应 wiki 页面）。
-6. **非 core 技能支持入记录**：Gathering Storm / Herald of Ice / Tempest Bell 等非 Family-core
-   技能组的支持集合至少写入记录内容或 secondary supportPackages，不能只做兼容性检查。
+6. **所有启用技能组的支持归属**：Gathering Storm / Herald of Ice / Tempest Bell 等非
+   Family-core 技能组也必须用 `supportPackages` 保存精确归属，或通过
+   `supportCoverageExceptions` 声明真实来源缺口 / 不适用；只写正文或兼容性检查不算覆盖。
 7. **因果方向自查**：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（Rend 是
    Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照。
 8. **未解析组件逐个 search**：任何 unresolved 计数出现时，先对该组件名执行一次
@@ -422,9 +423,9 @@ Research Memory 的 durable writer 只有 accept。修正既有记录两条路�
   不消耗验收）。补录记录保持旧记录的
   `title / recordKind / researchGroupId / source_case_refs` 不变时，`_persist_deep_record`
   会命中 `_existing_deep_record_id` 并原地 UPDATE 覆盖（`updatedDeepRecordCount` 计数）；
-  identity 变化（knowledge_key 改变）时同一 UPDATE 会清理旧 key 的孤儿 evidence，不产生
-  双记录。familyCoreSkillKeys 修正会改变 Family secondary 集合 → Family key 变化，旧 key
-  成为无记录空壳，属预期。
+  knowledge identity 变化（`knowledge_key` 改变）时同一 UPDATE 会清理旧 key 的孤儿
+  evidence，不产生双记录。`familyCoreSkillKeys` 修正只更新 Family secondary 元数据与相关记录
+  内容，不改变由升华 + primary 技能集合生成的 Family key，也不会制造旧 Family 空壳。
 - **维护脚本**：`server/knowledge/research_maintenance.py` 提供
   `calibrate_research_contract_v1`（按 source_ref spec 重建记录 + 旧记录
   `deprecated + superseded_by_id` + force backfill，带 backup 与原子事务），以及
