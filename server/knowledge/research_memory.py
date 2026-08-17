@@ -3019,7 +3019,15 @@ class ResearchMemoryService:
             params.append(ascendancy_key)
         if primary_skill_keys:
             placeholders = ",".join("?" for _ in primary_skill_keys)
-            where.append(f"primary_skill_key IN ({placeholders})")
+            where.append(
+                "("
+                "EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(primary_skill_keys) THEN primary_skill_keys ELSE '[]' END) "
+                f"WHERE json_each.value IN ({placeholders})) "
+                f"OR primary_skill_key IN ({placeholders})"
+                ")"
+            )
+            params.extend(primary_skill_keys)
             params.extend(primary_skill_keys)
         if build_family_keys:
             placeholders = ",".join("?" for _ in build_family_keys)
@@ -3072,7 +3080,14 @@ class ResearchMemoryService:
             params.append(ascendancy_key)
         if primary_skill_keys:
             placeholders = ",".join("?" for _ in primary_skill_keys)
-            where.append(f"families.primary_skill_key IN ({placeholders})")
+            where.append(
+                "(EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(families.primary_skill_keys) "
+                "THEN families.primary_skill_keys ELSE '[]' END) "
+                f"WHERE json_each.value IN ({placeholders})) "
+                f"OR families.primary_skill_key IN ({placeholders}))"
+            )
+            params.extend(primary_skill_keys)
             params.extend(primary_skill_keys)
         if build_family_keys:
             placeholders = ",".join("?" for _ in build_family_keys)
@@ -3495,6 +3510,16 @@ class ResearchMemoryService:
                                   deep_research_records.build_family_key
                               AND (
                                   research_build_families.ascendancy_key IN ({placeholders})
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM json_each(
+                                          CASE WHEN json_valid(
+                                              research_build_families.primary_skill_keys
+                                          ) THEN research_build_families.primary_skill_keys
+                                          ELSE '[]' END
+                                      )
+                                      WHERE json_each.value IN ({placeholders})
+                                  )
                                   OR research_build_families.primary_skill_key IN ({placeholders})
                                   OR EXISTS (
                                       SELECT 1
@@ -3506,7 +3531,7 @@ class ResearchMemoryService:
                     )
                     """
                 )
-                params.extend([*group, *group, *group, *group])
+                params.extend([*group, *group, *group, *group, *group])
         sql = "SELECT * FROM deep_research_records WHERE " + " AND ".join(where)
         sql += " ORDER BY evidence_count DESC, last_validated_at DESC, record_id"
         if not query_is_preference:

@@ -4311,3 +4311,96 @@ def test_backfill_replaces_quarantined_anchor_occupant(tmp_path):
         assert str(active[0]["record_id"]) == anchor_id
     finally:
         con.close()
+
+
+def test_query_matches_multi_primary_family_by_any_primary_key(tmp_path):
+    """A family with a multi-primary set must be found by EACH primary key (set-based
+    identity), not only by the legacy single-column primary. Regression for the
+    set-based family rebuild where only the first primary was mirrored into the
+    legacy primary_skill_key column."""
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(
+        db_path=db_path, graph_service=_graph_service(), initialize_store=True
+    )
+    first = service.propose_deep_research_records(_family_deep_payload())
+    record_id = first["recordIds"][0]
+
+    con = mature_learning.connect(db_path)
+    try:
+        original_family = con.execute(
+            "SELECT build_family_key FROM deep_research_records WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE deep_research_records SET build_family_key = ? WHERE record_id = ?",
+            ("bf-multi-primary", record_id),
+        )
+        con.execute(
+            "DELETE FROM research_build_families WHERE build_family_key = ?",
+            (original_family,),
+        )
+        con.execute(
+            """
+            INSERT INTO research_build_families(
+                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                primary_skill_keys, evidence_count, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                "bf-multi-primary",
+                "ascendancy:monk:martial_artist",
+                "skill:LightningArrowPlayer",
+                "[]",
+                json.dumps(["skill:LightningArrowPlayer", "skill:SecondaryArrowPlayer"]),
+                research_memory._now(),
+                research_memory._now(),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    for key in ("skill:SecondaryArrowPlayer", "skill:LightningArrowPlayer"):
+        result = service.query_research_memory(
+            "Lightning Arrow family query.",
+            ascendancy_key="ascendancy:monk:martial_artist",
+            primary_skill_key=key,
+            limit=5,
+        )
+        families = result["buildFamilies"]
+        assert [f["buildFamilyKey"] for f in families] == ["bf-multi-primary"], key
+        assert any(r["recordId"] == record_id for r in result["deepResearchRecords"]), key
+
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT game_patch, passive_tree_version FROM deep_research_records "
+            "WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()
+        game_patch = row["game_patch"]
+        tree_version = row["passive_tree_version"]
+    finally:
+        con.close()
+
+    # The family-discovery path must also match the second primary key.
+    discovered = service.query_research_memory(
+        "Lightning Arrow family query.",
+        detail_level="family",
+        class_key="class:monk",
+        game_patch=game_patch,
+        passive_tree_version=tree_version,
+        primary_skill_key="skill:SecondaryArrowPlayer",
+        limit=5,
+    )
+    assert [f["buildFamilyKey"] for f in discovered["buildFamilies"]] == ["bf-multi-primary"]
+
+    # The component-key path must surface family records via the set-based primary
+    # column even when the queried key is not in the record's own components.
+    by_component = service.query_research_memory(
+        "",
+        component_keys=["skill:SecondaryArrowPlayer"],
+        detail_level="record",
+        limit=5,
+    )
+    assert any(r["recordId"] == record_id for r in by_component["deepResearchRecords"])
