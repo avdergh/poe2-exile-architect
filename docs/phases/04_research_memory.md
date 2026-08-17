@@ -204,58 +204,21 @@ Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆�
 测试与旧宿主配置兼容（见 AGENTS.md），产品运行入口是四个按域拆分的 server。
 工具未直接显示时应先用宿主标准 tool discovery / tool search 按精确名称查找，再判断是否真的不可用。
 
-安装 skill 后，在 Codex 或支持 skill 的宿主中使用：
-
-```text
-/poe-bd-research --limit 50
-```
-
-这是会话里的 skill invocation，不是要求用户在 Codex 输入框里执行 shell 命令；宿主 agent 应
-通过工具运行内部脚本。
-
-若无参数触发 `/poe-bd-research`，skill 应先询问运行数量和模式，而不是先联网 dry-run 或静默
-启动完整 live crawl。若宿主支持交互式选择/确认 UI，优先给出“预检 5 个样本（推荐）/ 小批量
-提取 20 个样本 / 大批量提取 50 个样本 / 恢复已有队列”这类可选项；否则退化为普通文字选项。
-`--resume` 是独立恢复模式，不绑定到 50 个样本；恢复时必须同时提供原始 `queue` 返回的
-`--output-dir <runDir>`。
+`/poe-bd-research` 是会话里的 skill invocation，不是要求用户在 Codex 输入框里执行 shell 命令；
+宿主 agent 应通过工具运行内部脚本。
 
 **显式意图优先于预检菜单**：用户明确给出案例数量或分析意图（例如“抓 5 个案例来分析”）时，
 直接按 `--limit N` 执行完整流程（真实入队、逐案研究、accept），不得推荐或执行 `--dry-run`
 预检——预检不产生任何知识，只用于用户无参数且明确想先验证链路时。
 
-等价的底层脚本入口与逐案流程（queue → claim → inspect/read/search → review-contract →
-init-review → accept --validate-only → accept → status）以 `/poe-bd-research` skill 的
-`逐案流程` 为唯一执行事实源，本文档不再复述命令；完整参数见
-`scripts/research_mature_builds.py --help`。
+命令级流程与完整参数的唯一事实源是 `poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md`
+的 Options / No-Argument Behavior / 逐案流程章节（CLI 细节见 `scripts/research_mature_builds.py --help`）；
+本文档不再复述命令。流程骨架速查：queue → claim → inspect/read/search → review-contract →
+init-review → accept --validate-only → accept → status。
 
-默认非 dry-run `queue` 会创建 `.poe-bd-research/runs/<runId>` 并返回 `runDir`；同一轮的所有后续
-命令都必须使用该目录，且 `--resume` 需要原 `runDir`。不同会话使用不同 run，可以并发执行。
-
-默认行为：
-
-- 从 poe.ninja 当前 softcore trade league 拉取样本；
-- 等级默认 90-100；
-- `--limit` 默认 50；
-- 当前 Agent 一次只 claim 一个案例，并在完成该案例 accept 后再领取下一案；
-- `claim` 原子返回 safe-only `workerPrompt` 和 `reviewFile`，当前 Agent 必须直接遵守该 prompt，
-  不得转交给其他 agent，也不能只依赖本机 `SKILL.md` 路径或临时口头说明；
-- `worker-brief` 只用于恢复已经 claimed 的任务；
-- 支持 `--ascendancy`、`--league current|<league-url>`、`--level-min`、`--level-max`、
-  `--class`（可选透传 poe.ninja URL class filter）、`--source-file`、`--source-batch-file`、
-  `--expected-source-count`、`--resume`、`--dry-run`、`--output-dir`；
-- `--class` 同时接受空格名称和 poe.ninja URL 中的 `+` 分隔形式，编码前统一归一；列表返回后还会
-  按同一升华名本地复核，非目标升华不得占用 `limit`；
-- poe.ninja 采集按角色级去重：每用户本地 intake ledger（`paths.user_data_dir()/research_intake.sqlite`，
-  可用 `--intake-ledger` 覆盖）记录已入队角色（`character-hash:` 引用，明文角色名不落盘），
-  `queue` 会跳过本 league 已研究角色并继续分页抓取列表，直到凑满 `limit` 个新案例或列表穷尽
-  （单次最多 15 页）；queue 报告输出 `intakePagesFetched` / `intakeSkippedAlreadyResearched` /
-  `intakeLedgerRecordedCount` / `intakeLedgerSummary`。正式 accept 后 ledger 记录晋升为 `accepted`，
-  后续 queue 不再重复抓取同一角色；本地 source-file 输入不走 ledger；
-- batch mode 仍必须一案一轮：一个 Researcher prompt 只包含一个完整 BD；
-- 默认不复用上一案的 transient evidence，避免前一个样本污染后一个样本；
-- `/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、
-  文档、schema、安装脚本或 plugin manifest；collector / source / runtime 失败时只报告
-  safe error 并停止。
+`/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、
+文档、schema、安装脚本或 plugin manifest；collector / source / runtime 失败时只报告
+safe error 并停止。
 
 `queue`、`claim`、`status`、`accept` 都只输出 safe metadata。完整 raw-rich material 只保留在
 OS temp 的 lease-bound packet 中，不再通过终端输出。当前 Agent 使用 `inspect` 查看分区清单，

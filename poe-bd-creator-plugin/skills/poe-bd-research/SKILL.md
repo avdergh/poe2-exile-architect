@@ -83,10 +83,10 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 如果宿主提供交互式选择/确认工具（例如 Codex 的 choice/confirmation UI），优先发起一个选择问题。建议选项：
 
-- `预检 5 个样本（推荐）`：只执行 `limit=5`、`--dry-run`，验证 poe.ninja/collector 可用，不创建实际队列。仅用于用户没有数量/分析意图、只想确认链路时。
 - `小批量提取`：实际运行 `limit=20`，按队列逐案研究。
 - `大批量提取`：实际运行 `limit=50`，按队列逐案研究。
 - `恢复已有队列`：使用用户指定的 `runDir` 和 `limit`，并附加 `--resume`。不要把 `--resume` 只绑定到大批量。
+- `链路预检`：只执行 `limit=5`、`--dry-run`，验证 poe.ninja/collector 可用，不创建实际队列、不产生任何知识。仅用于用户没有数量/分析意图、只想确认链路时。
 
 如果宿主没有选择控件，退化为普通文字选项，等待用户回复。不要在用户选择前联网采样。`$ARGUMENTS`
 若包含裸 PoB code/链接（快速粘贴模式），不要询问运行模式，直接按下方"快速粘贴模式"落临时文件并

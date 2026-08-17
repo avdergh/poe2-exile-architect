@@ -205,6 +205,11 @@ source snapshot
 -> per-source safe evidence
 ```
 
+> 已过时（2026-08 set-based 身份规则取代）：现行 Family 身份 = 升华 + 主输出技能**集合**
+> （研究者声明的 `primary_damage` 角色技能，可多个，gem 等价归一）；自动副技能
+> （clear/boss/triggered-payload）、trigger-host 一律不参与身份。以
+> `docs/phases/04_research_memory.md` 与 `/poe-bd-research` skill 为准。
+
 防御、暗金、supports、资源方案和预算差异不参与 Family 身份，它们作为同一 Family 下的知识单元或
 来源变体保存。每条知识再按 `record_kind` 选择必要的核心角色组件生成 `knowledge_key`；完全相同的
 结构才自动归并，部分相似只保留为独立记录。标题或正文改写不能单独触发合并。
@@ -400,6 +405,10 @@ MVP 给 `query_research_memory` 增加可选 `detail_level=summary|record`：
 4. lifecycle/scenario/budget 匹配；
 5. 对 title、principle 和条件做简单文本匹配；
 6. 默认返回 3-6 条最相关的聚焦记录摘要，并控制总字符预算。
+
+> 已过时：现行 `query_research_memory` 的 `limit` 表示首轮展开条数，服务端不得把调用方请求
+> 暗中缩小为固定条数；默认返回数量以调用方 `limit` 与 `response_profile` 为准（见
+> `docs/phases/04_research_memory.md`）。
 
 记录正文 `content` 不参与程序硬过滤。程序只按顶层 metadata、稳定组件 ID 和派生索引筛选；正文
 由 Agent 阅读。后续若某个新维度反复需要检索，再把它提升为 typed payload 或索引字段。

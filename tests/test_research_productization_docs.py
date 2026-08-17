@@ -169,9 +169,9 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "每项 `gearResponsibilities` 必须区分组件静态文本直接提供的固有职责" in skill
     assert "在 validate-only 和正式 accept 前对每个最终对象做全对象语义闭环复核" in skill
     assert "worker-brief" in guide
-    assert "worker-brief" in phase4
+    assert "worker-brief" in skill
     assert "atomically returns the safe `workerPrompt`" in guide
-    assert "`claim` 原子返回" in phase4
+    assert "同一次原子操作中返回 `workerPrompt` 和 `reviewFile`" in skill
     assert "Never delegate a research case to a subagent" in guide
     assert "研究运行态禁止使用 subagent" in phase4
     assert "开发阶段有意不保留 `README.md`" not in agents
@@ -185,19 +185,16 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "poe-bd-research" in guide
     assert "poe-bd-research" in phase4
     assert "before any network crawl" in guide
-    assert "先询问运行数量和模式" in phase4
+    assert "显式意图优先于预检菜单" in phase4
     assert "Do not ask Codex Desktop" in guide
     assert "users to paste PowerShell/Python commands into the chat box" in guide
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
-    assert "不得转交给其他 agent" in phase4
+    assert "不要把它转交给其他 agent" in skill
     assert "not rely only on a local `SKILL.md` path" in guide
-    assert "预检 5 个成熟 BD 样本" in readme
+    assert "分析 5 个成熟 BD 样本" in readme
     assert "preflight 5" in guide
-    assert "预检 5 个样本" in phase4
+    assert "预检 5 个样本（推荐）" not in phase4
     assert "交互式选择/确认工具" in skill
-    assert "小批量" in phase4
-    assert "大批量" in phase4
-    assert "恢复已有队列" in phase4
     assert "不要把 `--resume` 只绑定到大批量" in skill
     assert ".poe-bd-research/runs/<runId>" in skill
     assert "--output-dir <runDir>" in skill
@@ -206,7 +203,7 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "class=Blood+Mage" in guide
     assert "class=Blood%2BMage" in guide
     assert 'URL-style input such as `--class "Blood+Mage"` is normalized' in guide
-    assert "非目标升华不得占用 `limit`" in phase4
+    assert "其他升华不能占用请求的样本数量" in skill
     assert "runtime product workflow" in guide
     assert "query_research_memory" in guide
     assert "search_graph_components" in guide
@@ -255,7 +252,8 @@ def test_skill_documents_one_case_worker_semantics():
     assert "不是在执行 shell 命令" in skill
     assert "不要要求用户把 PowerShell/Python 命令复制到会话框或终端" in skill
     assert "交互式选择/确认工具" in skill
-    assert "预检 5 个样本（推荐）" in skill
+    assert "预检 5 个样本（推荐）" not in skill
+    assert "链路预检" in skill
     assert "小批量提取" in skill
     assert "大批量提取" in skill
     assert "恢复已有队列" in skill

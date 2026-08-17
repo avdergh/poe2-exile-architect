@@ -123,9 +123,15 @@ on a documented tool-count cap.
 
 - Never delegate a research case to a subagent or separate agent lane. The current main conversation
   must read the bounded evidence, analyze the case, write the safe review and run acceptance.
-- If no arguments are supplied, ask for a mode before any network crawl: preflight 5
-  (`--dry-run`), small extraction 20, large extraction 50, or resume. Resume must not be tied only
-  to the large-batch option.
+- If no arguments are supplied, ask for a mode before any network crawl: small extraction 20,
+  large extraction 50, resume, or a link-check preflight 5 (`--dry-run`; produces no knowledge,
+  only verifies the collector chain). Resume must not be tied only to the large-batch option.
+- Explicit intent outranks the preflight menu: when the user states a case count or analysis
+  intent (e.g. "analyze 5 builds"), run the real queue with `--limit N` directly and do NOT
+  recommend or run the `--dry-run` preflight. Preflight never produces knowledge (no queue, no
+  research, no accept); treat it as a substitute for real analysis is an error. If the intent is
+  clear but vague, run a small real batch (`--limit 20`) and state that real enqueueing has
+  started, instead of asking whether to preflight.
 - Use `--class "Blood Mage"` when the user supplies poe.ninja's `class` filter. It is passed through
   to the list URL as `class=Blood+Mage`; URL-style input such as `--class "Blood+Mage"` is normalized
   before encoding and must not become `class=Blood%2BMage`. On the current site this names an

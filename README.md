@@ -115,11 +115,11 @@ Codex Desktop 的 `poe-bd-research-loop` 需要独立的 `poe-research-orchestra
 
 ```text
 使用 poe-bd-create skill，给我设计一个适合新手的 PoE2 BD。
-使用 poe-bd-research skill，预检 5 个成熟 BD 样本。
+使用 poe-bd-research skill，分析 5 个成熟 BD 样本。
 ```
 
-“预检”（`--dry-run`）只验证采集链路、不产生知识；想真正分析 N 个案例时直接说
-“用 poe-bd-research 分析 N 个成熟 BD”，会按 `--limit N` 真实入队并逐案研究。
+“预检”（`--dry-run`）只验证采集链路、不产生知识，仅在明确只想确认链路时使用；想真正分析 N
+个案例时直接说“用 poe-bd-research 分析 N 个成熟 BD”，会按 `--limit N` 真实入队并逐案研究。
 
 支持斜杠命令的宿主也可以使用 `/poe-bd-create` 和 `/poe-bd-research`。不同宿主的 Skill 发现方式
 可能不同，不以命令面板是否显示斜杠命令作为唯一安装验收标准。

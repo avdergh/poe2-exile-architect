@@ -3655,9 +3655,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="poe-bd-research")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    queue_parser = subparsers.add_parser("queue")
+    queue_parser = subparsers.add_parser(
+        "queue",
+        description=(
+            "Collect mature build samples into a safe research queue. Real enqueueing happens "
+            "by default; use --dry-run only to verify the collector chain without creating a "
+            "queue or producing knowledge. Interactive agents: when the user states a case "
+            "count or analysis intent, run with --limit N directly and do not offer the "
+            "preflight dry-run instead."
+        ),
+    )
     _add_queue_location_args(queue_parser, default_output_dir=None)
-    queue_parser.add_argument("--limit", type=int, default=50)
+    queue_parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help=(
+            "Number of new cases to enqueue (default 50). The default is a CLI compatibility "
+            "value: interactive skill invocations must not silently start 50; run the count "
+            "the user actually asked for."
+        ),
+    )
     queue_parser.add_argument(
         "--worker-count",
         type=int,
@@ -3684,7 +3702,16 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument("--expected-source-count", type=int)
     queue_parser.add_argument("--sample-start-index", type=int, default=1)
     queue_parser.add_argument("--resume", action="store_true")
-    queue_parser.add_argument("--dry-run", action="store_true")
+    queue_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Only inspect the safe samples that would be enqueued; no queue is created and no "
+            "knowledge is produced. Use it only to verify the poe.ninja/collector chain when "
+            "the user explicitly wants a link check - never as a substitute for real analysis "
+            "(run --limit N instead)."
+        ),
+    )
     queue_parser.add_argument(
         "--re-research",
         default=None,

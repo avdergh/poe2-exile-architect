@@ -1036,7 +1036,14 @@ def main(argv: list[str] | None = None) -> int:
         "or the /poe-bd-research skill instead of run_phase45_researcher_batch.py",
         file=sys.stderr,
     )
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        prog="run_phase45_researcher_batch.py",
+        description=(
+            "Development-only compatibility entry. Product research runs use "
+            "scripts/research_mature_builds.py via the /poe-bd-research skill; this script is "
+            "kept only for legacy dev workflows and always prints a deprecation notice."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--worker-count", type=int, default=5)
     parser.add_argument("--league", default="current")
