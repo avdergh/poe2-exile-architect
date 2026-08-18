@@ -861,14 +861,14 @@ def render_review_contract(
             "lineage/unique support gems must be labeled with their unique identity (support_modifier role with the lineage/unique identity stated in prose, or an open_question/modelability_caveat record; unique_enabler role fails resolver checks for support_gem nodes)",
             "allocated jewel sockets without socketed jewels require an explicit jewel-state declaration in the review",
             "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
-            "every enabled skill group's supports must be explicitly disposed: packaged in supportPackages (on any evidence record whose skill/support keys are resolved in that record) or declared via supportCoverageExceptions (source_coverage_gap/not_applicable); clear/boss/triggered_payload skills are automatically Family-core secondary skills, so their groups require coverage even though they do not alter the Family identity key",
+            "inspect every enabled skill group's supports; Family primary/core groups and any group whose mechanism is adopted by the Researcher require exact supportPackages ownership or a supportCoverageExceptions entry, while low-impact, internal-id, multi-active, or unresolved groups may remain explicit advisory/caveat evidence and do not block clean coverage by themselves",
             "support mechanism claims are judged by the review's combined fixed-point pairing check (support_skill_group_candidates, simulating the PoB group's effective compatibility); the single-pair support_skill_candidate query is candidate discovery only and defers to the combined check; never infer from the support name",
             "memory comparison must use stable keys: resolve ascendancy/class via search_graph_components + resolve_graph_component before filtering query_research_memory, and check familyRecordCoverage/familyRecordIndex/familyPremiseCatalog against existing same-family knowledge",
             "every packet condition* (EnemyChilled/EnemyBleeding/EnemyBlinded/EnemyIgnited/CritRecently/BeenHitRecently/usePowerCharges) must be traced in a 'condition -> source component -> verification status' table; unsourced assumptions become modelability caveats",
             "every gear slot must appear in the records: structured component, content text, or explicit not_applicable",
             "never guess stable-key paths: always search_graph_components then resolve_graph_component; support-gem metadata paths can be Items/Gem or Items/Gems",
             "silent or unavailable high-value mechanics (e.g. Innervate, Charged Mark charge rates) must be preserved in caveats/verification tasks, not dropped",
-            "supports of non-Family-core skill groups must be packaged in supportPackages or declared via supportCoverageExceptions, not just compatibility-checked or mentioned in content",
+            "non-Family-core skill groups must be reviewed rather than silently dropped; package their supports when a durable conclusion depends on that ownership, otherwise preserve the low-impact/unresolved boundary in content, caveats, or verification tasks",
             "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
             "any unresolved count requires a per-name search_graph_components before declaring a source gap",
             "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity)",
@@ -3360,12 +3360,11 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 - safeReviewFile: {review_file}（相对当前 --output-dir）
 
 ## Research Quality First
-研究质量优先于速度与上下文预算：必须完整读取全部要求的分区，并为**每个启用技能组**给出明确处置
-（supportPackages 打包 / supportCoverageExceptions 声明；无 supports 的纯内部 id/占位组由验收自动豁免，
-带 supports 的内部组仍保持覆盖缺口），
-不得为了省 token 或上下文而缩减要求的步骤、砍掉非核心技能组、或把支持只写进正文而不打包。
-批量 resolve 与精简视图已降低上下文成本——不要因资源焦虑牺牲覆盖。缺失任何已要求步骤都会被
-accept 的 supports 覆盖缺口与逐组处置清单揭示。
+研究质量优先于速度与上下文预算：必须完整读取全部要求的分区，并盘点每个启用技能组。Family
+主技能、核心副技能以及研究结论实际依赖的高影响组应使用 supportPackages 或
+supportCoverageExceptions 保存精确归属；低影响、内部 id、multi-active 或无法唯一解析的组可以保留
+为明确 caveat / verification task，不得静默丢弃，也不因其自身缺口机械否定整个案例。
+批量 resolve 与精简视图用于降低上下文成本；优先把精力用于构筑身份、因果链和失败条件。
 
 ## Evidence First
 先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；complete=false
@@ -3404,10 +3403,10 @@ graph 等独立佐证。
    覆盖范围）。装备自带的珠宝孔不豁免树槽声明——装备孔里的宝石不能填天赋树槽。
 3. Spirit/reservation 预算：评估所有 persistent buff（光环/战旗/常驻技能）的 Spirit 预留总量与
    来源（装备/升华），写入资源闭环记录。
-4. support 打包：每个启用技能组的 supports 必须完整打包进 skill_package/mechanic_chain 的
-   supportPackages，或经 supportCoverageExceptions 声明；Family 身份记录（skill_package/
-   mechanic_chain）覆盖的核心技能组不得遗留 ≥2 个未打包辅助（rotation 等非身份记录提及的
-   组由 source 侧检查覆盖，不要求在同一记录内打包）。
+4. support 打包：Family 主技能、核心副技能以及结论依赖其归属的高影响组，必须在
+   skill_package/mechanic_chain/rotation 的 supportPackages 中保存精确所有权，或经
+   supportCoverageExceptions 声明。其他启用组仍需盘点，但可作为低影响 / internal-id /
+   multi-active / unresolved caveat 保留，不因未完整结构化而单独阻断 clean。
 5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，以 review 内
    组合 fixed-point 校验（support_skill_group_candidates，模拟 PoB 技能组实际生效性）为准；
    独立 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。机制细节
@@ -3431,13 +3430,11 @@ graph 等独立佐证。
     双端点。
  10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
      证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task。
- 11. 每个启用技能组的支持都必须显式处置：skill_package/mechanic_chain/rotation 等记录通过
-      typedPayload.supportPackages 打包，或用 supportCoverageExceptions 声明
-      source_coverage_gap / not_applicable；Gathering Storm / Herald of Ice / Tempest Bell 等
-      非 Family-core 组的支持也须打包或声明，不能只做兼容性检查或只写入正文。注意 clear_skill /
-      boss_skill / triggered_payload 技能（含 Spellslinger/触发宿主内嵌的载荷）自动进入 Family
-      核心副技能元数据但不改变 Family key；其技能组同样必须覆盖，否则 supports 会判
-      evidence_missing。
+ 11. 非核心技能组也必须被观察：Gathering Storm / Herald of Ice / Tempest Bell 等组若承担本案
+      的机制、轮转或结论职责，应通过 typedPayload.supportPackages / supportCoverageExceptions
+      保存归属；若只是低影响、内部、multi-active 或无法唯一解析的来源细节，可在 content、caveat
+      或 verification task 中说明。clear_skill / boss_skill / triggered_payload 自动进入 Family
+      核心副技能元数据但不改变 Family key，仍按核心 support gate 检查。
  12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
      是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
  13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次

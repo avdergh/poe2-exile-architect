@@ -1524,7 +1524,7 @@ def test_acceptance_resolves_name_based_support_ownership_before_schema_validati
     ]
 
 
-def test_source_skill_named_in_rotation_blocks_supports_until_group_is_structured(
+def test_source_skill_named_in_rotation_remains_advisory_when_not_family_core(
     tmp_path,
 ):
     review_file = _write_review(
@@ -1582,9 +1582,10 @@ def test_source_skill_named_in_rotation_blocks_supports_until_group_is_structure
         source_evidence_diagnostics=diagnostics,
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
     assert diagnostics["unstructuredSourceSkillMentions"][0]["name"] == "Spark"
-    assert coverage["supports"] == "evidence_missing"
+    assert coverage["supports"] == "covered"
     assert any("Spark" in item for item in advisories)
 
 
@@ -1658,7 +1659,7 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
     assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
 
 
-def test_source_support_diagnostics_non_core_group_blocks_until_packaged(tmp_path):
+def test_source_support_diagnostics_non_core_group_remains_advisory(tmp_path):
     review_file = _write_review(
         tmp_path,
         filename="evidence-noncore-unpackaged-supports-review.json",
@@ -1724,7 +1725,8 @@ def test_source_support_diagnostics_non_core_group_blocks_until_packaged(tmp_pat
         },
     )
 
-    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
     assert diagnostics["unrepresentedActiveSkillGroupCount"] == 0
     assert diagnostics["skillGroupDispositions"][0]["disposition"] == "partially_packaged"
 
@@ -5448,7 +5450,87 @@ def test_source_skill_diagnostics_binds_packages_to_their_skill_group(tmp_path):
     assert disposition["unrepresentedSupportNames"] == ["Support B"]
 
 
-def test_internal_id_group_with_supports_is_not_auto_exempt():
+def test_deferred_component_alias_cannot_authorize_accepted_support_package():
+    accepted_review_record = {
+        "sampleId": "case:fixture",
+        "researchGroupId": "research:fixture",
+        "caseRef": "source-hash:fixture",
+        "safeEvidenceRefs": ["evidence:fixture"],
+        "recordKind": "mechanic_chain",
+        "title": "Accepted package",
+        "summary": "Accepted support ownership.",
+        "content": "Skill A uses Real Support.",
+        "components": [
+            {
+                "candidateName": "Skill A",
+                "componentKey": "skill:SkillAPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Skill A",
+            },
+            {
+                "candidateName": "Real Support",
+                "componentKey": "support:Real",
+                "role": "support_modifier",
+                "resolverQuery": "Real Support",
+            },
+        ],
+        "typedPayload": {
+            "supportPackages": [
+                {
+                    "skillKey": "skill:SkillAPlayer",
+                    "supportKeys": ["support:Real"],
+                }
+            ]
+        },
+    }
+    deferred_alias_record = {
+        **accepted_review_record,
+        "title": "Deferred wrong alias",
+        "components": [
+            {
+                "candidateName": "Support X",
+                "componentKey": "support:Real",
+                "role": "support_modifier",
+                "resolverQuery": "Support X",
+            }
+        ],
+        "typedPayload": {},
+    }
+    accepted_records = [
+        {
+            "researchGroupId": "research:fixture",
+            "recordKind": "mechanic_chain",
+            "components": [
+                {"componentKey": "skill:SkillAPlayer", "role": "primary_damage"},
+                {"componentKey": "support:Real", "role": "support_modifier"},
+            ],
+            "typedPayload": accepted_review_record["typedPayload"],
+        }
+    ]
+
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review={
+            "safeArtifactOnly": True,
+            "deepResearchRecords": [accepted_review_record, deferred_alias_record],
+        },
+        accepted_records=accepted_records,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:1",
+                    "activeSkills": [{"name": "Skill A", "skillId": "SkillAPlayer"}],
+                    "supports": [{"name": "Support X", "gemId": "SupportGemX"}],
+                }
+            ]
+        },
+    )
+
+    disposition = diagnostics["skillGroupDispositions"][0]
+    assert disposition["disposition"] == "partially_packaged"
+    assert disposition["unrepresentedSupportNames"] == ["Support X"]
+
+
+def test_internal_id_group_with_supports_is_visible_but_diagnostic_only():
     diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
         review={"safeArtifactOnly": True, "deepResearchRecords": []},
         source_skill_manifest={
@@ -5472,6 +5554,8 @@ def test_internal_id_group_with_supports_is_not_auto_exempt():
     assert disposition["exemptInternalId"] is False
     assert disposition["disposition"] == "unrepresented"
     assert diagnostics["undisposedSkillGroupCount"] == 1
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
 
 
 def test_core_skill_group_support_gaps_reports_triggered_payload_group():
@@ -5522,3 +5606,66 @@ def test_case_coverage_populates_structured_core_support_gaps():
 
     assert coverage["supports"] == "evidence_missing"
     assert diagnostics["coreSkillGroupSupportGaps"] == ["skill:ExplosiveGrenadePlayer"]
+
+
+def test_family_core_source_support_omission_still_blocks_clean_coverage():
+    record = {
+        "sampleId": "case:fixture",
+        "researchGroupId": "research:fixture",
+        "caseRef": "source-hash:fixture",
+        "safeEvidenceRefs": ["evidence:fixture"],
+        "recordKind": "skill_package",
+        "title": "Core package",
+        "summary": "Core support ownership.",
+        "content": "Core skill package.",
+        "components": [
+            {
+                "candidateName": "Core Skill",
+                "componentKey": "skill:CorePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Core Skill",
+            }
+        ],
+        "typedPayload": {
+            "supportPackages": [
+                {
+                    "skillKey": "skill:CorePlayer",
+                    "supportKeys": ["support:SupportGemA", "support:SupportGemB"],
+                }
+            ]
+        },
+    }
+    accepted_records = [
+        {
+            "researchGroupId": "research:fixture",
+            "recordKind": "skill_package",
+            "components": [{"componentKey": "skill:CorePlayer", "role": "primary_damage"}],
+            "typedPayload": record["typedPayload"],
+        }
+    ]
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review={"safeArtifactOnly": True, "deepResearchRecords": [record]},
+        accepted_records=accepted_records,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:1",
+                    "activeSkills": [{"name": "Core Skill", "skillId": "CorePlayer"}],
+                    "supports": [
+                        {"name": "Support A", "gemId": "SupportGemA"},
+                        {"name": "Support B", "gemId": "SupportGemB"},
+                        {"name": "Support C", "gemId": "SupportGemC"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    coverage, _ = run_phase4_deep_review_acceptance._evaluate_case_coverage(
+        review={"caseCoverage": {"supports": "covered"}},
+        accepted_records=accepted_records,
+        source_evidence_diagnostics=diagnostics,
+    )
+
+    assert diagnostics["supportCoverageBlockedByStructuredOmission"] is True
+    assert coverage["supports"] == "evidence_missing"

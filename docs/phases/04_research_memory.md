@@ -402,9 +402,10 @@ case 研究都应执行：
 5. **silent / unavailable 不丢结论**：`lookup_mechanic` 返回 silent 或语料无文本的机制，直接以
    样本证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task
    （wiki 佐证不是要求，论坛 BD 多数机制没有对应 wiki 页面）。
-6. **所有启用技能组的支持归属**：Gathering Storm / Herald of Ice / Tempest Bell 等非
-   Family-core 技能组也必须用 `supportPackages` 保存精确归属，或通过
-   `supportCoverageExceptions` 声明真实来源缺口 / 不适用；只写正文或兼容性检查不算覆盖。
+6. **所有启用技能组都要盘点，但不机械卡死**：Family 主技能、核心副技能以及结论实际依赖的
+   高影响组用 `supportPackages` / `supportCoverageExceptions` 保存精确归属；Gathering Storm /
+   Herald of Ice / Tempest Bell 等低影响、internal-id、multi-active 或无法唯一解析的非核心组可作为
+   content / caveat / verification task 保留，不因未完整结构化而单独阻断 clean。
 7. **因果方向自查**：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（Rend 是
    Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照。
 8. **未解析组件逐个 search**：任何 unresolved 计数出现时，先对该组件名执行一次

@@ -4004,7 +4004,7 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroupCount": 0,
         "unrepresentedActiveSkillGroups": [],
         "supportCoverageBlockedByStructuredOmission": False,
-        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
+        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
         "structuredMentionClosureEnforced": True,
         "skillGroupDispositions": [],
         "undisposedSkillGroupCount": 0,
@@ -4022,6 +4022,9 @@ def _source_skill_evidence_diagnostics(
 
     records = _deep_record_reviews(review)
     ownership_records = list(accepted_records) if accepted_records is not None else records
+    core_skill_keys = {
+        key for keys in _core_skill_identity_keys(ownership_records).values() for key in keys
+    }
     graph_display_names = {
         node.stable_key: node.display_name
         for node in (graph_service.snapshot.nodes if graph_service is not None else ())
@@ -4036,7 +4039,7 @@ def _source_skill_evidence_diagnostics(
             if not name:
                 continue
             component_key = str(component.get("componentKey") or "").strip()
-            if component_key:
+            if component_key and accepted_records is None:
                 component_aliases_by_key.setdefault(component_key, set()).add(name)
             if component_key.startswith("support:") or (
                 not component_key and component.get("role") == "support_modifier"
@@ -4106,6 +4109,7 @@ def _source_skill_evidence_diagnostics(
     skill_group_dispositions: list[dict[str, Any]] = []
     seen_active_names: set[str] = set()
     seen_support_names: set[str] = set()
+    core_support_blocked = False
     source_skill_resolutions = source_skill_resolutions or {}
     for group in groups:
         group_ref = str(group.get("groupRef") or "")
@@ -4170,6 +4174,9 @@ def _source_skill_evidence_diagnostics(
             disposition = "packaged"
         else:
             disposition = "partially_packaged"
+
+        if disposition not in DISPOSED_SKILL_GROUP_STATES and group_skill_keys & core_skill_keys:
+            core_support_blocked = True
 
         if disposition == "unrepresented":
             unrepresented_groups.append(
@@ -4240,8 +4247,8 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroupCount": len(unrepresented_groups),
         "unrepresentedActiveSkillGroups": unrepresented_groups[:12],
         "unrepresentedActiveSkillGroupsTruncated": len(unrepresented_groups) > 12,
-        "supportCoverageBlockedByStructuredOmission": bool(undisposed_groups),
-        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
+        "supportCoverageBlockedByStructuredOmission": core_support_blocked,
+        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
         "structuredMentionClosureEnforced": True,
         "skillGroupDispositions": skill_group_dispositions,
         "undisposedSkillGroupCount": len(undisposed_groups),
@@ -4279,7 +4286,9 @@ def _evaluate_case_coverage(
     ]
     inferred = {
         "supports": _support_packages_cover_core_skill_groups(accepted_records)
-        and not undisposed_group_items,
+        and not source_evidence_diagnostics.get(
+            "supportCoverageBlockedByStructuredOmission", False
+        ),
         "rotation": "rotation" in record_kinds,
         "passiveAscendancy": _has_explicit_ascendancy_responsibility(
             accepted_records, graph_service=graph_service

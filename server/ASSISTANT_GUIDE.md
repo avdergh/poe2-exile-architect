@@ -158,8 +158,9 @@ on a documented tool-count cap.
   The Family identity key uses only the ascendancy and primary-skill set. `clear_skill`,
   `boss_skill`, and `triggered_payload` are inferred Family-core secondary metadata and must not
   be repeated in `typedPayload.familyCoreSkillKeys`; a Family-core `trigger_host` must be declared
-  there explicitly. These secondary keys do not alter the Family key. Every enabled source skill
-  group still needs explicit support ownership or a coverage exception.
+  there explicitly. These secondary keys do not alter the Family key. Inventory every enabled
+  source skill group, but require exact support ownership only for Family core/high-impact groups
+  or conclusions that depend on it; preserve other unresolved groups as explicit caveats.
 - `passiveAscendancy` coverage requires an ascendancy shell plus concrete resolved ascendancy
   responsibilities. Mutated random item instances are case-only evidence, excluded from normal
   creator retrieval and planner patterns.
