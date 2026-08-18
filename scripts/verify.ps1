@@ -62,6 +62,7 @@ try {
                 "tests/test_lifecycle.py",
                 "tests/test_server.py",
                 "tests/test_project_config.py",
+                "tests/test_dsh_adapter.py",
                 "-q"
             )
             Invoke-StaticChecks

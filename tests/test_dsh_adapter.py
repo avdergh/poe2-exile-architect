@@ -119,6 +119,8 @@ def test_install_stages_then_swaps_and_doctor_accepts_result(tmp_path):
     assert not target.with_name("poe-bd.next").exists()
     doctor = installer.doctor_preset(source=source, target=target)
     assert doctor["status"] == "healthy"
+    # The kept backup of the previous version is informational, not gating.
+    assert doctor["checks"]["backupKept"] is True
 
 
 def test_install_copy_failure_preserves_current_target(tmp_path, monkeypatch):
@@ -194,3 +196,43 @@ def test_dsh_compositions_register_all_domain_servers():
         assert text.count("process.env.POE_BD_UV") == 4
         assert text.count("process.platform === 'win32'") >= 4
         assert text.count(": 'uv')") == 4
+
+
+def test_doctor_reports_staging_residue(tmp_path):
+    source = _write_source_preset(tmp_path)
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+    assert (
+        installer.install_preset(source=source, target=target, repo_root=None)["status"]
+        == "installed"
+    )
+    target.with_name("poe-bd.next").mkdir()
+
+    result = installer.doctor_preset(source=source, target=target)
+
+    assert result["status"] == "unhealthy"
+    assert result["checks"]["stagingResidue"] is False
+
+
+def test_doctor_reports_orphan_backup_when_target_missing(tmp_path):
+    source = _write_source_preset(tmp_path)
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+    _write_installed_preset(target.with_name("poe-bd.bak"), marker="orphan")
+
+    result = installer.doctor_preset(source=source, target=target)
+
+    assert result["status"] == "unhealthy"
+    assert result["checks"]["installed"] is False
+    assert result["checks"]["orphanBackup"] is False
+
+
+def test_doctor_does_not_crash_on_partial_install(tmp_path):
+    source = _write_source_preset(tmp_path)
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+    # agent.cordis.yml present but the skills/ tree is missing entirely.
+    _write_installed_preset(target)
+
+    result = installer.doctor_preset(source=source, target=target)
+
+    assert result["status"] == "unhealthy"
+    assert result["checks"]["skillsInstalled"] is False
+    assert result["checks"]["frontmatter"] is False

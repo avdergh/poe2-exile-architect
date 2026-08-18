@@ -82,7 +82,8 @@ MCP 行的 `cwd`/`PYTHONPATH` 从环境变量 `POE_BD_CREATOR_ROOT` 解析，回
    `get_freshness_report → 渐进 Research 查询 → start_generation_run → …` 主链路。
 3. `python scripts\adapt_skills_for_dsh.py --check` 可随时核对生成后的 skill 无
    缺失/陈旧文件、裸工具名、残留旧前缀或双前缀；
-   `python scripts\install_dsh_preset.py doctor` 核对安装状态。
+   `python scripts\install_dsh_preset.py doctor` 核对安装状态（含 staging `.next`
+   残留与孤儿 `.bak` 检测；已安装旁的 `.bak` 是重装保留的恢复点，仅报告不判坏）。
 
 ## 已知边界
 
@@ -96,3 +97,7 @@ MCP 行的 `cwd`/`PYTHONPATH` 从环境变量 `POE_BD_CREATOR_ROOT` 解析，回
   已在行内显式声明。
 - 动态 Cordis 插件（`cordis_define`/`cordis_run`）不是本适配的交付形态，仅适合
   运行时调试；正式能力来自 patch / preset 两层的静态组合。
+- **bundle 转换注意点**：将来把第一层 MCP 行打包为 DSH bundle（
+  `cordis.patch.yml` 插件包，`dsh bundle install`）时，必须从本 preset 移除 4 个
+  MCP 行——同一 `serverName` 在 preset 与 bundle 两处注册会让后加载实例失败。
+  届时 preset 只保留人设/skills，MCP 注册全局由 bundle 承担，二选一，不能并存。

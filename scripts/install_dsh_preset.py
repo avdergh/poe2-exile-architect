@@ -172,12 +172,29 @@ def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
         "patchExists": PATCH_FILE.is_file(),
     }
     if checks["installed"]:
-        checks["frontmatter"] = all(
-            _read(target / "skills" / skill / "SKILL.md").startswith("---")
-            for skill in REQUIRED_SKILLS
-        )
+        try:
+            checks["frontmatter"] = all(
+                _read(target / "skills" / skill / "SKILL.md").startswith("---")
+                for skill in REQUIRED_SKILLS
+            )
+        except OSError:
+            checks["frontmatter"] = False
+    # Swap residue detection: `poe-bd.next` is never legitimate after a
+    # finished install, and a missing target with a leftover `poe-bd.bak`
+    # means a crashed swap that must be restored manually before reinstalling.
+    staging = target.with_name(f"{target.name}.next")
+    backup = target.with_name(f"{target.name}.bak")
+    checks["stagingResidue"] = not staging.exists()
+    if not checks["installed"]:
+        checks["orphanBackup"] = not backup.exists()
+    # A `.bak` beside an installed target is the normal post-reinstall state
+    # (the installer keeps the previous version as a recovery point), so it is
+    # reported but does not gate the status.
+    if backup.exists() and checks["installed"]:
+        checks["backupKept"] = True
+    gated = {key: value for key, value in checks.items() if key != "backupKept"}
     return {
-        "status": "healthy" if all(checks.values()) else "unhealthy",
+        "status": "healthy" if all(gated.values()) else "unhealthy",
         "target": str(target),
         "checks": checks,
     }
