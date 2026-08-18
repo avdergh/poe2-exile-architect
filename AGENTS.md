@@ -374,6 +374,14 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `scripts/package_physical_graph_seed.py`：把最新验证物理图转换为不含绝对路径的发布种子。
 - `scripts/build_codex_plugin.py`：把服务、helper、依赖、语料、Research/graph 种子和 PoB 子集组装为
   自包含 Codex 插件；必要种子缺失时失败关闭。
+- `scripts/adapt_skills_for_dsh.py`：把插件 skills 改写为 DSH 工具前缀与 DSH 说明头，生成
+  `dsh/agent-presets/poe-bd/skills/`；幂等运行，`--check` 同时校验缺失/陈旧文件、裸工具名、
+  旧前缀和重复前缀。
+- `scripts/install_dsh_preset.py`：以 staging + 可恢复 backup 安装、卸载或诊断 DSH `poe-bd`
+  会话 preset 到 `${DSH_HOME}/.agent-presets/poe-bd/`；不触碰宿主组合与随发行版 preset。
+- `dsh/`：DeepSeek Harness 适配层——`poe-bd.mcp.cordis.yml`（四个域 MCP server 的
+  `dsh-mcp-client` 注册 patch）、`agent-presets/poe-bd/`（preset 模板：组合 + 改写 skills）和
+  `README.md`（中文说明）。
 - `data/mature_build_learning/seed_cases.json`：只保存 sanitized seed mature cases。
 - `data/reference_builds.json`：只保存校准摘要，不是模板。
 

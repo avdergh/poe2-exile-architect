@@ -1,0 +1,68 @@
+# DeepSeek Harness overlay: register the four Exile Architect MCP servers.
+#
+# This is the layer-1 adapter. Apply it to any DSH launch:
+#
+#     dsh web --patch <repo>/dsh/poe-bd.mcp.cordis.yml
+#
+# or merge its `- insert:` block into `$DSH_HOME/cordis.patch.yml` (all
+# profiles) or `$DSH_HOME/profiles/<name>/cordis.patch.yml` (one profile) to
+# keep the registration across runs. See dsh/README.md.
+#
+# Tool names appear in the session as `mcp__poe_knowledge__<tool>`,
+# `mcp__poe_build__<tool>`, `mcp__poe_research__<tool>`,
+# `mcp__poe_learning__<tool>`.
+#
+# Paths: each stdio row resolves the repo root from the POE_BD_CREATOR_ROOT
+# environment variable, falling back to the literal checkout path below. The
+# fallback points at this machine's checkout; edit it or export
+# POE_BD_CREATOR_ROOT=<repo-root> on other machines. The command uses the
+# repo-bundled uv (repo mode, same shape as scripts/configure_agent_host.py).
+
+- insert:
+    - id: poe-knowledge-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_knowledge
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        args: [run, python, -m, server.mcp.knowledge_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONUTF8: '1'
+
+    - id: poe-build-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_build
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        args: [run, python, -m, server.mcp.build_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONUTF8: '1'
+
+    - id: poe-research-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_research
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        args: [run, python, -m, server.mcp.research_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONUTF8: '1'
+
+    - id: poe-learning-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_learning
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        args: [run, python, -m, server.mcp.learning_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONUTF8: '1'

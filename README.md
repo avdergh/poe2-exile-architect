@@ -109,6 +109,24 @@ Codex Desktop 的 `poe-bd-research-loop` 需要独立的 `poe-research-orchestra
 该模式不会 pull、clone 或重新链接 skill。注册后需要重启宿主或新建任务以重新发现工具。完整
 客户端路径、配置形状和故障排查见 [多 Agent 安装指南](docs/MULTI_AGENT_INSTALL.md)。
 
+### DeepSeek Harness
+
+DSH 原生内置 MCP client 桥，适配方式与 OpenCode 同构（注册四个域 MCP server）：
+"快速体验"先执行第一层 patch 注册工具，再安装 `poe-bd` 会话 preset 获得人设、四个
+skill 与 MCP 工具集：
+
+```powershell
+dsh web --patch dsh\poe-bd.mcp.cordis.yml          # 第一层：注册 mcp__poe_*__* 工具
+python scripts\install_dsh_preset.py install        # 第二层：安装 poe-bd preset
+python scripts\install_dsh_preset.py doctor         # 诊断
+```
+
+安装后新建 DSH 会话并在预设列表选择 **poe-bd**。换机器时设置
+`POE_BD_CREATOR_ROOT` 或在组合文件里替换路径字面量。四个 skill 由
+`scripts/adapt_skills_for_dsh.py` 从插件源生成（工具名带 `mcp__poe_<server>__`
+前缀）。当前交付已完成静态配置、生成/安装回滚测试和 YAML 解析；真实 DSH 会话启动仍待
+装有 DSH 的环境验收。完整说明见 [dsh/README.md](dsh/README.md)。
+
 ## 快速使用
 
 安装并重启宿主后，可以直接对 Agent 说：
@@ -136,6 +154,7 @@ Codex Desktop 的 `poe-bd-research-loop` 需要独立的 `poe-research-orchestra
 ## 文档
 
 - [多 Agent 安装与验证](docs/MULTI_AGENT_INSTALL.md)
+- [DeepSeek Harness 适配](dsh/README.md)
 - [项目总纲](docs/PROJECT_SPEC.md)
 - [架构说明（中文）](docs/ARCHITECTURE.CN.md) / [Architecture](docs/ARCHITECTURE.md)
 - [核心数据合同](docs/SCHEMAS.md)
@@ -153,6 +172,7 @@ Codex Desktop 的 `poe-bd-research-loop` 需要独立的 `poe-research-orchestra
 | Claude Code | 支持 | Research、Create | 支持 | 可测试 |
 | Cursor | 支持 | Research、Create | 支持 | 可测试 |
 | OpenCode | 支持 | Research、Create | 支持 | 当前优先测试目标 |
+| DeepSeek Harness | 静态适配（patch + preset） | 四个（改写版） | 静态配置完成 | 待 DSH 实机验收 |
 | VS Code Copilot / Gemini / OpenClaw / Hermes | 仅 skill 链接 | Research、Create | 不支持 | 需手工接 MCP，暂不宣称完整可用 |
 | Pi | 未接入 | 未接入 | Pi 需要扩展层 | 暂不支持 |
 
