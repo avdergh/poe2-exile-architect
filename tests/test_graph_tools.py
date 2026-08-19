@@ -273,6 +273,58 @@ def test_resolve_graph_component_returns_ambiguous_with_source_backed_candidates
     assert result["sourceRefs"] == ["fixture:graph_tools"]
 
 
+def test_resolve_graph_component_accepts_component_key_alias():
+    # Safe reviews name components componentKey; the alias must resolve identically to query.
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"componentKey": "Lightning Arrow"},
+    )
+
+    assert result["status"] == "ambiguous"
+    assert {candidate["stableKey"] for candidate in result["facts"]["candidates"]} == {
+        "gem:LightningArrow",
+        "skill:LightningArrowPlayer",
+    }
+
+
+def test_resolve_graph_component_component_key_alias_combines_with_filters():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"componentKey": "Lightning Arrow", "expected_node_types": ["active_skill"]},
+    )
+
+    assert result["status"] == "resolved"
+    assert result["resolvedSubject"]["stableKey"] == "skill:LightningArrowPlayer"
+
+
+def test_resolve_graph_component_rejects_dual_query_spellings():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"query": "Lightning Arrow", "componentKey": "Spark"},
+    )
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+    assert any(
+        "Available payload fields for resolve_graph_component" in caveat
+        for caveat in result["caveats"]
+    )
+
+
+def test_component_key_alias_is_resolve_only():
+    result = _service().run_tool(
+        "search_graph_components",
+        {"componentKey": "Lightning Arrow"},
+    )
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+    assert any(
+        "Available payload fields for search_graph_components" in caveat
+        for caveat in result["caveats"]
+    )
+
+
 def test_resolve_graph_component_filters_candidates_by_expected_node_type():
     result = _service().run_tool(
         "resolve_graph_component",
@@ -875,3 +927,43 @@ def test_resolve_graph_component_batch_rejects_empty_keys():
 
     assert result["status"] == "error"
     assert result["errorCode"] == "invalid_schema"
+
+
+def test_resolve_graph_component_batch_handles_large_key_sets():
+    # Pins the raised cap boundary: exactly 60 keys must pass, 61 must fail (next test).
+    keys = ["skill:LightningArrowPlayer"] * 60
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": keys, "detail": "compact"},
+    )
+
+    assert result["status"] == "ok"
+    assert len(result["facts"]["resolutions"]) == 60
+    assert all(item["status"] == "resolved" for item in result["facts"]["resolutions"])
+
+
+def test_resolve_graph_component_batch_enforces_key_cap():
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": ["skill:LightningArrowPlayer"] * 61, "detail": "compact"},
+    )
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+
+
+def test_resolve_graph_component_batch_full_falls_back_to_compact_on_payload_overflow(
+    monkeypatch,
+):
+    monkeypatch.setattr(gt, "_json_size", lambda payload: 10**9)
+
+    result = _service().run_tool(
+        "resolve_graph_component",
+        {"keys": ["skill:LightningArrowPlayer", "gem:LightningArrow"], "detail": "full"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["facts"]["detail"] == "compact"
+    assert "envelopes" not in result["facts"]
+    assert "payload_limit_truncated" in result["caveats"]
+    assert len(result["facts"]["resolutions"]) == 2

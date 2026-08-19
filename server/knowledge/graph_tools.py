@@ -91,7 +91,7 @@ _CONTEXT_TYPE_TAGS = tuple(
 
 class ResolveGraphComponentInput(StrictModel):
     query: str = Field(default="", max_length=240)
-    keys: list[str] = Field(default_factory=list, max_length=20)
+    keys: list[str] = Field(default_factory=list, max_length=60)
     detail: Literal["full", "compact"] = "full"
     expected_node_types: list[str] = Field(default_factory=list, max_length=12)
     scope: Literal["any", "player"] = "any"
@@ -218,6 +218,29 @@ CONTEXT_POLICIES: dict[str, str] = {
 }
 
 
+def _normalize_resolve_component_key_alias(
+    query_family: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Accept ``componentKey`` (safe-review contract vocabulary) as an alias of ``query``.
+
+    resolve_graph_component's typed schema uses ``query``/``keys``, while safe reviews
+    name components ``componentKey``. Researchers naturally pass ``componentKey`` first
+    and only learn the real fields from a validation error; normalize the alias before
+    schema validation so the first call works. When both ``query`` and ``componentKey``
+    are supplied, leave the payload untouched so the schema rejects the ambiguity loudly
+    (with its available-fields hint) instead of silently preferring one.
+    """
+    if query_family != "resolve_graph_component" or "componentKey" not in payload:
+        return payload
+    normalized = dict(payload)
+    component_key = normalized.pop("componentKey")
+    if normalized.get("query"):
+        normalized["componentKey"] = component_key
+    else:
+        normalized["query"] = component_key
+    return normalized
+
+
 class GraphQueryService:
     """Read-only typed facade over one physical graph snapshot."""
 
@@ -289,6 +312,7 @@ class GraphQueryService:
             )
 
         model_cls = INPUT_MODELS[query_family]
+        payload = _normalize_resolve_component_key_alias(query_family, payload)
         try:
             typed_input = model_cls.model_validate(payload)
         except ValidationError as exc:
@@ -632,17 +656,28 @@ class GraphQueryService:
                     "sourceRefs": list(envelope.get("sourceRefs") or []),
                 }
             )
+        unresolved = [item for item in resolutions if item["status"] != "resolved"]
+        caveats = ["partial_resolution"] if unresolved else []
+        if any(item["status"] == "ambiguous" for item in unresolved):
+            caveats.append("ambiguous_resolution")
         facts: dict[str, Any] = {
             "keys": list(typed_input.keys),
             "detail": typed_input.detail,
             "resolutions": resolutions,
         }
         if typed_input.detail == "full":
-            facts["envelopes"] = {key: envelopes[key] for key in typed_input.keys}
-        unresolved = [item for item in resolutions if item["status"] != "resolved"]
-        caveats = ["partial_resolution"] if unresolved else []
-        if any(item["status"] == "ambiguous" for item in unresolved):
-            caveats.append("ambiguous_resolution")
+            full_facts = {
+                **facts,
+                "envelopes": {key: envelopes[key] for key in typed_input.keys},
+            }
+            if _json_size(full_facts) > MAX_PAYLOAD_BYTES:
+                # Full envelopes exceed the payload budget at this key count; keep the
+                # evidence-preserving compact projection (the four semantic-edge fields
+                # are always retained) and say so explicitly instead of truncating mid-way.
+                facts["detail"] = "compact"
+                caveats.append("payload_limit_truncated")
+            else:
+                facts = full_facts
         aggregate_confidence = min(
             1.0 if item["status"] == "resolved" else 0.5 if item["status"] == "ambiguous" else 0.0
             for item in resolutions

@@ -713,57 +713,65 @@ class DeepResearchRecordProposal(StrictModel):
                 raise ValueError(
                     "typed_payload.gearResponsibilities is only valid on gear_synergy records"
                 )
-            if (
-                not isinstance(gear_responsibilities, list)
-                or not gear_responsibilities
-                or len(gear_responsibilities) > 12
-            ):
+            if not isinstance(gear_responsibilities, list) or len(gear_responsibilities) > 12:
                 raise ValueError(
-                    "typed_payload.gearResponsibilities must be a non-empty list with at most 12 entries"
+                    "typed_payload.gearResponsibilities must be a list with at most 12 entries"
                 )
-            gear_keys = {
-                mention.component_key
-                for mention in self.component_mentions
-                if mention.component_key
-                and mention.role in {"unique_enabler", "gear_base", "weapon_base"}
-            }
-            seen_gear_keys: set[str] = set()
-            for responsibility in gear_responsibilities:
-                if (
-                    not isinstance(responsibility, dict)
-                    or set(responsibility)
-                    != {
-                        "componentKey",
-                        "responsibilityType",
-                        "responsibility",
-                    }
-                    or not isinstance(responsibility.get("componentKey"), str)
-                    or responsibility["componentKey"] not in gear_keys
-                    or responsibility.get("responsibilityType") not in GEAR_RESPONSIBILITY_TYPES
-                    or not isinstance(responsibility.get("responsibility"), str)
-                    or not responsibility["responsibility"].strip()
-                    or len(responsibility["responsibility"]) > 240
-                    or responsibility["componentKey"] in seen_gear_keys
-                ):
-                    unresolved_gear = [
-                        str(mention.component_key or "") or str(mention.candidate_name or "")
-                        for mention in self.component_mentions
-                        if mention.role in {"unique_enabler", "gear_base", "weapon_base"}
-                        and not mention.component_key
-                        and (mention.candidate_name or mention.component_key)
-                    ]
-                    raise ValueError(
-                        "typed_payload.gearResponsibilities entries must reference resolved gear and provide a canonical responsibility type"
-                        + (
-                            "; unresolved gear components: "
-                            + ", ".join(sorted(set(unresolved_gear))[:5])
-                            + " - set resolverQuery to a resolvable query (full stable key, id-mapping, "
-                            "normalized alias, or display name like 'The Hammer of Faith'), not the key tail"
-                            if unresolved_gear
-                            else ""
-                        )
+            if gear_responsibilities:
+                self._validate_gear_responsibilities(gear_responsibilities)
+        return self
+
+    def _validate_gear_responsibilities(self, gear_responsibilities: list[dict[str, Any]]) -> None:
+        """Validate node-referenced gear responsibilities.
+
+        An empty ``gearResponsibilities`` list on a gear_synergy record is the
+        content-based gear path: pure rare/magic gear has no graph node, so its knowledge
+        (slot + target mods + roll pursuit) lives in the record content instead of
+        node-referenced responsibilities. Only non-empty lists reach this validator.
+        """
+        gear_keys = {
+            mention.component_key
+            for mention in self.component_mentions
+            if mention.component_key
+            and mention.role in {"unique_enabler", "gear_base", "weapon_base"}
+        }
+        seen_gear_keys: set[str] = set()
+        for responsibility in gear_responsibilities:
+            if (
+                not isinstance(responsibility, dict)
+                or set(responsibility)
+                != {
+                    "componentKey",
+                    "responsibilityType",
+                    "responsibility",
+                }
+                or not isinstance(responsibility.get("componentKey"), str)
+                or responsibility["componentKey"] not in gear_keys
+                or responsibility.get("responsibilityType") not in GEAR_RESPONSIBILITY_TYPES
+                or not isinstance(responsibility.get("responsibility"), str)
+                or not responsibility["responsibility"].strip()
+                or len(responsibility["responsibility"]) > 240
+                or responsibility["componentKey"] in seen_gear_keys
+            ):
+                unresolved_gear = [
+                    str(mention.component_key or "") or str(mention.candidate_name or "")
+                    for mention in self.component_mentions
+                    if mention.role in {"unique_enabler", "gear_base", "weapon_base"}
+                    and not mention.component_key
+                    and (mention.candidate_name or mention.component_key)
+                ]
+                raise ValueError(
+                    "typed_payload.gearResponsibilities entries must reference resolved gear and provide a canonical responsibility type"
+                    + (
+                        "; unresolved gear components: "
+                        + ", ".join(sorted(set(unresolved_gear))[:5])
+                        + " - set resolverQuery to a resolvable query (full stable key, id-mapping, "
+                        "normalized alias, or display name like 'The Hammer of Faith'), not the key tail"
+                        if unresolved_gear
+                        else ""
                     )
-                seen_gear_keys.add(responsibility["componentKey"])
+                )
+            seen_gear_keys.add(responsibility["componentKey"])
         return self
 
 

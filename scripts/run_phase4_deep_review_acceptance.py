@@ -549,6 +549,7 @@ def accept_deep_review_candidates(
         accepted_records=accepted_record_summaries,
         graph_service=graph_service,
         source_evidence_diagnostics=source_evidence_diagnostics,
+        deep_records=deep_payload.get("deep_research_records") or [],
     )
     deep_payload, accepted_record_summaries, gear_context_deferred = (
         _filter_mechanic_records_without_gear_context(
@@ -556,6 +557,11 @@ def accept_deep_review_candidates(
             deep_payload=deep_payload,
             accepted_records=accepted_record_summaries,
             case_coverage=case_coverage,
+            schema_deferred_records=[
+                item
+                for item in deferred_records
+                if str(item.get("reason") or "") == "invalid_schema"
+            ],
         )
     )
     deferred_records.extend(gear_context_deferred)
@@ -576,6 +582,7 @@ def accept_deep_review_candidates(
             accepted_records=accepted_record_summaries,
             graph_service=graph_service,
             source_evidence_diagnostics=source_evidence_diagnostics,
+            deep_records=deep_payload.get("deep_research_records") or [],
         )
     blocked_pattern_dependencies = _blocked_pattern_dependencies(
         [
@@ -618,6 +625,9 @@ def accept_deep_review_candidates(
     )
     deferred.extend(deferred_records)
     deferred.extend(mechanic_audit_deferred)
+    # Surface schema root causes (invalid_schema) before their dependent deferrals
+    # (e.g. insufficient_gear_context) in the aggregated report; gate semantics untouched.
+    deferred = _root_cause_first_deferred(deferred)
     edge_payload = {
         "schema_version": 4,
         "fragments": [],
@@ -1591,6 +1601,7 @@ def _filter_mechanic_records_without_gear_context(
     deep_payload: dict[str, Any],
     accepted_records: list[dict[str, Any]],
     case_coverage: dict[str, str],
+    schema_deferred_records: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     declared_coverage = review.get("caseCoverage")
     if (
@@ -1599,6 +1610,19 @@ def _filter_mechanic_records_without_gear_context(
         or case_coverage.get("gearRoles") != "evidence_missing"
     ):
         return deep_payload, accepted_records, []
+
+    # A gear_synergy record rejected by schema validation is the root cause of the coverage
+    # gap; reference it so a dependent deferral is not mistaken for an independent failure.
+    root_cause_refs = [
+        {
+            "recordKind": str(item.get("recordKind") or ""),
+            "title": str(item.get("titleZh") or item.get("title") or ""),
+            "sampleId": str(item.get("sampleId") or ""),
+        }
+        for item in schema_deferred_records or []
+        if str(item.get("reason") or "") == "invalid_schema"
+        and str(item.get("recordKind") or "") == "gear_synergy"
+    ]
 
     kept_records: list[dict[str, Any]] = []
     kept_summaries: list[dict[str, Any]] = []
@@ -1617,6 +1641,7 @@ def _filter_mechanic_records_without_gear_context(
                 "sampleId": summary["sampleId"],
                 "reason": "insufficient_gear_context",
                 "componentKeys": summary["componentKeys"],
+                **({"rootCauseRefs": root_cause_refs} if root_cause_refs else {}),
                 "caveats": [
                     "The case has incomplete gear-role evidence. A mechanic chain may otherwise "
                     "generalize an item-specific rule while omitting the item that changes or "
@@ -2065,7 +2090,9 @@ def _build_payload(
                     "caveats": [
                         "Component-level transfer requires explicit gear responsibilities or a "
                         "reviewed not_applicable gear boundary. This prevents an omitted identity "
-                        "item from turning a source-specific mechanism into reusable planner advice."
+                        "item from turning a source-specific mechanism into reusable planner advice.",
+                        "新 Family 首次入库时尤其如此：component 级 transfer 候选需要独立于本案的"
+                        "跨族证据支撑，待后续案例提供后再提出，不能只凭本案例的组件命中。",
                     ],
                     "candidateKind": "build_pattern",
                 }
@@ -2789,7 +2816,11 @@ def _filter_records_with_unsupported_structured_support_packages(
                     "Unsupported pairs: " + pair_summary + ". Fix: move each rejected support into "
                     "the supportPackages entry of the active skill it actually links to in the "
                     "source group (meta hosts must not own the supports of their socketed skill), "
-                    "or remove it from supportPackages and describe it in content only.",
+                    "or remove it from supportPackages and describe it in content only. When the "
+                    "source group truly cannot supply a compatible support, declare the pair in "
+                    "supportCoverageExceptions with reason=source_coverage_gap or "
+                    "not_applicable and explain it in detail there - the declared-exception path, "
+                    "not a silent bypass.",
                 ],
                 "candidateKind": "deep_research_record",
             }
@@ -4262,6 +4293,7 @@ def _evaluate_case_coverage(
     accepted_records: list[dict[str, Any]],
     graph_service: graph_tools.GraphQueryService | None = None,
     source_evidence_diagnostics: dict[str, Any] | None = None,
+    deep_records: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     declared = review.get("caseCoverage")
     advisories: list[str] = []
@@ -4293,7 +4325,9 @@ def _evaluate_case_coverage(
         "passiveAscendancy": _has_explicit_ascendancy_responsibility(
             accepted_records, graph_service=graph_service
         ),
-        "gearRoles": _has_explicit_gear_responsibilities(accepted_records),
+        "gearRoles": _has_explicit_gear_responsibilities(
+            accepted_records, deep_records=deep_records or []
+        ),
         "resourceDefense": bool(record_kinds & {"resource_engine", "defense_engine"}),
     }
     coverage: dict[str, str] = {}
@@ -4627,7 +4661,10 @@ def _has_explicit_ascendancy_responsibility(
     return False
 
 
-def _has_explicit_gear_responsibilities(accepted_records: list[dict[str, Any]]) -> bool:
+def _has_explicit_gear_responsibilities(
+    accepted_records: list[dict[str, Any]],
+    deep_records: list[dict[str, Any]] | None = None,
+) -> bool:
     identity_types = {
         "primary_skill_source",
         "identity_enabler",
@@ -4652,6 +4689,20 @@ def _has_explicit_gear_responsibilities(accepted_records: list[dict[str, Any]]) 
             and str(responsibility.get("responsibility") or "").strip()
             for responsibility in responsibilities
         ):
+            return True
+    # Content-based gear evidence path: a gear_synergy record whose gearResponsibilities is
+    # empty documents gear knowledge in content (slot + target mods + roll pursuit) for
+    # pure rare/magic gear, which has no graph node to reference. It counts as explicit
+    # gear coverage so rare-gear-driven cases are not forced into a record-kind lie or a
+    # permanent evidence_missing cascade. Content is mandatory non-empty on every record,
+    # so an empty responsibilities list is a deliberate declaration of this path.
+    for record in deep_records or []:
+        if str(record.get("record_kind") or "") != "gear_synergy":
+            continue
+        responsibilities = (record.get("typed_payload") or {}).get("gearResponsibilities")
+        if responsibilities:
+            continue
+        if str(record.get("content") or "").strip():
             return True
     return False
 
@@ -4687,15 +4738,26 @@ def _record_kind_advisories(records: list[dict[str, Any]]) -> list[str]:
             # populate; fall back to it only when the primary components view is absent.
             components = item.get("components")
             mentions = item.get("component_mentions") or []
-            has_primary = any(
-                str(component.get("role") or "") == "primary_damage"
-                for component in (components or [])
-            ) or any(str(mention.get("role") or "") == "primary_damage" for mention in mentions)
+            roles = [str(component.get("role") or "") for component in (components or [])] or [
+                str(mention.get("role") or "") for mention in mentions
+            ]
+            has_primary = any(role == "primary_damage" for role in roles)
             if not has_primary:
-                advisories.append(
-                    f"{item.get('title')}: {kind} identity record should declare at least one "
-                    "primary_damage component (family identity = ascendancy + primary-skill set)."
+                # A package whose components are ALL secondary roles (clear/boss/triggered
+                # payload/trigger host) is not identity-anchoring: the contract forbids marking
+                # sub-skills as primary, so it neither needs nor may claim its own
+                # primary_damage declaration. Only identity-relevant packages get the advisory;
+                # genuinely identity-anchoring packages still require a primary declaration.
+                secondary_only = bool(roles) and all(
+                    role in {"clear_skill", "boss_skill", "triggered_payload", "trigger_host"}
+                    for role in roles
                 )
+                if not secondary_only:
+                    advisories.append(
+                        f"{item.get('title')}: {kind} identity record should declare at least one "
+                        "primary_damage component (family identity = ascendancy + primary-skill "
+                        "set; clear/boss/triggered secondary-only packages are exempt)."
+                    )
     return advisories
 
 
@@ -4805,6 +4867,21 @@ def _known_version(value: Any) -> str:
     return "" if normalized.casefold() in {"", "unknown", "none", "null"} else normalized
 
 
+def _root_cause_first_deferred(deferred: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order aggregated deferred candidates so schema root causes surface first.
+
+    ``invalid_schema`` entries are the root causes that cascade into dependent deferrals
+    (e.g. a rejected gear_synergy record flipping gearRoles coverage and deferring
+    mechanic_chains with ``insufficient_gear_context``). Sorting is stable and only affects
+    presentation order: relative order inside each reason and every gate check are
+    untouched.
+    """
+    return sorted(
+        deferred,
+        key=lambda item: 0 if str(item.get("reason") or "") == "invalid_schema" else 1,
+    )
+
+
 def _reason_counts(deferred: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in deferred:
@@ -4854,9 +4931,17 @@ def _load_safe_json(path: Path, *, expected_safe: bool) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # Lead with "file:line:column" so a malformed review is locatable at a glance
+        # (the raw JSONDecodeError text buries the position in a trailing parenthetical).
+        if isinstance(exc, json.JSONDecodeError):
+            location = f"{path}:{exc.lineno}:{exc.colno}"
+            detail = exc.msg
+        else:
+            location = str(path)
+            detail = str(exc)
         raise ValueError(
-            f"safe review file failed to parse as UTF-8 JSON: {path} "
-            f"({type(exc).__name__}: {exc}); if the file carries a UTF-8 BOM, re-save it "
+            f"{location}: safe review file failed to parse as UTF-8 JSON "
+            f"({type(exc).__name__}: {detail}); if the file carries a UTF-8 BOM, re-save it "
             "without BOM (utf-8-sig compatible)"
         ) from exc
     if not isinstance(payload, dict):

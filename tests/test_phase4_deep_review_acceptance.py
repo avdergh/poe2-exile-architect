@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 
+import pytest
+
 from scripts import run_phase4_deep_review_acceptance
 from server.knowledge import graph_tools as gt
 from server.knowledge import mature_learning
@@ -2772,6 +2774,10 @@ def test_structured_support_packages_reject_cross_assigned_multi_active_supports
         (spell_skill, totem_support),
         (totem_skill, spell_support),
     }
+    # The fix caveat must teach the declared-exception path, not just repackaging.
+    assert "supportCoverageExceptions" in deferred[0]["caveats"][1]
+    assert "source_coverage_gap" in deferred[0]["caveats"][1]
+    assert "not_applicable" in deferred[0]["caveats"][1]
 
     record["typed_payload"]["supportPackages"] = [
         {"skillKey": spell_skill, "supportKeys": [spell_support]},
@@ -2933,6 +2939,8 @@ def test_structured_support_package_defer_keeps_lightning_bolt_cdr_rejection(tmp
     assert pair["requiredTypesExpr"] == ["Attack"]
     assert pair["excludedReason"] == "required_types_not_matched"
     assert "attack" not in pair["endpointSkillTypes"]
+    assert "supportCoverageExceptions" in deferred[0]["caveats"][1]
+    assert "source_coverage_gap" in deferred[0]["caveats"][1]
 
 
 def test_source_support_name_match_does_not_collapse_distinct_stable_skill_keys():
@@ -3219,6 +3227,107 @@ def test_identity_gear_responsibility_satisfies_gear_coverage():
     assert coverage["gearRoles"] == "covered"
 
 
+def test_content_based_gear_synergy_counts_as_explicit_gear_coverage():
+    content_gear = {
+        "record_kind": "gear_synergy",
+        "content": "稀有黄装模板：头盔高生命+双抗、身体甲 +技能等级，均 T1 优先。",
+        "typed_payload": {"gearResponsibilities": []},
+    }
+    # Content-based gear evidence (empty responsibilities + non-empty content) counts.
+    assert (
+        run_phase4_deep_review_acceptance._has_explicit_gear_responsibilities(
+            [], deep_records=[content_gear]
+        )
+        is True
+    )
+    # Non-gear records and records with filled responsibilities do not change the rule.
+    assert (
+        run_phase4_deep_review_acceptance._has_explicit_gear_responsibilities(
+            [],
+            deep_records=[{"record_kind": "mechanic_chain", "content": "x", "typed_payload": {}}],
+        )
+        is False
+    )
+    # Without the deep-records view, an empty-responsibilities gear record is not evidence.
+    assert (
+        run_phase4_deep_review_acceptance._has_explicit_gear_responsibilities(
+            [{"recordKind": "gear_synergy", "typedPayload": {"gearResponsibilities": []}}],
+            deep_records=None,
+        )
+        is False
+    )
+
+
+def test_content_gear_record_keeps_mechanic_chain_and_gear_coverage(tmp_path):
+    db_path = tmp_path / "memory.sqlite"
+    review_file = _write_review(
+        tmp_path,
+        filename="content-gear-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            },
+            {
+                "candidateName": "Fixture Support",
+                "componentKey": "support:FixtureSupport",
+                "role": "support_modifier",
+                "resolverQuery": "Fixture Support",
+            },
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["ascendancyKey"] = "ascendancy:ranger:deadeye"
+    review["deepResearchRecords"].append(
+        {
+            "sampleId": "fixture_sample_001",
+            "researchGroupId": "research:fixture_sample_001",
+            "caseRef": "case:fixture-sample-001",
+            "safeEvidenceRef": "safe:fixture-sample-001",
+            "recordKind": "gear_synergy",
+            "title": "稀有黄装模板",
+            "summary": "记录纯稀有装驱动的词条追求，无图节点可引用。",
+            "content": "稀有黄装模板：头盔追求高生命+双抗、身体甲追求 +技能等级，均 T1 优先。",
+            "contentLanguage": "zh-CN",
+            "lengthExceptionReason": None,
+            "components": [
+                {
+                    "candidateName": "Resolved Only",
+                    "componentKey": "skill:ResolvedOnlyPlayer",
+                    "role": "primary_damage",
+                    "resolverQuery": "Resolved Only",
+                }
+            ],
+            "conditions": [],
+            "failureConditions": [],
+            "typedPayload": {"gearResponsibilities": []},
+            "ascendancyKey": "ascendancy:ranger:deadeye",
+            "extractionMethodVersion": "deep_research_mvp_v1",
+            "gamePatch": "0.5.4",
+            "passiveTreeVersion": "0_5",
+            "pobVersionOrCommit": "unknown",
+        }
+    )
+    review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=db_path,
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    assert report["caseCoverage"]["gearRoles"] == "covered"
+    assert not any(
+        item.get("reason") == "insufficient_gear_context" for item in report["deferredCandidates"]
+    )
+    assert report["acceptedDeepRecordCount"] >= 2  # mechanic_chain + content gear_synergy
+
+
 def test_declared_missing_gear_context_defers_mechanic_chain_only():
     deep_payload = {
         "schema_version": 5,
@@ -3264,6 +3373,172 @@ def test_declared_missing_gear_context_defers_mechanic_chain_only():
     ]
     assert [row["recordKind"] for row in kept] == ["skill_package", "resource_engine"]
     assert deferred[0]["reason"] == "insufficient_gear_context"
+
+
+def test_gear_context_deferral_references_schema_root_cause_records():
+    deep_payload = {
+        "schema_version": 5,
+        "deep_research_records": [{"record_kind": "mechanic_chain"}],
+    }
+    summaries = [
+        {
+            "titleZh": "Mechanic",
+            "recordKind": "mechanic_chain",
+            "sampleId": "fixture",
+            "componentKeys": ["skill:Fixture", "unique:Fixture"],
+        }
+    ]
+    schema_deferred = [
+        {
+            "titleZh": "身份装备职责",
+            "recordKind": "gear_synergy",
+            "sampleId": "fixture",
+            "reason": "invalid_schema",
+            "validationIssues": [],
+        },
+        # Non-gear schema failures and non-schema gear deferrals are not root causes of
+        # the gear coverage gap.
+        {
+            "titleZh": "无关记录",
+            "recordKind": "skill_package",
+            "sampleId": "fixture",
+            "reason": "invalid_schema",
+        },
+        {
+            "titleZh": "其它原因",
+            "recordKind": "gear_synergy",
+            "sampleId": "fixture",
+            "reason": "unsupported_structured_skill_support_pair",
+        },
+    ]
+
+    _, _, deferred = (
+        run_phase4_deep_review_acceptance._filter_mechanic_records_without_gear_context(
+            review={"caseCoverage": {"gearRoles": "evidence_missing"}},
+            deep_payload=deep_payload,
+            accepted_records=summaries,
+            case_coverage={"gearRoles": "evidence_missing"},
+            schema_deferred_records=schema_deferred,
+        )
+    )
+
+    assert deferred[0]["reason"] == "insufficient_gear_context"
+    assert deferred[0]["rootCauseRefs"] == [
+        {"recordKind": "gear_synergy", "title": "身份装备职责", "sampleId": "fixture"}
+    ]
+
+
+def test_gear_context_deferral_without_schema_root_cause_omits_root_cause_refs():
+    deep_payload = {
+        "schema_version": 5,
+        "deep_research_records": [{"record_kind": "mechanic_chain"}],
+    }
+    summaries = [
+        {
+            "titleZh": "Mechanic",
+            "recordKind": "mechanic_chain",
+            "sampleId": "fixture",
+            "componentKeys": ["skill:Fixture", "unique:Fixture"],
+        }
+    ]
+
+    _, _, deferred = (
+        run_phase4_deep_review_acceptance._filter_mechanic_records_without_gear_context(
+            review={"caseCoverage": {"gearRoles": "evidence_missing"}},
+            deep_payload=deep_payload,
+            accepted_records=summaries,
+            case_coverage={"gearRoles": "evidence_missing"},
+            schema_deferred_records=[],
+        )
+    )
+
+    assert deferred[0]["reason"] == "insufficient_gear_context"
+    assert "rootCauseRefs" not in deferred[0]
+
+
+def test_root_cause_first_deferred_orders_invalid_schema_before_dependents():
+    deferred = [
+        {"titleZh": "Mechanic", "reason": "insufficient_gear_context"},
+        {"titleZh": "Gear", "reason": "invalid_schema"},
+        {"titleZh": "Other", "reason": "insufficient_gear_context"},
+        {"titleZh": "Pattern", "reason": "supporting_record_deferred"},
+    ]
+
+    ordered = run_phase4_deep_review_acceptance._root_cause_first_deferred(deferred)
+
+    assert [item["reason"] for item in ordered] == [
+        "invalid_schema",
+        "insufficient_gear_context",
+        "insufficient_gear_context",
+        "supporting_record_deferred",
+    ]
+    # Stable ordering inside the same reason.
+    assert ordered[1]["titleZh"] == "Mechanic"
+    assert ordered[2]["titleZh"] == "Other"
+
+
+def test_load_safe_json_reports_line_column_location_first(tmp_path):
+    bad = tmp_path / "broken-review.json"
+    bad.write_text(
+        '{\n  "safeArtifactOnly": true,\n  "candidateReviews": }',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        run_phase4_deep_review_acceptance._load_safe_json(bad, expected_safe=False)
+
+    message = str(excinfo.value)
+    assert message.startswith(f"{bad}:3:"), message
+    assert "failed to parse as UTF-8 JSON" in message
+
+
+def test_component_transfer_without_gear_evidence_defers_with_first_intake_caveat(tmp_path):
+    db_path = tmp_path / "memory.sqlite"
+    review_file = _write_review(
+        tmp_path,
+        filename="transfer-without-gear-review.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            },
+            {
+                "candidateName": "Fixture Support",
+                "componentKey": "support:FixtureSupport",
+                "role": "support_modifier",
+                "resolverQuery": "Fixture Support",
+            },
+        ],
+        include_deep_record=True,
+        candidate_overrides={
+            "transferScope": "component",
+            "transferRationale": "The package depends on skill/support compatibility, not ascendancy.",
+            "applicabilityRequirements": ["The active skill can use this support behavior."],
+            "exclusionConditions": ["Do not use when support legality fails."],
+        },
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["ascendancyKey"] = "ascendancy:ranger:deadeye"
+    review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=db_path,
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+    )
+
+    transfer_deferred = [
+        item
+        for item in report["deferredCandidates"]
+        if item.get("reason") == "insufficient_transfer_evidence"
+    ]
+    assert transfer_deferred, report["deferredCandidates"]
+    assert any("首次入库" in caveat for caveat in transfer_deferred[0]["caveats"])
+    assert not report["acceptedTransferCandidateCount"]
 
 
 def test_pattern_cannot_bypass_a_deferred_mechanic_record(tmp_path):
@@ -5214,6 +5489,32 @@ def test_record_kind_advisory_checks_skill_package_without_knowledge_shape():
     )
 
     assert any("primary_damage component" in item for item in advisories)
+
+
+def test_record_kind_advisory_exempts_secondary_only_packages():
+    advisories = run_phase4_deep_review_acceptance._record_kind_advisories(
+        [
+            {
+                "recordKind": "skill_package",
+                "title": "副技能包",
+                "typedPayload": {},
+                "components": [
+                    {"componentKey": "skill:ClearPlayer", "role": "clear_skill"},
+                    {"componentKey": "skill:BossPlayer", "role": "boss_skill"},
+                    {"componentKey": "skill:TriggeredPlayer", "role": "triggered_payload"},
+                ],
+            },
+            {
+                "recordKind": "skill_package",
+                "title": "身份包",
+                "typedPayload": {},
+                "components": [{"componentKey": "skill:GenPlayer", "role": "generator"}],
+            },
+        ]
+    )
+    primary_notes = [item for item in advisories if "primary_damage component" in item]
+    assert not any("副技能包" in item for item in primary_notes)
+    assert any("身份包" in item for item in primary_notes)
 
 
 def test_source_skill_diagnostics_dispositions_and_internal_id_exemption(tmp_path):

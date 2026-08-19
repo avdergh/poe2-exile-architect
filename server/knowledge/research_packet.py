@@ -251,7 +251,9 @@ def jewel_counts(
     separately. ``allocated`` covers only the active spec. Derived view, never persisted:
     computed from the same raw XML ``_packet_sections`` parses, so safeHash is unaffected
     and old packets compute it identically. Callers that already parsed ``_packet_sections``
-    may pass ``sections`` to avoid re-parsing.
+    may pass ``sections`` to avoid re-parsing. ``countNotes`` explains how the four counts
+    relate (active-spec scope, tree vs equipment sockets, and the allocated-without-socketed
+    gap) so consumers do not have to reconcile them manually.
     """
     normalized = _unwrap_packet(packet)
     if sections is None:
@@ -281,11 +283,38 @@ def jewel_counts(
             root = None
         if root is not None:
             status = _tree_metadata_status(root)
+    notes: list[str] = []
+    if status != "ok":
+        notes.append(
+            "counts may be unreliable: passive-tree node metadata or the jewel socket mapping "
+            "is unavailable for this packet"
+        )
+    if allocated:
+        notes.append(
+            "allocatedJewelSocketCount counts only the active passive spec's allocated "
+            "jewel-socket nodes"
+        )
+    if tree_socketed:
+        notes.append(
+            "treeSocketedJewelCount counts jewels whose source socket is a passive-tree "
+            "socket (resolved from the tree <Sockets> mapping)"
+        )
+    if embedded:
+        notes.append(
+            "embeddedJewelCount counts jewels in equipment jewel sockets of the active item "
+            "set; an embedded jewel cannot fill an empty tree socket"
+        )
+    if allocated and tree_socketed < allocated:
+        notes.append(
+            f"{allocated - tree_socketed} allocated tree socket(s) carry no socketed tree "
+            "jewel (empty or extraction gap); the review must declare the jewel state"
+        )
     return {
         "allocatedJewelSocketCount": allocated,
         "treeSocketedJewelCount": tree_socketed,
         "embeddedJewelCount": embedded,
         "socketedJewelCount": tree_socketed + embedded,
+        "countNotes": notes,
         "status": status,
     }
 
@@ -429,6 +458,7 @@ def read_packet_section(
             "complete": next_cursor is None,
             "noRawMatureBuildMaterial": True,
         }
+        _attach_continuity_warning(result, start=start, limit=page_size, next_cursor=next_cursor)
         result["advisories"] = _cross_axis_advisories(packet)
         return result
     items = _packet_sections(_unwrap_packet(packet))[normalized_section]
@@ -453,9 +483,19 @@ def read_packet_section(
         "complete": next_cursor is None,
         "noRawMatureBuildMaterial": True,
     }
+    _attach_continuity_warning(result, start=start, limit=page_size, next_cursor=next_cursor)
     if normalized_section in {"passives", "gear", "skills"}:
         result["advisories"] = [*_cross_axis_advisories(packet), *jewel_advisories(packet)]
     return result
+
+
+def _attach_continuity_warning(
+    result: dict[str, Any], *, start: int, limit: int, next_cursor: int | None
+) -> None:
+    """Attach ``continuityWarning`` (only when the character budget truncated the page)."""
+    warning = _continuity_warning(start=start, limit=limit, next_cursor=next_cursor)
+    if warning:
+        result["continuityWarning"] = warning
 
 
 def _filter_passive_items(items: list[dict[str, Any]], node_type: str) -> list[dict[str, Any]]:
@@ -989,6 +1029,24 @@ def _bounded_page(
         page.append(items[index])
         index += 1
     return page, index if index < len(items) else None
+
+
+def _continuity_warning(*, start: int, limit: int, next_cursor: int | None) -> str | None:
+    """Return an explicit warning when the character budget truncated a page.
+
+    ``_bounded_page`` stops as soon as the next item would exceed the response budget, so
+    a page can return fewer than ``limit`` items with ``complete=false`` and a
+    ``nextCursor`` strictly below ``cursor + limit``. Callers that resume at
+    ``cursor + limit`` (instead of the returned ``nextCursor``) silently skip the items in
+    between; the warning makes that failure mode visible instead of silent.
+    """
+    if next_cursor is None or next_cursor >= start + limit:
+        return None
+    return (
+        f"page truncated by the response character budget: {next_cursor - start} of up to "
+        f"{limit} item(s) fit this page (cursor {start} -> nextCursor {next_cursor}). Resume "
+        "at nextCursor only — never at cursor+limit, which would skip the truncated items."
+    )
 
 
 def _truncate_item(item: dict[str, Any]) -> dict[str, Any]:

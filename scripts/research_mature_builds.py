@@ -407,7 +407,11 @@ def claim_case(
     _init_db(db_path)
     now = _now()
     expires = now + timedelta(seconds=max(1, int(lease_seconds or 1)))
-    lease_token = secrets.token_urlsafe(32)
+    # token_urlsafe's alphabet includes "-", so a token can start with "-" and argparse would
+    # treat a "--lease-token <value>" value as a new option ("expected one argument"). Prefix a
+    # letter so every generated token is argparse-safe; main() additionally rewrites legacy
+    # dash-leading values into the equals form.
+    lease_token = "t" + secrets.token_urlsafe(32)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
@@ -871,19 +875,25 @@ def render_review_contract(
             "non-Family-core skill groups must be reviewed rather than silently dropped; package their supports when a durable conclusion depends on that ownership, otherwise preserve the low-impact/unresolved boundary in content, caveats, or verification tasks",
             "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
             "any unresolved count requires a per-name search_graph_components before declaring a source gap",
-            "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity)",
+            "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity; clear/boss/triggered secondary-only packages are exempt)",
         ],
         "rules": [
             "只能使用 allowedValues 中的枚举；不得自造 role、axis 或 patternType。",
             "artifactIdentity、sampleId、researchGroupId、caseRef、safeEvidenceRef 和版本字段由当前 lease 注入；不要在记录或候选中重复抄写。",
             "role 表达组件在 BD 中的功能；节点类型由 resolver 证明，并按 componentRoleNodeTypeCompatibility 检查。",
-            "同一 researchGroupId 的记录必须使用同一个 ascendancyKey，并且只把一个核心主技能标为 primary_damage。",
+            "primary_damage 是唯一的主输出角色，两条规则互补而非重复：①记录级——每个 "
+            "skill_package / mechanic_chain 身份记录必须声明至少一个 primary_damage 组件，否则无法"
+            "锚定 Family 身份；②组级——同一 researchGroupId 的记录必须使用同一个 ascendancyKey，且"
+            "该组 primary_damage 集合应恰好等于该 BD 真正的主输出技能集合：同一 BD 有多个主输出时"
+            "全部声明（集合语义，合法），clear_skill / boss_skill / triggered_payload 等副技能和 "
+            "trigger_host 不得标为 primary_damage；组件全是 clear/boss/triggered/trigger_host 的"
+            "纯副技能包不需要自己的 primary_damage 声明；标错集合会产生 sibling Family。",
             "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 归档。Family identity key 只由升华与 primary_damage 技能集合决定；clear_skill、boss_skill、triggered_payload 自动进入 Family 核心副技能元数据但不改变 key。trigger_host 不自动进入该元数据（换宿主视为变体），需要保留为 Family-core 时必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会授权 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
             "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发；被拒的 unsupportedPairs 会带 triggeringSegment 引用触发句，先改句再重验。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
-            "gearRoles covered 必须有 gear_synergy，并在 typedPayload.gearResponsibilities 说明已解析武器/暗金的具体职责；只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
+            "gearRoles covered 必须有 gear_synergy：已解析武器/暗金在 typedPayload.gearResponsibilities 写明具体职责；纯稀有/魔法装（无图节点）留空 gearResponsibilities 并在 content 写明槽位+目标词条+档位追求，即为 content 型装备证据（该记录仍须含 ≥1 已解析组件作锚点）。只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
             "gearRoles 为 evidence_missing 时，accept 会暂缓 mechanic_chain 和 component transfer，避免遗漏身份装备后把实例机制写成通用知识；补齐装备职责或确认 not_applicable 后再提交。",
             "若装备分区显示 itemStates 包含 mutated，依赖该随机实例的记录写 availability=source_specific_random，并在 sourceSpecificComponentKeys 指出对应装备。该知识只解释本案，不进入常规 Create 召回或 planner pattern。",
             "依赖随机实例的 candidateReview 也写 availability=source_specific_random，并在 sourceSpecificComponentNames 精确指出对应组件。accept 只用这些组件建立 observation 索引；组件无法解析时保留无组件索引的案例备注，不生成 planner pattern。",
@@ -1060,7 +1070,9 @@ def accept_case(
     )
     accept_dir.mkdir(parents=True, exist_ok=True)
     _begin_accepting(db_path, row=row, lease_token=lease_token)
-    slug = f"{_slug(sample_id)}-{lease_token[:12]}"
+    # Same lease reference normalization as _suggested_review_file so the acceptance artifact
+    # basename and the review basename derive from the identical slug.
+    slug = f"{_slug(sample_id)}-{_slug(lease_token)[:12]}"
     try:
         report = acceptance.accept_deep_review_candidates(
             db_path=Path(memory_db_path),
@@ -2864,6 +2876,7 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
 def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "acceptanceMode": legacy_batch._safe_text(report.get("acceptanceMode")),
+        "deferredReasonCounts": dict(report.get("deferredReasonCounts") or {}),
         "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
@@ -3367,8 +3380,10 @@ supportCoverageExceptions 保存精确归属；低影响、内部 id、multi-act
 批量 resolve 与精简视图用于降低上下文成本；优先把精力用于构筑身份、因果链和失败条件。
 
 ## Evidence First
-先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；complete=false
-时继续使用 nextCursor。jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对照）；search 只能定位
+先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；
+complete=false 时用上一页响应的 nextCursor 续页（不要用 cursor+limit 自算：字符预算截断时实返
+数量会少于请求 limit，自算会跳过中间条目；响应出现 continuityWarning 时尤其如此）。
+jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对照）；search 只能定位
 具体线索，不能替代完整分区读取。
 技能、天赋和装备效果必须来自当前案例证据或工具事实；允许保留有价值的推断，但必须明确标为推断，
 不能把模型记忆中的免疫、转换、触发或缩放效果写成已证实事实。
@@ -3442,7 +3457,8 @@ graph 等独立佐证。
   14. Family 身份决策清单：Family 身份 = 升华 + 主输出技能集合（role=primary_damage 的
       skill 组件，可多个；CoC/Spellslinger 等触发宿主、clear_skill / boss_skill /
       triggered_payload 自动副技能一律不参与身份）。skill_package / mechanic_chain
-      记录必须声明至少一个 primary_damage 组件；同一 BD 的多个主输出技能都要声明。
+      记录必须声明至少一个 primary_damage 组件；同一 BD 的多个主输出技能都要声明；
+      纯副技能包（组件全是 clear/boss/triggered/trigger_host）不需要自己的 primary_damage。
       身份相同的档案会自动归入既有 Family（无需也不得新建 sibling 档案）。
   15. 语义边闭环：每案至少提交 2 条 resolver-backed semantic edge 写入 review.semanticEdges
       （edge_type 限 enables_mechanic / scales_with / mitigates_weakness_of /
@@ -3712,6 +3728,33 @@ def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _rewrite_lease_token_argv(argv: list[str] | None) -> list[str] | None:
+    """Rewrite ``--lease-token <value>`` into the equals form when the value starts with ``-``.
+
+    argparse treats a ``-``-leading option value as a new option, so legacy dash-leading
+    lease tokens would fail with "expected one argument". Only ``--lease-token`` is
+    rewritten (never other options, whose dash-leading values must keep failing loudly);
+    ``None`` and already-equals-form arguments pass through untouched.
+    """
+    if argv is None:
+        return None
+    out: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if (
+            arg == "--lease-token"
+            and index + 1 < len(argv)
+            and str(argv[index + 1]).startswith("-")
+        ):
+            out.append(f"--lease-token={argv[index + 1]}")
+            index += 2
+            continue
+        out.append(arg)
+        index += 1
+    return out
+
+
 def _runtime_failure_payload(command: str | None, exc: Exception) -> dict[str, Any]:
     status = "collector_failed" if command == "queue" else "runtime_failed"
     safe_error = legacy_batch._safe_error(str(exc))
@@ -3943,7 +3986,7 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status")
     _add_queue_location_args(status_parser)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_rewrite_lease_token_argv(argv))
     try:
         if args.command == "queue":
             run_id, output_dir = _queue_cli_output_dir(args)

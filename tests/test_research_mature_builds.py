@@ -613,6 +613,50 @@ def test_queue_status_returns_persisted_intake_ledger_summary_and_tolerates_old_
     assert legacy_status["intakeLedgerSource"] == "live"
 
 
+def test_research_quality_summary_persists_deferred_reason_counts_for_status(tmp_path):
+    from scripts import research_mature_builds
+
+    summary = research_mature_builds._research_quality_summary(
+        {
+            "acceptanceMode": "partial_with_deferred",
+            "deferredReasonCounts": {"invalid_schema": 1, "insufficient_gear_context": 2},
+        }
+    )
+    assert summary["deferredReasonCounts"] == {
+        "invalid_schema": 1,
+        "insufficient_gear_context": 2,
+    }
+
+    # The stored summary is merged into every per-sample status row, so the reason
+    # breakdown survives the accept -> status round trip without any schema change.
+    db_path = tmp_path / "queue-status-deferred.sqlite"
+    research_mature_builds._init_db(db_path)
+    now = "2026-08-18T00:00:00+00:00"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO cases (
+                sample_id, status, source_type, source_hash, source_hash_ref, league,
+                level, class_name, ascendancy, main_skill, safe_error, packet_id,
+                packet_safe_hash, created_at, updated_at, research_quality_summary
+            ) VALUES (?, 'accepted', 'local', 'h', 'h', 'runesofaldur', 97, 'Witch',
+                'Abyssal Lich', 'Thrashing Vines', '', 'p', 's', ?, ?, ?)
+            """,
+            (
+                "case:deferred-snapshot",
+                now,
+                now,
+                json.dumps(summary, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        conn.commit()
+    rows = research_mature_builds._fetch_cases(db_path)
+    assert rows[0]["deferredReasonCounts"] == {
+        "invalid_schema": 1,
+        "insufficient_gear_context": 2,
+    }
+
+
 def test_queue_cli_stops_when_live_source_has_no_usable_samples(tmp_path, capsys, monkeypatch):
     from scripts import research_mature_builds
 
@@ -1032,6 +1076,79 @@ def test_init_review_cli_returns_safe_bounded_metadata(tmp_path, capsys):
     assert payload["status"] == "initialized"
     assert payload["reviewFile"] == claimed["reviewFile"]
     assert payload["noRawMatureBuildMaterial"] is True
+    _assert_safe_payload(payload, tmp_path.parent)
+
+
+def test_claim_lease_token_is_argparse_safe(tmp_path):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-lease-token-prefix",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    token = claimed["leaseToken"]
+    assert token[0].isalnum(), "lease token must never start with '-' (argparse option clash)"
+    # urlsafe alphabet + a letter prefix keeps the token slug-stable for review/acceptance names.
+    assert research_mature_builds._slug(token) == token
+
+
+def test_lease_token_argv_rewrite_only_touches_lease_token():
+    from scripts import research_mature_builds
+
+    rewritten = research_mature_builds._rewrite_lease_token_argv(
+        ["read", "--output-dir", "r", "--lease-token", "-dash-led", "--section", "skills"]
+    )
+    assert rewritten == [
+        "read",
+        "--output-dir",
+        "r",
+        "--lease-token=-dash-led",
+        "--section",
+        "skills",
+    ]
+    # Equals-form and non-lease options must pass through untouched.
+    assert research_mature_builds._rewrite_lease_token_argv(
+        ["read", "--lease-token=-abc", "--section", "skills"]
+    ) == ["read", "--lease-token=-abc", "--section", "skills"]
+    untouched = research_mature_builds._rewrite_lease_token_argv(
+        ["read", "--output-dir", "-weird-dir", "--section", "skills"]
+    )
+    assert untouched == ["read", "--output-dir", "-weird-dir", "--section", "skills"]
+    assert research_mature_builds._rewrite_lease_token_argv(None) is None
+
+
+def test_read_cli_parses_dash_leading_lease_token_without_argparse_error(tmp_path, capsys):
+    from scripts import research_mature_builds
+
+    # A dash-leading token must reach lease validation (and fail there as a safe JSON error),
+    # never be rejected by argparse as "expected one argument".
+    code = research_mature_builds.main(
+        [
+            "read",
+            "--output-dir",
+            str(tmp_path / "research"),
+            "--lease-token",
+            "-dash-led-token",
+            "--section",
+            "skills",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert code == 1
+    assert payload["status"] == "runtime_failed"
+    assert "expected one argument" not in captured.out
+    assert "expected one argument" not in captured.err
     _assert_safe_payload(payload, tmp_path.parent)
 
 
@@ -2352,6 +2469,9 @@ def test_research_packet_captures_tree_jewels_via_sockets_mapping():
     assert counts["treeSocketedJewelCount"] == 1
     assert counts["embeddedJewelCount"] == 0
     assert counts["socketedJewelCount"] == 1
+    assert isinstance(counts["countNotes"], list)
+    assert any("active passive spec" in note for note in counts["countNotes"])
+    assert any("tree socket" in note for note in counts["countNotes"])
     assert research_packet.jewel_advisories(packet, sections=sections) == []
     assert len(sections["jewels"]) == 1
     assert sections["jewels"][0]["name"] == "Rapture Curio"
@@ -2399,6 +2519,8 @@ def test_research_packet_jewel_counts_counts_embedded_item_sockets():
     assert counts["treeSocketedJewelCount"] == 0
     assert counts["embeddedJewelCount"] == 1  # only the active item set's embedded jewel
     assert counts["socketedJewelCount"] == 1
+    assert any("equipment jewel socket" in note for note in counts["countNotes"])
+    assert any("cannot fill an empty tree socket" in note for note in counts["countNotes"])
     # Empty tree socket with only embedded jewels still needs a declaration.
     assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
 
@@ -2428,6 +2550,7 @@ def test_research_packet_jewel_counts_allocated_scope_is_active_spec_only():
     assert counts["status"] == "ok"
     assert counts["allocatedJewelSocketCount"] == 2  # active spec 2 only
     assert counts["treeSocketedJewelCount"] == 0
+    assert any("carry no socketed tree jewel" in note for note in counts["countNotes"])
     assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
 
 
@@ -3159,6 +3282,51 @@ def test_read_packet_section_skill_groups_from_rich_xml():
         str(item["activeSkills"][0]["name"]) for item in groups["items"] if item["activeSkills"]
     }
     assert {"Plasma Blast", "Bonestorm", "Blasphemy"} <= active_names
+
+
+def test_read_packet_section_continuity_warning_and_gap_free_chaining():
+    from server.knowledge import research_packet
+
+    # A 20k-char modifier guarantees the character budget truncates any page that contains it,
+    # which used to make callers that resume at cursor+limit silently skip items.
+    huge_mod = "X" * 20_000
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="1"><Spec treeVersion="0_5" nodes=""></Spec></Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nSmall Helm\nIron Circlet\nItem Level: 82\n+10 to maximum Life</Item>
+    <Item id="2">Rarity: RARE\nBig Body\nPlate Vest\nItem Level: 82\n{huge_mod}</Item>
+    <Item id="3">Rarity: RARE\nSmall Boots\nWool Shoes\nItem Level: 82\n+10% increased Movement Speed</Item>
+    <ItemSet id="1">
+      <Slot name="Helmet" itemId="1" />
+      <Slot name="Body Armour" itemId="2" />
+      <Slot name="Boots" itemId="3" />
+    </ItemSet>
+  </Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+
+    seen: list[str] = []
+    cursor = 0
+    warning_count = 0
+    while True:
+        page = research_packet.read_packet_section(packet, section="gear", cursor=cursor, limit=50)
+        assert page["status"] == "ok"
+        seen.extend(str(item.get("name") or "") for item in page["items"])
+        if "continuityWarning" in page:
+            warning_count += 1
+            assert page["nextCursor"] < cursor + page["limit"]
+            assert "never at cursor+limit" in page["continuityWarning"]
+        if page["complete"]:
+            break
+        cursor = page["nextCursor"]
+
+    # Chaining by nextCursor covers every item exactly once, with no gaps and no overlaps.
+    assert sorted(seen) == ["Big Body", "Small Boots", "Small Helm"]
+    assert len(seen) == len(set(seen))
+    assert warning_count >= 1
 
 
 def test_is_pure_routing_passive():
