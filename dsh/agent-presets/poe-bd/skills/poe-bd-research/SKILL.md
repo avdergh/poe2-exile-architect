@@ -74,17 +74,24 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 queue 前一次性解析并冻结：
 
-1. `repoRoot` 优先取安装器管理的任一 `poe-*-mcp` cwd；否则取 `POE_BD_CREATOR_DIR`，再否则从当前
-   Skill 的真实路径向上查找。候选必须同时有 `pyproject.toml`、`server/main.py` 和
-   `scripts/research_mature_builds.py`；缺失或歧义时停止，不能猜 cwd 或全盘搜索。
-2. `uvCommand` 优先复用同一 MCP 条目的 uv 命令；否则按 `repoRoot/.tools/uv/uv.exe`、
-   `repoRoot/.tools/uv/uv`、PATH uv 的顺序解析为绝对路径。不得把 Codex bundle 的 node launcher
-   当成 uv。
-3. 冻结 `researchCliArgv` 为以下绝对 argv 数组，不存成 shell 字符串：
+1. `runtimeRoot` 优先取安装器管理的任一 `poe-*-mcp` cwd；否则取 `POE_BD_CREATOR_DIR`，再否则从当前
+   Skill 的真实路径向上查找。候选必须包含 `server/main.py` 和 `scripts/research_mature_builds.py`，且
+   是带 `pyproject.toml` 的源码仓库，或带 `.codex-plugin/plugin.json` 与
+   `scripts/run_plugin_server.mjs` 的自包含插件；缺失或歧义时停止，不能猜 cwd 或全盘搜索。
+2. 源码仓库按 `runtimeRoot/.tools/uv/uv.exe`、`runtimeRoot/.tools/uv/uv`、PATH uv 解析，冻结为：
 
    ```text
-   [uvCommand, "run", "--project", repoRoot, "python", repoRoot/scripts/research_mature_builds.py]
+   [uvCommand, "run", "--project", runtimeRoot, "python", runtimeRoot/scripts/research_mature_builds.py]
    ```
+
+   自包含插件复用 MCP 已注册的 Node，或从 PATH 解析 Node，冻结为：
+
+   ```text
+   [nodeCommand, runtimeRoot/scripts/run_plugin_server.mjs, "--research-cli"]
+   ```
+
+3. `researchCliArgv` 必须是上述绝对 argv 数组之一，不存成 shell 字符串。Node 只作为插件官方 Python
+   启动器，不把它当成 uv；对应入口或解释器不可用时停止。
 
 内部执行或派发时保持元素边界，路径含空格也不得重新拆分。
 

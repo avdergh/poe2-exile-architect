@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import ModuleType
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +37,30 @@ def test_codex_plugin_registers_self_contained_mcp_runtime() -> None:
         assert server["args"] == ["./scripts/run_plugin_server.mjs", "--server", *args]
     assert (plugin_root / "scripts" / "run_plugin_server.mjs").is_file()
     assert (plugin_root / "scripts" / "run_plugin_server.py").is_file()
+
+
+def test_self_contained_launcher_dispatches_research_cli(monkeypatch) -> None:
+    launcher = ROOT / "poe-bd-creator-plugin" / "scripts" / "run_plugin_server.py"
+    spec = spec_from_file_location("test_plugin_launcher", launcher)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    package = ModuleType("scripts")
+    research_cli = ModuleType("scripts.research_mature_builds")
+    received: list[str] = []
+
+    def fake_main(argv: list[str]) -> int:
+        received.extend(argv)
+        return 17
+
+    research_cli.main = fake_main  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "scripts", package)
+    monkeypatch.setitem(sys.modules, "scripts.research_mature_builds", research_cli)
+    monkeypatch.setattr(module.sys, "argv", [str(launcher), "--research-cli", "status", "--x"])
+
+    assert module.main() == 17
+    assert received == ["status", "--x"]
 
 
 def test_codex_distribution_requires_helper_and_release_databases() -> None:

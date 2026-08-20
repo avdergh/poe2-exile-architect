@@ -2369,10 +2369,17 @@ def _refresh_packet_expiry(
         if str(payload.get("safeHash") or "") != str(packet_safe_hash):
             continue
         payload["expiresAt"] = expires_iso
-        packet_path.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
+        staging_path = packet_path.with_name(
+            f".{packet_path.name}.{secrets.token_hex(8)}.tmp"
         )
+        try:
+            staging_path.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(staging_path, packet_path)
+        finally:
+            staging_path.unlink(missing_ok=True)
         return True
     return False
 
@@ -2451,9 +2458,9 @@ def _rebuild_packet_for_claim(
 def _quarantine_dir(output_root: Path) -> Path:
     """Return the run-local quarantine directory for raw source material.
 
-    This is intentionally separate from the transient OS temp packet root: the quarantine
-    lives next to the queue db inside the run directory (gitignored, removed with the run),
-    so a lost or expired packet can be rebuilt from it while the case is still queued.
+    Quarantine and lease packets use separate subtrees inside the private run directory
+    (gitignored and removed with the run), so a lost or expired packet can be rebuilt from
+    quarantine while the case is still queued.
     """
     return Path(output_root) / "quarantine"
 
@@ -2924,7 +2931,7 @@ def _queue_report(
         "noRawMatureBuildMaterial": True,
         "caveats": [
             "The queue stores only safe metadata, leases, and packet safe hashes.",
-            "Raw mature build material exists only in run-local quarantine and transient OS temp packets.",
+            "Raw mature build material exists only in run-local quarantine and lease-bound transient packets.",
             "Use inspect/read/search from the active lease to read bounded structured evidence.",
             "This script does not call any OpenAI, Claude, Gemini, or other model provider API.",
             *([level_bias_note] if level_bias_note else []),
@@ -3797,11 +3804,13 @@ def _known_version(value: Any) -> str:
 
 
 def _effective_temp_root(temp_root: str | Path | None, *, output_root: Path) -> Path:
-    root = (
-        Path(temp_root)
-        if temp_root is not None
-        else Path(tempfile.gettempdir()) / DEFAULT_TEMP_DIRNAME
-    )
+    if temp_root is None:
+        # Controller and Worker subprocesses share the run directory, while sandboxed Workers
+        # may not be allowed to read the Controller's OS temp directory. The run is already a
+        # private raw-bearing quarantine boundary and cleanup removes it as one unit, so keep
+        # the default lease packet in a separate private subtree of that same boundary.
+        return (Path(output_root) / DEFAULT_TEMP_DIRNAME).resolve()
+    root = Path(temp_root)
     resolved_root = root.resolve()
     if _is_relative_to(resolved_root, output_root.resolve()):
         raise ValueError("temp_root must not be inside the durable output_dir")

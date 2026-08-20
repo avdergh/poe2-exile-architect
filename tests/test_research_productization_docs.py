@@ -263,6 +263,10 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "worker_assignment_missing" in worker
     assert "researchCliArgv" not in worker
     assert "macOS/Linux" in worker
+    assert "run_plugin_server.mjs" in controller
+    assert "--research-cli" in controller
+    assert "run_plugin_server.mjs" in worker
+    assert "--research-cli" in worker
     assert "claim --output-dir <runDir>" in worker
     assert "不得自行发现其他仓库、创建/恢复 queue" in worker
     assert "只处理一个 claim" in worker

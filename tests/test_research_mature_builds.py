@@ -94,6 +94,15 @@ def test_queue_cli_allocates_a_distinct_default_run_directory_per_invocation(
         assert run_dir.parent.parent == tmp_path / ".poe-bd-research"
         assert (run_dir / research_mature_builds.QUEUE_DB_FILENAME).exists()
         assert research_mature_builds.queue_status(output_dir=run_dir)["queuedCount"] == 1
+        packet_root = run_dir / research_mature_builds.DEFAULT_TEMP_DIRNAME
+        assert list(packet_root.glob("poe-bd-creator-research-packet-*/packet.json"))
+        claim = research_mature_builds.claim_case(output_dir=run_dir, lease_seconds=1800)
+        inspected = research_mature_builds.inspect_case(
+            output_dir=run_dir,
+            lease_token=claim["leaseToken"],
+        )
+        assert inspected["status"] == "ok"
+        assert inspected["sampleId"] == claim["sampleId"]
 
 
 def test_queue_refuses_to_overwrite_an_existing_queue(tmp_path):
@@ -3257,6 +3266,42 @@ def test_cleanup_expired_packets_removes_expired_packets(tmp_path):
     assert list(temp_root.glob("poe-bd-creator-research-packet-*"))  # packet2 survives
 
 
+def test_packet_publication_hides_incomplete_staging_directory(tmp_path, monkeypatch):
+    from server.knowledge import research_packet
+
+    temp_root = tmp_path / "packets"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    real_write_text = Path.write_text
+    staging_names: list[str] = []
+
+    def reject_restrictive_mkdtemp(*args, **kwargs):
+        raise AssertionError("packet staging must inherit the private run root ACL")
+
+    def write_while_cleanup_runs(path: Path, data: str, **kwargs):
+        if path.name == "packet.json" and path.parent.parent == temp_root:
+            staging_names.append(path.parent.name)
+            assert path.parent.name.startswith(f".{research_packet.PACKET_PREFIX}")
+            assert research_packet.cleanup_expired_packets(temp_root=temp_root)["removed"] == 0
+        return real_write_text(path, data, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_while_cleanup_runs)
+    monkeypatch.setattr(research_packet.tempfile, "mkdtemp", reject_restrictive_mkdtemp)
+    result = research_packet.build_research_packet(
+        {"safeMetadata": {}, "rawContext": {}},
+        persist_for_transport=True,
+        ttl_seconds=3600,
+        temp_root=temp_root,
+    )
+
+    packet_path = Path(result["packetPath"])
+    assert packet_path.is_file()
+    assert packet_path.parent.name.startswith(research_packet.PACKET_PREFIX)
+    if research_packet.os.name != "nt":
+        assert packet_path.parent.stat().st_mode & 0o777 == 0o700
+    assert staging_names
+    assert not list(temp_root.glob(f".{research_packet.PACKET_PREFIX}*"))
+
+
 def test_claim_rebuilds_missing_packet_from_quarantine(tmp_path):
     from scripts import research_mature_builds
 
@@ -3300,7 +3345,7 @@ def test_claim_rebuilds_missing_packet_from_quarantine(tmp_path):
     assert packet["safeHash"] == claimed["packetSafeHash"]
 
 
-def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path):
+def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 
     from scripts import research_mature_builds
@@ -3325,6 +3370,21 @@ def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path):
     queued_packets = list(temp_root.glob("poe-bd-creator-research-packet-*/packet.json"))
     assert len(queued_packets) == 1
     queued = json.loads(queued_packets[0].read_text(encoding="utf-8"))
+    real_replace = research_mature_builds.os.replace
+    replace_observations: list[dict] = []
+
+    def replace_after_observing_complete_old_packet(source, destination):
+        replace_observations.append(
+            json.loads(Path(destination).read_text(encoding="utf-8"))
+        )
+        assert Path(source).name != "packet.json"
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        research_mature_builds.os,
+        "replace",
+        replace_after_observing_complete_old_packet,
+    )
 
     claimed = research_mature_builds.claim_case(
         output_dir=output_dir,
@@ -3338,6 +3398,7 @@ def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path):
     packet = json.loads(packets[0].read_text(encoding="utf-8"))
     assert packet["safeHash"] == queued["safeHash"]
     assert packet["safeHash"] == claimed["packetSafeHash"]
+    assert replace_observations[0]["safeHash"] == queued["safeHash"]
 
     expires = datetime.fromisoformat(packet["expiresAt"])
     now = datetime.now(timezone.utc)

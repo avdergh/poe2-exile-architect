@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import secrets
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
@@ -75,10 +77,31 @@ def build_research_packet(
     result: dict[str, Any] = {"ok": True, "packet": packet}
     if persist_for_transport:
         root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
-        directory = Path(tempfile.mkdtemp(prefix=PACKET_PREFIX, dir=root))
-        path = directory / "packet.json"
-        path.write_text(json.dumps(packet, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        result["packetPath"] = str(path)
+        root.mkdir(parents=True, exist_ok=True)
+        for _attempt in range(32):
+            staging = root / f".{PACKET_PREFIX}{secrets.token_hex(8)}"
+            try:
+                if os.name == "nt":
+                    staging.mkdir()
+                else:
+                    staging.mkdir(mode=0o700)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise FileExistsError("could not allocate a unique research packet staging directory")
+        directory = root / staging.name[1:]
+        try:
+            staging_path = staging / "packet.json"
+            staging_path.write_text(
+                json.dumps(packet, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            staging.rename(directory)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        result["packetPath"] = str(directory / "packet.json")
     return result
 
 
@@ -92,6 +115,7 @@ def cleanup_expired_packets(
     Packets are short-lived by design: queued packets get a long TTL (24h) so they survive
     waiting time; claimed packets are rebuilt on claim with the lease's own TTL, so an
     expired packet simply means the case lease expired too and the case can be reclaimed.
+    The caller chooses the private packet root; Research defaults it inside the shared run.
     """
     root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir())
     current = _parse_time(now) if now is not None else datetime.now(timezone.utc)

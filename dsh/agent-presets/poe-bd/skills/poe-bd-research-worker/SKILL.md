@@ -28,18 +28,25 @@ description: Internal explicit-only worker for one leased PoE2 mature-build Rese
 
 只在已加载 Worker Skill 的安装内解析运行前缀：
 
-1. `repoRoot` 优先取安装器管理的任一 `poe-*-mcp` cwd；否则取 `POE_BD_CREATOR_DIR`，再否则从本
-   Skill 的真实路径向上查找。候选必须有 `pyproject.toml`、`server/main.py` 和
-   `scripts/research_mature_builds.py`；缺失或歧义时返回 safe failure，不猜 cwd 或全盘搜索。
-2. Windows 依次使用 `repoRoot/.tools/uv/uv.exe`、PATH uv；macOS/Linux 依次使用
-   `repoRoot/.tools/uv/uv`、PATH uv。可见 MCP 配置中的绝对 uv 命令优先；不得把 node launcher 当 uv。
-3. 使用宿主命令工具按参数边界调用：
+1. `runtimeRoot` 优先取安装器管理的任一 `poe-*-mcp` cwd；否则取 `POE_BD_CREATOR_DIR`，再否则从本
+   Skill 的真实路径向上查找。候选必须包含 `server/main.py` 和 `scripts/research_mature_builds.py`，且
+   是带 `pyproject.toml` 的源码仓库，或带 `.codex-plugin/plugin.json` 与
+   `scripts/run_plugin_server.mjs` 的自包含插件；缺失或歧义时返回 safe failure，不猜 cwd 或全盘搜索。
+2. 源码仓库在 Windows 依次使用 `runtimeRoot/.tools/uv/uv.exe`、PATH uv；macOS/Linux 依次使用
+   `runtimeRoot/.tools/uv/uv`、PATH uv，调用前缀为：
 
    ```text
-   <uvCommand> run --project <repoRoot> python <repoRoot>/scripts/research_mature_builds.py
+   <uvCommand> run --project <runtimeRoot> python <runtimeRoot>/scripts/research_mature_builds.py
    ```
 
-路径含空格时使用当前宿主的原生参数引用；不得把 runDir 或 repoRoot 回退为当前 cwd。
+   自包含插件复用 MCP 已注册的 Node，或从 PATH 解析 Node，调用前缀为：
+
+   ```text
+   <nodeCommand> <runtimeRoot>/scripts/run_plugin_server.mjs --research-cli
+   ```
+
+Node 只作为插件官方 Python 启动器，不把它当成 uv。路径含空格时使用宿主的原生参数边界；不得把
+runDir 或 runtimeRoot 回退为当前 cwd。
 
 ## Runtime Boundary
 

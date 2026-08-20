@@ -1,8 +1,9 @@
-"""Start the self-contained Exile Architect MCP servers from the installed plugin root.
+"""Start self-contained Exile Architect MCP servers or the Research CLI.
 
 With no ``--server`` argument this runs the legacy aggregate ``server.main`` entry (backwards
 compatible with old host configurations). With ``--server <domain>`` it runs one of the four
-split domain servers: knowledge / build / research / learning.
+split domain servers: knowledge / build / research / learning. ``--research-cli`` reuses the
+same packaged Python runtime for the internal Research Controller/Worker command surface.
 """
 
 from __future__ import annotations
@@ -47,6 +48,10 @@ def _check() -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    if args[:1] == ["--research-cli"]:
+        from scripts.research_mature_builds import main as run_research_cli
+
+        return run_research_cli(args[1:])
     if "--check" in args:
         return _check()
     server_arg = None
