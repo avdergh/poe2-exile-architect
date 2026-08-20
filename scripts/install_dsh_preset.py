@@ -35,6 +35,7 @@ REQUIRED_SKILLS = (
     "poe-bd-create",
     "poe-bd-learning-loop",
     "poe-bd-research",
+    "poe-bd-research-worker",
     "poe-bd-research-loop",
 )
 # Literal fallback root baked into the checked-in compositions; rewritten at

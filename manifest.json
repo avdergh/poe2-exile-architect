@@ -97,7 +97,7 @@
     { "name": "load_final_build_artifact", "description": "Restore a saved final PoB artifact into the active engine without exposing raw XML." },
     { "name": "export_final_pob_artifact", "description": "Export one verified final artifact to local XML and/or PoB import-code files." },
     { "name": "export_final_build_package", "description": "Export and inventory the complete PoB XML, import-code, and official .build delivery package." },
-    { "name": "cleanup_completed_task_runtime", "description": "Delete one completed task's private runtime state after its durable result is safe; Learning/Research Memory, seeds and user exports are never deleted." },
+    { "name": "cleanup_completed_task_runtime", "description": "Delete completed private task runtime, or explicitly abandon an unfinished Research run while releasing only its queued intake-ledger reservations; durable memories, accepted history, seeds and user exports are preserved." },
     { "name": "list_skills_for_level", "description": "List gems usable as acquisition references at a level, optionally class/type-filtered; soft crafting-level filter, engine verifies true availability." },
     { "name": "query_public_learning_memory", "description": "Recall copy-safe public/local Learning Memory for an ordinary Create without a campaign receipt." },
     { "name": "validate_level_availability", "description": "Verify candidate skills at a target level via engine gem requirements (ok/partial/unavailable); never picks a direction." },

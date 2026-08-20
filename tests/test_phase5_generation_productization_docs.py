@@ -219,12 +219,12 @@ def test_installers_fallback_uninstall_knows_all_product_skills():
     sh_lines = {line.strip() for line in sh.splitlines()}
 
     assert (
-        "@('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop', "
+        "@('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-research-loop', "
         "'poe-bd-learning-loop')" in ps1
     )
     assert "printf '%s\\n' \"poe-bd-research\"" not in sh_lines
     assert (
-        'printf \'%s\\n\' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" '
+        'printf \'%s\\n\' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-research-loop" '
         '"poe-bd-learning-loop"' in sh
     )
 
@@ -263,8 +263,14 @@ def test_installers_register_poe2_mcp_server_for_supported_hosts():
     assert "configure_agent_host.py" in sh
     assert "poe-bd-research-loop" in ps1
     assert "poe-bd-learning-loop" in ps1
-    assert "$PortableSkills = @('poe-bd-research', 'poe-bd-create')" in ps1
-    assert 'PORTABLE_SKILLS="poe-bd-research poe-bd-create"' in sh
+    assert (
+        "$PortableSkills = @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create')" in ps1
+    )
+    assert 'PORTABLE_SKILLS="poe-bd-research poe-bd-research-worker poe-bd-create"' in sh
+    assert "Assert-ResearchSkillPair" in ps1
+    assert "validate_research_skill_pair" in sh
+    assert "must both exist" in ps1
+    assert "must both exist" in sh
 
 
 def test_phase5_distribution_includes_generation_runtime_contracts():

@@ -1,9 +1,9 @@
 """Product entrypoint for mature PoE2 build research queues.
 
 This script does not call an LLM provider. It prepares safe queue metadata,
-leases one mature build case at a time to the current Researcher agent, renders
-bounded transient evidence only for the active lease, and accepts safe proposals
-through the existing typed gates.
+leases mature build cases to a bounded worker pool, renders bounded transient
+evidence only for each active lease, and accepts safe proposals through the
+existing typed gates.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +41,7 @@ from server.knowledge import (  # noqa: E402
     research_models,
     research_packet,
 )
+from server.learning.file_lock import interprocess_file_lock  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
 RUNS_DIRNAME = "runs"
@@ -47,6 +49,37 @@ QUEUE_DB_FILENAME = "poe_bd_research_queue.sqlite"
 DEFAULT_TEMP_DIRNAME = "poe-bd-creator-research-packets"
 DEFAULT_MEMORY_DB_PATH = paths.mature_learning_path()
 DEFAULT_INTAKE_LEDGER_PATH = research_intake_ledger.default_ledger_path()
+DEFAULT_WORKER_COUNT = 5
+MAX_WORKER_COUNT = 5
+_ACCEPT_LOCK = threading.RLock()
+
+RESEARCH_MANDATORY_CHECKS = (
+    "暗金/lineage 宝石必须标注 unique 身份；unique support gem 保持 support_modifier role，"
+    "不得误用 unique_enabler。",
+    "已分配天赋树珠宝槽必须显式声明空置或已插珠宝及 radius/Time-Lost 覆盖；装备珠宝孔不能替代树槽。",
+    "评估全部 persistent buff 的 Spirit/reservation 预算与来源，并写入资源闭环记录。",
+    "盘点全部启用技能组；Family 核心和结论依赖的高影响组必须提供 supportPackages 或 "
+    "supportCoverageExceptions，其他组也不得静默丢弃。",
+    "辅助机制结论以 review 内 support_skill_group_candidates 组合校验为准；单对查询只用于候选发现，"
+    "机制语义不得按名称猜测。",
+    "Memory 对照前先用 search_graph_components + resolve_graph_component 解析身份 stable key，"
+    "再检查 familyRecordCoverage、familyRecordIndex 与 familyPremiseCatalog。",
+    "把 packet 中每个 condition* 写成 条件→来源组件→验证状态；无来源假设必须进入 modelability caveat。",
+    "每个装备槽位都必须以结构化组件、content 文本或显式 not_applicable 的一种形式出现在记录中。",
+    "不得猜 stable-key 路径；所有组件先 search 再 resolve，resolverQuery 必须是完整 key、映射、alias "
+    "或归一化显示名。",
+    "lookup_mechanic silent/unavailable 时保留有样本证据或引擎读回支持的结论；不因 wiki 缺页强制新增 "
+    "caveat 或 verification task。",
+    "非 Family 核心技能组也必须被观察；结论依赖其归属时保存 support 所有权，否则明确保留为 "
+    "content、caveat 或 verification task。",
+    "每个 resource_engine/mechanic_chain 写入前核对生成与消费方向，并与既有同组件 Family 记录对照。",
+    "出现 unresolved 计数时必须逐个执行 search_graph_components，再定性为 source gap。",
+    "Family 身份只使用升华 + primary_damage 技能集合；纯 clear/boss/triggered/trigger_host 副技能包"
+    "不要求自己的 primary_damage，support/non-skill 组件不改变该豁免。",
+    "每案至少提交 2 条 resolver-backed semantic edge；无法合法推导时明确说明，禁止为凑数发明关系。",
+    "review 顶层 memoryUse 必须存在并记录本案的 query_research_memory 查询；未查询时保留空 queries "
+    "并说明原因。",
+)
 
 RAW_MARKERS = (
     "eNrt",
@@ -65,11 +98,24 @@ RAW_MARKERS = (
 )
 
 
+def _effective_worker_count(value: Any) -> int:
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        requested = DEFAULT_WORKER_COUNT
+    return min(MAX_WORKER_COUNT, max(1, requested))
+
+
+def _accept_lock_path(memory_db_path: str | Path) -> Path:
+    memory_path = Path(memory_db_path).resolve()
+    return memory_path.with_name(f".{memory_path.name}.research-accept.lock")
+
+
 def queue_cases(
     *,
     league_url: str = "current",
     limit: int = 50,
-    worker_count: int = 1,
+    worker_count: int = DEFAULT_WORKER_COUNT,
     level_min: int = 90,
     level_max: int = 100,
     ascendancies: list[str] | None = None,
@@ -99,7 +145,7 @@ def queue_cases(
     ``supplement=true``). Raw material is rebuilt from the prior run's quarantine; cases
     without quarantine material are skipped.
     """
-    del worker_count  # Deprecated compatibility input; execution is always serial.
+    effective_worker_count = _effective_worker_count(worker_count)
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     db_path = _queue_db_path(output_root, queue_db_path)
@@ -124,6 +170,7 @@ def queue_cases(
             output_root=output_root,
             db_path=db_path,
             effective_temp_root=effective_temp_root,
+            worker_count=effective_worker_count,
         )
 
     source_file_values = list(source_files or [])
@@ -226,7 +273,7 @@ def queue_cases(
         report = _queue_report(
             status="dry_run",
             db_path=db_path,
-            requested_worker_count=1,
+            requested_worker_count=effective_worker_count,
             cases=[_safe_case_row_from_case(case) for case in cases],
             dry_run=True,
             source_input_summary=source_input_summary,
@@ -284,8 +331,8 @@ def queue_cases(
                 if any(case.get("status") == "pending" for case in cases)
                 else "source_unavailable"
             ),
-            "requestedWorkerCount": "1",
-            "workerCountSemantics": "serial_one_case_at_a_time",
+            "requestedWorkerCount": str(effective_worker_count),
+            "workerCountSemantics": "parallel_subagents_one_case_each",
             "currentPatch": version_context["gamePatch"],
             "passiveTreeVersion": version_context["passiveTreeVersion"],
             "pobVersionOrCommit": version_context["pobVersionOrCommit"],
@@ -402,7 +449,7 @@ def claim_case(
     lease_owner: str = "current_researcher_agent",
     temp_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Atomically lease one case while preventing concurrent active research."""
+    """Atomically lease one case up to the queue's bounded worker capacity."""
     db_path = _queue_db_path(Path(output_dir), queue_db_path)
     _init_db(db_path)
     now = _now()
@@ -415,23 +462,32 @@ def claim_case(
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
-        active = conn.execute(
-            """
-            SELECT *
-              FROM cases
-             WHERE status IN ('claimed', 'accepting')
-               AND (status = 'accepting' OR lease_expires_at > ?)
-             ORDER BY id ASC
-             LIMIT 1
-            """,
-            (_iso(now),),
+        configured_worker_count = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'requestedWorkerCount'"
         ).fetchone()
-        if active is not None:
+        worker_count = _effective_worker_count(
+            configured_worker_count["value"]
+            if configured_worker_count is not None
+            else DEFAULT_WORKER_COUNT
+        )
+        active_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                  FROM cases
+                 WHERE status IN ('claimed', 'accepting')
+                   AND (status = 'accepting' OR lease_expires_at > ?)
+                """,
+                (_iso(now),),
+            ).fetchone()[0]
+        )
+        if active_count >= worker_count:
             conn.commit()
             return {
-                "status": "active_case_in_progress",
+                "status": "worker_capacity_reached",
                 "queueKind": "poe_bd_research_external_agent_queue",
-                "sampleId": str(active["sample_id"]),
+                "activeCaseCount": active_count,
+                "workerCount": worker_count,
                 "noRawMatureBuildMaterial": True,
             }
         row = conn.execute(
@@ -466,12 +522,48 @@ def claim_case(
         )
         claimed = conn.execute("SELECT * FROM cases WHERE id = ?", (int(row["id"]),)).fetchone()
         conn.commit()
-    _rebuild_packet_for_claim(
-        row=claimed,
-        output_root=Path(output_dir),
-        temp_root=temp_root,
-        lease_seconds=lease_seconds,
-    )
+    try:
+        _rebuild_packet_for_claim(
+            row=claimed,
+            output_root=Path(output_dir),
+            temp_root=temp_root,
+            lease_seconds=lease_seconds,
+        )
+    except Exception:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases
+                   SET status = 'queued',
+                       lease_token = NULL,
+                       lease_owner = NULL,
+                       lease_expires_at = NULL,
+                       updated_at = ?
+                 WHERE id = ?
+                   AND status = 'claimed'
+                   AND lease_token = ?
+                   AND packet_safe_hash = ?
+                """,
+                (
+                    _now_iso(),
+                    int(claimed["id"]),
+                    lease_token,
+                    str(claimed["packet_safe_hash"]),
+                ),
+            )
+            conn.commit()
+        result = {
+            "status": "claim_packet_failed",
+            "queueKind": "poe_bd_research_external_agent_queue",
+            "sampleId": str(claimed["sample_id"]),
+            "errorKind": "packet_prepare_failed",
+            "leaseReleased": cur.rowcount == 1,
+            "retryable": cur.rowcount == 1,
+            "recoveryRequired": cur.rowcount != 1,
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
     result = _claim_payload(
         dict(claimed),
         lease_token=lease_token,
@@ -711,7 +803,7 @@ def render_review_contract(
                 "availability": "standard or source_specific_random",
                 "sourceSpecificComponentKeys": "random-instance components excluded from planner advice",
                 "ascendancyResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus concrete responsibility",
-                "gearResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus canonical responsibilityType and concise responsibility",
+                "gearResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus canonical responsibilityType and concise responsibility; use an explicit [] only for content-based rare/magic gear evidence",
             },
         },
         "componentRoleNodeTypeCompatibility": {
@@ -756,7 +848,7 @@ def render_review_contract(
             "gearResponsibilities": {
                 "type": "list[object]",
                 "entry": 'exactly {"componentKey": str, "responsibilityType": str, "responsibility": str}',
-                "rule": "only on gear_synergy records; componentKey resolved and mentioned in the same record with role unique_enabler/gear_base/weapon_base; responsibilityType in allowedValues.gearResponsibilityType; responsibility <=240 chars; <=12 entries; componentKey unique; rare/magic items without a graph node cannot be listed here - describe them in content instead",
+                "rule": "only on gear_synergy records; componentKey resolved and mentioned in the same record with role unique_enabler/gear_base/weapon_base; responsibilityType in allowedValues.gearResponsibilityType; responsibility <=240 chars; <=12 entries; componentKey unique; for rare/magic items without a graph node, explicitly set gearResponsibilities=[] and describe slot + target mods + roll pursuit in content; a missing or null field is not this declaration",
             },
         },
         "mechanicAuditTemplate": {
@@ -861,22 +953,7 @@ def render_review_contract(
             "knowledge_scope": "global_seed",
             "directionality": "directional | associative（synergizes_with 必须 associative）",
         },
-        "mandatoryChecks": [
-            "lineage/unique support gems must be labeled with their unique identity (support_modifier role with the lineage/unique identity stated in prose, or an open_question/modelability_caveat record; unique_enabler role fails resolver checks for support_gem nodes)",
-            "allocated jewel sockets without socketed jewels require an explicit jewel-state declaration in the review",
-            "Spirit/reservation budget for all persistent buffs must be assessed in the resource records",
-            "inspect every enabled skill group's supports; Family primary/core groups and any group whose mechanism is adopted by the Researcher require exact supportPackages ownership or a supportCoverageExceptions entry, while low-impact, internal-id, multi-active, or unresolved groups may remain explicit advisory/caveat evidence and do not block clean coverage by themselves",
-            "support mechanism claims are judged by the review's combined fixed-point pairing check (support_skill_group_candidates, simulating the PoB group's effective compatibility); the single-pair support_skill_candidate query is candidate discovery only and defers to the combined check; never infer from the support name",
-            "memory comparison must use stable keys: resolve ascendancy/class via search_graph_components + resolve_graph_component before filtering query_research_memory, and check familyRecordCoverage/familyRecordIndex/familyPremiseCatalog against existing same-family knowledge",
-            "every packet condition* (EnemyChilled/EnemyBleeding/EnemyBlinded/EnemyIgnited/CritRecently/BeenHitRecently/usePowerCharges) must be traced in a 'condition -> source component -> verification status' table; unsourced assumptions become modelability caveats",
-            "every gear slot must appear in the records: structured component, content text, or explicit not_applicable",
-            "never guess stable-key paths: always search_graph_components then resolve_graph_component; support-gem metadata paths can be Items/Gem or Items/Gems",
-            "silent or unavailable high-value mechanics (e.g. Innervate, Charged Mark charge rates) must be preserved in caveats/verification tasks, not dropped",
-            "non-Family-core skill groups must be reviewed rather than silently dropped; package their supports when a durable conclusion depends on that ownership, otherwise preserve the low-impact/unresolved boundary in content, caveats, or verification tasks",
-            "check generation vs consumption direction before writing resource_engine/mechanic_chain and compare with existing same-component family records",
-            "any unresolved count requires a per-name search_graph_components before declaring a source gap",
-            "skill_package and mechanic_chain identity records must declare at least one primary_damage component: family identity is the ascendancy + primary-skill SET, and a record without a primary declaration cannot anchor identity (secondary/trigger-host roles never participate in identity; clear/boss/triggered secondary-only packages are exempt)",
-        ],
+        "mandatoryChecks": list(RESEARCH_MANDATORY_CHECKS),
         "rules": [
             "只能使用 allowedValues 中的枚举；不得自造 role、axis 或 patternType。",
             "artifactIdentity、sampleId、researchGroupId、caseRef、safeEvidenceRef 和版本字段由当前 lease 注入；不要在记录或候选中重复抄写。",
@@ -886,14 +963,15 @@ def render_review_contract(
             "锚定 Family 身份；②组级——同一 researchGroupId 的记录必须使用同一个 ascendancyKey，且"
             "该组 primary_damage 集合应恰好等于该 BD 真正的主输出技能集合：同一 BD 有多个主输出时"
             "全部声明（集合语义，合法），clear_skill / boss_skill / triggered_payload 等副技能和 "
-            "trigger_host 不得标为 primary_damage；组件全是 clear/boss/triggered/trigger_host 的"
-            "纯副技能包不需要自己的 primary_damage 声明；标错集合会产生 sibling Family。",
+            "trigger_host 不得标为 primary_damage；参与 Family 技能身份判断的主动技能角色全是 "
+            "clear/boss/triggered/trigger_host 的纯副技能包不需要自己的 primary_damage 声明，"
+            "support_modifier 等非主动技能组件不改变该豁免；标错集合会产生 sibling Family。",
             "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 归档。Family identity key 只由升华与 primary_damage 技能集合决定；clear_skill、boss_skill、triggered_payload 自动进入 Family 核心副技能元数据但不改变 key。trigger_host 不自动进入该元数据（换宿主视为变体），需要保留为 Family-core 时必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会授权 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
             "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
             "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发；被拒的 unsupportedPairs 会带 triggeringSegment 引用触发句，先改句再重验。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
-            "gearRoles covered 必须有 gear_synergy：已解析武器/暗金在 typedPayload.gearResponsibilities 写明具体职责；纯稀有/魔法装（无图节点）留空 gearResponsibilities 并在 content 写明槽位+目标词条+档位追求，即为 content 型装备证据（该记录仍须含 ≥1 已解析组件作锚点）。只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
+            "gearRoles covered 必须有 gear_synergy：已解析武器/暗金在 typedPayload.gearResponsibilities 写明具体职责；纯稀有/魔法装（无图节点）必须显式填写 gearResponsibilities=[]，并在 content 写明槽位+目标词条+档位追求，即为 content 型装备证据（字段缺失/null 不算声明；该记录仍须含 ≥1 已解析组件作锚点）。只有防御或便利装备不足以代表构筑身份装备已还原。依赖身份装备的机制和 component transfer 必须包含对应装备职责。",
             "gearRoles 为 evidence_missing 时，accept 会暂缓 mechanic_chain 和 component transfer，避免遗漏身份装备后把实例机制写成通用知识；补齐装备职责或确认 not_applicable 后再提交。",
             "若装备分区显示 itemStates 包含 mutated，依赖该随机实例的记录写 availability=source_specific_random，并在 sourceSpecificComponentKeys 指出对应装备。该知识只解释本案，不进入常规 Create 召回或 planner pattern。",
             "依赖随机实例的 candidateReview 也写 availability=source_specific_random，并在 sourceSpecificComponentNames 精确指出对应组件。accept 只用这些组件建立 observation 索引；组件无法解析时保留无组件索引的案例备注，不生成 planner pattern。",
@@ -1069,105 +1147,108 @@ def accept_case(
         Path(acceptance_output_dir) if acceptance_output_dir else output_root / "acceptance"
     )
     accept_dir.mkdir(parents=True, exist_ok=True)
-    _begin_accepting(db_path, row=row, lease_token=lease_token)
     # Same lease reference normalization as _suggested_review_file so the acceptance artifact
     # basename and the review basename derive from the identical slug.
     slug = f"{_slug(sample_id)}-{_slug(lease_token)[:12]}"
-    try:
-        report = acceptance.accept_deep_review_candidates(
-            db_path=Path(memory_db_path),
-            json_output=accept_dir / f"{slug}-acceptance.json",
-            md_output=accept_dir / f"{slug}-acceptance.md",
-            review_file=safe_review_file,
-            version_context=version_context,
-            source_skill_manifest=source_skill_manifest,
-            jewel_counts=jewel_counts,
-            review_payload=review_payload,
-            require_deep_records=True,
-        )
-    except Exception:
-        _finish_accepting_after_exception(db_path, row=row, lease_token=lease_token)
-        raise
-    accepted = str(report.get("status") or "") == "accepted"
-    supplement_no_gain = False
-    if (
-        accepted
-        and int(row["supplement"] or 0)
-        and (
-            int(report.get("createdDeepRecordCount") or 0)
-            + int(report.get("updatedDeepRecordCount") or 0)
-        )
-        == 0
-    ):
-        # A supplement round that produced no durable record delta adds no knowledge; do
-        # not consume the lease as a successful acceptance.
-        supplement_no_gain = True
-        accepted = False
-    status = "accepted" if accepted else "acceptance_rejected"
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(
-            """
-            UPDATE cases
-               SET status = ?,
-                   accepted_at = ?,
-                   updated_at = ?,
-                   lease_token = NULL,
-                   lease_owner = NULL,
-                   lease_expires_at = NULL,
-                   acceptance_status = ?,
-                   accepted_pattern_count = ?,
-                   accepted_deep_record_count = ?,
-                   accepted_semantic_edge_count = ?,
-                   unresolved_deep_record_component_count = ?,
-                   research_quality_summary = ?,
-                   deferred_candidate_count = ?
-             WHERE sample_id = ?
-               AND status = 'accepting'
-               AND lease_token = ?
-               AND packet_safe_hash = ?
-            """,
-            (
-                status,
-                _now_iso() if accepted else "",
-                _now_iso(),
-                str(report.get("status") or ""),
-                int(report.get("acceptedPatternCount") or 0),
-                int(report.get("acceptedDeepRecordCount") or 0),
-                int(report.get("acceptedSemanticEdgeCount") or 0),
-                int(report.get("unresolvedDeepRecordComponentCount") or 0),
-                json.dumps(_research_quality_summary(report), ensure_ascii=False, sort_keys=True),
-                int(report.get("deferredCandidateCount") or 0),
-                sample_id,
-                lease_token,
-                str(row["packet_safe_hash"]),
-            ),
-        )
-        conn.commit()
-    if cur.rowcount != 1:
-        raise ValueError("lease was modified before accept could be committed")
-    if accepted:
-        # The case is durably recorded: its transient packet is no longer needed. Best-effort
-        # cleanup so a file-lock hiccup never turns a successful accept into an error.
+    with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
+        _begin_accepting(db_path, row=row, lease_token=lease_token)
         try:
-            effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
-            research_packet.cleanup_packets_by_safe_hashes(
-                {str(row["packet_safe_hash"])},
-                temp_root=effective_temp_root,
+            report = acceptance.accept_deep_review_candidates(
+                db_path=Path(memory_db_path),
+                json_output=accept_dir / f"{slug}-acceptance.json",
+                md_output=accept_dir / f"{slug}-acceptance.md",
+                review_file=safe_review_file,
+                version_context=version_context,
+                source_skill_manifest=source_skill_manifest,
+                jewel_counts=jewel_counts,
+                review_payload=review_payload,
+                require_deep_records=True,
             )
-        except (OSError, ValueError):
-            pass
-        # Promote the character's intake-ledger record so future queues skip it.
-        if str(row["character_ref"] or "").startswith("character-hash:"):
-            effective_ledger = (
-                Path(intake_ledger_path)
-                if intake_ledger_path is not None
-                else DEFAULT_INTAKE_LEDGER_PATH
+        except Exception:
+            _finish_accepting_after_exception(db_path, row=row, lease_token=lease_token)
+            raise
+        accepted = str(report.get("status") or "") == "accepted"
+        supplement_no_gain = False
+        if (
+            accepted
+            and int(row["supplement"] or 0)
+            and (
+                int(report.get("createdDeepRecordCount") or 0)
+                + int(report.get("updatedDeepRecordCount") or 0)
             )
-            research_intake_ledger.mark_accepted(
-                effective_ledger,
-                league=str(row["league"] or ""),
-                character_ref=str(row["character_ref"] or ""),
+            == 0
+        ):
+            # A supplement round that produced no durable record delta adds no knowledge; do
+            # not consume the lease as a successful acceptance.
+            supplement_no_gain = True
+            accepted = False
+        status = "accepted" if accepted else "acceptance_rejected"
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases
+                   SET status = ?,
+                       accepted_at = ?,
+                       updated_at = ?,
+                       lease_token = NULL,
+                       lease_owner = NULL,
+                       lease_expires_at = NULL,
+                       acceptance_status = ?,
+                       accepted_pattern_count = ?,
+                       accepted_deep_record_count = ?,
+                       accepted_semantic_edge_count = ?,
+                       unresolved_deep_record_component_count = ?,
+                       research_quality_summary = ?,
+                       deferred_candidate_count = ?
+                 WHERE sample_id = ?
+                   AND status = 'accepting'
+                   AND lease_token = ?
+                   AND packet_safe_hash = ?
+                """,
+                (
+                    status,
+                    _now_iso() if accepted else "",
+                    _now_iso(),
+                    str(report.get("status") or ""),
+                    int(report.get("acceptedPatternCount") or 0),
+                    int(report.get("acceptedDeepRecordCount") or 0),
+                    int(report.get("acceptedSemanticEdgeCount") or 0),
+                    int(report.get("unresolvedDeepRecordComponentCount") or 0),
+                    json.dumps(
+                        _research_quality_summary(report), ensure_ascii=False, sort_keys=True
+                    ),
+                    int(report.get("deferredCandidateCount") or 0),
+                    sample_id,
+                    lease_token,
+                    str(row["packet_safe_hash"]),
+                ),
             )
+            conn.commit()
+        if cur.rowcount != 1:
+            raise ValueError("lease was modified before accept could be committed")
+        if accepted:
+            # The case is durably recorded: its transient packet is no longer needed. Best-effort
+            # cleanup so a file-lock hiccup never turns a successful accept into an error.
+            try:
+                effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+                research_packet.cleanup_packets_by_safe_hashes(
+                    {str(row["packet_safe_hash"])},
+                    temp_root=effective_temp_root,
+                )
+            except (OSError, ValueError):
+                pass
+            # Promote the character's intake-ledger record so future queues skip it.
+            if str(row["character_ref"] or "").startswith("character-hash:"):
+                effective_ledger = (
+                    Path(intake_ledger_path)
+                    if intake_ledger_path is not None
+                    else DEFAULT_INTAKE_LEDGER_PATH
+                )
+                research_intake_ledger.mark_accepted(
+                    effective_ledger,
+                    league=str(row["league"] or ""),
+                    character_ref=str(row["character_ref"] or ""),
+                )
     result = {
         "status": status,
         "sampleId": sample_id,
@@ -1307,101 +1388,104 @@ def retry_accept_case(
         packet_safe_hash=str(row["packet_safe_hash"]),
         version_context=version_context,
     )
-    _begin_retry_accepting(db_path, row=row)
     slug = f"{_slug(str(row['sample_id']))}-{_slug(safe_review_file.stem)[-24:]}"
-    try:
-        report = acceptance.accept_deep_review_candidates(
-            db_path=Path(memory_db_path),
-            json_output=accept_dir / f"{slug}-acceptance.json",
-            md_output=accept_dir / f"{slug}-acceptance.md",
-            review_file=safe_review_file,
-            version_context=version_context,
-            source_skill_manifest=source_skill_manifest,
-            jewel_counts=jewel_counts,
-            review_payload=review_payload,
-            require_deep_records=True,
-        )
-    except Exception:
-        _finish_accepting_after_exception(db_path, row=row, lease_token="")
-        raise
-    accepted = str(report.get("status") or "") == "accepted"
-    supplement_no_gain = False
-    if (
-        accepted
-        and int(row["supplement"] or 0)
-        and (
-            int(report.get("createdDeepRecordCount") or 0)
-            + int(report.get("updatedDeepRecordCount") or 0)
-        )
-        == 0
-    ):
-        # A supplement round that produced no durable record delta adds no knowledge; do
-        # not consume the retry as a successful acceptance.
-        supplement_no_gain = True
-        accepted = False
-    status = "accepted" if accepted else "acceptance_rejected"
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(
-            """
-            UPDATE cases
-               SET status = ?,
-                   accepted_at = ?,
-                   updated_at = ?,
-                   lease_token = NULL,
-                   lease_owner = NULL,
-                   lease_expires_at = NULL,
-                   acceptance_status = ?,
-                   accepted_pattern_count = ?,
-                   accepted_deep_record_count = ?,
-                   accepted_semantic_edge_count = ?,
-                   unresolved_deep_record_component_count = ?,
-                   research_quality_summary = ?,
-                   deferred_candidate_count = ?
-             WHERE sample_id = ?
-               AND status = 'accepting'
-               AND packet_safe_hash = ?
-            """,
-            (
-                status,
-                _now_iso() if accepted else "",
-                _now_iso(),
-                str(report.get("status") or ""),
-                int(report.get("acceptedPatternCount") or 0),
-                int(report.get("acceptedDeepRecordCount") or 0),
-                int(report.get("acceptedSemanticEdgeCount") or 0),
-                int(report.get("unresolvedDeepRecordComponentCount") or 0),
-                json.dumps(_research_quality_summary(report), ensure_ascii=False, sort_keys=True),
-                int(report.get("deferredCandidateCount") or 0),
-                str(row["sample_id"]),
-                str(row["packet_safe_hash"]),
-            ),
-        )
-        conn.commit()
-    if cur.rowcount != 1:
-        raise ValueError("rejected case was modified before retry accept could be committed")
-    if accepted:
-        # The case is durably recorded: its transient packet is no longer needed. Best-effort
-        # cleanup so a file-lock hiccup never turns a successful retry accept into an error.
+    with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
+        _begin_retry_accepting(db_path, row=row)
         try:
-            effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
-            research_packet.cleanup_packets_by_safe_hashes(
-                {str(row["packet_safe_hash"])},
-                temp_root=effective_temp_root,
+            report = acceptance.accept_deep_review_candidates(
+                db_path=Path(memory_db_path),
+                json_output=accept_dir / f"{slug}-acceptance.json",
+                md_output=accept_dir / f"{slug}-acceptance.md",
+                review_file=safe_review_file,
+                version_context=version_context,
+                source_skill_manifest=source_skill_manifest,
+                jewel_counts=jewel_counts,
+                review_payload=review_payload,
+                require_deep_records=True,
             )
-        except (OSError, ValueError):
-            pass
-        # Promote the character's intake-ledger record so future queues skip it.
-        if str(row["character_ref"] or "").startswith("character-hash:"):
-            effective_ledger = (
-                Path(intake_ledger_path)
-                if intake_ledger_path is not None
-                else DEFAULT_INTAKE_LEDGER_PATH
+        except Exception:
+            _finish_retry_accepting_after_exception(db_path, row=row)
+            raise
+        accepted = str(report.get("status") or "") == "accepted"
+        supplement_no_gain = False
+        if (
+            accepted
+            and int(row["supplement"] or 0)
+            and (
+                int(report.get("createdDeepRecordCount") or 0)
+                + int(report.get("updatedDeepRecordCount") or 0)
             )
-            research_intake_ledger.mark_accepted(
-                effective_ledger,
-                league=str(row["league"] or ""),
-                character_ref=str(row["character_ref"] or ""),
+            == 0
+        ):
+            # A supplement round that produced no durable record delta adds no knowledge; do
+            # not consume the retry as a successful acceptance.
+            supplement_no_gain = True
+            accepted = False
+        status = "accepted" if accepted else "acceptance_rejected"
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases
+                   SET status = ?,
+                       accepted_at = ?,
+                       updated_at = ?,
+                       lease_token = NULL,
+                       lease_owner = NULL,
+                       lease_expires_at = NULL,
+                       acceptance_status = ?,
+                       accepted_pattern_count = ?,
+                       accepted_deep_record_count = ?,
+                       accepted_semantic_edge_count = ?,
+                       unresolved_deep_record_component_count = ?,
+                       research_quality_summary = ?,
+                       deferred_candidate_count = ?
+                 WHERE sample_id = ?
+                   AND status = 'accepting'
+                   AND packet_safe_hash = ?
+                """,
+                (
+                    status,
+                    _now_iso() if accepted else "",
+                    _now_iso(),
+                    str(report.get("status") or ""),
+                    int(report.get("acceptedPatternCount") or 0),
+                    int(report.get("acceptedDeepRecordCount") or 0),
+                    int(report.get("acceptedSemanticEdgeCount") or 0),
+                    int(report.get("unresolvedDeepRecordComponentCount") or 0),
+                    json.dumps(
+                        _research_quality_summary(report), ensure_ascii=False, sort_keys=True
+                    ),
+                    int(report.get("deferredCandidateCount") or 0),
+                    str(row["sample_id"]),
+                    str(row["packet_safe_hash"]),
+                ),
             )
+            conn.commit()
+        if cur.rowcount != 1:
+            raise ValueError("rejected case was modified before retry accept could be committed")
+        if accepted:
+            # The case is durably recorded: its transient packet is no longer needed. Best-effort
+            # cleanup so a file-lock hiccup never turns a successful accept into an error.
+            try:
+                effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+                research_packet.cleanup_packets_by_safe_hashes(
+                    {str(row["packet_safe_hash"])},
+                    temp_root=effective_temp_root,
+                )
+            except (OSError, ValueError):
+                pass
+            # Promote the character's intake-ledger record so future queues skip it.
+            if str(row["character_ref"] or "").startswith("character-hash:"):
+                effective_ledger = (
+                    Path(intake_ledger_path)
+                    if intake_ledger_path is not None
+                    else DEFAULT_INTAKE_LEDGER_PATH
+                )
+                research_intake_ledger.mark_accepted(
+                    effective_ledger,
+                    league=str(row["league"] or ""),
+                    character_ref=str(row["character_ref"] or ""),
+                )
     result = {
         "status": status,
         "sampleId": str(row["sample_id"]),
@@ -1624,7 +1708,9 @@ def queue_status(
     return _queue_report(
         status=status_override or persisted_status or "ok",
         db_path=db_path,
-        requested_worker_count=1,
+        requested_worker_count=_effective_worker_count(
+            metadata.get("requestedWorkerCount") or DEFAULT_WORKER_COUNT
+        ),
         cases=rows,
         dry_run=False,
         inserted_count=inserted_count,
@@ -1788,18 +1874,96 @@ def _delete_run_directory(output_root: Path, staging: Path) -> tuple[str, dict[s
     return "cleaned", {}
 
 
+def _restore_released_intake_rows(ledger_path: Path, rows: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    for row in rows:
+        try:
+            research_intake_ledger.record_case(
+                ledger_path,
+                league=str(row.get("league") or ""),
+                character_ref=str(row.get("characterRef") or ""),
+                source_hash=str(row.get("sourceHash") or ""),
+                level=int(row.get("level") or 0),
+                ascendancy=str(row.get("ascendancy") or ""),
+                main_skill=str(row.get("mainSkill") or ""),
+                sample_id=str(row.get("sampleId") or ""),
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            failures.append(str(row.get("sampleId") or ""))
+    return failures
+
+
+def _release_abandoned_intake_rows(
+    *,
+    rows: list[dict[str, Any]],
+    metadata: dict[str, str],
+) -> dict[str, Any]:
+    ledger_path_text = str(metadata.get("intakeLedgerPath") or "").strip()
+    ledger_path = Path(ledger_path_text) if ledger_path_text else DEFAULT_INTAKE_LEDGER_PATH
+    released_rows: list[dict[str, Any]] = []
+    accepted_preserved = 0
+    missing = 0
+    for row in rows:
+        if str(row.get("status") or "") == "accepted":
+            accepted_preserved += 1
+            continue
+        character_ref = str(row.get("characterRef") or "").strip()
+        if not character_ref.startswith("character-hash:"):
+            continue
+        outcome = research_intake_ledger.release_queued_case(
+            ledger_path,
+            league=str(row.get("league") or ""),
+            character_ref=character_ref,
+            source_hash=str(row.get("sourceHash") or ""),
+            sample_id=str(row.get("sampleId") or ""),
+        )
+        if outcome == "released":
+            released_rows.append(row)
+            continue
+        if outcome == "accepted_preserved":
+            accepted_preserved += 1
+            continue
+        if outcome == "missing":
+            missing += 1
+            continue
+        rollback_failures = _restore_released_intake_rows(ledger_path, released_rows)
+        return {
+            "status": "rejected",
+            "errorCode": "research_intake_ledger_release_failed",
+            "releaseOutcome": outcome,
+            "sampleId": str(row.get("sampleId") or ""),
+            "releasedIntakeLedgerCount": len(released_rows),
+            "ledgerRollbackFailedSampleIds": rollback_failures,
+            "recoveryRequired": bool(rollback_failures),
+        }
+    return {
+        "status": "ok",
+        "ledgerPath": ledger_path,
+        "releasedRows": released_rows,
+        "releasedIntakeLedgerCount": len(released_rows),
+        "acceptedIntakeLedgerCountPreserved": accepted_preserved,
+        "missingIntakeLedgerCount": missing,
+    }
+
+
 def cleanup_completed_run(
     *,
     run_id: str,
     temp_root: str | Path | None = None,
     allow_rejected: bool = False,
+    abandon_incomplete: bool = False,
 ) -> dict[str, Any]:
-    """Delete one fully accepted Research run while preserving its durable Research Memory.
+    """Delete one Research run while preserving its durable Research Memory.
 
     ``allow_rejected`` permits cleanup when the run also contains ``acceptance_rejected``
     cases (e.g. cases blocked by source-data gaps that can never be accepted). It is an
     explicit opt-in: at least one case must still hold accepted durable records, and the
     default stays strict.
+
+    ``abandon_incomplete`` is a separate explicit opt-in for discarding an unfinished run.
+    It releases only exact queued intake-ledger reservations owned by that run, preserves
+    accepted ledger history and durable Research Memory, and rolls the releases back if the
+    run directory cannot be removed.
     """
 
     if not isinstance(run_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
@@ -1851,14 +2015,30 @@ def cleanup_completed_run(
     if not db_path.is_file():
         return {"status": "rejected", "errorCode": "research_run_not_found"}
     rows = _fetch_cases(db_path)
-    allowed_statuses = {"accepted", "acceptance_rejected"} if allow_rejected else {"accepted"}
-    if not rows or any(str(row.get("status") or "") not in allowed_statuses for row in rows):
-        return {"status": "rejected", "errorCode": "completed_research_run_required"}
-    if not any(
-        int(row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0) > 0
-        for row in rows
-    ):
-        return {"status": "rejected", "errorCode": "completed_research_run_required"}
+    if not abandon_incomplete:
+        allowed_statuses = {"accepted", "acceptance_rejected"} if allow_rejected else {"accepted"}
+        if not rows or any(str(row.get("status") or "") not in allowed_statuses for row in rows):
+            return {"status": "rejected", "errorCode": "completed_research_run_required"}
+        if not any(
+            int(row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0)
+            > 0
+            for row in rows
+        ):
+            return {"status": "rejected", "errorCode": "completed_research_run_required"}
+
+    ledger_release: dict[str, Any] = {
+        "status": "ok",
+        "ledgerPath": DEFAULT_INTAKE_LEDGER_PATH,
+        "releasedRows": [],
+        "releasedIntakeLedgerCount": 0,
+        "acceptedIntakeLedgerCountPreserved": 0,
+        "missingIntakeLedgerCount": 0,
+    }
+    if abandon_incomplete:
+        metadata = _read_metadata(db_path)
+        ledger_release = _release_abandoned_intake_rows(rows=rows, metadata=metadata)
+        if ledger_release.get("status") != "ok":
+            return ledger_release
     packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
     evidence = {
         "caseCount": len(rows),
@@ -1882,6 +2062,19 @@ def cleanup_completed_run(
     # retry never re-reads a half-removed queue DB).
     outcome, detail = _delete_run_directory(output_root, staging)
     if outcome == "deferred":
+        if abandon_incomplete:
+            rollback_failures = _restore_released_intake_rows(
+                Path(ledger_release["ledgerPath"]),
+                list(ledger_release["releasedRows"]),
+            )
+            return {
+                "status": "partial",
+                "errorCode": "research_run_abandon_failed",
+                "detail": detail,
+                "releasedIntakeLedgerCount": int(ledger_release["releasedIntakeLedgerCount"]),
+                "ledgerRollbackFailedSampleIds": rollback_failures,
+                "recoveryRequired": bool(rollback_failures),
+            }
         _queue_pending_cleanup(
             runs_root,
             run_id=run_id,
@@ -1903,6 +2096,12 @@ def cleanup_completed_run(
         "memoriesPreserved": True,
         "userExportsPreserved": True,
         "containsRawMaterial": False,
+        "abandonedIncomplete": abandon_incomplete,
+        "releasedIntakeLedgerCount": int(ledger_release["releasedIntakeLedgerCount"]),
+        "acceptedIntakeLedgerCountPreserved": int(
+            ledger_release["acceptedIntakeLedgerCountPreserved"]
+        ),
+        "missingIntakeLedgerCount": int(ledger_release["missingIntakeLedgerCount"]),
         "delayedRetry": retried,
     }
 
@@ -2036,8 +2235,11 @@ def _write_metadata(db_path: Path, values: dict[str, str]) -> None:
 
 
 def _read_metadata(db_path: Path) -> dict[str, str]:
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         rows = conn.execute("SELECT key, value FROM metadata").fetchall()
+    finally:
+        conn.close()
     return {str(key): str(value) for key, value in rows}
 
 
@@ -2080,9 +2282,12 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
 
 
 def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM cases ORDER BY id ASC").fetchall()
+    finally:
+        conn.close()
     out: list[dict[str, Any]] = []
     for row in rows:
         try:
@@ -2350,6 +2555,7 @@ def _resume_queue_cases(
     output_root: Path,
     db_path: Path,
     effective_temp_root: Path,
+    worker_count: int,
 ) -> dict[str, Any]:
     """Resume an existing queue by rebuilding missing transient packets.
 
@@ -2362,7 +2568,7 @@ def _resume_queue_cases(
         report = _queue_report(
             status="resume_failed",
             db_path=db_path,
-            requested_worker_count=1,
+            requested_worker_count=worker_count,
             cases=[],
             dry_run=False,
             source_input_summary={
@@ -2376,6 +2582,13 @@ def _resume_queue_cases(
         _assert_safe_payload(report)
         return report
 
+    _write_metadata(
+        db_path,
+        {
+            "requestedWorkerCount": str(_effective_worker_count(worker_count)),
+            "workerCountSemantics": "parallel_subagents_one_case_each",
+        },
+    )
     version_context = _queue_version_context(db_path)
     quarantine = _quarantine_dir(output_root)
     rows = _fetch_cases(db_path)
@@ -2639,6 +2852,21 @@ def _queue_report(
     requested_sample_count = int(source_input_summary.get("requestedSampleCount") or 0)
     unavailable_count = counts.get("import_failed", 0)
     available_sample_count = max(0, len(samples) - unavailable_count)
+    now_iso = _now_iso()
+    expired_claimed_count = sum(
+        1
+        for case in cases
+        if str(case.get("status") or "") == "claimed"
+        and str(case.get("leaseExpiresAt") or "")
+        and str(case.get("leaseExpiresAt") or "") <= now_iso
+    )
+    stale_accepting_count = sum(
+        1
+        for case in cases
+        if str(case.get("status") or "") == "accepting"
+        and str(case.get("leaseExpiresAt") or "")
+        and str(case.get("leaseExpiresAt") or "") <= now_iso
+    )
     report = {
         "reportId": "poe-bd-research-queue-v1",
         "status": status,
@@ -2650,13 +2878,17 @@ def _queue_report(
         "availableSampleCount": available_sample_count,
         "sampleShortfallCount": max(0, requested_sample_count - available_sample_count),
         "queuedCount": counts.get("queued", 0),
+        "expiredClaimedCount": expired_claimed_count,
+        "dispatchableCount": counts.get("queued", 0) + expired_claimed_count,
         "claimedCount": counts.get("claimed", 0),
+        "acceptingCount": counts.get("accepting", 0),
+        "staleAcceptingCount": stale_accepting_count,
         "acceptedCount": counts.get("accepted", 0),
         "rejectedCount": counts.get("acceptance_rejected", 0),
         "importFailedCount": counts.get("import_failed", 0),
-        "requestedWorkerCount": 1,
-        "workerCountSemantics": "serial_one_case_at_a_time",
-        "workerReusePolicy": "fresh_lease_bound_sections_per_case_no_evidence_reuse",
+        "requestedWorkerCount": _effective_worker_count(requested_worker_count),
+        "workerCountSemantics": "parallel_subagents_one_case_each",
+        "workerReusePolicy": "fresh_subagent_per_case_no_evidence_reuse",
         "insertedCount": inserted_count,
         "duplicateCount": duplicate_count,
         "intakePagesFetched": int(source_input_summary.get("intakePagesFetched") or 0),
@@ -3351,16 +3583,21 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
             "补充轮无效。\n"
             + (f"- 本轮聚焦清单：{supplement_context}\n" if supplement_context else "")
         )
+    mandatory_checks_text = "\n".join(
+        f"{index}. {check}" for index, check in enumerate(RESEARCH_MANDATORY_CHECKS, start=1)
+    )
     return f"""你正在执行 PoE2 mature build Researcher 流程，只负责当前 leased case。
 这是当前案例的安全导航 brief。
 {supplement_section}
 
 ## Runtime Boundary
 - 这是产品运行态，不要修改源码、测试、文档、schema 或安装配置。
-- 禁止使用 subagent，不要转交给其他 agent；当前案例正式 accept 前不得领取下一案。
+- 你是当前 lease 的唯一 worker，必须连续持有证据上下文、safe review 与 accept 责任；不得再次
+  委派，也不得领取第二个案例。
 - 所有后续脚本命令都必须携带最初 queue 返回的 `--output-dir <runDir>`，不得使用默认共享目录。
 - 不要读源码或临时构造 service 绕过 MCP、lease 或 acceptance 边界。
 - 原始 PoB/XML 只能留在 run 内 quarantine 与 transient packet，不得写入聊天、safe review 或 durable memory。
+- claim 成功后的任何结束路径都必须返回 sampleId 和 safe outcome；accepted 时附 safe acceptance 摘要。
 - 最终只报告 safe artifact、验收状态和安全错误。
 
 ## Case
@@ -3407,68 +3644,8 @@ lookup_mechanic 返回的 revision-pinned sourceRef。Wiki 只作校对证据，
 graph 等独立佐证。
 
 ## Mandatory Checks
-以下十五项是提交前的强制自检，缺一不可：
-1. 暗金/lineage 宝石（如 Bhatair's Vengeance、Ailith's Chimes、Uhtred's 系列）：凡来源使用的
-   lineage support 或暗金宝石，必须在记录中标注其 unique 身份（组件 role 保持 support_modifier——
-   unique support gem 的节点类型是 support_gem，使用 unique_enabler role 会被解析校验拒绝——并在
-   记录 prose 中写明 lineage/unique，或在 open_question/modelability_caveat 记录中说明）；不能当
-   普通 support 处理。
-2. 珠宝槽闭环：inspect 的 jewelCounts 显示已分配珠宝槽且 treeSocketedJewelCount 为 0 时，
-   必须在 review 中显式声明珠宝状态（空置，或已插宝石及 radius/Time-Lost 位置化词缀的
-   覆盖范围）。装备自带的珠宝孔不豁免树槽声明——装备孔里的宝石不能填天赋树槽。
-3. Spirit/reservation 预算：评估所有 persistent buff（光环/战旗/常驻技能）的 Spirit 预留总量与
-   来源（装备/升华），写入资源闭环记录。
-4. support 打包：Family 主技能、核心副技能以及结论依赖其归属的高影响组，必须在
-   skill_package/mechanic_chain/rotation 的 supportPackages 中保存精确所有权，或经
-   supportCoverageExceptions 声明。其他启用组仍需盘点，但可作为低影响 / internal-id /
-   multi-active / unresolved caveat 保留，不因未完整结构化而单独阻断 clean。
-5. support 机制语义证据链：声称辅助为具体技能生成、转换、保留或放大某项机制时，以 review 内
-   组合 fixed-point 校验（support_skill_group_candidates，模拟 PoB 技能组实际生效性）为准；
-   独立 support_skill_candidate 单对查询仅用于候选发现，结论不一致时以组合校验为准。机制细节
-   以 corpus/wiki/来源文本为准，不得凭名字推断。注意：来源组静态校验对"同一句精确提到技能与
-   辅助名"的记录整条 defer（unsupported_source_skill_support_pair）；validate-only 的
-   deferred.unsupportedPairs 会带 triggeringSegment 引用触发句，声明某技能时不要在同一句
-   提及静态不兼容的辅助。
-6. Memory 对照用 stable key：查询前先 search_graph_components + resolve_graph_component 解析
-   ascendancy/class，再以 stable key 过滤 query_research_memory；检查
-   familyRecordCoverage / familyRecordIndex / familyPremiseCatalog 并逐条对照既有同族知识。
-7. Config 条件三栏检查表：把 packet 每个 condition*（EnemyChilled / EnemyBleeding /
-   EnemyBlinded / EnemyIgnited / CritRecently / BeenHitRecently / usePowerCharges 等）列成
-   "条件 → 来源组件 → 验证状态"；无来源的假设必须写成 modelability caveat，不得静默采纳。
-8. 装备全覆盖盘点：每个装备槽位（含暗金/黄装/药剂/护符）必须在记录中出现——结构化组件、
-   content 文本或显式 not_applicable 三选一；写 review 前成表自查。
- 9. 禁止猜 key 路径：所有组件先 search_graph_components 再 resolve_graph_component；支持宝石的
-    metadata 路径可能有 Items/Gem 与 Items/Gems 两种形式，猜错会被判 component_type_mismatch
-    或 missing。resolverQuery 必须是可解析查询（完整 stable key / id-mapping / 归一化 alias /
-    归一化显示名），不要把 key 尾段（如 snake_case 带撇号形式）当查询；多实体/兵种类技能
-    （Skeletal*/Spectre/Companion）key 通常为 Summon* 复数形式，可能同时存在 Command*/Summon*
-    双端点。
- 10. silent / unavailable 不丢结论：lookup_mechanic 返回 silent 或语料无文本的机制，直接以样本
-     证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task。
- 11. 非核心技能组也必须被观察：Gathering Storm / Herald of Ice / Tempest Bell 等组若承担本案
-      的机制、轮转或结论职责，应通过 typedPayload.supportPackages / supportCoverageExceptions
-      保存归属；若只是低影响、内部、multi-active 或无法唯一解析的来源细节，可在 content、caveat
-      或 verification task 中说明。clear_skill / boss_skill / triggered_payload 自动进入 Family
-      核心副技能元数据但不改变 Family key，仍按核心 support gate 检查。
- 12. 因果方向自查：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（例如 Rend
-     是 Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照后再定因果。
- 13. 未解析组件逐个 search：任何 unresolved 计数出现时，先对该组件名执行一次
-     search_graph_components 再定性为 source gap；图中已存在但未 search 的组件不得误报 gap。
-  14. Family 身份决策清单：Family 身份 = 升华 + 主输出技能集合（role=primary_damage 的
-      skill 组件，可多个；CoC/Spellslinger 等触发宿主、clear_skill / boss_skill /
-      triggered_payload 自动副技能一律不参与身份）。skill_package / mechanic_chain
-      记录必须声明至少一个 primary_damage 组件；同一 BD 的多个主输出技能都要声明；
-      纯副技能包（组件全是 clear/boss/triggered/trigger_host）不需要自己的 primary_damage。
-      身份相同的档案会自动归入既有 Family（无需也不得新建 sibling 档案）。
-  15. 语义边闭环：每案至少提交 2 条 resolver-backed semantic edge 写入 review.semanticEdges
-      （edge_type 限 enables_mechanic / scales_with / mitigates_weakness_of /
-      creates_failure_risk_for / requires_transition_gate / has_modelability_caveat /
-      synergizes_with；两端都必须先用 resolve_graph_component 解析并携带
-      source_resolution / target_resolution 证据）。无法推导时在 review 的
-      deferredCandidateCount / 结论中说明原因，不得为凑数发明关系。
-  16. 记忆对照留痕：review 顶层 memoryUse 必须存在（对象，至少含 queries 数组）。逐条记录
-      本案例写 review 前执行的 query_research_memory 查询（查询文本、参数、命中的档案）；
-      没有执行任何查询的案例写空数组 queries: [] 并在 queries 的说明字段注明原因。
+以下 {len(RESEARCH_MANDATORY_CHECKS)} 项是提交前的强制自检，缺一不可：
+{mandatory_checks_text}
 
 ## Research Goal
 重建并分别记录：
@@ -3816,8 +3993,8 @@ def main(argv: list[str] | None = None) -> int:
     queue_parser.add_argument(
         "--worker-count",
         type=int,
-        default=1,
-        help="Deprecated compatibility option; research always runs one case at a time.",
+        default=DEFAULT_WORKER_COUNT,
+        help="Concurrent one-case research workers (default 5, clamped to 1-5).",
     )
     queue_parser.add_argument("--league", default="current")
     queue_parser.add_argument(
@@ -3986,7 +4163,11 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status")
     _add_queue_location_args(status_parser)
 
-    args = parser.parse_args(_rewrite_lease_token_argv(argv))
+    # ``parse_args(None)`` reads ``sys.argv`` itself, which would bypass the compatibility
+    # rewrite below. Materialize the real CLI arguments first so legacy dash-leading lease
+    # tokens follow the same path as programmatic ``main([...])`` calls.
+    effective_argv = sys.argv[1:] if argv is None else argv
+    args = parser.parse_args(_rewrite_lease_token_argv(effective_argv))
     try:
         if args.command == "queue":
             run_id, output_dir = _queue_cli_output_dir(args)

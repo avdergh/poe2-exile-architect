@@ -4,7 +4,8 @@
 > （`deep_research_records`、BuildFamily/canonical evidence、`query_research_memory` 两级召回等）。
 > §7.2 / §8.2 列举的 `include_design_memory` / `lifecycle_stage` / `scenario_tags` /
 > `budget_band` 参数未实现；现行查询合同以 `docs/phases/04_research_memory.md`、
-> `/poe-bd-research` skill 与 claim 后动态下发的 review-contract 为准。阅读时把它当作历史设计
+> `/poe-bd-research` Controller、显式 `/poe-bd-research-worker` 与 claim 后动态下发的
+> review-contract 为准。阅读时把它当作历史设计
 > 参考，不要据此实现、调用或修改合同。
 
 ## 1. 文档定位
@@ -208,7 +209,7 @@ source snapshot
 > 已过时（2026-08 set-based 身份规则取代）：现行 Family 身份 = 升华 + 主输出技能**集合**
 > （研究者声明的 `primary_damage` 角色技能，可多个，gem 等价归一）；自动副技能
 > （clear/boss/triggered-payload）、trigger-host 一律不参与身份。以
-> `docs/phases/04_research_memory.md` 与 `/poe-bd-research` skill 为准。
+> `docs/phases/04_research_memory.md`、`/poe-bd-research` Controller 与显式 Worker Skill 为准。
 
 防御、暗金、supports、资源方案和预算差异不参与 Family 身份，它们作为同一 Family 下的知识单元或
 来源变体保存。每条知识再按 `record_kind` 选择必要的核心角色组件生成 `knowledge_key`；完全相同的

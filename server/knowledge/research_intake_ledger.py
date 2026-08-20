@@ -203,6 +203,60 @@ def mark_accepted(db_path: str | Path, *, league: str, character_ref: str) -> bo
     return cur.rowcount > 0
 
 
+def release_queued_case(
+    db_path: str | Path,
+    *,
+    league: str,
+    character_ref: str,
+    source_hash: str,
+    sample_id: str,
+) -> str:
+    """Release one abandoned queue reservation without touching accepted history.
+
+    The four safe identity fields bind the release to the exact case that originally
+    reserved the character.  A missing row is already released; an accepted row is
+    durable history and is deliberately preserved.  Any queued identity mismatch fails
+    closed so abandoning one run cannot release another run's reservation.
+    """
+
+    path = Path(db_path)
+    if not path.is_file():
+        return "missing"
+    init_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, status, source_hash, first_sample_id
+              FROM intake_records
+             WHERE league = ?
+               AND character_ref = ?
+            """,
+            (str(league or "").strip(), str(character_ref or "").strip()),
+        ).fetchone()
+        if row is None:
+            return "missing"
+        status = str(row[1] or "")
+        if status == ACCEPTED_STATUS:
+            return "accepted_preserved"
+        if status != DEFAULT_STATUS:
+            return "status_mismatch"
+        stored_source_hash = str(row[2] or "")
+        stored_sample_id = str(row[3] or "")
+        if stored_source_hash != str(source_hash or "").strip() or stored_sample_id != str(
+            sample_id or ""
+        ).strip():
+            return "ownership_mismatch"
+        cur = conn.execute(
+            "DELETE FROM intake_records WHERE id = ? AND status = 'queued'",
+            (int(row[0]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return "released" if cur.rowcount == 1 else "concurrent_change"
+
+
 def summary(db_path: str | Path, league: str | None = None) -> dict[str, Any]:
     """Safe aggregate counts for transparency in queue reports."""
     path = Path(db_path)

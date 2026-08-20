@@ -11,7 +11,7 @@ FROM_CHECKOUT=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGED_MCP_BEGIN="# BEGIN poe-bd-creator managed MCP server"
 MANAGED_MCP_END="# END poe-bd-creator managed MCP server"
-PORTABLE_SKILLS="poe-bd-research poe-bd-create"
+PORTABLE_SKILLS="poe-bd-research poe-bd-research-worker poe-bd-create"
 
 platforms_table() {
   cat <<EOF
@@ -120,13 +120,24 @@ clone_or_update() {
   fi
 }
 
+validate_research_skill_pair() {
+  local root controller=0 worker=0
+  root="$(skill_list_root)"
+  [[ -f "$root/poe-bd-research/SKILL.md" ]] && controller=1
+  [[ -f "$root/poe-bd-research-worker/SKILL.md" ]] && worker=1
+  if [[ "$controller" -ne "$worker" ]]; then
+    say "Research skill installation is incomplete: poe-bd-research and poe-bd-research-worker must both exist."
+    return 1
+  fi
+}
+
 list_skills() {
   local id="${1:-codex}" root
   root="$(skill_list_root)"
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       if [[ "$id" == "codex" ]]; then
-        printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+        printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
       else
         printf '%s\n' $PORTABLE_SKILLS
       fi
@@ -152,7 +163,7 @@ list_skills_for_uninstall() {
   if [[ -d "$root" ]]; then
     list_skills codex
   else
-    printf '%s\n' "poe-bd-research" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+    printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
   fi
 }
 
@@ -214,6 +225,7 @@ remove_link() {
 
 link_skills() {
   local target="$1" style="$2" id="$3" root
+  validate_research_skill_pair || exit 1
   root="$(skills_root)"
   [[ "$DRY_RUN" == "1" ]] || mkdir -p "$target"
   case "$style" in

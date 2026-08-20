@@ -44,6 +44,8 @@
 
       - Load the matching skill before poe-bd work: `poe-bd-create`,
         `poe-bd-research`, `poe-bd-research-loop`, `poe-bd-learning-loop`.
+        `poe-bd-research-worker` is internal and may be loaded only by an explicit
+        Research Controller subagent assignment.
       - Never invent build numbers: DPS / EHP / resistances / Spirit must come
         from PoB readback and Judge; default Judge feedback is hard-only.
       - All PoB/compute tools share one active build and MUST be called
@@ -93,7 +95,7 @@
 
 # The skill REGISTRY lives in the host composition and is layered per scope.
 # `baseUrl` is this preset's own directory, so the skills/ tree travels with
-# the preset wherever it is installed. The four adapted poe-bd skills are
+# the preset wherever it is installed. The four user-facing skills plus the internal Research Worker are
 # discovered from there; the agent also sees any deployment/user skills.
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'

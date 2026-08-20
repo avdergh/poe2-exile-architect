@@ -1156,6 +1156,7 @@ def cleanup_completed_task_runtime(
     task_kind: Literal["generation", "research", "learning_campaign"],
     task_id: str,
     allow_rejected: bool = False,
+    abandon_incomplete: bool = False,
 ) -> dict[str, Any]:
     """Delete one completed task's private runtime state after its durable result is safe.
 
@@ -1164,9 +1165,15 @@ def cleanup_completed_task_runtime(
     ``allow_rejected`` is a research opt-in: permits cleanup when the run also contains
     acceptance_rejected cases blocked by source-data gaps (at least one case must still
     hold accepted durable records). Default stays strict.
+    ``abandon_incomplete`` is a separate Research-only opt-in that requires an explicit user
+    decision to discard an unfinished run. It releases only exact queued intake-ledger
+    reservations owned by that run; accepted ledger history and Research Memory are preserved.
     """
     return task_cleanup.cleanup_completed_task_runtime(
-        task_kind=task_kind, task_id=task_id, allow_rejected=allow_rejected
+        task_kind=task_kind,
+        task_id=task_id,
+        allow_rejected=allow_rejected,
+        abandon_incomplete=abandon_incomplete,
     )
 
 

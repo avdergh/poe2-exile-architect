@@ -147,6 +147,62 @@ def test_mark_accepted_only_promotes_the_exact_character(tmp_path):
     }
 
 
+def test_release_queued_case_requires_exact_owner_and_preserves_accepted(tmp_path):
+    ledger = tmp_path / "ledger.sqlite"
+    queued_ref = research_intake_ledger.character_ref("acctA", "CharA")
+    accepted_ref = research_intake_ledger.character_ref("acctB", "CharB")
+    research_intake_ledger.record_case(
+        ledger,
+        league="league-x",
+        character_ref=queued_ref,
+        source_hash="source-a",
+        sample_id="case:a",
+    )
+    research_intake_ledger.record_case(
+        ledger,
+        league="league-x",
+        character_ref=accepted_ref,
+        source_hash="source-b",
+        sample_id="case:b",
+    )
+    research_intake_ledger.mark_accepted(
+        ledger, league="league-x", character_ref=accepted_ref
+    )
+
+    assert (
+        research_intake_ledger.release_queued_case(
+            ledger,
+            league="league-x",
+            character_ref=queued_ref,
+            source_hash="wrong-source",
+            sample_id="case:a",
+        )
+        == "ownership_mismatch"
+    )
+    assert (
+        research_intake_ledger.release_queued_case(
+            ledger,
+            league="league-x",
+            character_ref=accepted_ref,
+            source_hash="source-b",
+            sample_id="case:b",
+        )
+        == "accepted_preserved"
+    )
+    assert (
+        research_intake_ledger.release_queued_case(
+            ledger,
+            league="league-x",
+            character_ref=queued_ref,
+            source_hash="source-a",
+            sample_id="case:a",
+        )
+        == "released"
+    )
+    assert research_intake_ledger.seen_character_refs(ledger, "league-x") == {accepted_ref}
+    assert research_intake_ledger.summary(ledger)["byStatus"] == {"accepted": 1}
+
+
 def test_ledger_never_stores_raw_identities_or_import_material(tmp_path):
     ledger = tmp_path / "ledger.sqlite"
     research_intake_ledger.record_case(

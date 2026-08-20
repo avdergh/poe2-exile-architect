@@ -13,7 +13,7 @@ DSH 的工具命名与能力形态。
 | `poe-bd.mcp.cordis.yml` | 第一层：`- insert:` patch，把四个 MCP server 注册进宿主组合 |
 | `agent-presets/poe-bd/agent.cordis.yml` | 第二层：`poe-bd` agent preset 组合（MCP 行 + 人设 + skill 注册） |
 | `agent-presets/poe-bd/preset.yml` | preset 显示元数据 |
-| `agent-presets/poe-bd/skills/` | 四个改写后的 skill（由 `scripts/adapt_skills_for_dsh.py` 生成，勿手改） |
+| `agent-presets/poe-bd/skills/` | 四个用户工作流 skill + 一个显式 Research Worker（由 `scripts/adapt_skills_for_dsh.py` 生成，勿手改） |
 | `../scripts/adapt_skills_for_dsh.py` | skill 改写生成器（工具名前缀、DSH 说明头） |
 | `../scripts/install_dsh_preset.py` | preset 安装/卸载/诊断（install / uninstall / doctor） |
 
@@ -55,7 +55,8 @@ python scripts\install_dsh_preset.py uninstall        # 卸载
 ```
 
 安装目标：`${DSH_HOME:-$HOME/.dsh}\.agent-presets\poe-bd\`。之后在 DSH Web
-新建会话，在预设列表选择 **poe-bd**，即获得四个 MCP 工具集 + 四个 skill + poe-bd
+新建会话，在预设列表选择 **poe-bd**，即获得四个 MCP 工具集 + 四个用户工作流 skill + 一个显式
+Research Worker + poe-bd
 人设；其他会话不受影响（MCP 子进程只在 preset 挂载时拉起）。
 
 更新已有 preset 时，安装器会先完整复制到同级 `poe-bd.next`，再把当前目录移动为

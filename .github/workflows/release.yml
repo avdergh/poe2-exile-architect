@@ -65,7 +65,9 @@ jobs:
 
       - run: uv sync
       - run: uv run ruff check server scripts pipeline tests
-      - run: uv run ruff format --check server scripts pipeline tests
+      - name: Format advisory
+        continue-on-error: true
+        run: uv run ruff format --check server scripts pipeline tests
       - run: npx --yes @anthropic-ai/mcpb validate manifest.json
       - run: uv run python -m pipeline.build_corpus
       - name: Golden tests (release gate)

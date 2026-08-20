@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import multiprocessing
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -25,10 +29,36 @@ RAW_MARKERS = (
 )
 
 
+def _hold_research_accept_file_lock(
+    lock_path: str,
+    start_event,
+    active,
+    max_active,
+    counter_lock,
+) -> None:
+    from server.learning.file_lock import interprocess_file_lock
+
+    if not start_event.wait(timeout=10):
+        raise RuntimeError("accept-lock test start event timed out")
+    with interprocess_file_lock(Path(lock_path)):
+        with counter_lock:
+            active.value += 1
+            max_active.value = max(max_active.value, active.value)
+        try:
+            time.sleep(0.25)
+        finally:
+            with counter_lock:
+                active.value -= 1
+
+
 def test_research_queue_defaults_to_runtime_memory_store():
     from scripts import research_mature_builds
 
     assert research_mature_builds.DEFAULT_MEMORY_DB_PATH == paths.mature_learning_path()
+    assert research_mature_builds.DEFAULT_WORKER_COUNT == 5
+    assert research_mature_builds._effective_worker_count(None) == 5
+    assert research_mature_builds._effective_worker_count(0) == 1
+    assert research_mature_builds._effective_worker_count(6) == 5
 
 
 def test_queue_cli_allocates_a_distinct_default_run_directory_per_invocation(
@@ -746,8 +776,8 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     assert queued["status"] == "queued"
     assert queued["queueKind"] == "poe_bd_research_external_agent_queue"
     assert queued["sampleCount"] == 2
-    assert queued["requestedWorkerCount"] == 1
-    assert queued["workerCountSemantics"] == "serial_one_case_at_a_time"
+    assert queued["requestedWorkerCount"] == 5
+    assert queued["workerCountSemantics"] == "parallel_subagents_one_case_each"
     assert "preparedCount" not in queued
     _assert_safe_payload(queued, tmp_path.parent)
 
@@ -760,13 +790,14 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     second = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
 
     assert first["status"] == "claimed"
-    assert second["status"] == "active_case_in_progress"
-    assert second["sampleId"] == first["sampleId"]
+    assert second["status"] == "claimed"
+    assert second["sampleId"] != first["sampleId"]
     assert first["mainSkillAuthority"] == "programmatic_snapshot_non_authoritative"
     assert first["packetSafeHash"]
     assert first["reviewFile"].startswith("reviews/")
     assert "这是当前案例的安全导航 brief" in first["workerPrompt"]
-    assert "不要转交给其他 agent" in first["workerPrompt"]
+    assert "当前 lease 的唯一 worker" in first["workerPrompt"]
+    assert "不得领取第二个案例" in first["workerPrompt"]
     assert "--output-dir <runDir>" in first["workerPrompt"]
     assert first["leaseToken"] in first["workerPrompt"]
     _assert_safe_payload(first, tmp_path.parent)
@@ -791,8 +822,9 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     _assert_safe_payload(prompt_payload, tmp_path.parent)
 
     status = research_mature_builds.queue_status(output_dir=output_dir)
-    assert status["claimedCount"] == 1
-    assert status["queuedCount"] == 1
+    assert status["claimedCount"] == 2
+    assert status["acceptingCount"] == 0
+    assert status["queuedCount"] == 0
     assert all("acceptedDeepRecordCount" in sample for sample in status["samples"])
     assert all(
         sample["mainSkillAuthority"] == "programmatic_snapshot_non_authoritative"
@@ -802,6 +834,119 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     assert all("unresolvedDeepRecordMentionCount" in sample for sample in status["samples"])
     assert all("unresolvedUniqueComponentCount" in sample for sample in status["samples"])
     _assert_safe_payload(status, tmp_path.parent)
+
+
+def test_queue_claim_capacity_releases_after_one_case_is_accepted(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "seven-samples.txt"
+    batch_file.write_text(
+        "\n---POB-SAMPLE---\n".join(
+            _sample_code(f"ConcurrentPlayer{index}", ascendancy="Deadeye", level=95)
+            for index in range(7)
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-capacity"
+    research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-capacity",
+        worker_count=5,
+    )
+
+    claimed = [
+        research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+        for _ in range(5)
+    ]
+    capacity = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    assert {item["status"] for item in claimed} == {"claimed"}
+    assert len({item["sampleId"] for item in claimed}) == 5
+    assert len({item["leaseToken"] for item in claimed}) == 5
+    assert capacity == {
+        "status": "worker_capacity_reached",
+        "queueKind": "poe_bd_research_external_agent_queue",
+        "activeCaseCount": 5,
+        "workerCount": 5,
+        "noRawMatureBuildMaterial": True,
+    }
+
+    first = claimed[0]
+    review_file = output_dir / first["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, first)
+
+    def fake_accept_deep_review_candidates(**kwargs):
+        status = research_mature_builds.queue_status(output_dir=output_dir)
+        assert status["acceptingCount"] == 1
+        return {
+            "status": "accepted",
+            "acceptedPatternCount": 1,
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "accepted"},
+        }
+
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        fake_accept_deep_review_candidates,
+    )
+    research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=first["leaseToken"],
+        review_file=review_file,
+        memory_db_path=tmp_path / "memory-capacity.sqlite",
+    )
+    replacement = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+
+    assert replacement["status"] == "claimed"
+    assert replacement["sampleId"] not in {item["sampleId"] for item in claimed}
+    assert status["acceptedCount"] == 1
+    assert status["claimedCount"] == 5
+    assert status["acceptingCount"] == 0
+    assert status["queuedCount"] == 1
+
+
+def test_concurrent_claims_are_atomic_and_bounded_to_five_workers(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "ten-samples.txt"
+    batch_file.write_text(
+        "\n---POB-SAMPLE---\n".join(
+            _sample_code(f"AtomicPlayer{index}", ascendancy="Deadeye", level=95)
+            for index in range(10)
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-atomic-claim"
+    research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-atomic-claim",
+        worker_count=5,
+    )
+    monkeypatch.setattr(research_mature_builds, "_identity_resolvability_hint", lambda **_: {})
+    barrier = threading.Barrier(8)
+
+    def claim_once():
+        barrier.wait(timeout=5)
+        return research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: claim_once(), range(8)))
+
+    claimed = [item for item in results if item["status"] == "claimed"]
+    at_capacity = [item for item in results if item["status"] == "worker_capacity_reached"]
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+
+    assert len(claimed) == 5
+    assert len(at_capacity) == 3
+    assert len({item["sampleId"] for item in claimed}) == 5
+    assert len({item["leaseToken"] for item in claimed}) == 5
+    assert status["claimedCount"] == 5
+    assert status["queuedCount"] == 5
 
 
 def test_worker_brief_is_safe_inline_and_explains_tool_fallback(tmp_path, monkeypatch):
@@ -834,7 +979,8 @@ def test_worker_brief_is_safe_inline_and_explains_tool_fallback(tmp_path, monkey
     assert brief["reviewFile"].startswith("reviews/")
     prompt = brief["workerPrompt"]
     assert "这是当前案例的安全导航 brief" in prompt
-    assert "不要转交给其他 agent" in prompt
+    assert "当前 lease 的唯一 worker" in prompt
+    assert "不得领取第二个案例" in prompt
     assert "inspect" in prompt
     assert "read" in prompt
     assert "programmatic mainSkill candidate" in prompt
@@ -858,6 +1004,10 @@ def test_worker_brief_is_safe_inline_and_explains_tool_fallback(tmp_path, monkey
     assert "partial_with_deferred" in prompt
     assert "DeepResearchRecord" in prompt
     assert "完整保留该机制包" in prompt
+    assert "以下 16 项是提交前的强制自检" in prompt
+    for index, check in enumerate(research_mature_builds.RESEARCH_MANDATORY_CHECKS, start=1):
+        assert f"{index}. {check}" in prompt
+    assert "以下十五项" not in prompt
     assert '"patternType": "build_archetype"' not in prompt
     assert "SKILL.md" not in prompt
     _assert_safe_payload(brief, tmp_path.parent)
@@ -942,7 +1092,15 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
         "utility",
     ]
     assert contract["candidateTemplate"]["transferScope"] == "family"
+    assert contract["mandatoryChecks"] == list(research_mature_builds.RESEARCH_MANDATORY_CHECKS)
+    assert len(contract["mandatoryChecks"]) == 16
+    assert "wiki 缺页强制新增" in contract["mandatoryChecks"][9]
+    assert "semantic edge" in contract["mandatoryChecks"][14]
+    assert "memoryUse" in contract["mandatoryChecks"][15]
     assert "gearResponsibilities" in contract["allowedValues"]["typedIdentityFields"]
+    gear_rule = contract["typedPayloadSchema"]["gearResponsibilities"]["rule"]
+    assert "explicitly set gearResponsibilities=[]" in gear_rule
+    assert "missing or null field is not this declaration" in gear_rule
     assert "supportCoverageExceptions" in contract["allowedValues"]["typedIdentityFields"]
     assert (
         "skillName/supportNames"
@@ -951,6 +1109,10 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert "applicabilityRequirements" in contract["candidateTemplate"]
     assert "exclusionConditions" in contract["candidateTemplate"]
     assert "不得自造 role" in contract["rules"][0]
+    assert any(
+        "support_modifier 等非主动技能组件不改变该豁免" in rule for rule in contract["rules"]
+    )
+    assert any("字段缺失/null 不算声明" in rule for rule in contract["rules"])
     assert contract["nextActions"] == [
         "init-review",
         "edit_review",
@@ -1126,13 +1288,19 @@ def test_lease_token_argv_rewrite_only_touches_lease_token():
     assert research_mature_builds._rewrite_lease_token_argv(None) is None
 
 
-def test_read_cli_parses_dash_leading_lease_token_without_argparse_error(tmp_path, capsys):
+def test_read_cli_parses_dash_leading_lease_token_without_argparse_error(
+    tmp_path, capsys, monkeypatch
+):
     from scripts import research_mature_builds
 
     # A dash-leading token must reach lease validation (and fail there as a safe JSON error),
-    # never be rejected by argparse as "expected one argument".
-    code = research_mature_builds.main(
+    # never be rejected by argparse as "expected one argument". Exercise ``main()`` with
+    # no explicit argv so this pins the production CLI path through ``sys.argv``.
+    monkeypatch.setattr(
+        research_mature_builds.sys,
+        "argv",
         [
+            "research_mature_builds.py",
             "read",
             "--output-dir",
             str(tmp_path / "research"),
@@ -1140,8 +1308,9 @@ def test_read_cli_parses_dash_leading_lease_token_without_argparse_error(tmp_pat
             "-dash-led-token",
             "--section",
             "skills",
-        ]
+        ],
     )
+    code = research_mature_builds.main()
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
 
@@ -2033,6 +2202,62 @@ def test_retry_accept_rejected_case_without_lease(tmp_path, monkeypatch):
     assert status["rejectedCount"] == 0
 
 
+def test_retry_accept_exception_restores_rejected_state(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("RetryFailurePlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-retry-failure"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-retry-failure",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        lambda **_: {
+            "status": "rejected",
+            "acceptedPatternCount": 0,
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "error"},
+        },
+    )
+    research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=review_file,
+        memory_db_path=tmp_path / "memory-retry-failure.sqlite",
+    )
+
+    def fail_acceptance(**kwargs):
+        raise RuntimeError("simulated durable failure")
+
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        fail_acceptance,
+    )
+    with pytest.raises(RuntimeError, match="simulated durable failure"):
+        research_mature_builds.retry_accept_case(
+            output_dir=output_dir,
+            sample_id=claimed["sampleId"],
+            review_file=review_file,
+            memory_db_path=tmp_path / "memory-retry-failure.sqlite",
+        )
+
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+    assert status["rejectedCount"] == 1
+    assert status["acceptingCount"] == 0
+
+
 def test_expired_lease_can_reclaim_and_old_lease_cannot_accept(tmp_path, monkeypatch):
     from scripts import research_mature_builds
 
@@ -2049,6 +2274,11 @@ def test_expired_lease_can_reclaim_and_old_lease_cannot_accept(tmp_path, monkeyp
     )
     first = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
     _expire_case_lease(output_dir / "poe_bd_research_queue.sqlite", first["sampleId"])
+    expired_status = research_mature_builds.queue_status(output_dir=output_dir)
+    assert expired_status["queuedCount"] == 0
+    assert expired_status["claimedCount"] == 1
+    assert expired_status["expiredClaimedCount"] == 1
+    assert expired_status["dispatchableCount"] == 1
     second = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
     assert second["sampleId"] == first["sampleId"]
     assert second["leaseToken"] != first["leaseToken"]
@@ -2109,12 +2339,17 @@ def test_accept_holds_exact_lease_before_running_durable_acceptance(tmp_path, mo
         source_files=[source_file],
         output_dir=output_dir,
         temp_root=tmp_path.parent / "poe-research-temp-accept-lock",
+        worker_count=1,
     )
     claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
     reclaim_attempts: list[dict] = []
+    stale_accepting_counts: list[int] = []
 
     def fake_accept_deep_review_candidates(**kwargs):
         _expire_case_lease(output_dir / "poe_bd_research_queue.sqlite", claimed["sampleId"])
+        stale_accepting_counts.append(
+            research_mature_builds.queue_status(output_dir=output_dir)["staleAcceptingCount"]
+        )
         reclaim_attempts.append(
             research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
         )
@@ -2141,15 +2376,157 @@ def test_accept_holds_exact_lease_before_running_durable_acceptance(tmp_path, mo
     )
 
     assert accepted["status"] == "accepted"
+    assert stale_accepting_counts == [1]
     assert reclaim_attempts == [
         {
-            "status": "active_case_in_progress",
+            "status": "worker_capacity_reached",
             "queueKind": "poe_bd_research_external_agent_queue",
-            "sampleId": claimed["sampleId"],
+            "activeCaseCount": 1,
+            "workerCount": 1,
             "noRawMatureBuildMaterial": True,
         }
     ]
     assert research_mature_builds.queue_status(output_dir=output_dir)["acceptedCount"] == 1
+
+
+def test_claim_packet_failure_releases_lease_and_returns_sample_id(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("PacketFailurePlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-packet-failure"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-packet-failure",
+    )
+
+    def fail_packet_rebuild(**kwargs):
+        raise OSError("simulated packet failure")
+
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_rebuild_packet_for_claim",
+        fail_packet_rebuild,
+    )
+    result = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+
+    assert result["status"] == "claim_packet_failed"
+    assert result["sampleId"].startswith("case:poe-bd-research-")
+    assert result["leaseReleased"] is True
+    assert result["retryable"] is True
+    assert result["recoveryRequired"] is False
+    assert status["queuedCount"] == 1
+    assert status["claimedCount"] == 0
+    assert status["dispatchableCount"] == 1
+
+
+def test_formal_accepts_for_one_memory_store_are_serialized(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    batch_file = tmp_path / "accept-samples.txt"
+    batch_file.write_text(
+        _sample_code("AcceptPlayerA", ascendancy="Deadeye", level=95)
+        + "\n---POB-SAMPLE---\n"
+        + _sample_code("AcceptPlayerB", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-concurrent-accept"
+    research_mature_builds.queue_cases(
+        source_batch_files=[batch_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-concurrent-accept",
+        worker_count=2,
+    )
+    claims = [
+        research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+        for _ in range(2)
+    ]
+    for claim in claims:
+        review_file = output_dir / claim["reviewFile"]
+        review_file.parent.mkdir(parents=True, exist_ok=True)
+        _write_claim_review(review_file, claim)
+
+    counter_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_accept_deep_review_candidates(**kwargs):
+        nonlocal active, max_active
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.1)
+            return {
+                "status": "accepted",
+                "acceptedPatternCount": 1,
+                "deferredCandidateCount": 0,
+                "patternWrite": {"status": "accepted"},
+            }
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        fake_accept_deep_review_candidates,
+    )
+    memory_db = tmp_path / "shared-memory.sqlite"
+
+    def accept_one(claim):
+        return research_mature_builds.accept_case(
+            output_dir=output_dir,
+            lease_token=claim["leaseToken"],
+            review_file=output_dir / claim["reviewFile"],
+            memory_db_path=memory_db,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(accept_one, claims))
+
+    status = research_mature_builds.queue_status(output_dir=output_dir)
+    assert max_active == 1
+    assert [item["status"] for item in results] == ["accepted", "accepted"]
+    assert status["acceptedCount"] == 2
+    assert status["claimedCount"] == 0
+    assert status["acceptingCount"] == 0
+    assert research_mature_builds._accept_lock_path(memory_db) == (
+        research_mature_builds._accept_lock_path(memory_db.resolve())
+    )
+
+
+def test_research_accept_file_lock_serializes_spawned_processes(tmp_path):
+    from scripts import research_mature_builds
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    active = context.Value("i", 0)
+    max_active = context.Value("i", 0)
+    counter_lock = context.Lock()
+    lock_path = str(research_mature_builds._accept_lock_path(tmp_path / "shared.sqlite"))
+    processes = [
+        context.Process(
+            target=_hold_research_accept_file_lock,
+            args=(lock_path, start_event, active, max_active, counter_lock),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(timeout=15)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+
+    assert max_active.value == 1
+    assert active.value == 0
 
 
 def test_legacy_phase45_wrappers_warn_on_stderr_without_polluting_json_stdout(
@@ -2693,6 +3070,12 @@ def test_queue_persists_quarantine_and_resume_rebuilds_missing_packets(tmp_path)
             for row in conn.execute("SELECT packet_safe_hash FROM cases")
             if str(row["packet_safe_hash"])
         }
+        conn.execute("UPDATE metadata SET value = '1' WHERE key = 'requestedWorkerCount'")
+        conn.execute(
+            "UPDATE metadata SET value = 'serial_one_case_at_a_time' "
+            "WHERE key = 'workerCountSemantics'"
+        )
+        conn.commit()
     assert len(hashes_before) == 2
 
     # Destroy every transient packet, then resume: packets must be rebuilt from quarantine
@@ -2713,6 +3096,8 @@ def test_queue_persists_quarantine_and_resume_rebuilds_missing_packets(tmp_path)
     assert resumed["resumeSummary"]["packetIntactCount"] == 0
     assert resumed["resumeSummary"]["unrecoverableCaseCount"] == 0
     assert resumed["sampleCount"] == 2
+    assert resumed["requestedWorkerCount"] == 5
+    assert resumed["workerCountSemantics"] == "parallel_subagents_one_case_each"
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row

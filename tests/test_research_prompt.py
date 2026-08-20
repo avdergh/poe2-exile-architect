@@ -226,6 +226,8 @@ def test_researcher_prompt_separates_caveats_from_family_and_requires_gear_respo
     assert "do not belong to the Family" in text
     assert "supportCoverageExceptions" in text
     assert "gearResponsibilities" in text
+    assert "gearResponsibilities explicitly []" in text
+    assert "missing/null is not a declaration" in text
     assert "physically belongs to that ascendancy" in text
 
 

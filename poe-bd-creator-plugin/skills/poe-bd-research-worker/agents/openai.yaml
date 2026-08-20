@@ -1,0 +1,6 @@
+interface:
+  display_name: "PoE BD Research Worker (Internal)"
+  short_description: "Process one Controller-assigned PoE2 research case"
+
+policy:
+  allow_implicit_invocation: false

@@ -36,7 +36,7 @@ $ScriptRepoDir = Split-Path -Parent $PSCommandPath
 $RepoDir = if ($FromCheckout) { $ScriptRepoDir } else { $RepoDir }
 $ManagedMcpBegin = '# BEGIN poe-bd-creator managed MCP server'
 $ManagedMcpEnd = '# END poe-bd-creator managed MCP server'
-$PortableSkills = @('poe-bd-research', 'poe-bd-create')
+$PortableSkills = @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create')
 $PortableMcpHosts = @('claude', 'cursor', 'opencode')
 
 $Platforms = [ordered]@{
@@ -125,9 +125,18 @@ function Clone-Or-Update {
     }
 }
 
+function Assert-ResearchSkillPair([string]$Root) {
+    if (-not (Test-Path $Root)) { Write-Error "Skills directory not found: $Root" }
+    $hasController = Test-Path (Join-Path $Root 'poe-bd-research\SKILL.md')
+    $hasWorker = Test-Path (Join-Path $Root 'poe-bd-research-worker\SKILL.md')
+    if ($hasController -ne $hasWorker) {
+        Write-Error 'Research skill installation is incomplete: poe-bd-research and poe-bd-research-worker must both exist.'
+    }
+}
+
 function Get-SkillNames([string]$Id) {
     $root = Get-SkillListRoot
-    if (-not (Test-Path $root)) { Write-Error "Skills directory not found: $root" }
+    Assert-ResearchSkillPair $root
     $all = @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     if ($Id -eq 'codex') { return $all }
     return @($PortableSkills | Where-Object { $all -contains $_ })
@@ -138,7 +147,7 @@ function Get-SkillNamesForUninstall {
     if (Test-Path $root) {
         return @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     }
-    return @('poe-bd-research', 'poe-bd-create', 'poe-bd-research-loop', 'poe-bd-learning-loop')
+    return @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-research-loop', 'poe-bd-learning-loop')
 }
 
 function Test-IsReparse([string]$Path) {
@@ -222,6 +231,7 @@ function New-SafeJunction([string]$LinkPath, [string]$TargetPath) {
 
 function Link-Skills([string]$Target, [string]$Style, [string]$Id) {
     $root = Get-SkillsRoot
+    Assert-ResearchSkillPair (Get-SkillListRoot)
     if (-not $DryRun -and -not (Test-Path $Target)) { New-Item -ItemType Directory -Path $Target | Out-Null }
     switch ($Style) {
         'per-skill' {
@@ -412,9 +422,9 @@ function Cmd-Install([string]$Id) {
     Install-BuildConverterProvider
     Register-McpServer $Id
     $installedSkills = if ($Id -eq 'codex') {
-        '/poe-bd-research, /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop'
+        '/poe-bd-research (+ explicit worker), /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop'
     } else {
-        '/poe-bd-research and /poe-bd-create'
+        '/poe-bd-research (+ explicit worker) and /poe-bd-create'
     }
     Write-Host "Installed Exile Architect for $Id. Restart the host to discover $installedSkills."
 }

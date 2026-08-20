@@ -81,10 +81,11 @@ def test_research_cleanup_dispatches_by_safe_run_id(monkeypatch):
     monkeypatch.setattr(
         task_cleanup.research_mature_builds,
         "cleanup_completed_run",
-        lambda *, run_id, allow_rejected=False: {
+        lambda *, run_id, allow_rejected=False, abandon_incomplete=False: {
             "status": "cleaned",
             "taskId": run_id,
             "allowRejected": allow_rejected,
+            "abandonIncomplete": abandon_incomplete,
         },
     )
 
@@ -96,6 +97,7 @@ def test_research_cleanup_dispatches_by_safe_run_id(monkeypatch):
         "status": "cleaned",
         "taskId": "20260805-010203-abcd",
         "allowRejected": False,
+        "abandonIncomplete": False,
     }
 
     result_with_opt_in = task_cleanup.cleanup_completed_task_runtime(
@@ -104,6 +106,28 @@ def test_research_cleanup_dispatches_by_safe_run_id(monkeypatch):
         allow_rejected=True,
     )
     assert result_with_opt_in["allowRejected"] is True
+
+    abandoned = task_cleanup.cleanup_completed_task_runtime(
+        task_kind="research",
+        task_id="20260805-010203-abcd",
+        abandon_incomplete=True,
+    )
+    assert abandoned["abandonIncomplete"] is True
+
+
+def test_abandon_incomplete_is_research_only():
+    result = task_cleanup.cleanup_completed_task_runtime(
+        task_kind="generation",
+        task_id="final-build:test",
+        abandon_incomplete=True,
+    )
+    assert result == {
+        "status": "rejected",
+        "errorCode": "abandon_incomplete_research_only",
+        "memoriesPreserved": True,
+        "userExportsPreserved": True,
+        "containsRawMaterial": False,
+    }
 
 
 def test_research_cleanup_removes_run_and_exact_transient_packets(monkeypatch, tmp_path):
@@ -140,7 +164,7 @@ def test_research_cleanup_removes_run_and_exact_transient_packets(monkeypatch, t
 
     result = research_mature_builds.cleanup_completed_run(run_id=run_id)
 
-    assert result["status"] == "cleaned"
+    assert result["status"] == "cleaned", result
     assert result["removedTransientPacketCount"] == 1
     assert packet_calls[0][0] == {"safe-hash"}
     assert not output_root.exists()
@@ -630,3 +654,148 @@ def test_research_cleanup_allow_rejected_opt_in(monkeypatch, tmp_path):
     relaxed = research_mature_builds.cleanup_completed_run(run_id=run_id, allow_rejected=True)
     assert relaxed["status"] == "cleaned"
     assert not output_root.exists()
+
+
+def test_research_abandon_releases_only_owned_queued_ledger_rows(monkeypatch, tmp_path):
+    from server.knowledge import research_intake_ledger
+
+    run_id = "20260805-010203-abcd"
+    output_root = tmp_path / ".poe-bd-research" / "runs" / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    ledger = tmp_path / "research_intake.sqlite"
+    queued_ref = research_intake_ledger.character_ref("acctA", "CharA")
+    accepted_ref = research_intake_ledger.character_ref("acctB", "CharB")
+    research_mature_builds._init_db(db_path)
+    research_mature_builds._write_metadata(db_path, {"intakeLedgerPath": str(ledger)})
+
+    def insert_case(sample_id, status, character_ref, source_hash):
+        research_mature_builds._insert_case_if_absent(
+            db_path,
+            {
+                "sampleId": sample_id,
+                "status": status,
+                "sourceType": "poe_ninja_import_code",
+                "sourceHash": source_hash,
+                "sourceHashRef": f"source-hash:{source_hash}",
+                "characterRef": character_ref,
+                "league": "league-x",
+                "level": 95,
+                "className": "Ranger",
+                "ascendancy": "Deadeye",
+                "mainSkill": "LightningArrowPlayer",
+                "safeError": "",
+                "packetId": f"packet:{sample_id}",
+                "packetSafeHash": f"packet-hash:{sample_id}",
+            },
+        )
+
+    insert_case("case:queued", "queued", queued_ref, "source-queued")
+    insert_case("case:accepted", "accepted", accepted_ref, "source-accepted")
+    research_intake_ledger.record_case(
+        ledger,
+        league="league-x",
+        character_ref=queued_ref,
+        source_hash="source-queued",
+        sample_id="case:queued",
+    )
+    research_intake_ledger.record_case(
+        ledger,
+        league="league-x",
+        character_ref=accepted_ref,
+        source_hash="source-accepted",
+        sample_id="case:accepted",
+    )
+    research_intake_ledger.mark_accepted(
+        ledger, league="league-x", character_ref=accepted_ref
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": len(hashes)},
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_delete_run_directory",
+        lambda _output_root, _staging: ("cleaned", {}),
+    )
+
+    result = research_mature_builds.cleanup_completed_run(
+        run_id=run_id,
+        abandon_incomplete=True,
+    )
+
+    assert result["status"] == "cleaned", result
+    assert result["abandonedIncomplete"] is True
+    assert result["releasedIntakeLedgerCount"] == 1
+    assert result["acceptedIntakeLedgerCountPreserved"] == 1
+    assert research_intake_ledger.seen_character_refs(ledger, "league-x") == {accepted_ref}
+
+
+def test_research_abandon_rolls_back_ledger_when_directory_delete_fails(
+    monkeypatch, tmp_path
+):
+    from server.knowledge import research_intake_ledger
+
+    run_id = "20260805-010203-abcd"
+    output_root = tmp_path / ".poe-bd-research" / "runs" / run_id
+    db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
+    ledger = tmp_path / "research_intake.sqlite"
+    character_ref = research_intake_ledger.character_ref("acctA", "CharA")
+    research_mature_builds._init_db(db_path)
+    research_mature_builds._write_metadata(db_path, {"intakeLedgerPath": str(ledger)})
+    research_mature_builds._insert_case_if_absent(
+        db_path,
+        {
+            "sampleId": "case:queued",
+            "status": "queued",
+            "sourceType": "poe_ninja_import_code",
+            "sourceHash": "source-queued",
+            "sourceHashRef": "source-hash:queued",
+            "characterRef": character_ref,
+            "league": "league-x",
+            "level": 95,
+            "className": "Ranger",
+            "ascendancy": "Deadeye",
+            "mainSkill": "LightningArrowPlayer",
+            "safeError": "",
+            "packetId": "packet:queued",
+            "packetSafeHash": "packet-hash:queued",
+        },
+    )
+    research_intake_ledger.record_case(
+        ledger,
+        league="league-x",
+        character_ref=character_ref,
+        source_hash="source-queued",
+        sample_id="case:queued",
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "DEFAULT_OUTPUT_DIR",
+        tmp_path / ".poe-bd-research",
+    )
+    monkeypatch.setattr(
+        research_mature_builds.research_packet,
+        "cleanup_packets_by_safe_hashes",
+        lambda hashes, *, temp_root: {"removed": 0},
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_delete_run_directory",
+        lambda _output_root, _staging: ("deferred", {"reason": "locked"}),
+    )
+
+    result = research_mature_builds.cleanup_completed_run(
+        run_id=run_id,
+        abandon_incomplete=True,
+    )
+
+    assert result["status"] == "partial"
+    assert result["recoveryRequired"] is False
+    assert output_root.exists()
+    assert research_intake_ledger.seen_character_refs(ledger, "league-x") == {character_ref}

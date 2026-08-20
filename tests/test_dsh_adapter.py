@@ -52,6 +52,11 @@ def test_adapt_skills_regenerates_the_checked_in_tree(tmp_path):
         assert (out / rel).read_text(encoding="utf-8") == (checked_in / rel).read_text(
             encoding="utf-8"
         )
+    controller = (out / "poe-bd-research" / "SKILL.md").read_text(encoding="utf-8")
+    worker = (out / "poe-bd-research-worker" / "SKILL.md").read_text(encoding="utf-8")
+    assert "subagent" in controller and "send_message" in controller
+    assert "DSH Worker" in worker
+    assert "skill` 工具加载本 skill" in worker
 
 
 def test_adapt_check_reports_stale_generated_files(tmp_path):

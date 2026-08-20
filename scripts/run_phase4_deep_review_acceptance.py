@@ -1137,6 +1137,7 @@ def _build_deep_record_payload(
             deferred.append(
                 {
                     "titleZh": item["title"],
+                    "recordKind": item["recordKind"],
                     "sampleId": item["sampleId"],
                     "reason": "invalid_schema",
                     "componentKeys": component_keys,
@@ -1199,6 +1200,7 @@ def _build_deep_record_payload(
             deferred.append(
                 {
                     "titleZh": item["title"],
+                    "recordKind": item["recordKind"],
                     "sampleId": item["sampleId"],
                     "reason": str(validation.get("errorCode") or "invalid_deep_record"),
                     "componentKeys": component_keys,
@@ -4691,16 +4693,20 @@ def _has_explicit_gear_responsibilities(
         ):
             return True
     # Content-based gear evidence path: a gear_synergy record whose gearResponsibilities is
-    # empty documents gear knowledge in content (slot + target mods + roll pursuit) for
+    # explicitly [] documents gear knowledge in content (slot + target mods + roll pursuit) for
     # pure rare/magic gear, which has no graph node to reference. It counts as explicit
     # gear coverage so rare-gear-driven cases are not forced into a record-kind lie or a
     # permanent evidence_missing cascade. Content is mandatory non-empty on every record,
-    # so an empty responsibilities list is a deliberate declaration of this path.
+    # while a missing/null field means the researcher did not make that declaration.
     for record in deep_records or []:
         if str(record.get("record_kind") or "") != "gear_synergy":
             continue
-        responsibilities = (record.get("typed_payload") or {}).get("gearResponsibilities")
-        if responsibilities:
+        typed_payload = record.get("typed_payload") or {}
+        if (
+            not isinstance(typed_payload, dict)
+            or "gearResponsibilities" not in typed_payload
+            or typed_payload["gearResponsibilities"] != []
+        ):
             continue
         if str(record.get("content") or "").strip():
             return True
@@ -4743,20 +4749,29 @@ def _record_kind_advisories(records: list[dict[str, Any]]) -> list[str]:
             ]
             has_primary = any(role == "primary_damage" for role in roles)
             if not has_primary:
-                # A package whose components are ALL secondary roles (clear/boss/triggered
-                # payload/trigger host) is not identity-anchoring: the contract forbids marking
-                # sub-skills as primary, so it neither needs nor may claim its own
-                # primary_damage declaration. Only identity-relevant packages get the advisory;
-                # genuinely identity-anchoring packages still require a primary declaration.
-                secondary_only = bool(roles) and all(
-                    role in {"clear_skill", "boss_skill", "triggered_payload", "trigger_host"}
-                    for role in roles
+                # Classify only roles that participate in Family skill identity. A normal
+                # secondary package also contains support_modifier (and may contain other
+                # non-skill components); those must not turn a clear/boss/triggered package into
+                # an identity anchor. Packages with no recognized Family skill role still keep
+                # the advisory, as do genuinely identity-anchoring packages.
+                secondary_roles = {
+                    "clear_skill",
+                    "boss_skill",
+                    "triggered_payload",
+                    "trigger_host",
+                }
+                family_skill_roles = [
+                    role for role in roles if role == "primary_damage" or role in secondary_roles
+                ]
+                secondary_only = bool(family_skill_roles) and all(
+                    role in secondary_roles for role in family_skill_roles
                 )
                 if not secondary_only:
                     advisories.append(
                         f"{item.get('title')}: {kind} identity record should declare at least one "
                         "primary_damage component (family identity = ascendancy + primary-skill "
-                        "set; clear/boss/triggered secondary-only packages are exempt)."
+                        "set; clear/boss/triggered secondary-only packages are exempt, and "
+                        "non-skill components do not affect that exemption)."
                     )
     return advisories
 

@@ -1,9 +1,28 @@
-# 修复计划（v5，P3+P4 已实现；P0-3 暂停）
+# 修复计划（v6，最终复审修正已实现；历史并发决策已替换）
 
 > 状态：v3/v4 均完成独立 review；**v5 实现 P4 三项**（③ advisory 豁免 → ② status 快照 → ① 批量
 > resolve 上限+守卫），按 P4 review 修正后的方案实施（详见「P4 实现记录」）。
-> **P0-3 暂停**：等用户侧确认 Codex 是否更新 subagent 的 MCP 支持能力后再议，并发测试一并暂停。
+> 原 P0-3 单 Agent 政策已由 `docs/RESEARCH_SUBAGENT_ORCHESTRATION.md` 的并发编排方案替换；本文件
+> 后续带日期的实测和修复记录仍作为历史证据保留，不再充当现行运行合同。
 > 排序原则：频率 × 影响 ÷ 成本。P0=建议立即修；P1=值得修；P2=随改；另有"不做"清单。
+
+## v7 普通 Research Controller/Worker 拆分（2026-08-20）
+
+- 用户入口 `poe-bd-research` 只负责 queue/resume、Subagent 编排、回访、汇总与 cleanup；显式专用
+  `poe-bd-research-worker` claim 并完成一案，禁止隐式调用和主会话研究 fallback。
+- Mandatory Checks 收口为 16 项中文单一事实源，由 workerPrompt 动态编号并以 list 进入
+  review-contract；不再维护英文镜像或固定计数副本。
+- 正式 accept/retry 保留进程级全局 RLock 与按 Memory DB 派生的跨进程文件锁；并发 claim 上限仍为 5。
+
+## v6 最终复审修正（2026-08-20）
+
+- content 型装备证据只接受显式 `gearResponsibilities=[]`；字段缺失或 `null` 不再被真假值判断误当成
+  已声明路径。仍不解析正文关键词，Research 语义判断继续由模型负责。
+- CLI 入口先把真实 `sys.argv[1:]` 物化后再做 legacy lease-token 改写，程序化调用与真实命令一致。
+- 深度记录 schema deferral 保留 `recordKind`，使 `gear_synergy` 根因能端到端进入
+  `rootCauseRefs`；不再只由单元测试手工构造该字段。
+- primary advisory 只分类参与 Family 身份的主动技能角色；`support_modifier` 等非主动技能组件
+  不会破坏 clear/boss/triggered/trigger_host 纯副技能包豁免。
 
 ---
 
@@ -16,10 +35,10 @@
 
 **实施（全部为代码/校验层，提示词净增 0 token，合同规则换词不增量）**：
 1. `server/knowledge/research_models.py`：`gearResponsibilities` 由"非空列表 ≤12"放宽为
-   "列表 ≤12"；空列表 = content 型黄装路径（content 本身强制非空）；非空时条目校验
+   "列表 ≤12"；显式空列表 = content 型黄装路径（content 本身强制非空；缺失/null 不算声明）；非空时条目校验
    逻辑原样抽为 `_validate_gear_responsibilities`，语义不变。
 2. `scripts/run_phase4_deep_review_acceptance.py`：`_has_explicit_gear_responsibilities`
-   增加 content 路径——`gear_synergy` + 空 responsibilities + 非空 content 计为显式
+   增加 content 路径——`gear_synergy` + 显式空 responsibilities + 非空 content 计为显式
    装备覆盖证据（deep_records 视图传入；验收 summary 不带 content，故从 deep payload
    读取）；`_evaluate_case_coverage` 增加 `deep_records` 参数，两处调用点同步。
 3. 合同/提示同源措辞换词：contract rule「gearRoles covered」与 research_prompt.py
@@ -196,7 +215,7 @@ support into the supportPackages entry..."，未提 `supportCoverageExceptions`�
 **现状/证据**：case 3 中 gear_synergy 记录 invalid_schema，依赖它的 mechanic_chain 以
 `insufficient_gear_context`（不同原因）被暂缓，首次诊断误判。全仓无 rootCause 字段（新字段）。
 
-**方案**：deferred 对象增加 `rootCauseRefs`（指向实际 invalid_schema 的 recordId/title）；
+**方案**：deferred 对象增加 `rootCauseRefs`（指向实际 invalid_schema 的 recordKind/title/sampleId）；
 accept 聚合（run_phase4_deep_review_acceptance.py:2132/3462 一带）"根因优先"排序。
 不改门禁语义（invalid_schema 的 schema_gate_failed 662-663 保持）。M（1 天）。
 
@@ -308,12 +327,13 @@ socketedJewelCount），核心痛点成立：不解释 allocated≠socketed 的�
 
 按 P4 review 的修正方案实施，顺序 ③→②→①（全部 S 级，零提示词增长）：
 
-- **③ primary_damage advisory 豁免**：`_record_kind_advisories` 对"组件全部为
-  clear_skill/boss_skill/triggered_payload/trigger_host"的纯副技能包跳过 primary_damage
-  advisory（advisory 文案同步注明豁免；锚定身份的包仍要求 primary）；contract 双规则句与
+- **③ primary_damage advisory 豁免**：`_record_kind_advisories` 对"参与 Family 身份判断的主动技能
+  角色全部为 clear_skill/boss_skill/triggered_payload/trigger_host"的纯副技能包跳过 primary_damage；
+  support_modifier 等非主动技能组件不参与该分类，不会破坏豁免。advisory 文案同步注明豁免，
+  锚定身份的包仍要求 primary；contract 双规则句与
   workerPrompt 清单 14 换词补充"纯副技能包不需要自己的 primary_damage 声明"；同时补 v4
   文档缺口——content 型黄装记录须含 ≥1 已解析组件锚点（contract gearRoles 句）。
-  测试：`test_record_kind_advisory_exempts_secondary_only_packages`。
+  测试：`test_record_kind_advisory_exempts_secondary_only_packages`（包含 support_modifier）。
 - **② status per-sample deferredReasonCounts 快照**：`_research_quality_summary` 增加
   `deferredReasonCounts`（accept 时持久化）；`_fetch_cases` 已把 quality_summary 全量并入
   每行输出，status 自动可见，无需改 status 代码。测试：
@@ -326,14 +346,14 @@ socketedJewelCount），核心痛点成立：不解释 allocated≠socketed 的�
   `test_resolve_graph_component_batch_full_falls_back_to_compact_on_payload_overflow`。
 - 验证：6 个新测试全过 + 6 个受影响测试文件全量 + verify.ps1 quick。
 
-## P4 Review 记录（独立 subagent 静态 review，2026-08-18）
+## P4 Review 记录（独立 subagent 静态 review，2026-08-18；v6 已复核修正）
 
-- **总体结论**：READY WITH MINOR NOTES，5/5 APPROVE（advisory 豁免 / 三处措辞 / quality
-  summary / 批量守卫 / 测试全部正确，符合设计 review 的 ③②① 方案）。
-- **minor notes 处置**：① 英文 mandatoryChecks 镜像缺豁免句 → **已修**（:878 补
-  "clear/boss/triggered secondary-only packages are exempt"）；② contract 规则"组件全是副角色"
-  措辞宽于 4-role 集合 → **已修**（改为"组件全是 clear/boss/triggered/trigger_host 的纯副
-  技能包"，与实现逐字对齐）；③ 60/61 边界未钉 → **已修**（large-key-set 测试 30→60，精确
+- **当时结论**：READY WITH MINOR NOTES，5/5 APPROVE；v6 最终复审随后发现真实 CLI、schema
+  deferral 字段、显式空列表和带 support 的副技能包四个测试盲区，已在本文顶部记录并修正。
+- **minor notes 处置**：① 英文 mandatoryChecks 镜像缺豁免句 → **当时已修**；v7 已取消独立英文镜像，
+  改由中文单一事实源生成 workerPrompt/review-contract。v6 进一步明确只看
+  Family 相关主动技能角色，support/non-skill 组件不改变豁免。② contract 与实现措辞已在 v6
+  统一为同一分类口径。③ 60/61 边界未钉 → **已修**（large-key-set 测试 30→60，精确
   钉住上限）；④ gearRoles content 路径"防御便利装可满足覆盖"——**先前 v4 review 已评估并
   接受**（防线从 schema 级退到 review 级是 content 路径的固有属性，研究者自声明 + 深审把关），
   且锚点要求由 insufficient_research_depth 强制 ≥1 已解析组件，与新增措辞一致；⑤ 工作树

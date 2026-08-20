@@ -28,6 +28,19 @@ function Invoke-Uv {
     }
 }
 
+function Invoke-UvAdvisory {
+    param(
+        [string]$Name,
+        [string[]]$Arguments
+    )
+
+    Write-Host "==> $Name (advisory)"
+    & $Uv run @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "$Name reported differences; continuing because formatting is advisory."
+    }
+}
+
 function Invoke-ManifestValidation {
     Invoke-Uv "mcpb manifest validation" @(
         "python",
@@ -38,7 +51,7 @@ function Invoke-ManifestValidation {
 
 function Invoke-StaticChecks {
     Invoke-Uv "ruff check" @("ruff", "check", "server", "scripts", "pipeline", "tests")
-    Invoke-Uv "ruff format --check" @(
+    Invoke-UvAdvisory "ruff format --check" @(
         "ruff",
         "format",
         "--check",

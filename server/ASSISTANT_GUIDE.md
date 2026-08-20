@@ -87,9 +87,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 
 Phase 4 turns one mature PoE2 build at a time into copy-safe research memory. The product entry is
 `/poe-bd-research` / `$poe-bd-research`; internal phase names and script commands are not user
-commands. The `/poe-bd-research` skill owns the step-by-step command walkthrough and depth
-checklist (including the 13-item pre-submit self-check); this guide keeps only the always-injected
-contract, so the two must stay in sync.
+commands. The `/poe-bd-research` skill owns Controller orchestration;
+`/poe-bd-research-worker` owns the single-case command sequence, while the lease workerPrompt and
+review-contract share the runtime mandatory checklist. This guide keeps only the always-injected contract.
 
 ### Tool map
 
@@ -121,8 +121,13 @@ on a documented tool-count cap.
 
 ### Runtime flow
 
-- Never delegate a research case to a subagent or separate agent lane. The current main conversation
-  must read the bounded evidence, analyze the case, write the safe review and run acceptance.
+- The main conversation loads `poe-bd-research`, creates or resumes the queue, and coordinates up
+  to five Research workers. It never claims cases or reads case evidence. Each fresh subagent must
+  explicitly load `poe-bd-research-worker` with the existing absolute runDir, resolve its runtime
+  from the installed Skill/MCP environment, claim exactly one case, own that lease through
+  acceptance, and stop afterward.
+  Hosts without a shared filesystem/runtime/MCP subagent contract fail before queue creation; there
+  is no main-conversation research fallback.
 - If no arguments are supplied, ask for a mode before any network crawl: small extraction 20,
   large extraction 50, resume, or a link-check preflight 5 (`--dry-run`; produces no knowledge,
   only verifies the collector chain). Resume must not be tied only to the large-batch option.
@@ -141,19 +146,21 @@ on a documented tool-count cap.
 - Treat the skill invocation as a chat request. Do not ask Codex Desktop users to paste PowerShell/Python commands into the chat box.
 - This is a runtime product workflow. Do not edit source, tests, docs, schemas or installers while
   executing it. Report safe collector/source/runtime errors and stop.
-- Script order is `queue -> claim -> inspect/read/search -> memory/graph research ->
-  review-contract -> init-review -> edit safe review -> accept --validate-only -> accept -> status`.
+- Script order is Controller `queue`, then explicit Worker `claim -> inspect/read/search -> memory/graph research
+  -> review-contract -> init-review -> edit safe review -> accept --validate-only -> accept`, followed
+  by main `status` and cleanup.
 - A non-dry-run `queue` without an explicit output directory creates
   `.poe-bd-research/runs/<runId>` and returns `runDir`. Preserve that value as `--output-dir` for
   every later command in the run. Never fall back to the shared `.poe-bd-research` root. Existing
   queue databases are not overwritten; `--resume` requires the original `runDir`.
 - `claim` atomically returns the safe `workerPrompt`, lease identity and review path. Follow it
   directly; `worker-brief` is resume-only. Do not rely only on a local `SKILL.md` path.
-- Finish acceptance for the current case before claiming another. Do not carry transient evidence
-  across cases; reuse only tools, the skill and accepted memory.
+- A worker stops after accepting its single case and returns sampleId plus a safe outcome. The Controller starts a fresh worker for
+  later queued cases; workers never carry transient evidence across cases.
 - Reconstruct skills/supports, rotation, mechanism chains, gear and passive responsibilities,
   resource/defense engines, tradeoffs, failure conditions and modelability gaps before querying
-  durable memory. The research skill owns the full depth checklist and calibrated examples.
+  durable memory. The lease workerPrompt/review-contract own the full mandatory checklist; the
+  explicit Worker Skill keeps only the single-case workflow and supplemental boundaries.
 - Keep one resolved ascendancy and one `primary_damage` skill consistent across a research group.
   The Family identity key uses only the ascendancy and primary-skill set. `clear_skill`,
   `boss_skill`, and `triggered_payload` are inferred Family-core secondary metadata and must not
@@ -414,7 +421,11 @@ does not take over build completion.
   `cleanup_completed_task_runtime(task_kind="generation", task_id=artifact_id)` only after all
   outputs succeeded and `runtimeCleanupReady=true`. Completed Research and Learning
   workflows use the same cleanup tool with their own task kind; memories and exported files are
-  preserved. Partial delivery and active tasks remain recoverable.
+  preserved. Partial delivery and active tasks remain recoverable. Only an explicit user decision
+  to discard an unfinished Research run authorizes `abandon_incomplete=true`; that mode releases
+  only exact queued intake-ledger reservations owned by the run and preserves accepted ledger
+  history plus Research Memory. Identity mismatch or directory-removal failure fails closed and
+  rolls released reservations back.
 - Separate design judgment from tool-verified evidence in user-facing text. Expected campaign feel
   is an Agent judgment; PoB/Judge-verified defenses, sustain, and stage gates are evidence claims.
 - The sections below describe general compute-tool usage. For `/poe-bd-create`, formal evaluation

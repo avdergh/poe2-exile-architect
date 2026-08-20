@@ -3248,6 +3248,22 @@ def test_content_based_gear_synergy_counts_as_explicit_gear_coverage():
         )
         is False
     )
+    # Missing/null is an unanswered contract field, not an explicit declaration that this
+    # record intentionally uses the content-only rare/magic gear path.
+    for typed_payload in ({}, {"gearResponsibilities": None}):
+        assert (
+            run_phase4_deep_review_acceptance._has_explicit_gear_responsibilities(
+                [],
+                deep_records=[
+                    {
+                        "record_kind": "gear_synergy",
+                        "content": "这段正文存在，但没有明确声明内容型装备路径。",
+                        "typed_payload": typed_payload,
+                    }
+                ],
+            )
+            is False
+        )
     # Without the deep-records view, an empty-responsibilities gear record is not evidence.
     assert (
         run_phase4_deep_review_acceptance._has_explicit_gear_responsibilities(
@@ -3425,6 +3441,89 @@ def test_gear_context_deferral_references_schema_root_cause_records():
     assert deferred[0]["reason"] == "insufficient_gear_context"
     assert deferred[0]["rootCauseRefs"] == [
         {"recordKind": "gear_synergy", "title": "身份装备职责", "sampleId": "fixture"}
+    ]
+
+
+def test_schema_invalid_gear_record_reaches_root_cause_refs_end_to_end(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="schema-invalid-gear-root-cause.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["caseCoverage"] = {"gearRoles": "covered"}
+    review["deepResearchRecords"].append(
+        {
+            "sampleId": "fixture_sample_001",
+            "researchGroupId": "research:fixture_sample_001",
+            "caseRef": "case:fixture-sample-001",
+            "safeEvidenceRef": "safe:fixture-sample-001",
+            "recordKind": "gear_synergy",
+            "title": "错误的装备职责引用",
+            "summary": "装备职责错误引用了技能组件。",
+            "content": "该记录应先因 schema 错误暂缓，并成为机制链暂缓的根因。",
+            "contentLanguage": "zh-CN",
+            "lengthExceptionReason": None,
+            "components": [
+                {
+                    "candidateName": "Resolved Only",
+                    "componentKey": "skill:ResolvedOnlyPlayer",
+                    "role": "primary_damage",
+                    "resolverQuery": "Resolved Only",
+                }
+            ],
+            "conditions": [],
+            "failureConditions": [],
+            "typedPayload": {
+                "gearResponsibilities": [
+                    {
+                        "componentKey": "skill:ResolvedOnlyPlayer",
+                        "responsibilityType": "identity_enabler",
+                        "responsibility": "非法地把技能当成装备职责来源。",
+                    }
+                ]
+            },
+            "extractionMethodVersion": "deep_research_mvp_v1",
+            "gamePatch": "0.5.4",
+            "passiveTreeVersion": "0_5",
+            "pobVersionOrCommit": "unknown",
+        }
+    )
+    review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        graph_service=_graph_service(),
+        validation_only=True,
+    )
+
+    schema_error = next(
+        item for item in report["deferredCandidates"] if item.get("titleZh") == "错误的装备职责引用"
+    )
+    assert schema_error["reason"] == "invalid_schema"
+    assert schema_error["recordKind"] == "gear_synergy"
+    dependent = next(
+        item
+        for item in report["deferredCandidates"]
+        if item.get("reason") == "insufficient_gear_context"
+    )
+    assert dependent["rootCauseRefs"] == [
+        {
+            "recordKind": "gear_synergy",
+            "title": "错误的装备职责引用",
+            "sampleId": "fixture_sample_001",
+        }
     ]
 
 
@@ -5502,6 +5601,7 @@ def test_record_kind_advisory_exempts_secondary_only_packages():
                     {"componentKey": "skill:ClearPlayer", "role": "clear_skill"},
                     {"componentKey": "skill:BossPlayer", "role": "boss_skill"},
                     {"componentKey": "skill:TriggeredPlayer", "role": "triggered_payload"},
+                    {"componentKey": "support:ClearSupport", "role": "support_modifier"},
                 ],
             },
             {

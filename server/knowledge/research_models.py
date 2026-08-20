@@ -724,7 +724,7 @@ class DeepResearchRecordProposal(StrictModel):
     def _validate_gear_responsibilities(self, gear_responsibilities: list[dict[str, Any]]) -> None:
         """Validate node-referenced gear responsibilities.
 
-        An empty ``gearResponsibilities`` list on a gear_synergy record is the
+        An explicitly empty ``gearResponsibilities`` list on a gear_synergy record is the
         content-based gear path: pure rare/magic gear has no graph node, so its knowledge
         (slot + target mods + roll pursuit) lives in the record content instead of
         node-referenced responsibilities. Only non-empty lists reach this validator.
@@ -772,7 +772,7 @@ class DeepResearchRecordProposal(StrictModel):
                     )
                 )
             seen_gear_keys.add(responsibility["componentKey"])
-        return self
+        return None
 
 
 class ResearcherOutput(StrictModel):

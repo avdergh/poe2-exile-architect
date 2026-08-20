@@ -155,9 +155,12 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     spec = (REPO_ROOT / "docs" / "PROJECT_SPEC.md").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
-    skill = (
+    controller = (
         REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research" / "SKILL.md"
     ).read_text(encoding="utf-8")
+    worker_root = REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research-worker"
+    worker = (worker_root / "SKILL.md").read_text(encoding="utf-8")
+    worker_metadata = (worker_root / "agents" / "openai.yaml").read_text(encoding="utf-8")
     phase4 = (REPO_ROOT / "docs" / "phases" / "04_research_memory.md").read_text(encoding="utf-8")
 
     assert "/poe-bd-research" in readme
@@ -166,14 +169,19 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "$poe-bd-research" in guide
     assert "/poe-bd-research" in phase4
     assert "$poe-bd-research" in phase4
-    assert "每项 `gearResponsibilities` 必须区分组件静态文本直接提供的固有职责" in skill
-    assert "在 validate-only 和正式 accept 前对每个最终对象做全对象语义闭环复核" in skill
+    assert "poe-bd-research-worker" in controller
+    assert "allow_implicit_invocation: false" in worker_metadata
+    assert "default_prompt" not in worker_metadata
+    assert "gearResponsibilities" in worker
+    assert "在 validate-only 和正式 accept 前复核每个最终对象" in worker
     assert "worker-brief" in guide
-    assert "worker-brief" in skill
     assert "atomically returns the safe `workerPrompt`" in guide
-    assert "同一次原子操作中返回 `workerPrompt` 和 `reviewFile`" in skill
-    assert "Never delegate a research case to a subagent" in guide
-    assert "研究运行态禁止使用 subagent" in phase4
+    assert "coordinates up" in guide and "to five Research workers" in guide
+    assert "never claims cases or reads case evidence" in guide
+    assert "最多 5 个普通 Research subagent" in phase4
+    assert "poe-bd-research-worker" in phase4
+    assert "Never delegate a research case to a subagent" not in guide
+    assert "研究运行态禁止使用 subagent" not in phase4
     assert "开发阶段有意不保留 `README.md`" not in agents
     assert "开发阶段有意不保留 `README.md`" not in claude
     assert "Public README 政策" in spec
@@ -189,21 +197,20 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "Do not ask Codex Desktop" in guide
     assert "users to paste PowerShell/Python commands into the chat box" in guide
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
-    assert "不要把它转交给其他 agent" in skill
+    assert "poe-bd-research-worker" in guide
     assert "not rely only on a local `SKILL.md` path" in guide
     assert "分析 5 个成熟 BD 样本" in readme
     assert "preflight 5" in guide
     assert "预检 5 个样本（推荐）" not in phase4
-    assert "交互式选择/确认工具" in skill
-    assert "不要把 `--resume` 只绑定到大批量" in skill
-    assert ".poe-bd-research/runs/<runId>" in skill
-    assert "--output-dir <runDir>" in skill
+    assert "No-Argument Behavior" in controller
+    assert "--resume --output-dir PATH" in controller
+    assert "runDir" in controller
     assert "Never fall back to the shared `.poe-bd-research` root" in guide
-    assert '--class "Blood Mage"' in skill
+    assert "--class NAME" in controller
     assert "class=Blood+Mage" in guide
     assert "class=Blood%2BMage" in guide
     assert 'URL-style input such as `--class "Blood+Mage"` is normalized' in guide
-    assert "其他升华不能占用请求的样本数量" in skill
+    assert "class" in controller and "不得二次编码" in controller
     assert "runtime product workflow" in guide
     assert "query_research_memory" in guide
     assert "search_graph_components" in guide
@@ -213,8 +220,7 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "accept --validate-only" in guide
     assert "Plain `accept` is the only durable writer" in guide
     assert "fullyResolvedForAccept" in guide
-    assert "componentRoleNodeTypeCompatibility" in skill
-    assert "两空格缩进的多行 JSON" in skill
+    assert "review-contract" in worker
     assert "unresolvedUniqueComponentCount" in phase4
     for internal_contract in (
         "scripts/research_mature_builds.py",
@@ -229,66 +235,57 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "## 开发验证" not in readme
 
 
-def test_skill_documents_one_case_worker_semantics():
-    skill = (
+def test_research_controller_and_worker_skills_have_separate_roles():
+    controller = (
         REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research" / "SKILL.md"
     ).read_text(encoding="utf-8")
-    assert "一案一轮" in skill
-    assert "串行处理" in skill
-    assert "不得再领取下一案" in skill
-    assert "禁止使用 subagent" in skill
-    assert "当前 Agent 必须亲自读取 prompt" in skill
-    assert "运行态" in skill
-    assert "不得修改仓库源码" in skill
-    assert "不得调用调试/TDD/代码修改类 skill" in skill
-    assert "collector_failed" in skill
-    assert "source_unavailable" in skill
-    assert "--limit 5 --dry-run" in skill
-    assert "/poe-bd-research --limit 20" in skill
-    assert "不要在用户选择前联网采样" in skill
-    assert "600000ms" in skill
-    assert "POE_RESEARCH_SUCCEEDED: yes" in skill
-    assert "POE_RESEARCH_SUCCEEDED: no" in skill
-    assert "不是在执行 shell 命令" in skill
-    assert "不要要求用户把 PowerShell/Python 命令复制到会话框或终端" in skill
-    assert "交互式选择/确认工具" in skill
-    assert "预检 5 个样本（推荐）" not in skill
-    assert "链路预检" in skill
-    assert "小批量提取" in skill
-    assert "大批量提取" in skill
-    assert "恢复已有队列" in skill
-    assert "不要把 `--resume` 只绑定到大批量" in skill
-    assert "退化为普通文字选项" in skill
-    assert "底层 `scripts/research_mature_builds.py` 命令是 agent 内部实现步骤" in skill
-    assert "不得依赖调用时 cwd" in skill
-    assert "`poe_knowledge_mcp`（或任一 `poe_*_mcp`）条目中的" in skill
-    assert "OpenCode 使用 `command[0]`" in skill
-    assert "不能把 Codex bundle 的 `node` launcher 当成 uv" in skill
-    assert "`repoRoot/.tools/uv/uv.exe`、`repoRoot/.tools/uv/uv`、PATH 中的 `uv`" in skill
-    assert "<uvCommand> run --project <repoRoot> python" in skill
-    assert "<repoRoot>/scripts/research_mature_builds.py" in skill
-    assert "<research-cli> queue $ARGUMENTS" in skill
-    assert "在项目根目录运行 queue" not in skill
-    assert "./.tools/uv/uv run python scripts/research_mature_builds.py" not in skill
-    assert ".\\.tools\\uv\\uv.exe run python scripts\\research_mature_builds.py" not in skill
-    assert "worker-brief" in skill
-    assert "`workerPrompt` 已内联运行边界" in skill
-    assert "`claim` 会在同一次原子操作中返回 `workerPrompt`" in skill
-    assert "不要手工复制 `leaseToken`" in skill
-    assert "只用于恢复一个已经 claimed 的任务" in skill
-    assert "tool discovery / tool search" in skill
-    assert "不要仅凭首屏工具列表断言 MCP 不可用" in skill
-    assert "mechanicAuditLiveEvidenceStatus" in skill
-    assert "wiki 佐证是" in skill
-    assert "mechanicAudit 的**可选项**" in skill
-    assert "不需要额外标注" in skill
-    assert "不得把 `A / B`" in skill
-    assert "最强因果结论" in skill
-    assert "只使用文件编辑工具或 `apply_patch` 编辑" in skill
-    assert "PowerShell here-string" in skill
-    assert not (
-        REPO_ROOT / "poe-bd-creator-plugin" / "agents" / "mature-build-researcher.md"
-    ).exists()
+    worker_root = REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research-worker"
+    worker = (worker_root / "SKILL.md").read_text(encoding="utf-8")
+    metadata = (worker_root / "agents" / "openai.yaml").read_text(encoding="utf-8")
+
+    assert "主会话永不 claim、读取案例证据、编辑 review 或 accept" in controller
+    assert "poe-bd-research-worker" in controller
+    assert "runDir" in controller
+    assert "status.dispatchableCount > 0" in controller
+    assert "最多同时运行 5 个" in controller
+    assert "回访和其他任务不计入该业务上限" in controller
+    assert "两个新 Worker 中连续重复" in controller
+    assert "反馈已返回不等于获得 cleanup 授权" in controller
+    assert "创建新的 supplement run" in controller
+    assert "Worker 运行态已经结束" in controller
+    assert "POE_RESEARCH_SUCCEEDED: yes" in controller
+    assert "claim --output-dir" not in controller
+    assert "Researcher Checklist" not in controller
+    assert "Mandatory Checks" not in controller
+
+    assert "name: poe-bd-research-worker" in worker
+    assert "Internal explicit-only worker" in worker
+    assert "worker_assignment_missing" in worker
+    assert "researchCliArgv" not in worker
+    assert "macOS/Linux" in worker
+    assert "claim --output-dir <runDir>" in worker
+    assert "不得自行发现其他仓库、创建/恢复 queue" in worker
+    assert "只处理一个 claim" in worker
+    assert "sampleId + safe outcome" in worker
+    assert "accepted 时附 safe acceptance 摘要" in worker
+    assert "No-Argument Behavior" not in worker
+    assert "--resume" not in worker
+    assert "cleanup_completed_task_runtime" not in worker
+    assert "allow_implicit_invocation: false" in metadata
+
+
+def test_research_subagent_orchestration_doc_stays_compact_and_role_focused():
+    document = (REPO_ROOT / "docs" / "RESEARCH_SUBAGENT_ORCHESTRATION.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert len(document) < 3000
+    assert "Controller 只负责 queue/resume" in document
+    assert "Worker Skill 设为 explicit-only" in document
+    assert "worker_capacity_reached" in document
+    assert "进程级全局 RLock" in document
+    assert "只反馈不修改" in document
+    assert "固定派发" not in document
 
 
 def test_document_language_policy_exempts_runtime_prompts():
@@ -318,6 +315,10 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
 
     codex_manifest = json.loads(
         (REPO_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    assert all(
+        "poe-bd-research-worker" not in prompt
+        for prompt in codex_manifest["interface"]["defaultPrompt"]
     )
     codex_mcp = json.loads((REPO_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert codex_manifest["mcpServers"] == "./.mcp.json"
@@ -350,6 +351,10 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     assert codex_bundle["name"] == "poe-bd-creator"
     assert codex_bundle["version"].startswith("0.4.5")
     assert codex_bundle["skills"] == "./skills/"
+    assert all(
+        "poe-bd-research-worker" not in prompt
+        for prompt in codex_bundle["interface"]["defaultPrompt"]
+    )
 
 
 def test_installers_support_dry_run_and_refuse_real_directory_overwrite():

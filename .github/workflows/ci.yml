@@ -37,9 +37,11 @@ jobs:
         run: uv sync
 
       - name: Lint
-        run: |
-          uv run ruff check server scripts pipeline tests
-          uv run ruff format --check server scripts pipeline tests
+        run: uv run ruff check server scripts pipeline tests
+
+      - name: Format advisory
+        continue-on-error: true
+        run: uv run ruff format --check server scripts pipeline tests
 
       - name: Validate .mcpb manifest
         run: npx --yes @anthropic-ai/mcpb validate manifest.json

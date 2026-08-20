@@ -11,11 +11,13 @@
 
 ## 支持范围
 
-- Codex：安装四个 skill，并写入 `~/.codex/config.toml`。
-- Claude Code：安装 `poe-bd-research`、`poe-bd-create`，并写入 `~/.claude.json`。
-- Cursor：安装上述两个 skill，并写入 `~/.cursor/mcp.json`。
-- OpenCode：安装上述两个 skill 到原生目录 `~/.config/opencode/skills`，并写入
+- Codex：安装四个用户工作流 skill 与显式 `poe-bd-research-worker`，并写入 `~/.codex/config.toml`。
+- Claude Code：安装 `poe-bd-research`、显式 `poe-bd-research-worker`、`poe-bd-create`，并写入 `~/.claude.json`。
+- Cursor：安装上述三个 skill，并写入 `~/.cursor/mcp.json`。
+- OpenCode：安装上述三个 skill 到原生目录 `~/.config/opencode/skills`，并写入
   `~/.config/opencode/opencode.json`；可用 `OPENCODE_CONFIG` 覆盖配置路径。
+- macOS 使用 `install.sh` 与 Worker Skill 的 POSIX runtime binding（仓库 uv 或 PATH uv）。当前按
+  filesystem、`fcntl.flock`、spawn 和路径规则设计兼容，但尚未完成 macOS 实机/CI 认证，不宣称已验证。
 - `poe-bd-research-loop`、`poe-bd-learning-loop` 依赖 Codex Desktop 的可见任务编排，本阶段不迁移。
 - Codex Desktop 的 `poe-bd-research-loop` 还依赖独立的
   `poe-research-orchestrator` checkout，但不绑定任何盘符或固定目录。优先通过

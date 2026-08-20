@@ -28,9 +28,10 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   knowledge upsert 和逐来源 evidence：已完成；support、装备、防御和资源方案保留为 Family 内知识；
 - 历史 `DeepResearchRecord` 高置信回填：可识别记录归入 Family，同知识选择信息最完整的 canonical，
   其他记录以 `deprecated/superseded_by_id` 保留审计；无法可靠识别的旧记录不强行合并；
-- `/poe-bd-research` skill 深度提取合同、lease-bound worker brief 和提交期 review contract：已完成；
-- 深挖方法、脱敏合格案例和浅层反例保留在 skill；worker brief 只携带当前案例导航和研究目标，精确
-  schema/枚举在写入前由 `review-contract` 渐进披露：已完成；
+- `/poe-bd-research` Controller、显式 `/poe-bd-research-worker` 单案流程、lease-bound worker brief
+  和提交期 review contract：已完成；
+- Controller 只保留队列/编排；Worker 只保留单案命令顺序和补充边界。16 项强制检查与精确
+  schema/枚举由 `workerPrompt`/`review-contract` 从同一事实源渐进披露：已完成；
 - Researcher 顺序为“先独立分析当前案例，再查 memory 对照/查重，最后写入”，避免旧经验锚定新
   案例发现：已完成；
 - fallback worker 可提交组件名称、角色和 resolver 查询词，由 accept gate 解析并回填稳定 ID：已完成；
@@ -48,12 +49,16 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 - 更多职业样本回放、字段扩展候选和真实生成质量对照：等待后续案例验证。
 
 运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源。命令、顺序与编辑约束的执行事实源是
-`/poe-bd-research` skill 与 claim 返回的 `workerPrompt`/`review-contract`，本节只维护运行时语义
-边界，不复述命令：
+`/poe-bd-research` Controller、`/poe-bd-research-worker` 与 claim 返回的
+`workerPrompt`/`review-contract`，本节只维护运行时语义边界，不复述命令：
 
 - MCP `ASSISTANT_GUIDE`：保留工具能力地图、选择条件、权威边界和安全边界；
-- `/poe-bd-research` skill：保留完整研究流程、深挖方法、覆盖维度及正反例；
-- `claim.workerPrompt`：只保留当前 lease 身份、证据读取顺序、质量目标和下一步；
+- `/poe-bd-research` skill：只保留用户输入、queue/resume、Worker 编排、回访、汇总与 cleanup；
+- 未完成 run 默认继续失败关闭；只有用户明确放弃时，cleanup 才可启用 `abandon_incomplete`，按
+  run 内 safe identity 精确释放仍为 `queued` 的 intake-ledger 占位并原子删除 runtime；accepted
+  ledger 与 Research Memory 永久保留，身份不匹配或删除失败必须回滚；
+- `/poe-bd-research-worker` skill：显式专用的一案一 worker 流程，不提供 queue 或用户菜单；
+- `claim.workerPrompt`：保留当前 lease 身份、证据读取顺序、质量目标、16 项强制检查和下一步；
 - `review-contract`：在写 artifact 前提供精确 JSON 形状、canonical role/axis/pattern 枚举与模板；
 - `init-review`：按当前 lease 原子创建 UTF-8、两空格缩进的 review 骨架，已有文件不覆盖；
 - `accept --validate-only`：以正式门禁规则给出可修复错误，不做 alias 猜测或自动改写。
@@ -197,8 +202,10 @@ validate-only（acceptance 是唯一持久化写入方）。
 
 ## 产品化入口
 
-研究运行态禁止使用 subagent、子代理或独立 agent lane。研究 MCP 工具只保证在触发 skill 的当前
-主会话可用；当前 Agent 必须亲自完成 prompt 读取、深度提取、safe review 和 accept，并严格逐案串行。
+研究运行态由 Controller 建立/恢复队列并编排最多 5 个普通 Research subagent。Controller 不领取或
+读取案例；每个 subagent 显式加载 `poe-bd-research-worker`，使用同一绝对 runDir 并从安装环境解析
+runtime，claim 且只处理一案。无共享 filesystem/runtime/MCP 的宿主在 queue 前失败关闭，不回退
+主会话研究。
 Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆分的 server（工具面约 48 个），
 不触发 Codex 数量上限；历史遗留的聚合入口 `poe2-build-mcp`（`server/main.py`）仍注册，仅保留供
 测试与旧宿主配置兼容（见 AGENTS.md），产品运行入口是四个按域拆分的 server。
@@ -208,20 +215,20 @@ Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆�
 宿主 agent 应通过工具运行内部脚本。
 
 **显式意图优先于预检菜单**：用户明确给出案例数量或分析意图（例如“抓 5 个案例来分析”）时，
-直接按 `--limit N` 执行完整流程（真实入队、逐案研究、accept），不得推荐或执行 `--dry-run`
+直接按 `--limit N` 执行完整流程（真实入队、并发 worker 研究、accept），不得推荐或执行 `--dry-run`
 预检——预检不产生任何知识，只用于用户无参数且明确想先验证链路时。
 
-命令级流程与完整参数的唯一事实源是 `poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md`
-的 Options / No-Argument Behavior / 逐案流程章节（CLI 细节见 `scripts/research_mature_builds.py --help`）；
-本文档不再复述命令。流程骨架速查：queue → claim → inspect/read/search → review-contract →
-init-review → accept --validate-only → accept → status。
+Controller 参数/编排事实源是 `poe-bd-research/SKILL.md`，单案命令事实源是
+`poe-bd-research-worker/SKILL.md` 与当前 lease 的动态合同（CLI 细节见
+`scripts/research_mature_builds.py --help`）。流程骨架：Controller queue → Worker claim →
+inspect/read/search → review-contract → init-review → validate/accept → Controller status。
 
 `/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、
 文档、schema、安装脚本或 plugin manifest；collector / source / runtime 失败时只报告
 safe error 并停止。
 
 `queue`、`claim`、`status`、`accept` 都只输出 safe metadata。完整 raw-rich material 只保留在
-OS temp 的 lease-bound packet 中，不再通过终端输出。当前 Agent 使用 `inspect` 查看分区清单，
+OS temp 的 lease-bound packet 中，不再通过终端输出。研究 worker 使用 `inspect` 查看分区清单，
 再通过有界、可分页的 `read` / `search` 读取 `skills`、`gear`、`passives`、`config`、`build`；
 `prompt` 仅作为兼容 manifest。公开 `propose_*` 只验证候选，safe review + `accept` 是队列研究唯一
 durable write 路径。
@@ -376,10 +383,9 @@ PoB code 或临时路径。
 
 ### 研究执行 checklist（2026-08-07 修订，防再犯）
 
-以下条目已迁入 `workerPrompt` 的 Mandatory Checks（中文 13 项，运行时权威）与 review-contract
-的 `mandatoryChecks`（英文枚举），两处一一对应；`/poe-bd-research` skill 不再保留 13 项全文，
-只以引用指向 claim 返回的 `workerPrompt`（详见该 skill 的提交前自检段）。本段保留为阶段审查
-记录；执行时以运行时合同为准，避免再次出现"两套清单从未对账"。
+以下条目已收口到 `RESEARCH_MANDATORY_CHECKS` 的 16 项中文单一事实源；workerPrompt 按该 tuple
+动态编号，review-contract 以 JSON list 返回同一内容。Controller/Worker Skill 不再保存另一份清单。
+本段只保留为阶段审查记录；执行时以当前 lease 的运行时合同为准。
 
 以下条目来自真实案例审查（Monk/Martial Artist Hollow Palm 案例的补齐与修正），每个 deep
 case 研究都应执行：

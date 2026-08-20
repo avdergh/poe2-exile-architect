@@ -26,6 +26,20 @@ def test_verification_script_exposes_layered_profiles():
     assert "ComputePytestTimeoutSeconds" not in full_block
 
 
+def test_format_checks_are_advisory_but_lint_remains_blocking():
+    script = Path("scripts/verify.ps1").read_text(encoding="utf-8")
+
+    assert 'Invoke-Uv "ruff check"' in script
+    assert 'Invoke-UvAdvisory "ruff format --check"' in script
+    assert "formatting is advisory" in script
+    for workflow in ("ci.yml", "release.yml"):
+        content = Path(".github", "workflows", workflow).read_text(encoding="utf-8")
+        assert "uv run ruff check server scripts pipeline tests" in content
+        format_block = content.split("- name: Format advisory", maxsplit=1)[1]
+        assert "continue-on-error: true" in format_block
+        assert "uv run ruff format --check server scripts pipeline tests" in format_block
+
+
 def test_compute_profile_documents_long_runtime_timeout_budget():
     script = Path("scripts/verify.ps1").read_text(encoding="utf-8")
 

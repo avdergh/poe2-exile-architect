@@ -59,8 +59,13 @@ EXTRA_NOTES = {
 > 语料/图/机制/静态查询可以并行。
 """,
     "poe-bd-research": """\
-> 运行绑定：`<research-cli>` 由 DSH 的 shell 工具（Windows 为 pwsh）按下方
-> “运行绑定”一节执行；外层超时至少 10 分钟（以毫秒配置时为 `600000ms`）。
+> **DSH 映射**：Controller 用 `subagent` 后台启动显式
+> `poe-bd-research-worker`，等待后台结算，并用 `send_message` 续聊回访。
+> queue 由 DSH shell（Windows 为 pwsh）执行，外层超时至少 `600000ms`。
+""",
+    "poe-bd-research-worker": """\
+> **DSH Worker**：只允许 Controller 显式用 `skill` 工具加载本 skill；从 assignment
+> 取得 runDir 后用 shell 执行单案流程，不创建或恢复 queue。
 """,
     "poe-bd-learning-loop": """\
 > **DSH 映射（重要）**：Codex Desktop 任务原语（`create_thread` /
