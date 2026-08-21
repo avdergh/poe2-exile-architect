@@ -1591,6 +1591,8 @@ def test_accept_case_validation_returns_copy_safety_failure_instead_of_runtime_e
         "claim",
     ]
     assert [issue["type"] for issue in result["validationIssues"]].count("copy_safety") == 1
+    assert result["durableWritePreflight"]["checkedWithoutMutation"] is True
+    assert not (tmp_path / "memory.sqlite").exists()
     assert unsafe_claim not in str(result)
 
 
@@ -1640,6 +1642,189 @@ def test_validation_transport_report_id_exemption_rejects_raw_markers_and_pob_co
     }
     assert any("raw_pob_xml_marker" in item["flags"] for item in diagnostics)
     assert any("pob_code_like_blob" in item["flags"] for item in diagnostics)
+
+
+def test_durable_write_preflight_reports_permission_without_mutating(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    memory_root = tmp_path / "memory-root"
+    ledger_root = tmp_path / "ledger-root"
+    memory_root.mkdir()
+    ledger_root.mkdir()
+    memory_db = memory_root / "memory.sqlite"
+    ledger = ledger_root / "ledger.sqlite"
+    lock = research_mature_builds._accept_lock_path(memory_db)
+    memory_db.write_bytes(b"memory")
+    lock.write_bytes(b"lock")
+    ledger.write_bytes(b"ledger")
+    denied = {memory_db.resolve(), lock.resolve()}
+    real_open = Path.open
+
+    def guarded_open(path: Path, *args, **kwargs):
+        if path.resolve() in denied:
+            raise PermissionError("simulated sandbox write denial")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    result = research_mature_builds._durable_write_preflight(
+        memory_db_path=memory_db,
+        intake_ledger_path=ledger,
+        requires_intake_ledger=True,
+    )
+
+    assert result == {
+        "status": "permission_required",
+        "memoryDbWritable": False,
+        "acceptLockWritable": False,
+        "intakeLedgerRequired": True,
+        "intakeLedgerWritable": True,
+        "unknownTargets": [],
+        "requiresWriteApproval": True,
+        "advisoryOnly": True,
+        "scope": "existing_file_handles_only",
+        "sqliteSidecarCreationUnverified": True,
+        "checkedWithoutMutation": True,
+    }
+    with real_open(memory_db, "rb") as handle:
+        assert handle.read() == b"memory"
+    with real_open(lock, "rb") as handle:
+        assert handle.read() == b"lock"
+    with real_open(ledger, "rb") as handle:
+        assert handle.read() == b"ledger"
+
+
+def test_durable_write_preflight_reports_ready_and_unknown_without_mutating(tmp_path):
+    from scripts import research_mature_builds
+
+    memory_db = tmp_path / "memory.sqlite"
+    lock = research_mature_builds._accept_lock_path(memory_db)
+    ledger = tmp_path / "ledger.sqlite"
+    for path, payload in (
+        (memory_db, b"memory"),
+        (lock, b"lock"),
+        (ledger, b"ledger"),
+    ):
+        path.write_bytes(payload)
+    before = {
+        path: (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in (memory_db, lock, ledger)
+    }
+
+    ready = research_mature_builds._durable_write_preflight(
+        memory_db_path=memory_db,
+        intake_ledger_path=ledger,
+        requires_intake_ledger=True,
+    )
+    unknown = research_mature_builds._durable_write_preflight(
+        memory_db_path=tmp_path / "missing-memory.sqlite",
+        intake_ledger_path=tmp_path / "missing-ledger.sqlite",
+        requires_intake_ledger=True,
+    )
+
+    assert ready["status"] == "write_handle_ready"
+    assert ready["requiresWriteApproval"] is False
+    assert ready["sqliteSidecarCreationUnverified"] is True
+    assert ready["unknownTargets"] == []
+    assert unknown["status"] == "permission_required"
+    assert unknown["requiresWriteApproval"] is True
+    assert unknown["unknownTargets"] == ["memoryDb", "acceptLock", "intakeLedger"]
+    assert {
+        path: (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in (memory_db, lock, ledger)
+    } == before
+
+
+def test_durable_write_preflight_treats_generic_oserror_as_unknown(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    memory_db = tmp_path / "memory.sqlite"
+    lock = research_mature_builds._accept_lock_path(memory_db)
+    ledger = tmp_path / "ledger.sqlite"
+    for path in (memory_db, lock, ledger):
+        path.write_bytes(b"safe")
+    real_open = Path.open
+
+    def guarded_open(path: Path, *args, **kwargs):
+        if path.resolve() == ledger.resolve():
+            raise OSError("simulated transient handle failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    result = research_mature_builds._durable_write_preflight(
+        memory_db_path=memory_db,
+        intake_ledger_path=ledger,
+        requires_intake_ledger=True,
+    )
+
+    assert result["status"] == "permission_required"
+    assert result["memoryDbWritable"] is True
+    assert result["acceptLockWritable"] is True
+    assert result["intakeLedgerWritable"] is None
+    assert result["unknownTargets"] == ["intakeLedger"]
+
+
+def test_validation_readiness_is_independent_from_durable_write_permission(
+    tmp_path, monkeypatch
+):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-write-preflight-independent",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_claim_review(review_file, claimed)
+    permission_required = {
+        "status": "permission_required",
+        "memoryDbWritable": False,
+        "acceptLockWritable": False,
+        "intakeLedgerRequired": False,
+        "intakeLedgerWritable": True,
+        "unknownTargets": [],
+        "requiresWriteApproval": True,
+        "advisoryOnly": True,
+        "scope": "existing_file_handles_only",
+        "sqliteSidecarCreationUnverified": True,
+        "checkedWithoutMutation": True,
+    }
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
+        lambda **_kwargs: {
+            "status": "accepted",
+            "acceptedDeepRecordCount": 1,
+            "deferredCandidateCount": 0,
+            "deferredReasonCounts": {},
+            "patternWrite": {"status": "accepted", "validationOnly": True},
+            "deepRecordWrite": {"status": "accepted", "validationOnly": True},
+        },
+    )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_durable_write_preflight",
+        lambda **_kwargs: permission_required,
+    )
+
+    result = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+        validation_only=True,
+    )
+
+    assert result["status"] == "validation_passed"
+    assert result["readyForAccept"] is True
+    assert result["fullyResolvedForAccept"] is True
+    assert result["durableWritePreflight"] == permission_required
 
 
 def test_validation_only_treats_case_coverage_gap_as_partial_acceptance():

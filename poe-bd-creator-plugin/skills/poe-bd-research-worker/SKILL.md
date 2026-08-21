@@ -83,7 +83,9 @@ runDir 或 runtimeRoot 回退为当前 cwd。
    按 validationIssues 有界修正。missing/ambiguous endpoint 最多进行两轮 repair，不能要求程序猜枚举
    或自动选择端点。
 
-6. Mandatory Checks 全部通过后执行正式 `accept`。可修复的 `acceptance_rejected` 使用同一 safe review
+6. Mandatory Checks 全部通过后执行正式 `accept`。若 validate-only 的 `durableWritePreflight` 为
+   `permission_required`，先向宿主请求用户数据目录写权限再执行；`write_handle_ready` 仅为当前句柄的
+   advisory，不保证 SQLite 事务一定成功。可修复的 `acceptance_rejected` 使用同一 safe review
    走 `retry-accept --sample-id <sampleId>`；不要把 validation/retry 当成新案例。不可恢复的 runtime
    错误停止当前 Worker，保留 run/lease 状态并返回 safe failure。
 

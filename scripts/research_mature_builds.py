@@ -1143,6 +1143,18 @@ def accept_case(
             validation_only=True,
         )
         result = _validation_only_result(report, sample_id=sample_id)
+        effective_ledger = (
+            Path(intake_ledger_path)
+            if intake_ledger_path is not None
+            else DEFAULT_INTAKE_LEDGER_PATH
+        )
+        result["durableWritePreflight"] = _durable_write_preflight(
+            memory_db_path=Path(memory_db_path),
+            intake_ledger_path=effective_ledger,
+            requires_intake_ledger=str(row["character_ref"] or "").startswith(
+                "character-hash:"
+            ),
+        )
         if single_record is not None:
             result["singleRecordValidation"] = {
                 "recordIndex": single_record,
@@ -3323,6 +3335,56 @@ def _safe_validation_path_segment(value: str) -> str:
         return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"redacted-key:{digest}"
+
+
+def _durable_write_preflight(
+    *,
+    memory_db_path: Path,
+    intake_ledger_path: Path,
+    requires_intake_ledger: bool,
+) -> dict[str, Any]:
+    """Check current-process write access without creating files or changing task state."""
+
+    memory_writable = _existing_write_handle_available(memory_db_path)
+    lock_writable = _existing_write_handle_available(_accept_lock_path(memory_db_path))
+    ledger_writable = (
+        _existing_write_handle_available(intake_ledger_path) if requires_intake_ledger else True
+    )
+    checks = {
+        "memoryDb": memory_writable,
+        "acceptLock": lock_writable,
+        "intakeLedger": ledger_writable,
+    }
+    ready = all(value is True for value in checks.values())
+    return {
+        "status": "write_handle_ready" if ready else "permission_required",
+        "memoryDbWritable": memory_writable,
+        "acceptLockWritable": lock_writable,
+        "intakeLedgerRequired": requires_intake_ledger,
+        "intakeLedgerWritable": ledger_writable,
+        "unknownTargets": [name for name, value in checks.items() if value is None],
+        "requiresWriteApproval": not ready,
+        "advisoryOnly": True,
+        "scope": "existing_file_handles_only",
+        "sqliteSidecarCreationUnverified": True,
+        "checkedWithoutMutation": True,
+    }
+
+
+def _existing_write_handle_available(path: Path) -> bool | None:
+    try:
+        target = Path(path)
+        if not target.is_file():
+            # Creation cannot be proven without mutating the parent directory. Fail closed and
+            # let the Worker request permission before formal accept.
+            return None
+        with target.open("r+b"):
+            pass
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return None
 
 
 _COMPACT_MECHANIC_AUDIT_KEYS = (
