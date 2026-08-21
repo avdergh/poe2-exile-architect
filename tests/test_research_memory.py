@@ -780,6 +780,25 @@ def test_query_receipt_preserves_typed_identity_and_safe_result_ids(tmp_path):
     assert "Plan a target Family." not in str(receipt)
 
 
+def test_query_rejects_skill_keys_in_build_family_filter(tmp_path):
+    service = research_memory.ResearchMemoryService(db_path=tmp_path / "mature.sqlite")
+
+    result = service.query_research_memory(
+        "",
+        ascendancy_key="ascendancy:monk:martial_artist",
+        primary_skill_key="skill:LightningArrowPlayer",
+        build_family_keys=["skill:LightningArrowPlayer", "rawImportCode:eNrt-sensitive"],
+    )
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_identity_parameter"
+    assert "use primary_skill_key" in " ".join(result["caveats"])
+    assert "omit build_family_keys" in " ".join(result["caveats"])
+    assert result["facts"] == {"invalidBuildFamilyKeyCount": 2}
+    assert "LightningArrowPlayer" not in str(result)
+    assert "eNrt-sensitive" not in str(result)
+
+
 def test_query_receipt_records_graph_backed_primary_skill_equivalence(tmp_path):
     service = research_memory.ResearchMemoryService(
         db_path=tmp_path / "mature.sqlite",

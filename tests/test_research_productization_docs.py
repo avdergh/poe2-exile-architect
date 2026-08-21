@@ -272,6 +272,7 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "只处理一个 claim" in worker
     assert "sampleId + safe outcome" in worker
     assert "accepted 时附 safe acceptance 摘要" in worker
+    assert "`build_family_keys` 只接收查询已返回的 `bf-...`" in worker
     assert "No-Argument Behavior" not in worker
     assert "--resume" not in worker
     assert "cleanup_completed_task_runtime" not in worker

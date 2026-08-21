@@ -782,6 +782,17 @@ def render_review_contract(
             "candidateReviews": [],
             "semanticEdges": [],
         },
+        "memoryUseQuerySchema": {
+            "dedupeQueryRef": "required dq-... receipt from query_research_memory",
+            "query": "safe query summary",
+            "ascendancyKey": "optional ascendancy:... identity",
+            "primarySkillKey": "optional skill:... or gem:... identity",
+            "buildFamilyKeys": (
+                "optional stored bf-... IDs returned by an earlier query; omit when unknown, "
+                "never place skill:/gem: keys here"
+            ),
+            "outcome": "safe comparison outcome",
+        },
         "allowedValues": {
             "caseCoverage": sorted(acceptance.CASE_COVERAGE_STATUSES),
             "componentRole": sorted(research_models.COMPONENT_ROLES),

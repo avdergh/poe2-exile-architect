@@ -70,6 +70,8 @@ runDir 或 runtimeRoot 回退为当前 cwd。
 2. 直接遵守 `workerPrompt`。先 `inspect`，再按其指定顺序用可分页 `read` 读完全部分区；`search`
    只能定位具体线索，不能替代完整读取。先独立重建案例，再查询 Research Memory，并通过
    `search_graph_components` → `resolve_graph_component` 确认 stable key。
+   Family 查询用 `primary_skill_key=skill:/gem:`；`build_family_keys` 只接收查询已返回的 `bf-...`，
+   未知时省略，禁止把技能 key 填进去。
 
 3. 初步研究完成后运行 `review-contract`，以其 `mandatoryChecks`、模板、枚举、兼容矩阵和 rules 为
    当前 lease 的精确事实源；不得从本 Skill 猜字段或固定检查数量。

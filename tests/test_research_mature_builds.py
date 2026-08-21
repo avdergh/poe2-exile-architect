@@ -1106,6 +1106,10 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert "wiki 缺页强制新增" in contract["mandatoryChecks"][9]
     assert "semantic edge" in contract["mandatoryChecks"][14]
     assert "memoryUse" in contract["mandatoryChecks"][15]
+    assert "skill:..." in contract["memoryUseQuerySchema"]["primarySkillKey"]
+    assert "gem:..." in contract["memoryUseQuerySchema"]["primarySkillKey"]
+    assert "bf-..." in contract["memoryUseQuerySchema"]["buildFamilyKeys"]
+    assert "never place skill:/gem:" in contract["memoryUseQuerySchema"]["buildFamilyKeys"]
     assert "gearResponsibilities" in contract["allowedValues"]["typedIdentityFields"]
     gear_rule = contract["typedPayloadSchema"]["gearResponsibilities"]["rule"]
     assert "explicitly set gearResponsibilities=[]" in gear_rule

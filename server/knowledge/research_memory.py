@@ -676,6 +676,19 @@ class ResearchMemoryService:
         build_family_keys = sorted(
             {str(key).strip() for key in build_family_keys or [] if str(key).strip()}
         )
+        invalid_family_keys = [
+            key for key in build_family_keys if not key.startswith("bf-")
+        ]
+        if invalid_family_keys:
+            return research_models.public_error(
+                "invalid_identity_parameter",
+                [
+                    "build_family_keys accepts only stored 'bf-...' Family IDs returned by "
+                    "an earlier query; use primary_skill_key for skill:/gem: identities and "
+                    "omit build_family_keys when the Family ID is not known"
+                ],
+                facts={"invalidBuildFamilyKeyCount": len(invalid_family_keys)},
+            )
         record_kinds = sorted(
             {
                 str(record_kind).strip()
