@@ -1429,6 +1429,84 @@ def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path)
         con.close()
 
 
+def test_family_join_preserves_authoritative_legacy_key(tmp_path):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
+    first = _deep_record_payload()
+    first_record = first["deep_research_records"][0]
+    first_record["record_kind"] = "skill_package"
+    first_record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+    first_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        }
+    ]
+    first_record["component_keys"] = ["skill:LightningArrowPlayer"]
+    first_result = service.propose_deep_research_records(first)
+    current_key = first_result["buildFamilyKeys"][0]
+    legacy_key = "bf-legacy-authoritative"
+
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute(
+            """
+            INSERT INTO research_build_families(
+                build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                secondary_skill_keys, evidence_count, created_at, last_seen_at
+            )
+            SELECT ?, ascendancy_key, primary_skill_key, primary_skill_keys,
+                   secondary_skill_keys, evidence_count, created_at, last_seen_at
+            FROM research_build_families WHERE build_family_key = ?
+            """,
+            (legacy_key, current_key),
+        )
+        con.execute(
+            "UPDATE deep_research_records SET build_family_key = ? WHERE build_family_key = ?",
+            (legacy_key, current_key),
+        )
+        con.execute(
+            "UPDATE research_build_family_evidence SET build_family_key = ? "
+            "WHERE build_family_key = ?",
+            (legacy_key, current_key),
+        )
+        con.execute("DELETE FROM research_build_families WHERE build_family_key = ?", (current_key,))
+        con.commit()
+    finally:
+        con.close()
+
+    second = json.loads(json.dumps(first))
+    second_record = second["deep_research_records"][0]
+    second_record["research_group_id"] = "research:legacy-family-second-source"
+    second_record["source_case_refs"] = ["source-hash:legacy-family-second"]
+    result = service.propose_deep_research_records(second)
+
+    assert result["createdBuildFamilyCount"] == 0
+    assert result["buildFamilyKeys"] == [legacy_key]
+    con = mature_learning.connect(db_path)
+    try:
+        assert [
+            str(row["build_family_key"])
+            for row in con.execute(
+                "SELECT build_family_key FROM research_build_families"
+            ).fetchall()
+        ] == [legacy_key]
+        assert {
+            str(row["build_family_key"])
+            for row in con.execute(
+                "SELECT build_family_key FROM deep_research_records "
+                "WHERE superseded_by_id IS NULL"
+            ).fetchall()
+        } == {legacy_key}
+    finally:
+        con.close()
+
+
 def test_record_writes_report_the_persisted_canonical_record(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())

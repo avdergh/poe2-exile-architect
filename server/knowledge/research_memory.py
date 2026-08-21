@@ -1836,6 +1836,7 @@ class ResearchMemoryService:
                 ascendancy_key=str(row["ascendancy_key"]),
                 primary_skill_keys=tuple(sorted(existing_keys)),
                 secondary_skill_keys=tuple(sorted(_loads(row["secondary_skill_keys"], []))),
+                authoritative_key=str(row["build_family_key"]),
             )
             canon_existing = self._canonical_identity_set(con, existing_keys, idx=idx)
             if canon_new == canon_existing or canon_new <= canon_existing:
