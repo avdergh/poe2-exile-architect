@@ -2629,6 +2629,118 @@ def test_source_group_accepts_support_known_on_sibling_endpoint_of_same_active_g
     assert diagnostics["sourceSupportCompatibilityBlocked"] is False
 
 
+def test_recommended_minion_support_stays_gap_when_all_endpoints_lack_required_types():
+    source = pg.GraphSource(
+        source_id="fixture:minion-command-payload-gap",
+        kind="test_fixture",
+        source_file="tests/test_phase4_deep_review_acceptance.py",
+    )
+    gem_key = "gem:FixtureCommandableMinion"
+    summon_key = "skill:FixtureSummonMinionPlayer"
+    command_key = "skill:FixtureCommandMinionPlayer"
+    support_key = "support:FixtureMinionDamageSupport"
+    contract_key = "skill:FixtureMinionDamageSupportContract"
+    snapshot = pg.GraphSnapshot(
+        snapshot_id="snapshot:minion-command-payload-gap",
+        created_at=datetime(2026, 8, 21, tzinfo=UTC),
+        sources=(source,),
+        nodes=(
+            pg.GraphNode(gem_key, "skill_gem", "Fixture Minion", (source.source_id,)),
+            pg.GraphNode(summon_key, "active_skill", "Fixture Minion", (source.source_id,)),
+            pg.GraphNode(command_key, "active_skill", "Fixture Command", (source.source_id,)),
+            pg.GraphNode(
+                support_key,
+                "support_gem",
+                "Fixture Minion Damage",
+                (source.source_id,),
+            ),
+            pg.GraphNode(
+                contract_key,
+                "active_skill",
+                "Fixture Minion Damage contract",
+                (source.source_id,),
+            ),
+            pg.GraphNode("skill_type:minion", "skill_type", "Minion", (source.source_id,)),
+            pg.GraphNode(
+                "skill_type:commandsminions",
+                "skill_type",
+                "CommandsMinions",
+                (source.source_id,),
+            ),
+        ),
+        edges=(
+            pg.GraphEdge("grants_skill", gem_key, summon_key, (source.source_id,)),
+            pg.GraphEdge("grants_skill", gem_key, command_key, (source.source_id,)),
+            pg.GraphEdge("granted_by", summon_key, gem_key, (source.source_id,)),
+            pg.GraphEdge("granted_by", command_key, gem_key, (source.source_id,)),
+            pg.GraphEdge("has_type", summon_key, "skill_type:minion", (source.source_id,)),
+            pg.GraphEdge(
+                "has_type",
+                command_key,
+                "skill_type:commandsminions",
+                (source.source_id,),
+            ),
+            pg.GraphEdge("grants_skill", support_key, contract_key, (source.source_id,)),
+            pg.GraphEdge("recommended_for", support_key, gem_key, (source.source_id,)),
+        ),
+        aliases=(
+            pg.GraphAlias("Fixture Minion", summon_key, (source.source_id,)),
+            pg.GraphAlias("Fixture Minion Damage", support_key, (source.source_id,)),
+        ),
+        requirement_facts=(
+            pg.RequirementFact(
+                component_key=contract_key,
+                level_or_stage="support_contract",
+                requirements={
+                    "allowed_types_expr": ["Damage", "Attack", "CrossbowAmmoSkill"],
+                    "excluded_types_expr": [],
+                    "supports_gems_only": False,
+                },
+                source_refs=(source.source_id,),
+            ),
+        ),
+    )
+    graph_service = gt.GraphQueryService.from_snapshot(snapshot)
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": "skill-set:1:group:1",
+                "activeSkills": [
+                    {
+                        "name": "Fixture Minion",
+                        "skillId": "FixtureSummonMinionPlayer",
+                        "nameSource": "gem_name",
+                    }
+                ],
+                "supports": [{"name": "Fixture Minion Damage"}],
+            }
+        ]
+    }
+
+    resolutions = run_phase4_deep_review_acceptance._source_skill_id_resolutions(
+        graph_service=graph_service,
+        source_skill_manifest=manifest,
+    )
+    diagnostics = run_phase4_deep_review_acceptance._source_support_compatibility_diagnostics(
+        graph_service=graph_service,
+        source_skill_manifest=manifest,
+        source_skill_resolutions=resolutions,
+    )
+
+    assert any(
+        edge.edge_type == "recommended_for"
+        and edge.source_key == support_key
+        and edge.target_key == gem_key
+        for edge in snapshot.edges
+    )
+    assert diagnostics["multiActiveSkillSupportGroupCount"] == 0
+    assert diagnostics["unsupportedSourceSupportPairCount"] == 1
+    pair = diagnostics["unsupportedSourceSupportPairs"][0]
+    assert pair["evaluatedSkillKeys"] == [command_key, summon_key]
+    assert pair["excludedReason"] == "required_types_not_matched"
+    assert diagnostics["sourceSupportCompatibilityBlocked"] is True
+
+
 def test_unrelated_unsupported_source_pair_does_not_erase_confirmed_support_coverage():
     coverage, advisories = run_phase4_deep_review_acceptance._evaluate_case_coverage(
         review={"caseCoverage": {"supports": "covered"}},
