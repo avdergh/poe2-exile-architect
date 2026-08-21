@@ -2,7 +2,7 @@
 
 The full tool surface stays in ``server.main`` (single fact source). Each domain server
 re-registers its own subset with its own short bootstrap; the legacy aggregate server keeps all
-131 tools so tests, smoke scripts and old host configurations keep working.
+144 tools so tests, smoke scripts and old host configurations keep working.
 """
 
 from __future__ import annotations
@@ -65,6 +65,21 @@ def test_key_tools_land_in_the_right_server():
     assert "propose_research_fragments" in _tool_names(research_server.mcp)
     assert "validate_researcher_output" in _tool_names(research_server.mcp)
     assert "build_research_packet" in _tool_names(research_server.mcp)
+    assert {
+        "start_research_run",
+        "adopt_legacy_research_run",
+        "get_research_run_status",
+        "claim_research_case",
+        "cleanup_research_run",
+        "inspect_research_case",
+        "read_research_case",
+        "search_research_case",
+        "get_research_review_contract",
+        "initialize_research_review",
+        "validate_research_review",
+        "accept_research_review",
+        "retry_research_review",
+    } <= _tool_names(research_server.mcp)
 
     assert "claim_learning_phase" in _tool_names(learning_server.mcp)
     assert "get_learning_create_packet" in _tool_names(learning_server.mcp)

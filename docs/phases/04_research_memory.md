@@ -30,8 +30,12 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   其他记录以 `deprecated/superseded_by_id` 保留审计；无法可靠识别的旧记录不强行合并；
 - `/poe-bd-research` Controller、显式 `/poe-bd-research-worker` 单案流程、lease-bound worker brief
   和提交期 review contract：已完成；
+- 发布插件的 queue/claim/read/review/accept 产品链路已改为 typed Research MCP：新 run 位于
+  user-data `research/runs/<runId>`，对 Agent 只返回 opaque `runRef`；当前项目、源码仓库和插件 cache
+  均不承载运行态，Worker 不再用 shell/file tool 修改 queue/review/Research DB；
 - Controller 只保留队列/编排；Worker 只保留单案命令顺序和补充边界。16 项强制检查与精确
-  schema/枚举由 `workerPrompt`/`review-contract` 从同一事实源渐进披露：已完成；
+  schema/枚举由 typed `get_research_review_contract` 从同一事实源渐进披露；CLI `workerPrompt`
+  仅为仓库开发兼容传输：已完成；
 - Researcher 顺序为“先独立分析当前案例，再查 memory 对照/查重，最后写入”，避免旧经验锚定新
   案例发现：已完成；
 - fallback worker 可提交组件名称、角色和 resolver 查询词，由 accept gate 解析并回填稳定 ID：已完成；
@@ -43,25 +47,25 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 - accept/status 按 typed reason 区分 schema、resolver、图源覆盖和提取深度问题：已完成；其中
   `unresolved_jewel_sockets` 覆盖“已分配珠宝槽无珠宝物品且 review 未声明珠宝状态”，
   `tree_data_missing` 不阻塞只提示：已完成；
-- `accept --validate-only` 复用正式 acceptance 逻辑，返回具体字段路径、提交值和 canonical 枚举，且
-  不写 durable memory、不改变 lease；Agent 必须自行修复后再正式 accept：已完成；
+- `validate_research_review` 复用正式 acceptance 逻辑，返回具体字段路径、提交值、canonical 枚举与
+  reviewHash，且不写 durable memory、不改变 lease；Agent 必须自行修复后再 hash-bound accept：已完成；
 - fragment/edge/pattern 继续作为短召回索引：已完成；
 - 更多职业样本回放、字段扩展候选和真实生成质量对照：等待后续案例验证。
 
-运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源。命令、顺序与编辑约束的执行事实源是
-`/poe-bd-research` Controller、`/poe-bd-research-worker` 与 claim 返回的
-`workerPrompt`/`review-contract`，本节只维护运行时语义边界，不复述命令：
+运行时信息按以下边界维护，压缩重复时不得删除其唯一事实源。工具顺序与 review 约束的执行事实源是
+`/poe-bd-research` Controller、`/poe-bd-research-worker` 与 typed review contract；本节只维护运行时
+语义边界，不复述命令：
 
 - MCP `ASSISTANT_GUIDE`：保留工具能力地图、选择条件、权威边界和安全边界；
-- `/poe-bd-research` skill：只保留用户输入、queue/resume、Worker 编排、回访、汇总与 cleanup；
+- `/poe-bd-research` skill：只保留用户输入、typed queue/resume、Worker 编排、回访、汇总与 cleanup；
 - 未完成 run 默认继续失败关闭；只有用户明确放弃时，cleanup 才可启用 `abandon_incomplete`，按
   run 内 safe identity 精确释放仍为 `queued` 的 intake-ledger 占位并原子删除 runtime；accepted
   ledger 与 Research Memory 永久保留，身份不匹配或删除失败必须回滚；
-- `/poe-bd-research-worker` skill：显式专用的一案一 worker 流程，不提供 queue 或用户菜单；
-- `claim.workerPrompt`：保留当前 lease 身份、证据读取顺序、质量目标、16 项强制检查和下一步；
-- `review-contract`：在写 artifact 前提供精确 JSON 形状、canonical role/axis/pattern 枚举与模板；
-- `init-review`：按当前 lease 原子创建 UTF-8、两空格缩进的 review 骨架，已有文件不覆盖；
-- `accept --validate-only`：以正式门禁规则给出可修复错误，不做 alias 猜测或自动改写。
+- `/poe-bd-research-worker` skill：显式专用的一案一 Worker typed-tool 流程，不提供 queue 或用户菜单；
+- `get_research_review_contract`：在写 artifact 前提供精确 JSON 形状、canonical 枚举与模板；
+- `initialize_research_review`：返回当前 lease 的内存 safe review 对象，已有对象不覆盖；
+- `validate_research_review`：原子保存 safe review 并返回可修复错误和 `reviewHash`；
+- `accept_research_review`：只接收相同 lease 下完全一致的 validated hash。
 - canonical role 表达 BD 功能，通过兼容矩阵与 resolver 的物理 node type 对照；它不是 node type
   alias。生成/兑现、被动转换器和武器职责可以由不同合法实体类型承担，但 stable key 仍必须唯一解析。
 - `readyForAccept` 表示安全子集可接收；`fullyResolvedForAccept` 与 `acceptanceMode=clean` 才表示无候选
@@ -206,9 +210,9 @@ validate-only（acceptance 是唯一持久化写入方）。
 6 个活动槽位（Controller 1 + Subagent 5）；回访和其他 Subagent 与 Research 共享后 5 个槽位，
 超出部分排队。Research 补位优先，回访在当前 run 全部案例结算后再续聊原 agent。等待采用
 300 秒事件窗口，无变化心跳最多每 5 分钟一次，超时不反复查询 status。Controller 不领取或
-读取案例；每个 subagent 显式加载 `poe-bd-research-worker`，使用同一绝对 runDir 并从安装环境解析
-runtime，claim 且只处理一案。无共享 filesystem/runtime/MCP 的宿主在 queue 前失败关闭，不回退
-主会话研究。
+读取案例；每个 subagent 显式加载 `poe-bd-research-worker`，使用同一 opaque runRef，通过 Research
+MCP claim 且只处理一案。fork 必须包含用户本轮真实请求/授权；无共享 Research MCP 的宿主在 queue
+前失败关闭，不回退主会话研究。
 Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆分的 server（工具面约 48 个），
 不触发 Codex 数量上限；历史遗留的聚合入口 `poe2-build-mcp`（`server/main.py`）仍注册，仅保留供
 测试与旧宿主配置兼容（见 AGENTS.md），产品运行入口是四个按域拆分的 server。
@@ -221,24 +225,20 @@ Research 任务连接 `poe_knowledge_mcp` + `poe_research_mcp` 两个按域拆�
 直接按 `--limit N` 执行完整流程（真实入队、并发 worker 研究、accept），不得推荐或执行 `--dry-run`
 预检——预检不产生任何知识，只用于用户无参数且明确想先验证链路时。
 
-Controller 参数/编排事实源是 `poe-bd-research/SKILL.md`，单案命令事实源是
-`poe-bd-research-worker/SKILL.md` 与当前 lease 的动态合同（CLI 细节见
-`scripts/research_mature_builds.py --help`）。流程骨架：Controller queue → Worker claim →
-inspect/read/search → review-contract → init-review → validate/accept → Controller status。
+Controller 参数/编排事实源是 `poe-bd-research/SKILL.md`，单案工具事实源是
+`poe-bd-research-worker/SKILL.md` 与当前 lease 的动态合同。流程骨架：Controller typed queue → Worker
+typed claim → inspect/read/search → contract → initialize in-memory review → validate/hash-bound accept →
+Controller status。CLI 只保留仓库开发和 legacy 兼容入口。
 
 `/poe-bd-research` 是产品运行态，不是开发任务。运行期间 agent 不得修改仓库源码、测试、
 文档、schema、安装脚本或 plugin manifest；collector / source / runtime 失败时只报告
 safe error 并停止。
 
-`queue`、`claim`、`status`、`accept` 都只输出 safe metadata。完整 raw-rich material 只保留在
-OS temp 的 lease-bound packet 中，不再通过终端输出。研究 worker 使用 `inspect` 查看分区清单，
-再通过有界、可分页的 `read` / `search` 读取 `skills`、`gear`、`passives`、`config`、`build`；
-`prompt` 仅作为兼容 manifest。公开 `propose_*` 只验证候选，safe review + `accept` 是队列研究唯一
-durable write 路径。
-
-`init-review` 只负责可靠地创建当前 lease 绑定的空骨架，不生成研究内容，也不增加新的 durable writer。
-运行态 Agent 只能用文件编辑工具或 `apply_patch` 编辑这个 `reviewFile`，不能用 PowerShell here-string、
-内联 `ConvertTo-Json` 或 `Set-Content` 拼接整份 JSON，也不能借此修改源码或其他运行产物。
+所有 Research workflow 工具只输出 safe metadata/结构化 evidence。完整 raw-rich material 只保留在
+user-data run quarantine 与 lease-bound packet，不进入聊天。Worker 通过有界分页工具读取各分区；
+`initialize_research_review` 返回内存对象，Agent 不直接编辑任何运行态文件。`validate_research_review`
+原子保存 safe review，`accept_research_review` 只接收相同 validated hash，是队列研究唯一 durable
+write 路径；公开 `propose_*` 仍只验证候选。
 
 产品默认 durable memory 是 `paths.mature_learning_path()` 指向的用户数据数据库，与 MCP
 `query_research_memory` 使用同一文件。仓库根的 `phase4_real_research_memory.sqlite` 仅是旧开发脚本
@@ -442,8 +442,8 @@ case 研究都应执行：
 Research Memory 的 durable writer 只有 accept。修正既有记录两条路径：
 
 - **同 case 补录（新 research run + accept）**：用与最初完全相同的 PoB 文本重新 queue
-  （sampleId/sourceHashRef 相同 → researchGroupId 相同）；CLI 支持
-  `research_mature_builds.py queue --re-research <旧run目录> [--supplement-focus ...]`：
+  （sampleId/sourceHashRef 相同 → researchGroupId 相同）；产品工具使用
+  `start_research_run(re_research_run_ref=..., supplement_focus=...)`：
   从旧 run 的 quarantine 重建每个案例为补充研究轮（本地来源路径，绕过 already-studied
   跳过，case 标记 `supplement=true`，accept 要求 created+updated ≥ 1，否则判定补充轮无效
   不消耗验收）。补录记录保持旧记录的

@@ -738,6 +738,14 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - Safe review contract v2 的 `mechanicAudit.wiki` 保存候选来源 `matchKind` 与 Agent 的
   `relevanceReason`。页面标题、redirect、ID 与搜索排名只证明页面身份/候选来源，`wiki.status` 才是
   Agent 阅读内容后的 supports/contradicts/silent 判断。
+- `ResearchRunRef`：发布产品只暴露 `research-run:<runId>`，服务端确定性映射到
+  `user_data/research/runs/<runId>`；除 `adopt_legacy_research_run` 明确接收一次 legacy run 根目录外，
+  不得向 Agent 返回或接受 queue DB、review、quarantine、插件 cache 内部文件或 Research Memory 的
+  绝对路径。adoption 只复制无活动 lease 的完整旧 run，跳过可重建 transient packet，保留源目录且
+  不迁移 durable knowledge。
+- Typed review transport：`initialize_research_review` 返回内存安全对象，
+  `validate_research_review` 原子保存并返回内容 hash，`accept_research_review` 必须提交完全相同的 hash；
+  Agent 不直接编辑运行态文件。Review 变化后旧 hash 失效。
 - Deep-record validate-only 同时返回 `inferredBuildFamilyKeys`、`resolvedTargetFamilyKeys` 和
   `familyResolutionPreview`；兼容 `buildFamilyKeys` 使用只读 `join/expand/new` 后的 target key。
 - `ResearchContextRequirement`：discriminated union，不允许开放 `Dict[str, Any]`。它只复用 Phase 3

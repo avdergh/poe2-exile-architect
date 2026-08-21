@@ -95,7 +95,7 @@ Review 在同一任务中发送：
 ```text
 model: gpt-5.6-sol
 thinking: xhigh
-prompt: 只做审查，不修改代码、数据库或运行产物。基于本任务 runDir 中的 safe review、accept/status 报告和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、未解析项和暂缓项是否合理；报告计数是否与实际写入一致。
+prompt: 只做审查，不修改代码、数据库或运行产物。基于本任务保存的 safe review/accept/status 摘要、opaque runRef 和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、未解析项和暂缓项是否合理；报告计数是否与实际写入一致。运行态只能通过 typed Research MCP 查询，不读取或编辑 run 文件。
 
 （"五项研究覆盖"指 review-contract 的 caseCoverage 五维：supports / rotation / passiveAscendancy / gearRoles / resourceDefense。）
 
@@ -122,7 +122,7 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 
 修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md；真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
 
-修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录（相同 PoB 文本重新 queue + accept；CLI 用 `research_mature_builds.py queue --re-research <旧run目录> [--supplement-focus ...]` 从旧 run 的 quarantine 重建案例为补充研究轮，accept 要求 created+updated ≥1 否则判定无效）或 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
+修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录使用 `mcp__poe_research__start_research_run(re_research_run_ref=..., supplement_focus=...)` 创建补充研究轮并经 typed validate/hash-bound accept（created+updated ≥1，否则补充轮无效），或使用 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
 
 最终必须单独输出一行 `POE_FIX_DATA_REPAIRED: yes` 或 `POE_FIX_DATA_REPAIRED: no`。只有实际写入、更新、重建或替换了修正后仍保留在数据库中的研究数据时才输出 yes；纯代码、测试、notes、artifact 修改，或只删除错误数据而没有保留修正版时输出 no。
 ```
@@ -132,7 +132,7 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 ```text
 model: gpt-5.6-sol
 thinking: xhigh
-prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数据，不扩大到未修改数据，不进行新研究或代码修复。基于原 review findings、Fix 结果、runDir artifact 和实际数据库内容，核对修正版的事实、证据、关系、Family/Pattern 和计数是否正确。
+prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数据，不扩大到未修改数据，不进行新研究或代码修复。基于原 review findings、Fix 结果、safe typed Research receipts 和实际数据库内容，核对修正版的事实、证据、关系、Family/Pattern 和计数是否正确。不得读取或编辑 run 文件。
 
 对每个修正版重新读取完整持久化对象，检查全对象语义闭环；特别核对组件或职责变化后是否仍残留旧的 conditions、typedPayload、contextRequirements、plannerHint、verificationTasks 或错误来源归属，不能只复查 Fix 声称修改的字段。
 
@@ -227,7 +227,7 @@ Research 最新 turn 为 `completed` 时：
      “已完成入库，应继续审查”后，调用 `recover_poe_research_intake_for_review`，保留
      `research_succeeded=false` 审计事实并进入 `review_pending`；不得把该恢复伪装成 research 成功。
    - marker 缺失、重复或矛盾：不得猜测成功；按 `research_succeeded=false` 记录并阻断，提示用户检查
-     可见 thread/runDir 后显式 retry。
+     可见 thread/runRef safe outcome 后显式 retry。
    bridge 的 finish 命令必须追加 `--research-succeeded yes|no`。
 2. 只有 `research_succeeded=true` 后再查状态；若已请求暂停，停在 `review_pending`，不要发送 review。
 3. 否则调用 `send_message_to_thread`，对同一 `thread_id` 指定
@@ -290,7 +290,7 @@ Fix completed，或已触发复审时 rereview completed，才会让状态服务
   `reset_poe_research_plan(plan_path, acknowledge_reset=true)`；bridge 为
   `reset --plan '<绝对路径>' --acknowledge-reset`。运行中的 Desktop turn 必须拒绝重置；成功后重新
   validate/status，并从第一项重新 claim。不得用手工编辑 Markdown/sidecar 代替该接口。
-- 重试：必须取得用户对该可见 thread/runDir 已检查的明确确认，才调用
+- 重试：必须取得用户对该可见 thread/runRef safe outcome 已检查的明确确认，才调用
   `retry_poe_research_task(... acknowledge_reviewed=true)`。重试会新建 claim 和新任务，不会自动
   复用失败 turn。
 - 已完成入库后继续审查：仅当 blocked research turn 为 `completed`、最终报告明确全部案例已正式

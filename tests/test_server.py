@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 131
+    assert len(tools) == 144
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -128,6 +128,19 @@ def test_tool_surface_intact():
         "evaluate_lifecycle_route",
         "get_meta_archetype_trends",
         "graph_tool_query",
+        "start_research_run",
+        "adopt_legacy_research_run",
+        "get_research_run_status",
+        "claim_research_case",
+        "cleanup_research_run",
+        "inspect_research_case",
+        "read_research_case",
+        "search_research_case",
+        "get_research_review_contract",
+        "initialize_research_review",
+        "validate_research_review",
+        "accept_research_review",
+        "retry_research_review",
         "build_research_packet",
         "validate_researcher_output",
         "query_research_memory",
@@ -279,6 +292,13 @@ def test_research_memory_tools_expose_public_schemas():
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
     assert tools["build_research_packet"].inputSchema["properties"]["case"]["type"] == "object"
+    assert tools["start_research_run"].inputSchema["properties"]["limit"]["type"] == "integer"
+    assert tools["claim_research_case"].inputSchema["properties"]["run_ref"]["type"] == "string"
+    assert tools["validate_research_review"].inputSchema["properties"]["review"]["type"] == "object"
+    assert (
+        tools["accept_research_review"].inputSchema["properties"]["expected_review_hash"]["type"]
+        == "string"
+    )
     assert (
         tools["validate_researcher_output"].inputSchema["properties"]["payload"]["type"] == "object"
     )

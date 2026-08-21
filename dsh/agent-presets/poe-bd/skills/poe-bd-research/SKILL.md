@@ -21,8 +21,8 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 ## Controller Boundary
 
 - 主会话永不 claim、读取案例证据、编辑 review 或 accept，也不提供串行 fallback。
-- queue 前确认宿主的 Subagent 能共享同一 filesystem、runDir、checkout/runtime 和 Research MCP
-  工具面。宿主只有 spawn 能力但无法确认这些共享语义时，失败关闭且不创建队列。
+- queue 前确认宿主的 Subagent 能共享 Research MCP 工具面和 opaque `runRef`。产品态运行不依赖当前
+  checkout/cwd，也不把 queue/review/quarantine 写入项目或插件缓存。
 - 目标宿主容量是 6 个活动槽位：Controller 占 1 个，Research Worker、回访和其他
   Subagent 共享剩余 5 个，超出部分排队。Research Worker 的业务并发上限仍为 5；宿主实际
   总容量低于 6 时按可用槽位降级，并向用户报告实际 Worker 数，不得宣称已启用 5 Worker。
@@ -48,12 +48,12 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - `--source-file PATH`：单个本地 PoB code/XML。
 - `--source-batch-file PATH`：本地批量输入；每案由独立 Worker 处理。
 - `--expected-source-count N`：本地输入的预期案例数；不符时不创建队列。
-- `--resume --output-dir PATH`：恢复原 queue；仍由 Controller 派发全新的单案 Worker。
+- `--resume --run-ref REF`：恢复新产品队列；仍由 Controller 派发全新的单案 Worker。
+- `--legacy-run-dir PATH`：只用于把无活动 lease 的旧 run 复制进 user-data runtime；源目录保留。
 - `--dry-run`：只验证 collector，不建队列、不产生知识。
-- `--output-dir PATH`：高级覆盖；普通新任务让 queue 创建独立 `runs/<runId>`。
 
 快速粘贴的裸 PoB code、pobb.in/pastebin 链接或 raw XML 先保存到 OS temp 文件，再替换成
-`--source-file <temp>`。不要把 code 原文放进命令行参数、runDir 或仓库；链接先由宿主 fetch 后落临时
+`--source-file <temp>`。不要把 code 原文放进命令行参数、run runtime 或仓库；链接先由宿主 fetch 后落临时
 文件，无法本地化时才请用户提供文件。
 
 角色级去重由本地 intake ledger 负责：queue 会跳过本 league 已研究角色并继续分页；正式 accept 后
@@ -65,55 +65,39 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 - 小批量提取：真实 `limit=20`；
 - 大批量提取：真实 `limit=50`；
-- 恢复已有队列：用户提供原 runDir；
+- 恢复已有队列：用户提供 runRef；旧任务只有 legacy runDir 时先走 typed adoption；
 - 链路预检：`limit=5 --dry-run`，仅在用户明确只想验证链路时使用。
 
 用户已给案例数量、输入或分析意图时直接执行真实 queue，不要用 dry-run 替代。由
 `poe-bd-research-loop` 发起且已经携带 `--limit` 等参数时也直接进入同一 Controller 流程，不再询问
 菜单；后续案例仍全部交给 Worker。
 
-## Runtime Binding
+## Typed Tool Binding
 
-queue 前一次性解析并冻结：
+产品态只使用 Research MCP 的 `mcp__poe_research__start_research_run / mcp__poe_research__adopt_legacy_research_run /
+mcp__poe_research__get_research_run_status / mcp__poe_research__cleanup_research_run`。工具未显示时先按精确名做 tool discovery；缺失时停止，不搜索仓库、不解析
+插件安装路径，也不回退 shell CLI。工具返回的 `runRef` 是唯一运行身份；不得向 Worker 传 runDir、
+reviewFile、插件 cache path 或 Research DB path。
 
-1. `runtimeRoot` 优先取安装器管理的任一 `poe-*-mcp` cwd；否则取 `POE_BD_CREATOR_DIR`，再否则从当前
-   Skill 的真实路径向上查找。候选必须包含 `server/main.py` 和 `scripts/research_mature_builds.py`，且
-   是带 `pyproject.toml` 的源码仓库，或带 `.codex-plugin/plugin.json` 与
-   `scripts/run_plugin_server.mjs` 的自包含插件；缺失或歧义时停止，不能猜 cwd 或全盘搜索。
-2. 源码仓库按 `runtimeRoot/.tools/uv/uv.exe`、`runtimeRoot/.tools/uv/uv`、PATH uv 解析，冻结为：
-
-   ```text
-   [uvCommand, "run", "--project", runtimeRoot, "python", runtimeRoot/scripts/research_mature_builds.py]
-   ```
-
-   自包含插件复用 MCP 已注册的 Node，或从 PATH 解析 Node，冻结为：
-
-   ```text
-   [nodeCommand, runtimeRoot/scripts/run_plugin_server.mjs, "--research-cli"]
-   ```
-
-3. `researchCliArgv` 必须是上述绝对 argv 数组之一，不存成 shell 字符串。Node 只作为插件官方 Python
-   启动器，不把它当成 uv；对应入口或解释器不可用时停止。
-
-内部执行或派发时保持元素边界，路径含空格也不得重新拆分。
+源码仓库的 `scripts/research_mature_builds.py` 只保留开发/legacy 兼容，不属于发布 Skill 流程。
 
 ## Queue
 
-用冻结 argv 追加 `queue` 和用户参数。live collector 外层超时至少 10 分钟；超时后按 runtime failure
-停止，不在同一 turn 重复 queue。
-
-非 dry-run queue 返回 `runId`、绝对 `runDir` 与 sample/status 计数。保存该 runDir，所有 Worker 和
-status 命令都使用它；不得退回共享 `.poe-bd-research`。显式目录已有 queue 时只有 `--resume` 可以
-复用，不能覆盖。
+调用 `mcp__poe_research__start_research_run` 并逐字段传入用户参数。live collector 外层超时至少 10 分钟；超时后按
+runtime failure 停止，不在同一 turn 重复 queue。非 dry-run 返回 `runId + runRef` 与安全计数；保存
+runRef，后续 status/Worker 只使用它。`--resume` 调用
+`mcp__poe_research__get_research_run_status(run_ref=<runRef>)`；旧绝对 runDir 先调用
+`mcp__poe_research__adopt_legacy_research_run(legacy_run_dir=<旧路径>)`，活动 lease 未结算时停止，不复制/抢占。
 
 ## Worker Scheduling
 
 每个 Worker 派发必须：
 
 - 显式点名 `$poe-bd-research-worker`；
-- 携带具名的绝对 `runDir`；
+- 携带具名的 opaque `runRef`；
 - 不指定 sampleId，不复制 Worker Skill 或逐案研究步骤；自然语言措辞可按当前上下文调整；
-- 宿主支持时使用无父上下文或最小上下文的新 Subagent。
+- 必须 fork 包含用户本次研究请求/授权的最近上下文；不得使用 `fork_turns=none`。Subagent 继承父任务
+  权限模式，但用户授权上下文仍需可见，不能只由 Controller 转述。
 
 初始创建数取 `dispatchableCount`、有效 worker-count 与宿主可用 Subagent 槽位的最小值；
 目标 6 总槽位下可同时运行 5 个 Worker。维护活动 Research Worker 集合与待回访队列。任一 Worker
@@ -151,7 +135,7 @@ status 命令都使用它；不得退回共享 `.poe-bd-research`。显式目录
 Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队。
 
 无回访时，只有全部案例 accepted、status 无 queued/claimed/accepting/rejected 且计数一致后才调用
-`mcp__poe_build__cleanup_completed_task_runtime(task_kind="research", task_id=<runId>)`。
+`mcp__poe_research__cleanup_research_run(run_ref=<runRef>)`。
 
 只有用户明确决定放弃一个未完成 run 时，才可对同一工具传
 `abandon_incomplete=true`。该路径只释放由本 run 精确拥有、仍为 `queued` 的 intake-ledger 占位，
@@ -161,12 +145,13 @@ Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队�
 有回访时，反馈已返回不等于获得 cleanup 授权：
 
 - 等用户明确确认或放弃全部反馈；
-- 批准知识补录时，Controller 结束旧 Worker assignment，使用原 runDir 通过既有 `--re-research` /
-  `--supplement-focus` 创建新的 supplement run，再把新 runDir 作为新的显式 Worker assignment 续发给
+- 批准知识补录时，Controller 结束旧 Worker assignment，使用原 runRef 通过
+  `re_research_run_ref + supplement_focus` 创建新的 supplement run，再把新 runRef 作为新的显式
+  Worker assignment 续发给
   原 agent；不得要求旧 Worker 在原 assignment 中 queue 或领取第二案；
 - 批准工具/流程修复时，follow-up 必须明确 Worker 运行态已经结束，本轮切换为普通开发任务，不再
   加载 Worker Skill 或执行 Research queue/claim；
-- 修复与复核完成后再 cleanup；上下文或 agent 映射丢失时保留 runDir，不推断授权。
+- 修复与复核完成后再 cleanup；上下文或 agent 映射丢失时保留 runRef，不推断授权。
 
 ## Final Status
 

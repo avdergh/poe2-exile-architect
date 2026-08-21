@@ -67,6 +67,18 @@ def mature_learning_path() -> Path:
     return user_data_dir() / "mature_build_learning.sqlite"
 
 
+def research_runtime_dir() -> Path:
+    """Private queue/review/quarantine runtime for mature-build Research tasks.
+
+    Product runs must never live under the source checkout or an installed plugin cache: both are
+    code locations, and the latter may be replaced by a cachebuster update. Durable accepted
+    knowledge remains in :func:`mature_learning_path`; this directory contains only resumable
+    task runtime that can be cleaned after acceptance/revisit completes.
+    """
+
+    return user_data_dir() / "research"
+
+
 def mature_learning_release_seed_path() -> Path:
     """Creator-safe Research Memory seed shipped with a release."""
     return BUNDLE_ROOT / "data" / "mature_build_learning" / "release.sqlite"

@@ -8,14 +8,27 @@ from pathlib import Path
 
 from ..main import (  # noqa: F401  (re-registered below)
     _SessionIsolatedFastMCP,
+    accept_research_review,
+    adopt_legacy_research_run,
     append_evidence_to_fragment,
     build_research_packet,
+    claim_research_case,
+    cleanup_research_run,
+    get_research_review_contract,
+    get_research_run_status,
+    initialize_research_review,
+    inspect_research_case,
     inspect_rejected_research_proposals,
     propose_build_patterns,
     propose_deep_research_records,
     propose_research_fragments,
     propose_semantic_edges,
+    read_research_case,
+    retry_research_review,
+    search_research_case,
+    start_research_run,
     submit_revalidation_result,
+    validate_research_review,
     validate_researcher_output,
 )
 
@@ -31,14 +44,27 @@ except OSError:
 mcp = _SessionIsolatedFastMCP("poe-research-mcp", instructions=_INSTRUCTIONS)
 
 _TOOLS = (
+    accept_research_review,
+    adopt_legacy_research_run,
     append_evidence_to_fragment,
     build_research_packet,
+    claim_research_case,
+    cleanup_research_run,
+    get_research_review_contract,
+    get_research_run_status,
+    initialize_research_review,
+    inspect_research_case,
     inspect_rejected_research_proposals,
     propose_build_patterns,
     propose_deep_research_records,
     propose_research_fragments,
     propose_semantic_edges,
+    read_research_case,
+    retry_research_review,
+    search_research_case,
+    start_research_run,
     submit_revalidation_result,
+    validate_research_review,
     validate_researcher_output,
 )
 

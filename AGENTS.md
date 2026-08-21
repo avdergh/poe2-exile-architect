@@ -86,6 +86,14 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_output /
   complete_generation_review` 管理 Phase 5 run。不得搜索仓库工作目录或要求用户安装/执行
   `scripts/create_build.py`；CLI 只保留为仓库开发兼容入口。
+- 发布插件内的普通 Research 必须通过 `start_research_run / claim_research_case /
+  inspect_research_case / read_research_case / search_research_case / get_research_review_contract /
+  initialize_research_review / validate_research_review / accept_research_review /
+  retry_research_review / cleanup_research_run` 管理运行态；旧 run 只可用
+  `adopt_legacy_research_run` 接入。新 run 只能保存
+  在 user-data 并以 opaque `runRef` 暴露；不得把 queue/review/quarantine 写入调用者项目、源码仓库或
+  插件 cache，也不得要求 Agent shell 编辑运行态文件。`scripts/research_mature_builds.py` 只保留仓库
+  开发和显式 legacy 恢复入口。
 - Create 当前默认禁止 `optimize_build` 和全局被动树重排。Agent 已经决定的机械变更应通过
   `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout / passive_delta /
   required_gear / ordinary_gear / config` 职能拆成小事务；不得把整个 BD 混进一个批次。只有以

@@ -44,7 +44,7 @@ from server.knowledge import (  # noqa: E402
 )
 from server.learning.file_lock import interprocess_file_lock  # noqa: E402
 
-DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
+DEFAULT_OUTPUT_DIR = paths.research_runtime_dir()
 RUNS_DIRNAME = "runs"
 QUEUE_DB_FILENAME = "poe_bd_research_queue.sqlite"
 DEFAULT_TEMP_DIRNAME = "poe-bd-creator-research-packets"
@@ -1095,6 +1095,93 @@ def init_review(
     return result
 
 
+def load_review_payload(
+    *,
+    lease_token: str,
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    queue_db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Read the lease-bound safe review for typed MCP editing without exposing its path."""
+
+    output_root = Path(output_dir)
+    row = _case_for_valid_lease(_queue_db_path(output_root, queue_db_path), lease_token)
+    review_file = _suggested_review_file(
+        output_dir=output_root,
+        sample_id=str(row["sample_id"]),
+        lease_token=lease_token,
+    )
+    review_path = output_root / review_file
+    if not review_path.is_file():
+        raise ValueError("lease-bound review is not initialized")
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    if not isinstance(review, dict):
+        raise ValueError("lease-bound review must be a JSON object")
+    acceptance._assert_safe(review)
+    result = {
+        "status": "loaded",
+        "sampleId": str(row["sample_id"]),
+        "reviewHash": review_payload_hash(review),
+        "review": review,
+        "noRawMatureBuildMaterial": True,
+    }
+    _assert_safe_payload(result)
+    return result
+
+
+def save_review_payload(
+    *,
+    lease_token: str,
+    review_payload: dict[str, Any],
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    queue_db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Atomically persist a safe in-memory review owned by the active lease."""
+
+    output_root = Path(output_dir)
+    db_path = _queue_db_path(output_root, queue_db_path)
+    row = _case_for_valid_lease(db_path, lease_token)
+    review_file = _suggested_review_file(
+        output_dir=output_root,
+        sample_id=str(row["sample_id"]),
+        lease_token=lease_token,
+    )
+    review_path = output_root / review_file
+    if not review_path.is_file():
+        raise ValueError("lease-bound review is not initialized")
+    canonical = _canonical_review_payload(
+        payload=copy.deepcopy(review_payload),
+        sample_id=str(row["sample_id"]),
+        source_hash_ref=str(row["source_hash_ref"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=_queue_version_context(db_path),
+    )
+    acceptance._assert_safe(canonical)
+    serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        staging.write_text(serialized, encoding="utf-8", newline="\n")
+        os.replace(staging, review_path)
+    finally:
+        staging.unlink(missing_ok=True)
+    result = {
+        "status": "saved",
+        "sampleId": str(row["sample_id"]),
+        "reviewHash": review_payload_hash(canonical),
+        "noRawMatureBuildMaterial": True,
+    }
+    _assert_safe_payload(result)
+    return result
+
+
+def review_payload_hash(review_payload: dict[str, Any]) -> str:
+    """Stable safe-review hash used to bind validation to formal acceptance."""
+
+    canonical = json.dumps(
+        review_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return "review-sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _slice_review_for_record(
     review: dict[str, Any],
     record_index: int,
@@ -1487,6 +1574,50 @@ def review_budget(*, review_file: str | Path) -> dict[str, Any]:
         ),
         "noRawMatureBuildMaterial": True,
     }
+
+
+def save_rejected_review_payload(
+    *,
+    sample_id: str,
+    review_payload: dict[str, Any],
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    queue_db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Replace the one safe review belonging to a rejected case before typed retry."""
+
+    output_root = Path(output_dir)
+    db_path = _queue_db_path(output_root, queue_db_path)
+    row = _case_for_rejected_sample(db_path, sample_id)
+    review_root = (output_root / "reviews").resolve()
+    matches = sorted(review_root.glob(f"{_slug(sample_id)}-*-safe-review.json"))
+    if len(matches) != 1:
+        raise ValueError("rejected case must have exactly one lease-bound safe review")
+    review_path = matches[0].resolve()
+    review_path.relative_to(review_root)
+    canonical = _canonical_review_payload(
+        payload=copy.deepcopy(review_payload),
+        sample_id=str(row["sample_id"]),
+        source_hash_ref=str(row["source_hash_ref"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=_queue_version_context(db_path),
+    )
+    acceptance._assert_safe(canonical)
+    serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        staging.write_text(serialized, encoding="utf-8", newline="\n")
+        os.replace(staging, review_path)
+    finally:
+        staging.unlink(missing_ok=True)
+    result = {
+        "status": "saved",
+        "sampleId": str(row["sample_id"]),
+        "reviewFile": review_path.relative_to(output_root.resolve()).as_posix(),
+        "reviewHash": review_payload_hash(canonical),
+        "noRawMatureBuildMaterial": True,
+    }
+    _assert_safe_payload(result)
+    return result
 
 
 def retry_accept_case(
@@ -2110,6 +2241,7 @@ def cleanup_completed_run(
     *,
     run_id: str,
     temp_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
     allow_rejected: bool = False,
     abandon_incomplete: bool = False,
 ) -> dict[str, Any]:
@@ -2128,7 +2260,8 @@ def cleanup_completed_run(
 
     if not isinstance(run_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
-    runs_root = (DEFAULT_OUTPUT_DIR / RUNS_DIRNAME).resolve()
+    runtime_root = Path(output_dir) if output_dir is not None else DEFAULT_OUTPUT_DIR
+    runs_root = (runtime_root / RUNS_DIRNAME).resolve()
     output_root = (runs_root / run_id).resolve()
     if not _is_relative_to(output_root, runs_root) or output_root.parent != runs_root:
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
@@ -3732,6 +3865,25 @@ def _canonical_review_artifact_identity(
     version_context: dict[str, str],
 ) -> dict[str, Any]:
     payload = json.loads(review_file.read_text(encoding="utf-8"))
+    return _canonical_review_payload(
+        payload=payload,
+        sample_id=sample_id,
+        source_hash_ref=source_hash_ref,
+        packet_safe_hash=packet_safe_hash,
+        version_context=version_context,
+    )
+
+
+def _canonical_review_payload(
+    *,
+    payload: Any,
+    sample_id: str,
+    source_hash_ref: str,
+    packet_safe_hash: str,
+    version_context: dict[str, str],
+) -> dict[str, Any]:
+    """Bind one safe in-memory review to its authoritative queue identity."""
+
     if not isinstance(payload, dict) or payload.get("safeArtifactOnly") is not True:
         raise ValueError("review artifact identity does not match the current lease")
     entries = [

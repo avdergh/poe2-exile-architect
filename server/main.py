@@ -59,6 +59,7 @@ from .knowledge import research_memory
 from .knowledge import research_models
 from .knowledge import research_packet
 from .knowledge import research_prompt
+from .knowledge import research_workflow
 from .live import meta as live_meta
 from .live import prices as live_prices
 from .live import update as live_update
@@ -2890,6 +2891,184 @@ def graph_tool_query(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
             "freshness": {"versionContext": {}},
             "noRawQuery": True,
         }
+
+
+@mcp.tool()
+def start_research_run(
+    league: str = "current",
+    limit: int = 50,
+    worker_count: int = 5,
+    level_min: int = 90,
+    level_max: int = 100,
+    ascendancies: list[str] | None = None,
+    classes: list[str] | None = None,
+    source_files: list[str] | None = None,
+    source_batch_files: list[str] | None = None,
+    expected_source_count: int | None = None,
+    sample_start_index: int = 1,
+    dry_run: bool = False,
+    re_research_run_ref: str | None = None,
+    supplement_focus: str = "",
+) -> dict[str, Any]:
+    """Create one mature-build Research queue in private user data and return an opaque runRef.
+
+    This is the product entrypoint for installed plugins. It never writes into the caller's
+    project or the installed plugin cache, and it never returns raw PoB/XML or filesystem paths.
+    """
+    return research_workflow.start_run(
+        league=league,
+        limit=limit,
+        worker_count=worker_count,
+        level_min=level_min,
+        level_max=level_max,
+        ascendancies=ascendancies,
+        classes=classes,
+        source_files=source_files,
+        source_batch_files=source_batch_files,
+        expected_source_count=expected_source_count,
+        sample_start_index=sample_start_index,
+        dry_run=dry_run,
+        re_research_run_ref=re_research_run_ref,
+        supplement_focus=supplement_focus,
+    )
+
+
+@mcp.tool()
+def adopt_legacy_research_run(legacy_run_dir: str) -> dict[str, Any]:
+    """Copy one inactive legacy run out of a checkout/plugin cache into user-data runtime.
+
+    The source is preserved. A live claimed/accepting lease blocks adoption until it settles.
+    Durable Research Memory and intake-ledger paths are never migrated by this operation.
+    """
+    return research_workflow.adopt_legacy_run(legacy_run_dir=legacy_run_dir)
+
+
+@mcp.tool()
+def get_research_run_status(run_ref: str) -> dict[str, Any]:
+    """Return safe queue/lease/acceptance counts for one opaque Research runRef."""
+    return research_workflow.run_status(run_ref=run_ref)
+
+
+@mcp.tool()
+def claim_research_case(run_ref: str, lease_seconds: int = 7200) -> dict[str, Any]:
+    """Atomically claim one case from a user-data-backed Research run."""
+    return research_workflow.claim_case(run_ref=run_ref, lease_seconds=lease_seconds)
+
+
+@mcp.tool()
+def inspect_research_case(run_ref: str, lease_token: str) -> dict[str, Any]:
+    """Inspect the bounded section manifest for the currently leased Research case."""
+    return research_workflow.inspect_case(run_ref=run_ref, lease_token=lease_token)
+
+
+@mcp.tool()
+def read_research_case(
+    run_ref: str,
+    lease_token: str,
+    section: Literal["skills", "gear", "passives", "config", "build", "jewels", "skill-groups"],
+    cursor: int = 0,
+    limit: int = 24,
+    node_type: str | None = None,
+    exclude_routing: bool = False,
+) -> dict[str, Any]:
+    """Read one paged structured section from the currently leased Research case."""
+    return research_workflow.read_case(
+        run_ref=run_ref,
+        lease_token=lease_token,
+        section=section,
+        cursor=cursor,
+        limit=limit,
+        node_type=node_type,
+        exclude_routing=exclude_routing,
+    )
+
+
+@mcp.tool()
+def search_research_case(
+    run_ref: str,
+    lease_token: str,
+    query: str,
+    section: Literal["skills", "gear", "passives", "config", "build", "jewels"] | None = None,
+    limit: int = 24,
+) -> dict[str, Any]:
+    """Search bounded structured evidence inside the currently leased Research case."""
+    return research_workflow.search_case(
+        run_ref=run_ref,
+        lease_token=lease_token,
+        query=query,
+        section=section,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def get_research_review_contract(run_ref: str, lease_token: str) -> dict[str, Any]:
+    """Return the exact safe-review v2 contract for one leased Research case."""
+    return research_workflow.review_contract(run_ref=run_ref, lease_token=lease_token)
+
+
+@mcp.tool()
+def initialize_research_review(run_ref: str, lease_token: str) -> dict[str, Any]:
+    """Initialize and return an in-memory safe review object; no file editing is required."""
+    return research_workflow.initialize_review(run_ref=run_ref, lease_token=lease_token)
+
+
+@mcp.tool()
+def validate_research_review(
+    run_ref: str,
+    lease_token: str,
+    review: dict[str, Any],
+    only_record: int | None = None,
+) -> dict[str, Any]:
+    """Atomically save and validate one safe review without changing queue acceptance state."""
+    return research_workflow.validate_review(
+        run_ref=run_ref,
+        lease_token=lease_token,
+        review=review,
+        only_record=only_record,
+    )
+
+
+@mcp.tool()
+def accept_research_review(
+    run_ref: str,
+    lease_token: str,
+    expected_review_hash: str,
+) -> dict[str, Any]:
+    """Accept the exact safe review previously validated under the same hash and lease."""
+    return research_workflow.accept_review(
+        run_ref=run_ref,
+        lease_token=lease_token,
+        expected_review_hash=expected_review_hash,
+    )
+
+
+@mcp.tool()
+def retry_research_review(
+    run_ref: str,
+    sample_id: str,
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Replace and retry the one safe review belonging to an acceptance-rejected case."""
+    return research_workflow.retry_review(
+        run_ref=run_ref,
+        sample_id=sample_id,
+        review=review,
+    )
+
+
+@mcp.tool()
+def cleanup_research_run(
+    run_ref: str,
+    allow_rejected: bool = False,
+    abandon_incomplete: bool = False,
+) -> dict[str, Any]:
+    """Delete one private Research runtime by opaque runRef; durable knowledge is preserved."""
+    return research_workflow.cleanup_run(
+        run_ref=run_ref,
+        allow_rejected=allow_rejected,
+        abandon_incomplete=abandon_incomplete,
+    )
 
 
 @mcp.tool()

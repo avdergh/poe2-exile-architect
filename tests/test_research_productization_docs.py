@@ -49,11 +49,12 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "research_succeeded=false" in skill
     assert "--research-succeeded yes|no" in skill
     assert (
-        "只做审查，不修改代码、数据库或运行产物。基于本任务 runDir 中的 safe review、"
-        "accept/status 报告和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、"
+        "只做审查，不修改代码、数据库或运行产物。基于本任务保存的 safe review/accept/status "
+        "摘要、opaque runRef 和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、"
         "身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、"
         "未解析项和暂缓项是否合理；报告计数是否与实际写入一致。"
     ) in skill
+    assert "运行态只能通过 typed Research MCP 查询，不读取或编辑 run 文件" in skill
     assert "不能因为组件成功解析就认为机制解释正确" in skill
     assert (
         "Findings 按严重度优先，给出对应 sourceCaseRef、recordId、patternId 或 artifact 位置"
@@ -176,10 +177,10 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert 'response_profile="create_compact"' in worker
     assert "claimScopeReview" in worker
     assert "relevanceReason" in worker
-    assert "accept --validate-only --compact" in worker
-    assert "在 validate-only 和正式 accept 前复核每个最终对象" in worker
-    assert "worker-brief" in guide
-    assert "atomically returns the safe `workerPrompt`" in guide
+    assert "validate_research_review" in worker
+    assert "在 typed validation 和正式 accept 前复核每个最终对象" in worker
+    assert "initialize_research_review" in guide
+    assert "in-memory safe review object" in guide
     assert "targets six" in guide and "up to five shared subagent slots" in guide
     assert "wait_agent(timeout_ms=300000)" in guide
     assert "never claims cases or reads case evidence" in guide
@@ -203,14 +204,14 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "users to paste PowerShell/Python commands into the chat box" in guide
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
     assert "poe-bd-research-worker" in guide
-    assert "not rely only on a local `SKILL.md` path" in guide
+    assert "opaque `runRef`" in guide
     assert "分析 5 个成熟 BD 样本" in readme
     assert "preflight 5" in guide
     assert "预检 5 个样本（推荐）" not in phase4
     assert "No-Argument Behavior" in controller
-    assert "--resume --output-dir PATH" in controller
-    assert "runDir" in controller
-    assert "Never fall back to the shared `.poe-bd-research` root" in guide
+    assert "--resume --run-ref REF" in controller
+    assert "runRef" in controller
+    assert "plugin cache" in guide
     assert "--class NAME" in controller
     assert "class=Blood+Mage" in guide
     assert "class=Blood%2BMage" in guide
@@ -220,12 +221,12 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "query_research_memory" in guide
     assert "search_graph_components" in guide
     assert "resolve_graph_component" in guide
-    assert "review-contract" in guide
-    assert "init-review" in guide
-    assert "accept --validate-only" in guide
-    assert "Plain `accept` is the" in guide and "only durable writer" in guide
+    assert "get_research_review_contract" in guide
+    assert "initialize_research_review" in guide
+    assert "validate_research_review" in guide
+    assert "accept_research_review" in guide
     assert "fullyResolvedForAccept" in guide
-    assert "review-contract" in worker
+    assert "get_research_review_contract" in worker
     assert "unresolvedUniqueComponentCount" in phase4
     for internal_contract in (
         "scripts/research_mature_builds.py",
@@ -250,7 +251,7 @@ def test_research_controller_and_worker_skills_have_separate_roles():
 
     assert "主会话永不 claim、读取案例证据、编辑 review 或 accept" in controller
     assert "poe-bd-research-worker" in controller
-    assert "runDir" in controller
+    assert "runRef" in controller
     assert "status.dispatchableCount > 0" in controller
     assert "Research Worker 的业务并发上限仍为 5" in controller
     assert "目标宿主容量是 6 个活动槽位" in controller
@@ -271,23 +272,20 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "Internal explicit-only worker" in worker
     assert "worker_assignment_missing" in worker
     assert "researchCliArgv" not in worker
-    assert "macOS/Linux" in worker
-    assert "run_plugin_server.mjs" in controller
-    assert "--research-cli" in controller
-    assert "run_plugin_server.mjs" in worker
-    assert "--research-cli" in worker
-    assert "claim --output-dir <runDir>" in worker
+    assert "claim_research_case" in worker
+    assert "start_research_run" in controller
+    assert "不回退 shell CLI" in controller
+    assert "不回退 shell CLI" in worker
+    assert "runRef" in worker
     assert "不得自行发现其他仓库、创建/恢复 queue" in worker
     assert "只处理一个 claim" in worker
     assert "sampleId + safe outcome" in worker
     assert "accepted 时附 safe acceptance 摘要" in worker
     assert "`build_family_keys` 只接收查询已返回的 `bf-...`" in worker
     assert '`detail_level="record" + response_profile="create_compact"`' in worker
-    assert "retry-accept --sample-id <sampleId> --compact" in worker
-    assert "`durableWritePreflight`" in worker
-    assert "`permission_required`" in worker
-    assert "`write_handle_ready`" in worker
-    assert "不保证 SQLite 事务一定成功" in worker
+    assert "retry_research_review" in worker
+    assert "expected_review_hash=<reviewHash>" in worker
+    assert "不得用 shell/file tool 编辑运行态" in worker
     assert "No-Argument Behavior" not in worker
     assert "--resume" not in worker
     assert "cleanup_completed_task_runtime" not in worker
@@ -300,7 +298,7 @@ def test_research_subagent_orchestration_doc_stays_compact_and_role_focused():
     )
 
     assert len(document) < 3000
-    assert "Controller 只负责 queue/resume" in document
+    assert "Controller 只负责 typed queue/resume" in document
     assert "Worker Skill 设为 explicit-only" in document
     assert "worker_capacity_reached" in document
     assert "进程级全局 RLock" in document

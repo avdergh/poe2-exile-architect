@@ -76,7 +76,11 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `evaluate_lifecycle_route`, `list_transition_gates`,
   `evaluate_transition_readiness`, `plan_lifecycle_stage_verification`, `record_build_feedback`,
   `promote_technique_memory`, plus Phase 4 research-memory tools
-  (`build_research_packet`, `validate_researcher_output`, `query_research_memory`,
+  (`start_research_run`, `claim_research_case`, `inspect_research_case`, `read_research_case`,
+  `search_research_case`, `get_research_review_contract`, `initialize_research_review`,
+  `validate_research_review`, `accept_research_review`, `retry_research_review`,
+  `get_research_run_status`, `adopt_legacy_research_run`, `cleanup_research_run`,
+  `build_research_packet`, `validate_researcher_output`, `query_research_memory`,
   `propose_deep_research_records`, `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
   `propose_build_patterns`, `submit_revalidation_result`,
   `inspect_rejected_research_proposals`). Static facts to *find* options; the engine *values* them.
@@ -90,14 +94,16 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 Phase 4 turns one mature PoE2 build at a time into copy-safe research memory. The product entry is
 `/poe-bd-research` / `$poe-bd-research`; internal phase names and script commands are not user
 commands. The `/poe-bd-research` skill owns Controller orchestration;
-`/poe-bd-research-worker` owns the single-case command sequence, while the lease workerPrompt and
-review-contract share the runtime mandatory checklist. This guide keeps only the always-injected contract.
+`/poe-bd-research-worker` owns the single-case typed-tool sequence. Product runs live in private
+user data and are addressed only by opaque `runRef`; the Agent never edits queue/review/database
+files. This guide keeps only the always-injected contract.
 
 ### Tool map
 
-- `scripts/research_mature_builds.py queue/claim/inspect/read/search`: lease one case and expose
-  bounded transient evidence. `inspect` lists sections; `read` paginates them; `search` locates a
-  concrete name but never replaces complete section reads.
+- `start_research_run` / `get_research_run_status`: create or resume a user-data-backed queue
+  without writing into the caller project or plugin cache.
+- `claim_research_case` / `inspect_research_case` / `read_research_case` /
+  `search_research_case`: lease one case and expose bounded structured evidence.
 - `query_research_memory`: compare the independently reconstructed case with accepted memory.
   Query summaries first with `response_profile=create_compact`, inspect Family coverage/index/
   premise catalog, then deep-read only selected record IDs until the critical premises close.
@@ -111,15 +117,15 @@ review-contract share the runtime mandatory checklist. This guide keeps only the
 - `append_evidence_to_fragment`: add safe evidence to an already accepted equivalent fragment
   instead of creating a duplicate.
 - `submit_revalidation_result`: renew, narrow or supersede accepted knowledge after version review.
-- `scripts/research_mature_builds.py review-contract`: disclose the exact safe-review structure and
-  canonical enums just before writing.
-- `scripts/research_mature_builds.py init-review`: atomically create the current lease's UTF-8,
-  two-space-indented review skeleton without overwriting an existing artifact.
-- `scripts/research_mature_builds.py accept --validate-only --compact`: run the real acceptance
-  logic without changing durable memory or queue state. Clean validation/accept/retry use compact;
-  any deferred/unresolved/gap/failure automatically returns the full report. Plain `accept` is the
-  only durable writer. `review_contract_upgrade_required` leaves the case claimed: update the same
-  review and rerun plain `accept` with the same lease instead of calling `retry-accept`.
+- `get_research_review_contract` / `initialize_research_review`: return the exact v2 contract and
+  an in-memory safe review object; no Agent filesystem edit is required.
+- `validate_research_review`: atomically save and validate the safe object, returning a reviewHash.
+- `accept_research_review`: accepts only that exact validated hash. `retry_research_review` owns the
+  rejected-case repair path. Problems automatically retain full diagnostics.
+- `adopt_legacy_research_run`: copies an inactive old run into user-data runtime while preserving
+  the source; live claimed/accepting leases block adoption.
+- `cleanup_research_run`: removes one completed or explicitly abandoned private runtime by runRef;
+  accepted Research Memory, ledger history, release seeds and user exports are preserved.
 
 If tools are not shown eagerly, use the host's normal tool discovery/search by exact name before
 declaring them unavailable. The unified MCP exposes the research tools; this behavior is not based
@@ -132,11 +138,10 @@ on a documented tool-count cap.
   priority; revisits and other subagent work queue until the current run's Research workers settle.
   A host exposing fewer than six total slots must report the reduced effective Worker count. The
   Controller never claims cases or reads case evidence. Each fresh subagent must
-  explicitly load `poe-bd-research-worker` with the existing absolute runDir, resolve its runtime
-  from the installed Skill/MCP environment, claim exactly one case, own that lease through
-  acceptance, and stop afterward.
-  Hosts without a shared filesystem/runtime/MCP subagent contract fail before queue creation; there
-  is no main-conversation research fallback.
+  explicitly load `poe-bd-research-worker` with the opaque runRef and a fork that includes the
+  user's actual research request/authorization, claim exactly one case, own that lease through
+  acceptance, and stop afterward. Hosts without a shared Research MCP surface fail before queue
+  creation; there is no main-conversation research fallback.
 - If no arguments are supplied, ask for a mode before any network crawl: small extraction 20,
   large extraction 50, resume, or a link-check preflight 5 (`--dry-run`; produces no knowledge,
   only verifies the collector chain). Resume must not be tied only to the large-batch option.
@@ -155,16 +160,11 @@ on a documented tool-count cap.
 - Treat the skill invocation as a chat request. Do not ask Codex Desktop users to paste PowerShell/Python commands into the chat box.
 - This is a runtime product workflow. Do not edit source, tests, docs, schemas or installers while
   executing it. Report safe collector/source/runtime errors and stop.
-- Script order is Controller `queue`, then explicit Worker `claim -> inspect/read/search -> memory/graph research
-  -> review-contract -> init-review -> edit safe review -> accept --validate-only --compact ->
-  accept --compact`, followed
-  by main `status` and cleanup.
-- A non-dry-run `queue` without an explicit output directory creates
-  `.poe-bd-research/runs/<runId>` and returns `runDir`. Preserve that value as `--output-dir` for
-  every later command in the run. Never fall back to the shared `.poe-bd-research` root. Existing
-  queue databases are not overwritten; `--resume` requires the original `runDir`.
-- `claim` atomically returns the safe `workerPrompt`, lease identity and review path. Follow it
-  directly; `worker-brief` is resume-only. Do not rely only on a local `SKILL.md` path.
+- Tool order is Controller `start_research_run`, then explicit Worker
+  `claim -> inspect/read/search -> memory/graph research -> contract -> initialize in-memory review
+  -> validate -> hash-bound accept`, followed by Controller status and cleanup.
+- New runs return only `runId + runRef`; filesystem paths remain server-private. Legacy absolute
+  runs require typed adoption after all live leases settle.
 - A worker stops after accepting its single case and returns sampleId plus a safe outcome. The Controller starts a fresh worker for
   later queued cases; workers never carry transient evidence across cases.
 - Wait on worker mailbox events with a 300-second window (`wait_agent(timeout_ms=300000)` in
@@ -172,8 +172,9 @@ on a documented tool-count cap.
   status read; emit at most one concise unchanged heartbeat per five minutes and continue waiting.
 - Reconstruct skills/supports, rotation, mechanism chains, gear and passive responsibilities,
   resource/defense engines, tradeoffs, failure conditions and modelability gaps before querying
-  durable memory. The lease workerPrompt/review-contract own the full mandatory checklist; the
-  explicit Worker Skill keeps only the single-case workflow and supplemental boundaries.
+  durable memory. The typed review contract owns the full mandatory checklist; the explicit
+  Worker Skill keeps only the single-case workflow and supplemental boundaries. The legacy CLI
+  workerPrompt remains a repository-development transport, not a product runtime dependency.
 - Keep one resolved ascendancy and one `primary_damage` skill consistent across a research group.
   The Family identity key uses only the ascendancy and primary-skill set. `clear_skill`,
   `boss_skill`, and `triggered_payload` are inferred Family-core secondary metadata and must not
@@ -205,7 +206,7 @@ on a documented tool-count cap.
   grants conditional cross-Family retrieval; it does not reduce the pattern's priority inside any
   Family listed in `originFamilyKeys`.
 
-Queue, claim, inspect, read, search, review-contract, init-review, validation and acceptance outputs are safe-only.
+Queue, claim, inspect, read, search, review-contract, in-memory review, validation and acceptance outputs are safe-only.
 Raw PoB code/XML, account or character details and whole-character mirrors remain confined to the
 lease-bound OS-temp packet. Durable records may preserve a complete reusable core mechanism package,
 including exact key skill/support roles, local passive connections and item/resource interactions,
