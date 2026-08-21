@@ -1494,6 +1494,154 @@ def test_validation_only_distinguishes_partial_acceptance_from_clean_acceptance(
     assert result["deepRecordsWithUnresolvedComponents"][0]["titleZh"] == "待修复记录"
 
 
+def test_validation_only_redacts_copyable_diagnostics_and_returns_safe_paths():
+    from scripts import research_mature_builds
+
+    support_caveat = "Supports: A, B, C, D, E"
+    long_caveat = "机制说明" * 500
+    raw_account_url = "https://pathofexile.com/account/view-profile/private-character"
+    unsafe_dynamic_key = "rawImportCode:eNrt-sensitive-key"
+    result = research_mature_builds._validation_only_result(
+        {
+            "status": "accepted",
+            "acceptedDeepRecordCount": 1,
+            "deferredCandidateCount": 0,
+            "deferredReasonCounts": {},
+            "caveats": [support_caveat, long_caveat],
+            "mechanicAudit": {"entries": [{"claim": long_caveat}]},
+            "patternWrite": {"status": "accepted", "validationOnly": True},
+            "deepRecordWrite": {
+                "status": "accepted",
+                "validationOnly": True,
+                "facts": {
+                    "validationIssues": [
+                        {
+                            "submittedValue": raw_account_url,
+                            "message": support_caveat,
+                        }
+                    ],
+                    unsafe_dynamic_key: "safe value",
+                },
+            },
+        },
+        sample_id="case:copy-safety-diagnostic",
+    )
+
+    assert result["status"] == "validation_failed"
+    assert result["readyForAccept"] is False
+    assert result["deferredReasonCounts"] == {}
+    assert result["copySafetyBlockingIssueCount"] == 3
+    diagnostics = result["copySafetyDiagnostics"]
+    by_loc = {tuple(item["loc"]): item for item in diagnostics}
+    assert by_loc[("caveats", 0)]["blockingFlags"] == []
+    assert by_loc[("caveats", 1)]["blockingFlags"] == ["long_guide_prose_like"]
+    assert by_loc[("mechanicAudit", "entries", 0, "claim")]["blockingFlags"] == [
+        "long_guide_prose_like"
+    ]
+    assert by_loc[
+        ("deepRecordWrite", "facts", "validationIssues", 0, "submittedValue")
+    ]["blockingFlags"] == ["raw_account_or_character_url"]
+    assert any(
+        issue["loc"] == ["caveats", 1] and issue["type"] == "copy_safety"
+        for issue in result["validationIssues"]
+    )
+    assert support_caveat not in str(result)
+    assert long_caveat not in str(result)
+    assert raw_account_url not in str(result)
+    assert unsafe_dynamic_key not in str(result)
+    research_mature_builds._assert_safe_payload(result)
+
+
+def test_accept_case_validation_returns_copy_safety_failure_instead_of_runtime_error(tmp_path):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-copy-safety-validation",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_claim_review(review_file, claimed)
+    unsafe_claim = "机制说明" * 500
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["mechanicAudit"] = [{"claim": unsafe_claim}]
+    review_file.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    result = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+        validation_only=True,
+    )
+
+    assert result["status"] == "validation_failed"
+    assert result["copySafetyBlockingIssueCount"] == 1
+    assert result["copySafetyDiagnostics"][0]["loc"] == [
+        "mechanicAudit",
+        0,
+        "claim",
+    ]
+    assert [issue["type"] for issue in result["validationIssues"]].count("copy_safety") == 1
+    assert unsafe_claim not in str(result)
+
+
+def test_validation_only_counts_forbidden_field_failures_as_blocking():
+    from scripts import research_mature_builds
+
+    report = research_mature_builds.acceptance._copy_safety_validation_failure_report(
+        {"nested": {"accountName": "private-account"}}
+    )
+    result = research_mature_builds._validation_only_result(
+        report,
+        sample_id="case:forbidden-field",
+    )
+
+    assert result["status"] == "validation_failed"
+    assert result["copySafetyBlockingIssueCount"] == 1
+    assert result["copySafetyDiagnostics"] == [
+        {
+            "loc": ["nested", "accountName"],
+            "flags": ["forbidden_copyable_field"],
+            "blockingFlags": ["forbidden_copyable_field"],
+        }
+    ]
+    assert "private-account" not in str(result)
+
+
+def test_validation_transport_report_id_exemption_rejects_raw_markers_and_pob_codes():
+    from scripts import research_mature_builds
+
+    normal_id = "phase4-deep-review-acceptance-v3"
+    safe, diagnostics = research_mature_builds._safe_validation_transport_report(
+        {"reportId": normal_id}
+    )
+    assert safe["reportId"] == normal_id
+    assert diagnostics == []
+
+    raw_marker = "rawimportcode:eNrt-sensitive"
+    pob_blob = _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+    unsafe, diagnostics = research_mature_builds._safe_validation_transport_report(
+        {"reportId": raw_marker, "nested": {"reportId": pob_blob}}
+    )
+    assert raw_marker not in str(unsafe)
+    assert pob_blob not in str(unsafe)
+    assert {tuple(item["loc"]) for item in diagnostics} == {
+        ("reportId",),
+        ("nested", "reportId"),
+    }
+    assert any("raw_pob_xml_marker" in item["flags"] for item in diagnostics)
+    assert any("pob_code_like_blob" in item["flags"] for item in diagnostics)
+
+
 def test_validation_only_treats_case_coverage_gap_as_partial_acceptance():
     from scripts import research_mature_builds
 

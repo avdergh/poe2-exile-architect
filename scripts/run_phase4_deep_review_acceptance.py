@@ -9,6 +9,7 @@ explicit reviewed endpoint mapping decision.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -478,6 +479,14 @@ def accept_deep_review_candidates(
     )
     if not isinstance(review, dict) or review.get("safeArtifactOnly") is not True:
         raise ValueError("deep review artifact must be safeArtifactOnly=true")
+    # Review payloads supplied directly by the Research CLI bypass _load_safe_json. Apply the
+    # same all-text guard before service initialization/backfill or any durable writer can run.
+    try:
+        _assert_safe(review)
+    except ValueError:
+        if validation_only:
+            return _copy_safety_validation_failure_report(review)
+        raise
     structural_groups = _structural_schema_issues(review)
     if structural_groups:
         report = _structural_failure_report(structural_groups)
@@ -633,13 +642,29 @@ def accept_deep_review_candidates(
         "fragments": [],
         "semantic_edges": review.get("semanticEdges") or [],
     }
+    submitted_deep_records = _deep_record_reviews(review)
+    record_kind_advisories = _record_kind_advisories(submitted_deep_records)
+    # Derived diagnostics can aggregate otherwise-safe fragments into copyable or guide-like
+    # prose. Guard every free-text source used by the final report before constructing the
+    # writable service; the final report is checked again immediately before it is persisted.
+    prewrite_diagnostics = {
+        "mechanicAudit": mechanic_audit_diagnostics,
+        "sourceEvidenceDiagnostics": source_evidence_diagnostics,
+        "deferredCandidates": deferred,
+        "coverageAdvisories": coverage_advisories,
+        "recordKindAdvisories": record_kind_advisories,
+    }
+    try:
+        _assert_safe(prewrite_diagnostics)
+    except ValueError:
+        if validation_only:
+            return _copy_safety_validation_failure_report(prewrite_diagnostics)
+        raise
     service = research_memory.ResearchMemoryService(
         db_path=Path(db_path),
         graph_service=graph_service,
         initialize_store=not validation_only,
     )
-    submitted_deep_records = _deep_record_reviews(review)
-    record_kind_advisories = _record_kind_advisories(submitted_deep_records)
     if require_deep_records and not deep_payload["deep_research_records"]:
         submitted_sample_id = str(
             (submitted_deep_records or review.get("candidateReviews") or [{}])[0].get("sampleId")
@@ -4993,6 +5018,94 @@ def _assert_safe(report: dict[str, Any]) -> None:
         raise ValueError(f"unsafe deep review acceptance report failed copy-safety: {flags}")
 
 
+def _copy_safety_validation_failure_report(value: dict[str, Any]) -> dict[str, Any]:
+    """Return path-only copy-safety issues for validate-only without echoing source text."""
+
+    diagnostics = _copy_safety_diagnostics(value)
+    diagnostics.extend(
+        {
+            "loc": path.split(".") if path else [],
+            "flags": ["forbidden_copyable_field"],
+        }
+        for path in copy_safety.find_forbidden_paths(value)
+    )
+    issues = [
+        {
+            "loc": item["loc"],
+            "msg": "review text failed copy-safety: " + ", ".join(item["flags"]),
+            "type": "copy_safety",
+        }
+        for item in diagnostics
+    ]
+    if not issues:
+        issues.append(
+            {
+                "loc": [],
+                "msg": "review failed unicode or copy-safety validation",
+                "type": "copy_safety",
+            }
+        )
+    return {
+        "reportId": "phase4-deep-review-acceptance-v3",
+        "status": "rejected",
+        "acceptanceMode": "blocked",
+        "validationOnly": True,
+        "durableWritePerformed": False,
+        "safeArtifactOnly": True,
+        "acceptedPatternCount": 0,
+        "acceptedDeepRecordCount": 0,
+        "acceptedSemanticEdgeCount": 0,
+        "deferredCandidateCount": 1,
+        "deferredReasonCounts": {"copy_safety_violation": 1},
+        "deferredCandidates": [
+            {
+                "reason": "copy_safety_violation",
+                "candidateKind": "research_case",
+                "validationIssues": issues,
+            }
+        ],
+        "copySafetyDiagnostics": diagnostics,
+        "patternWrite": {"status": "accepted", "validationOnly": True},
+        "deepRecordWrite": {"status": "accepted", "validationOnly": True},
+        "semanticEdgeWrite": {"status": "accepted", "validationOnly": True},
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
+
+
+def _copy_safety_diagnostics(value: Any) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+
+    def visit(child: Any, *, path: list[str | int]) -> None:
+        if isinstance(child, dict):
+            for raw_key, nested in child.items():
+                key = str(raw_key)
+                safe_key = _safe_copy_safety_path_segment(key)
+                key_flags = copy_safety.durable_knowledge_flags(key)
+                if key_flags:
+                    diagnostics.append({"loc": [*path, safe_key], "flags": key_flags})
+                visit(nested, path=[*path, safe_key])
+            return
+        if isinstance(child, list):
+            for index, nested in enumerate(child):
+                visit(nested, path=[*path, index])
+            return
+        if isinstance(child, str):
+            flags = copy_safety.durable_knowledge_flags(child)
+            if flags:
+                diagnostics.append({"loc": path, "flags": flags})
+
+    visit(value, path=[])
+    return diagnostics
+
+
+def _safe_copy_safety_path_segment(value: str) -> str:
+    if len(value) <= 120 and not copy_safety.copyability_flags(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"redacted-key:{digest}"
+
+
 def _assert_valid_unicode(value: Any, *, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -5016,36 +5129,15 @@ def _assert_valid_unicode(value: Any, *, path: str = "$") -> None:
 
 
 def _copyability_flags_for_safe_text(value: Any, *, key: str = "") -> list[str]:
-    text_fields = {
-        "title",
-        "summary",
-        "titleZh",
-        "summaryZh",
-        "content",
-        "reason",
-        "caveats",
-        "plannerHint",
-        "planner_hint",
-        "verificationTasks",
-        "verification_tasks",
-        "verificationGate",
-        "verification_gate",
-        "transferRationale",
-        "transfer_rationale",
-        "applicabilityRequirements",
-        "applicability_requirements",
-        "exclusionConditions",
-        "exclusion_conditions",
-        "deferredCandidates",
-    }
     flags: set[str] = set()
     if isinstance(value, dict):
         for child_key, child in value.items():
+            flags.update(copy_safety.durable_knowledge_flags(str(child_key)))
             flags.update(_copyability_flags_for_safe_text(child, key=str(child_key)))
     elif isinstance(value, list):
         for child in value:
             flags.update(_copyability_flags_for_safe_text(child, key=key))
-    elif isinstance(value, str) and key in text_fields:
+    elif isinstance(value, str):
         flags.update(copy_safety.durable_knowledge_flags(value))
     return sorted(flags)
 

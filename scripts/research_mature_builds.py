@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -1293,6 +1294,8 @@ def accept_case(
         ),
         "noRawMatureBuildMaterial": True,
     }
+    result, transport_diagnostics = _safe_validation_transport_report(result)
+    result["copySafetyDiagnostics"] = transport_diagnostics
     _assert_safe_payload(result)
     return result
 
@@ -1530,6 +1533,8 @@ def retry_accept_case(
         ),
         "noRawMatureBuildMaterial": True,
     }
+    result, transport_diagnostics = _safe_validation_transport_report(result)
+    result["copySafetyDiagnostics"] = transport_diagnostics
     _assert_safe_payload(result)
     return result
 
@@ -3172,26 +3177,54 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[str, Any]:
-    deferred_reason_counts = dict(report.get("deferredReasonCounts") or {})
+    safe_report, transport_diagnostics = _safe_validation_transport_report(report)
+    upstream_diagnostics = [
+        {
+            "loc": list(item.get("loc") or []),
+            "flags": list(item.get("flags") or []),
+            "blockingFlags": list(item.get("flags") or []),
+        }
+        for item in safe_report.get("copySafetyDiagnostics") or []
+        if isinstance(item, dict) and item.get("flags")
+    ]
+    copy_safety_diagnostics = [*upstream_diagnostics, *transport_diagnostics]
+    blocking_copy_safety = [
+        item for item in copy_safety_diagnostics if item["blockingFlags"]
+    ]
+    deferred_reason_counts = dict(safe_report.get("deferredReasonCounts") or {})
     schema_issue_count = int(deferred_reason_counts.get("invalid_schema") or 0)
     validation_issues: list[dict[str, Any]] = []
-    for deferred in report.get("deferredCandidates") or []:
+    for deferred in safe_report.get("deferredCandidates") or []:
         validation_issues.extend(list(deferred.get("validationIssues") or []))
     for key in ("patternWrite", "deepRecordWrite"):
-        write_result = report.get(key) or {}
+        write_result = safe_report.get(key) or {}
         if write_result.get("errorCode") == "invalid_schema":
             schema_issue_count += 1
             validation_issues.extend(
                 list((write_result.get("facts") or {}).get("validationIssues") or [])
             )
-    ready = report.get("status") == "accepted" and schema_issue_count == 0
-    deferred_candidate_count = int(report.get("deferredCandidateCount") or 0)
+    validation_issues.extend(
+        {
+            "loc": item["loc"],
+            "msg": "validation text failed copy-safety: "
+            + ", ".join(item["blockingFlags"]),
+            "type": "copy_safety",
+        }
+        for item in transport_diagnostics
+        if item["blockingFlags"]
+    )
+    ready = (
+        safe_report.get("status") == "accepted"
+        and schema_issue_count == 0
+        and not blocking_copy_safety
+    )
+    deferred_candidate_count = int(safe_report.get("deferredCandidateCount") or 0)
     unresolved_mention_count = int(
-        report.get("unresolvedDeepRecordMentionCount")
-        or report.get("unresolvedDeepRecordComponentCount")
+        safe_report.get("unresolvedDeepRecordMentionCount")
+        or safe_report.get("unresolvedDeepRecordComponentCount")
         or 0
     )
-    case_coverage_gap_count = int(report.get("caseCoverageGapCount") or 0)
+    case_coverage_gap_count = int(safe_report.get("caseCoverageGapCount") or 0)
     fully_resolved = (
         ready
         and deferred_candidate_count == 0
@@ -3207,31 +3240,89 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
         "validationOnly": True,
         "durableWritePerformed": False,
         "queueStateChanged": False,
-        "wouldAcceptPatternCount": int(report.get("acceptedPatternCount") or 0),
-        "wouldAcceptDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
-        "wouldAcceptSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
+        "wouldAcceptPatternCount": int(safe_report.get("acceptedPatternCount") or 0),
+        "wouldAcceptDeepRecordCount": int(safe_report.get("acceptedDeepRecordCount") or 0),
+        "wouldAcceptSemanticEdgeCount": int(safe_report.get("acceptedSemanticEdgeCount") or 0),
         "unresolvedDeepRecordComponentCount": int(
-            report.get("unresolvedDeepRecordComponentCount") or 0
+            safe_report.get("unresolvedDeepRecordComponentCount") or 0
         ),
         "unresolvedDeepRecordMentionCount": unresolved_mention_count,
-        "unresolvedUniqueComponentCount": int(report.get("unresolvedUniqueComponentCount") or 0),
-        "unkeyedDeepRecordCount": int(report.get("unkeyedDeepRecordCount") or 0),
-        "deepRecordsWithoutKnowledgeIdentity": report.get("deepRecordsWithoutKnowledgeIdentity")
+        "unresolvedUniqueComponentCount": int(
+            safe_report.get("unresolvedUniqueComponentCount") or 0
+        ),
+        "unkeyedDeepRecordCount": int(safe_report.get("unkeyedDeepRecordCount") or 0),
+        "deepRecordsWithoutKnowledgeIdentity": safe_report.get(
+            "deepRecordsWithoutKnowledgeIdentity"
+        )
         or [],
-        "deepRecordsWithUnresolvedComponents": report.get("deepRecordsWithUnresolvedComponents")
+        "deepRecordsWithUnresolvedComponents": safe_report.get(
+            "deepRecordsWithUnresolvedComponents"
+        )
         or [],
-        **_research_quality_summary(report),
+        **_research_quality_summary(safe_report),
         "acceptanceMode": acceptance_mode,
         "schemaIssueCount": schema_issue_count,
         "validationIssues": validation_issues,
+        "copySafetyDiagnostics": copy_safety_diagnostics,
+        "copySafetyBlockingIssueCount": len(blocking_copy_safety),
         "deferredCandidateCount": deferred_candidate_count,
         "deferredReasonCounts": deferred_reason_counts,
-        "deferredCandidates": report.get("deferredCandidates") or [],
-        "patternValidation": report.get("patternWrite") or {},
-        "deepRecordValidation": report.get("deepRecordWrite") or {},
-        "semanticEdgeValidation": report.get("semanticEdgeWrite") or {},
+        "deferredCandidates": safe_report.get("deferredCandidates") or [],
+        "patternValidation": safe_report.get("patternWrite") or {},
+        "deepRecordValidation": safe_report.get("deepRecordWrite") or {},
+        "semanticEdgeValidation": safe_report.get("semanticEdgeWrite") or {},
         "noRawMatureBuildMaterial": True,
     }
+
+
+def _safe_validation_transport_report(
+    report: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Redact unsafe validation prose while preserving safe paths and repair categories."""
+
+    diagnostics: list[dict[str, Any]] = []
+
+    def visit(value: Any, *, path: list[str | int]) -> Any:
+        if isinstance(value, dict):
+            safe_mapping: dict[str, Any] = {}
+            for child_key, child in value.items():
+                safe_key = _safe_validation_path_segment(str(child_key))
+                safe_mapping[safe_key] = visit(child, path=[*path, safe_key])
+            return safe_mapping
+        if isinstance(value, list):
+            return [visit(child, path=[*path, index]) for index, child in enumerate(value)]
+        if isinstance(value, str):
+            flags = copy_safety.copyability_flags(value)
+            if (
+                path
+                and path[-1] == "reportId"
+                and flags == ["full_gem_link_like"]
+                and re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,120}", value)
+            ):
+                return value
+            if flags:
+                blocking_flags = copy_safety.durable_knowledge_flags(value)
+                diagnostics.append(
+                    {
+                        "loc": path,
+                        "flags": flags,
+                        "blockingFlags": blocking_flags,
+                    }
+                )
+                return "[validation text redacted by copy-safety: " + ", ".join(flags) + "]"
+        return value
+
+    safe_report = visit(copy.deepcopy(report), path=[])
+    if not isinstance(safe_report, dict):
+        raise TypeError("validation report must remain an object after transport redaction")
+    return safe_report, diagnostics
+
+
+def _safe_validation_path_segment(value: str) -> str:
+    if len(value) <= 120 and not copy_safety.copyability_flags(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"redacted-key:{digest}"
 
 
 _COMPACT_MECHANIC_AUDIT_KEYS = (

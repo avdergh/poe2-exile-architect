@@ -3029,6 +3029,63 @@ def test_bounded_diagnostic_caveats_never_trip_copy_safety_long_prose():
     assert "+60 entries total" in support_advisory
 
 
+def test_formal_acceptance_safe_guard_scans_all_text_and_dynamic_keys():
+    long_claim = "机制说明" * 500
+    raw_url = "https://pathofexile.com/account/view-profile/private-character"
+
+    with pytest.raises(ValueError, match="failed copy-safety"):
+        run_phase4_deep_review_acceptance._assert_safe(
+            {"mechanicAudit": {"entries": [{"claim": long_claim}]}}
+        )
+    with pytest.raises(ValueError, match="failed copy-safety"):
+        run_phase4_deep_review_acceptance._assert_safe(
+            {"validationIssues": [{"submittedValue": raw_url}]}
+        )
+    with pytest.raises(ValueError, match="failed copy-safety"):
+        run_phase4_deep_review_acceptance._assert_safe(
+            {raw_url: "safe value"}
+        )
+
+
+def test_formal_copy_safety_guard_runs_before_writable_service_initialization(
+    tmp_path, monkeypatch
+):
+    review_path = _write_review(
+        tmp_path,
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["mechanicAudit"] = [{"claim": "机制说明" * 500}]
+
+    def fail_if_service_is_initialized(*_args, **_kwargs):
+        raise AssertionError("writable ResearchMemoryService initialized before copy-safety")
+
+    monkeypatch.setattr(
+        run_phase4_deep_review_acceptance.research_memory,
+        "ResearchMemoryService",
+        fail_if_service_is_initialized,
+    )
+
+    with pytest.raises(ValueError, match="failed copy-safety"):
+        run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+            db_path=tmp_path / "memory.sqlite",
+            json_output=tmp_path / "report.json",
+            md_output=tmp_path / "report.md",
+            review_file=review_path,
+            review_payload=review,
+            graph_service=_graph_service(),
+        )
+    assert not (tmp_path / "memory.sqlite").exists()
+
+
 def test_origin_family_requires_confirmed_identity_record():
     rotation = {
         "record_kind": "rotation",
