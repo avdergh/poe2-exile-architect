@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import sqlite3
 from typing import Any
+import unicodedata
 
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset(
@@ -2133,7 +2134,7 @@ def search_candidates(
     """Return bounded lexical discovery candidates without authorizing an endpoint."""
 
     text = _required_text(query, "component search query")
-    normalized = " ".join(text.casefold().split())
+    normalized = _discovery_text(text)
     expected = {str(value).strip() for value in expected_node_types if str(value).strip()}
     nodes_by_key = {node.stable_key: node for node in snapshot.nodes}
     aliases_by_key: dict[str, set[str]] = {}
@@ -2151,8 +2152,8 @@ def search_candidates(
         if expected and node.node_type not in expected:
             continue
         names = {
-            " ".join(node.display_name.casefold().split()),
-            *aliases_by_key.get(node.stable_key, set()),
+            _discovery_text(node.display_name),
+            *{_discovery_text(alias) for alias in aliases_by_key.get(node.stable_key, set())},
         }
         if normalized in names:
             rank = 0
@@ -2175,6 +2176,14 @@ def search_candidates(
         "truncated": len(ranked) > limit,
         "matched_node_types": sorted({nodes_by_key[key].node_type for key in candidate_keys}),
     }
+
+
+def _discovery_text(value: str) -> str:
+    """Accent-folded text used only to discover candidates, never to authorize endpoints."""
+
+    decomposed = unicodedata.normalize("NFKD", str(value).casefold())
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(without_marks.split())
 
 
 def resolve_id_mapping(

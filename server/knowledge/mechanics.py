@@ -65,12 +65,9 @@ _NOTE = "Concise reference — verify exact interactions in-game or via PoB's Ca
 
 
 def _curated(norm: str) -> tuple[str, str] | None:
-    """Match a normalized topic to a Tier-1 evergreen note (exact, then substring)."""
+    """Match a normalized topic to an exact Tier-1 evergreen note."""
     if norm in MECHANICS:
         return norm, MECHANICS[norm]
-    for key in MECHANICS:
-        if norm and (norm in key or key in norm):
-            return key, MECHANICS[key]
     return None
 
 
@@ -81,24 +78,45 @@ def explain(topic: str) -> dict:
     norm = raw.lower().replace(" ", "_").replace("-", "_")
     curated = _curated(norm)
 
-    wiki = None
-    hits = db.search_mechanics(raw, limit=1) if raw else []
-    if hits:
-        wiki = db.get_mechanic(hits[0]["id"], fuzzy=False)
+    wiki = db.get_mechanic(raw, fuzzy=False) if raw else None
 
     if not curated and not wiki:
+        hits = db.search_mechanics(raw, limit=8) if raw else []
+        curated_candidates = [
+            key for key in sorted(MECHANICS) if norm and (norm in key or key in norm)
+        ]
         return {
             "topic": raw,
             "found": False,
+            "resultKind": "search_candidates",
+            "candidates": [
+                {
+                    "title": hit["title"],
+                    "id": hit["id"],
+                    "snippet": hit["snippet"],
+                    "url": hit["url"],
+                    "matchKind": "local_corpus",
+                }
+                for hit in hits
+            ],
+            "curatedCandidates": curated_candidates,
             "available_topics": sorted(MECHANICS),
             "hint": (
-                "No bundled entry. Try search_mechanics(query) for related pages, or "
-                "lookup_mechanic(topic) to fetch it live from the wiki."
+                "No exact bundled entry. Candidates are discovery only: fetch one by exact title "
+                "and let the Agent judge supports/contradicts/silent. Use lookup_mechanic for "
+                "a live page not present in the corpus."
             ),
         }
 
     label = curated[0] if curated else wiki["title"]  # type: ignore[index]  # one is non-None here
-    out: dict = {"topic": label, "found": True, "note": _NOTE}
+    out: dict = {
+        "topic": label,
+        "requestedTopic": raw,
+        "found": True,
+        "resultKind": "curated_exact" if curated else "local_corpus",
+        "matchKind": "local_corpus",
+        "note": _NOTE,
+    }
     if curated:
         out["principle"] = curated[1]
     if wiki:

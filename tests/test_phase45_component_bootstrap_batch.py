@@ -40,7 +40,7 @@ def test_component_bootstrap_batch_writes_one_low_trust_case_observation_per_sou
 
     assert report["status"] == "accepted"
     assert report["sampleCount"] == 2
-    assert report["acceptedPatternCount"] == 2
+    assert report["acceptedPatternCount"] == 0
     assert report["acceptedObservationCount"] == 2
     assert report["deferredSampleCount"] == 0
     assert all(sample["confidenceTier"] == "case_observation" for sample in report["samples"])
@@ -54,12 +54,7 @@ def test_component_bootstrap_batch_writes_one_low_trust_case_observation_per_sou
 
     con = mature_learning.connect(tmp_path / "memory.sqlite")
     try:
-        assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 2
-        rows = con.execute(
-            "SELECT confidence_tier, sample_count FROM research_build_patterns"
-        ).fetchall()
-        assert {row["confidence_tier"] for row in rows} == {"case_observation"}
-        assert {row["sample_count"] for row in rows} == {1}
+        assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 0
     finally:
         con.close()
 
@@ -85,7 +80,7 @@ def test_component_bootstrap_batch_dedupes_duplicate_source_files(tmp_path):
     assert report["status"] == "accepted"
     assert report["sampleCount"] == 1
     assert report["duplicateInputCount"] == 1
-    assert report["acceptedPatternCount"] == 1
+    assert report["acceptedPatternCount"] == 0
 
 
 def test_component_bootstrap_batch_keeps_distinct_sources_with_same_components_as_cases(tmp_path):
@@ -105,12 +100,12 @@ def test_component_bootstrap_batch_keeps_distinct_sources_with_same_components_a
 
     assert report["status"] == "accepted"
     assert report["sampleCount"] == 2
-    assert report["acceptedPatternCount"] == 2
-    assert len({sample["patternIds"][0] for sample in report["samples"]}) == 2
+    assert report["acceptedPatternCount"] == 0
+    assert len({sample["observationIds"][0] for sample in report["samples"]}) == 2
 
     con = mature_learning.connect(tmp_path / "memory.sqlite")
     try:
-        assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 2
+        assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 0
     finally:
         con.close()
 
@@ -138,7 +133,7 @@ def test_component_bootstrap_batch_dedupes_whitespace_variants_after_decode(tmp_
     assert report["status"] == "accepted"
     assert report["sampleCount"] == 1
     assert report["duplicateInputCount"] == 1
-    assert report["acceptedPatternCount"] == 1
+    assert report["acceptedPatternCount"] == 0
 
 
 def test_component_bootstrap_batch_defers_bad_source_without_leaking_raw_error(tmp_path):

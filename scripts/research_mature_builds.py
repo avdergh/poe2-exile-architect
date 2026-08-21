@@ -768,6 +768,7 @@ def render_review_contract(
         },
         "topLevelTemplate": {
             "reportId": "poe_bd_research_review",
+            "reviewContractVersion": "phase4-safe-review-v2",
             "safeArtifactOnly": True,
             "artifactIdentity": artifact_identity,
             "caseCoverage": {
@@ -804,6 +805,7 @@ def render_review_contract(
             "knowledgeShape": ["player_action_sequence", "state_causal_chain"],
             "mechanicAuditClaimType": sorted(acceptance.MECHANIC_AUDIT_CLAIM_TYPES),
             "mechanicAuditWikiStatus": sorted(acceptance.MECHANIC_AUDIT_WIKI_STATUSES),
+            "mechanicAuditMatchKind": sorted(acceptance.MECHANIC_AUDIT_MATCH_KINDS),
             "mechanicAuditDecision": sorted(acceptance.MECHANIC_AUDIT_DECISIONS),
             "mechanicAuditCorroboration": sorted(acceptance.MECHANIC_AUDIT_CORROBORATION),
             "gearResponsibilityType": sorted(research_models.GEAR_RESPONSIBILITY_TYPES),
@@ -816,6 +818,7 @@ def render_review_contract(
                 "sourceSpecificComponentKeys": "random-instance components excluded from planner advice",
                 "ascendancyResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus concrete responsibility",
                 "gearResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus canonical responsibilityType and concise responsibility; use an explicit [] only for content-based rare/magic gear evidence",
+                "jewelSocketStates": "typed node/spec/item state for active empty, active-unallocated, and other-spec tree jewel assignments",
             },
         },
         "componentRoleNodeTypeCompatibility": {
@@ -862,6 +865,11 @@ def render_review_contract(
                 "entry": 'exactly {"componentKey": str, "responsibilityType": str, "responsibility": str}',
                 "rule": "only on gear_synergy records; componentKey resolved and mentioned in the same record with role unique_enabler/gear_base/weapon_base; responsibilityType in allowedValues.gearResponsibilityType; responsibility <=240 chars; <=12 entries; componentKey unique; for rare/magic items without a graph node, explicitly set gearResponsibilities=[] and describe slot + target mods + roll pursuit in content; a missing or null field is not this declaration",
             },
+            "jewelSocketStates": {
+                "type": "list[object]",
+                "entry": "nodeId/specId/state plus itemId unless state=empty",
+                "rule": "only on passive_package/open_question/modelability_caveat; states are filled/empty/socketed_unallocated/other_spec and must match the packet-derived jewel socket view",
+            },
         },
         "mechanicAuditTemplate": {
             "claim": "需要外部机制复核的具体事实结论",
@@ -872,6 +880,8 @@ def render_review_contract(
                 "status": "supports",
                 "pageTitle": "lookup_mechanic 返回的 title",
                 "sourceRef": "poe2wiki:page:<pageId>:rev:<revisionId>",
+                "matchKind": "direct | redirect | search_candidate | local_corpus",
+                "relevanceReason": "Research Agent 阅读页面内容后，说明它为何支持、反驳或未回答当前 claim",
             },
             "corroboration": ["source_artifact", "pinned_pob_static"],
             "decision": "keep",
@@ -920,6 +930,13 @@ def render_review_contract(
             "transferRationale": "若选择 component，说明移除原 Family 名称后为何仍可迁移。",
             "applicabilityRequirements": [],
             "exclusionConditions": [],
+            "claimScopeReview": {
+                "evidenceScope": "current_case",
+                "claimScope": "case_only",
+                "verdict": "supported",
+                "reason": "Research Agent 确认文本只表达当前案例证据，没有作总体频率外推",
+                "safeEvidenceRefs": [artifact_identity["safeEvidenceRef"]],
+            },
         },
         "semanticEdgeTemplate": {
             "source_key": "resolved skill:... / unique:pob:... / keystone:pob:0_5:... stable key",
@@ -992,6 +1009,7 @@ def render_review_contract(
             "classKey 和 ascendancyKey 必须是图节点 stable key（例如 class:monk、ascendancy:monk:martial_artist），不能写显示名（Monk / Martial Artist）；显示名会导致端点校验失败。",
             "更细的轮转、窗口和证据语义写入 content、typedPayload、conditions 或 summary。",
             "只在独立重建完成后，可用 explain_mechanic/search_mechanics 和 lookup_mechanic 复核触发、前置条件、资源流、转换或变形等高风险结论，并把结果写入 mechanicAudit；lookup_mechanic 命中时使用其返回的 revision-pinned sourceRef。wiki 无对应页面是常态，不要求为此标注或降级。",
+            "机制全文搜索只产生候选；选中后按精确标题重新读取正文，由 Research Agent 填写 supports/contradicts/silent 和 relevanceReason。direct/redirect/page ID 只证明页面身份，不能授权语义结论。",
             "每条 mechanic_chain 和 resource_engine 都必须被至少一个 mechanicAudit.affectedRecords 精确引用；claim 必须写该对象实际依赖的最强因果结论，不能只审计一个更弱的前提。",
             "每次 lookup_mechanic 只查询一个精确 Wiki 页面或一个中央机制名称，不得把 A / B 组件名拼成一次查询。一个关系需要多页证据时，提交多条关联同一对象的原子 mechanicAudit。",
             "poe2wiki 只能作为机制解释的校对证据，不能替代来源实例归属、support 兼容性、武器状态、数值 Judge 或 Family 身份证据；每条 mechanicAudit 条目都必须填写至少一种 corroboration（source_artifact / pinned_pob_static / typed_graph / typed_support_compatibility / local_mechanics / judge_readback 任选，样本来源即可，silent/unavailable 条目同样适用），wiki 不是 corroboration 的替代品。",
@@ -999,7 +1017,7 @@ def render_review_contract(
             "每个 covered 维度必须有具体记录证据；证据不足时填 evidence_missing。",
             "先写 safe review，再运行 accept --validate-only；修复全部 invalid_schema 后才能正式 accept。",
             "safe review 使用 UTF-8、两空格缩进的多行 JSON，确保有界修复能精确编辑单个字段。",
-            "单样本只能形成 case_observation，不能声称 common、usually 或通常。",
+            "单样本只能形成 case_observation；不得用任何语言作总体频率外推。每个 candidateReview 必须提交 claimScopeReview，由 Research Agent 以 typed scope 明确确认当前文字的证据范围。",
             "transferScope=component 只用于有明确因果链、最低适用条件、排除条件和验证任务的跨 Family 候选；普通案例事实使用 family。",
             "单案例不得提交 transferScope=global。公用知识由后端依据跨 Family 证据晋升，且最高只到 likely_pattern。",
             "不要为了产出公用知识而强行标记 component；不确定时保持 family。",
@@ -1036,6 +1054,7 @@ def init_review(
     review_path.parent.mkdir(parents=True, exist_ok=True)
     skeleton = {
         "reportId": "poe_bd_research_review",
+        "reviewContractVersion": "phase4-safe-review-v2",
         "safeArtifactOnly": True,
         "artifactIdentity": _lease_artifact_identity(row),
         "caseCoverage": {
@@ -1076,6 +1095,74 @@ def init_review(
     return result
 
 
+def _slice_review_for_record(
+    review: dict[str, Any],
+    record_index: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    records = review.get("deepResearchRecords") or []
+    selected = records[record_index]
+    title = str(selected.get("title") or "") if isinstance(selected, dict) else ""
+    matching_title_count = sum(
+        1
+        for record in records
+        if isinstance(record, dict) and str(record.get("title") or "") == title
+    )
+    title_is_unique = bool(title) and matching_title_count == 1
+    kept_audits: list[dict[str, Any]] = []
+    out_of_slice_references: list[str] = []
+    ambiguous_audit_count = 0
+    audits = review.get("mechanicAudit") or []
+    for audit in audits:
+        if not isinstance(audit, dict):
+            continue
+        affected_records = [
+            str(value).strip() for value in audit.get("affectedRecords") or [] if str(value).strip()
+        ]
+        if title not in affected_records:
+            out_of_slice_references.extend(affected_records)
+            continue
+        if not title_is_unique:
+            ambiguous_audit_count += 1
+            out_of_slice_references.extend(affected_records)
+            out_of_slice_references.extend(
+                str(value).strip()
+                for value in audit.get("affectedCandidates") or []
+                if str(value).strip()
+            )
+            continue
+        narrowed = copy.deepcopy(audit)
+        out_of_slice_references.extend(value for value in affected_records if value != title)
+        out_of_slice_references.extend(
+            str(value).strip()
+            for value in narrowed.get("affectedCandidates") or []
+            if str(value).strip()
+        )
+        narrowed["affectedRecords"] = [title]
+        narrowed["affectedCandidates"] = []
+        kept_audits.append(narrowed)
+    candidates = review.get("candidateReviews") or []
+    edges = review.get("semanticEdges") or []
+    sliced = {
+        **review,
+        "deepResearchRecords": [selected],
+        "candidateReviews": [],
+        "semanticEdges": [],
+        "mechanicAudit": kept_audits,
+    }
+    context = {
+        "recordIndex": record_index,
+        "recordTitle": title,
+        "excludedMechanicAuditCount": max(0, len(audits) - len(kept_audits)),
+        "excludedCandidateCount": len(candidates),
+        "excludedSemanticEdgeCount": len(edges),
+        "outOfSliceReferences": sorted(set(out_of_slice_references)),
+    }
+    if not title_is_unique:
+        context["ambiguousRecordTitle"] = title
+        context["ambiguousMechanicAuditCount"] = ambiguous_audit_count
+    return sliced, context
+
+
 def accept_case(
     *,
     lease_token: str,
@@ -1105,6 +1192,32 @@ def accept_case(
         packet_safe_hash=str(row["packet_safe_hash"]),
         version_context=version_context,
     )
+    if review_payload.get("reviewContractVersion") != "phase4-safe-review-v2":
+        result = {
+            # This check runs before the accepting CAS. The row is still claimed and the same
+            # lease remains authoritative, so do not pretend retry-accept is now available.
+            "status": "validation_failed",
+            "errorCode": "review_contract_upgrade_required",
+            "sampleId": sample_id,
+            "validationOnly": validation_only,
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "queueStateChanged": False,
+            "nextAction": (
+                "Upgrade the existing review in place, then rerun ordinary accept with the same "
+                "lease token."
+            ),
+            "validationIssues": [
+                {
+                    "loc": ["reviewContractVersion"],
+                    "msg": "upgrade the safe review to phase4-safe-review-v2 and complete the new Agent review fields",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
     source_skill_manifest = _optional_acceptance_skill_manifest(
         row=row,
         output_root=output_root,
@@ -1118,6 +1231,7 @@ def accept_case(
     if validation_only:
         review_payload_for_run = review_payload
         single_record: int | None = None
+        slice_context: dict[str, Any] | None = None
         if only_record is not None:
             records = review_payload_for_run.get("deepResearchRecords") or []
             if not 0 <= only_record < len(records):
@@ -1125,10 +1239,10 @@ def accept_case(
                     f"--only-record {only_record} out of range; the review has "
                     f"{len(records)} deep records"
                 )
-            review_payload_for_run = {
-                **review_payload_for_run,
-                "deepResearchRecords": [records[only_record]],
-            }
+            review_payload_for_run, slice_context = _slice_review_for_record(
+                review_payload_for_run,
+                only_record,
+            )
             single_record = only_record
         report = acceptance.accept_deep_review_candidates(
             db_path=Path(memory_db_path),
@@ -1151,9 +1265,7 @@ def accept_case(
         result["durableWritePreflight"] = _durable_write_preflight(
             memory_db_path=Path(memory_db_path),
             intake_ledger_path=effective_ledger,
-            requires_intake_ledger=str(row["character_ref"] or "").startswith(
-                "character-hash:"
-            ),
+            requires_intake_ledger=str(row["character_ref"] or "").startswith("character-hash:"),
         )
         if single_record is not None:
             result["singleRecordValidation"] = {
@@ -1161,6 +1273,7 @@ def accept_case(
                 "note": "Only this record was validated; caseCoverage, Family identity and "
                 "deferred counts reflect the single-record slice, not the full review.",
             }
+            result["sliceContext"] = slice_context or {}
         _assert_safe_payload(result)
         return result
 
@@ -1414,6 +1527,25 @@ def retry_accept_case(
         packet_safe_hash=str(row["packet_safe_hash"]),
         version_context=version_context,
     )
+    if review_payload.get("reviewContractVersion") != "phase4-safe-review-v2":
+        result = {
+            "status": "acceptance_rejected",
+            "errorCode": "review_contract_upgrade_required",
+            "sampleId": str(row["sample_id"]),
+            "validationOnly": False,
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "validationIssues": [
+                {
+                    "loc": ["reviewContractVersion"],
+                    "msg": "upgrade the safe review to phase4-safe-review-v2 and complete the new Agent review fields",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
     slug = f"{_slug(str(row['sample_id']))}-{_slug(safe_review_file.stem)[-24:]}"
     with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
         _begin_retry_accepting(db_path, row=row)
@@ -2397,9 +2529,7 @@ def _refresh_packet_expiry(
         if str(payload.get("safeHash") or "") != str(packet_safe_hash):
             continue
         payload["expiresAt"] = expires_iso
-        staging_path = packet_path.with_name(
-            f".{packet_path.name}.{secrets.token_hex(8)}.tmp"
-        )
+        staging_path = packet_path.with_name(f".{packet_path.name}.{secrets.token_hex(8)}.tmp")
         try:
             staging_path.write_text(
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
@@ -3190,19 +3320,23 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[str, Any]:
     safe_report, transport_diagnostics = _safe_validation_transport_report(report)
-    upstream_diagnostics = [
-        {
+    upstream_diagnostics: list[dict[str, Any]] = []
+    for item in safe_report.get("copySafetyDiagnostics") or []:
+        if not isinstance(item, dict) or not item.get("flags"):
+            continue
+        diagnostic = {
             "loc": list(item.get("loc") or []),
             "flags": list(item.get("flags") or []),
             "blockingFlags": list(item.get("flags") or []),
         }
-        for item in safe_report.get("copySafetyDiagnostics") or []
-        if isinstance(item, dict) and item.get("flags")
-    ]
+        if "originLoc" in item:
+            diagnostic["originLoc"] = list(item.get("originLoc") or [])
+            diagnostic["originKind"] = str(item.get("originKind") or "unknown")
+            if item.get("safeTitle"):
+                diagnostic["safeTitle"] = item["safeTitle"]
+        upstream_diagnostics.append(diagnostic)
     copy_safety_diagnostics = [*upstream_diagnostics, *transport_diagnostics]
-    blocking_copy_safety = [
-        item for item in copy_safety_diagnostics if item["blockingFlags"]
-    ]
+    blocking_copy_safety = [item for item in copy_safety_diagnostics if item["blockingFlags"]]
     deferred_reason_counts = dict(safe_report.get("deferredReasonCounts") or {})
     schema_issue_count = int(deferred_reason_counts.get("invalid_schema") or 0)
     validation_issues: list[dict[str, Any]] = []
@@ -3218,8 +3352,7 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
     validation_issues.extend(
         {
             "loc": item["loc"],
-            "msg": "validation text failed copy-safety: "
-            + ", ".join(item["blockingFlags"]),
+            "msg": "validation text failed copy-safety: " + ", ".join(item["blockingFlags"]),
             "type": "copy_safety",
         }
         for item in transport_diagnostics
@@ -3435,6 +3568,17 @@ def _compact_accept_result(result: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         out.pop("mechanicAudit", None)
+    deep_record_write = out.get("deepRecordWrite")
+    record_writes = (
+        deep_record_write.get("recordWrites") or [] if isinstance(deep_record_write, dict) else []
+    )
+    out["writeAdvisoryCounts"] = {
+        "crossFamilyDuplicate": sum(
+            len(item.get("crossFamilyDuplicateAdvisories") or [])
+            for item in record_writes
+            if isinstance(item, dict)
+        )
+    }
     for key in (
         "sourceEvidenceDiagnostics",
         "patternWrite",
@@ -3798,9 +3942,12 @@ jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对�
 
 独立重建当前案例后，先解析身份组件：用 search_graph_components 发现候选、用
 resolve_graph_component 确认 ascendancy 与 class 的 stable key（显示名不会命中存储 key，会静默
-返回空）；再以 stable key 过滤 query_research_memory 查重和对照，并检查返回的
-familyRecordCoverage / familyRecordIndex / familyPremiseCatalog，逐条对照既有同升华/同技能
-Family 知识。其余组件同样先 search 再 resolve，不得猜 key 路径（支持宝石 metadata 路径可能有
+返回空）；再以 stable key 调用 query_research_memory，首次身份宽查固定使用
+`detail_level="summary" + response_profile="create_compact"`。检查返回的 familyRecordCoverage /
+familyRecordIndex / familyPremiseCatalog；选定 Family 后，按 familyRecordIndex 的 `record_ids` 调用
+`detail_level="record" + response_profile="create_compact"` 精确深读，直到关键 premise、失败条件和
+验证任务闭合，不设置固定深读额度。逐条对照既有同升华/同技能 Family 知识。其余组件同样先 search
+再 resolve，不得猜 key 路径（支持宝石 metadata 路径可能有
 Items/Gem 与 Items/Gems 两种形式）。工具未直接显示时，使用宿主标准 tool discovery / tool search
 按精确名称查找；工具可能采用延迟发现，不要根据首屏工具列表断言不可用。
 
@@ -3808,7 +3955,9 @@ Items/Gem 与 Items/Gems 两种形式）。工具未直接显示时，使用宿�
 explain_mechanic / search_mechanics 查看当前本地静态机制资料，再用 lookup_mechanic 查询实时
 poe2wiki。重点检查触发与手动施放、前置状态、资源生成/消耗、伤害转换、mutation/transform 等；
 不要为普通组件名称逐个查 Wiki。每次只查询一个精确页面或中央机制名称，不得拼接 `A / B`；需要多页
-时写多条原子审计。每条 mechanic_chain 和 resource_engine 都必须由 mechanicAudit 精确引用，claim
+时写多条原子审计。全文搜索只返回候选，不授权结论；选中候选后按精确标题重新读取正文，由你判断
+`supports / contradicts / silent`，并在 `wiki.relevanceReason` 说明内容为何回答或没有回答当前 claim。
+直接标题、redirect、页面 ID 和 revision 只证明页面身份，同样不能替代内容判断。每条 mechanic_chain 和 resource_engine 都必须由 mechanicAudit 精确引用，claim
 必须写对象真正依赖的最强因果结论，不能只审计较弱前提。把复核结果写入顶层 mechanicAudit，并使用
 lookup_mechanic 返回的 revision-pinned sourceRef。Wiki 只作校对证据，不能替代来源实例归属、support
 兼容性、武器状态、Family 身份或数值 Judge；每项结论仍需注明 source artifact、PoB static、typed
@@ -3844,7 +3993,7 @@ typedPayload、conditions 或 summary。role 表达 BD 功能，物理节点类�
 
 把候选编辑进 safeReviewFile。propose_* 只用于候选校验，不代表入库。写完后先运行：
 
-  research_mature_builds.py accept --output-dir <runDir> --lease-token {lease_token} --review-file {review_file} --validate-only
+  research_mature_builds.py accept --output-dir <runDir> --lease-token {lease_token} --review-file {review_file} --validate-only --compact
 
 若返回 validation_failed，按 validationIssues 自行修正并重新校验。readyForAccept=true 只表示安全子集
 可以接收；fullyResolvedForAccept=true 才表示已有可归档的 Build Family，且没有覆盖缺口、候选暂缓
@@ -3852,6 +4001,11 @@ typedPayload、conditions 或 summary。role 表达 BD 功能，物理节点类�
 component_type_mismatch、错误 role/query 和其他可修复问题先做一次有界修复；只有真实 source coverage
 缺口或经复核仍无法唯一解析的内容才保留为 partial_with_deferred。validate-only 不写 durable memory，
 也不改变当前 lease。
+
+校验通过后，正式 `accept` 与可修复拒绝后的 `retry-accept` 同样使用 `--compact`；有 deferred、
+unresolved、coverage gap 或 failure 时 CLI 会自动回退完整报告，不得手工隐藏失败详情。
+`review_contract_upgrade_required` 发生在队列 CAS 前，案例仍为 claimed：补齐 v2 review 后必须用同一
+lease token 重新运行普通 `accept --compact`，不能改走只接受 rejected 案例的 `retry-accept`。
 """
 
 

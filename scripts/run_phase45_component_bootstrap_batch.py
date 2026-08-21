@@ -1,12 +1,12 @@
-"""Run Phase 4.5 programmatic component bootstrap pattern acceptance.
+"""Run Phase 4.5 programmatic component bootstrap observation intake.
 
 This fallback helper accepts many local PoB-code files, but it processes each
 unique source independently. It transiently decodes PoB import codes only to
 discover resolver-backed component candidates, then writes low-trust safe
-BuildDesignObservation / BuildPattern rows through ResearchMemoryService gates.
+BuildDesignObservation rows through ResearchMemoryService gates.
 
-It is not a Deep Researcher pass: no LLM/agent analyzes the full build, and all
-accepted rows must stay case_observation confidence only.
+It is not a Deep Researcher pass: no LLM/agent analyzes the full build, so it cannot write
+durable Patterns that require an Agent semantic-scope review.
 """
 
 from __future__ import annotations
@@ -179,7 +179,9 @@ def build_phase45_component_bootstrap_batch_report(
     )
     report = {
         "reportId": "phase45-component-bootstrap-batch-v1",
-        "status": "accepted" if accepted_pattern_count > 0 and deferred_count == 0 else "partial",
+        "status": (
+            "accepted" if accepted_observation_count > 0 and deferred_count == 0 else "partial"
+        ),
         "safeArtifactOnly": True,
         "snapshotId": graph_service.snapshot.snapshot_id,
         "sampleCount": len(samples),
@@ -192,8 +194,9 @@ def build_phase45_component_bootstrap_batch_report(
         "samples": samples,
         "caveats": [
             "Batch input was processed one unique source at a time.",
-            "All accepted rows are case_observation confidence only.",
-            "This is programmatic component bootstrap, not an external Deep Researcher pass.",
+            "All accepted rows are observation-only and carry no durable Pattern authority.",
+            "This is programmatic component bootstrap, not an external Deep Researcher pass; "
+            "Patterns require typed Agent semantic review.",
             "Transient decode was used only to find resolver-backed component candidates.",
         ],
         "noRawMatureBuildMaterial": True,
@@ -274,6 +277,9 @@ def _process_one_source(
         manifest_sample=manifest_sample,
         components=resolved_components,
     )
+    # Programmatic bootstrap has no external Agent. Preserve resolver-backed observations, but do
+    # not fabricate the agent_semantic_scope_review required for durable Pattern writes.
+    payload["patterns"] = []
     write_result = service.propose_build_patterns(payload)
     if write_result.get("status") != "accepted":
         return {

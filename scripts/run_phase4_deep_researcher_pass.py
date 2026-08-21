@@ -249,7 +249,7 @@ Return safe-only structured content with:
 - designAxisReview: one item per required axis with status, evidenceSummaryZh, candidateComponents, caveats;
 - primarySkillAssessment: rawImportedMainSkill, judgeSelectedSkillCandidate, researcherAssessment, confidence, caveats;
 - candidateObservations: copy-safe BuildDesignObservation candidates;
-- candidatePatterns: only if this single case provides useful case_observation, not common/usually claims;
+- candidatePatterns: only if this single case provides a useful case_observation, with a typed Agent scope review rather than language-keyword checks;
 - resolverRequests: endpoint names that should be resolved before durable write;
 - verificationTasks;
 - noRawMatureBuildMaterial: true.

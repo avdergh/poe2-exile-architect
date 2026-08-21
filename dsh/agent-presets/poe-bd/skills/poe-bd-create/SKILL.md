@@ -26,7 +26,9 @@ description: Use when the user asks for a Path of Exile 2 build, starter build, 
 `mcp__poe_knowledge__query_research_memory(response_profile="create_compact")`，并在确认精确 Family 后调用
 `mcp__poe_knowledge__query_public_learning_memory` 读取公开种子与本地追加的跨案例经验。明确记录哪些 Research 结论
 被采用、保留为注意事项或拒绝；Learning lesson 只作为待验证的设计提醒。Create 必须优先阅读
-紧凑结果中的 `criticalPremiseDigest`；不能只记住正向组件而丢失条件、失败场景和验证任务。用户
+紧凑结果中的 `criticalPremiseDigest`；不能只记住正向组件而丢失条件、失败场景和验证任务。
+`buildPatterns` 以 typed `confidenceTier` 和 `semanticScopeReview` 为范围权威；
+`legacy_unattested` 只能作为需重新验证的旧观察，不能凭自然语言中的“常见/通常”等措辞提高权重。用户
 显式使用 `--no-memory` 时跳过 Research 与 Learning Memory；静态语料、图、机制、生命周期、
 PoB、计算和 Judge 工具仍正常使用。不要为无记忆模式创建另一套 skill 或另一套 MCP 工具。
 

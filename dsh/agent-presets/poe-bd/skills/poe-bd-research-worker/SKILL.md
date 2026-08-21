@@ -78,24 +78,35 @@ runDir 或 runtimeRoot 回退为当前 cwd。
 2. 直接遵守 `workerPrompt`。先 `inspect`，再按其指定顺序用可分页 `read` 读完全部分区；`search`
    只能定位具体线索，不能替代完整读取。先独立重建案例，再查询 Research Memory，并通过
    `search_graph_components` → `resolve_graph_component` 确认 stable key。
-   Family 查询用 `primary_skill_key=skill:/gem:`；`build_family_keys` 只接收查询已返回的 `bf-...`，
-   未知时省略，禁止把技能 key 填进去。
+   Family 首次身份宽查固定用 `detail_level="summary" + response_profile="create_compact"`，并检查
+   `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog`；选定 Family 后按 index 返回的
+   `record_ids` 使用 `detail_level="record" + response_profile="create_compact"` 精确深读，直到关键
+   premise、失败条件和验证任务闭合，不设固定深读额度。Family 查询用
+   `primary_skill_key=skill:/gem:`；`build_family_keys` 只接收查询已返回的 `bf-...`，未知时省略，禁止
+   把技能 key 填进去。
 
 3. 初步研究完成后运行 `review-contract`，以其 `mandatoryChecks`、模板、枚举、兼容矩阵和 rules 为
    当前 lease 的精确事实源；不得从本 Skill 猜字段或固定检查数量。
+   机制全文搜索只提供候选；选中后按精确标题读取正文，由你在 `mechanicAudit.wiki` 填写
+   `matchKind`、`relevanceReason` 与 supports/contradicts/silent。Candidate Pattern 必须填写
+   `claimScopeReview`，用 typed scope 确认任何语言的正文只表达当前案例证据或条件迁移假设；不得依赖
+   关键词门禁。
 
 4. 运行 `init-review` 原子创建骨架，只编辑返回的 reviewFile。`already_exists` 表示保留已有工作，
    不得覆盖重建。
 
-5. 先执行 `accept --validate-only`。结构、resolver、角色、因果或职责变化后，对完整对象重新复核；
+5. 先执行 `accept --validate-only --compact`。结构、resolver、角色、因果或职责变化后，对完整对象重新复核；
    按 validationIssues 有界修正。missing/ambiguous endpoint 最多进行两轮 repair，不能要求程序猜枚举
    或自动选择端点。
 
-6. Mandatory Checks 全部通过后执行正式 `accept`。若 validate-only 的 `durableWritePreflight` 为
+6. Mandatory Checks 全部通过后执行正式 `accept --compact`。若 validate-only 的 `durableWritePreflight` 为
    `permission_required`，先向宿主请求用户数据目录写权限再执行；`write_handle_ready` 仅为当前句柄的
    advisory，不保证 SQLite 事务一定成功。可修复的 `acceptance_rejected` 使用同一 safe review
-   走 `retry-accept --sample-id <sampleId>`；不要把 validation/retry 当成新案例。不可恢复的 runtime
-   错误停止当前 Worker，保留 run/lease 状态并返回 safe failure。
+   走 `retry-accept --sample-id <sampleId> --compact`；CLI 在 deferred、unresolved、coverage gap 或
+   failure 时自动回退完整报告，不得隐藏失败详情。不要把 validation/retry 当成新案例。不可恢复的 runtime
+   错误停止当前 Worker，保留 run/lease 状态并返回 safe failure。若普通 accept 返回
+   `review_contract_upgrade_required`，队列仍是 `claimed`：在原文件补齐 v2 字段后，用同一 lease token
+   重新执行普通 `accept --compact`，不要改走 `retry-accept`。
 
 7. claim 成功后的任何结束路径都返回 `sampleId + safe outcome`；accepted 时附 safe acceptance 摘要，
    至少包含 acceptanceMode、created/updated/evidence counts、semantic edge count、deferred reasons、

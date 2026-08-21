@@ -87,6 +87,32 @@ def test_explain_mechanic():
     assert mechanics.explain("nonsense").get("found") is False
 
 
+def test_explain_mechanic_returns_full_text_hits_as_candidates(monkeypatch):
+    from server.knowledge import mechanics
+
+    monkeypatch.setattr(mechanics.db, "get_mechanic", lambda _topic, fuzzy=False: None)
+    monkeypatch.setattr(
+        mechanics.db,
+        "search_mechanics",
+        lambda _topic, limit=8: [
+            {
+                "id": "chaos-inoculation",
+                "title": "Chaos Inoculation",
+                "snippet": "The page only mentions Mind Over Matter in its body.",
+                "url": "https://example.invalid/ci",
+                "license": "CC BY-NC-SA 3.0",
+                "source": "fixture",
+            }
+        ],
+    )
+
+    result = mechanics.explain("Mind Over Matter")
+
+    assert result["found"] is False
+    assert result["resultKind"] == "search_candidates"
+    assert result["candidates"][0]["title"] == "Chaos Inoculation"
+
+
 def test_classify_affix_phys_damage():
     from server.knowledge import itemparse as ip
 

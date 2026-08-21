@@ -424,7 +424,15 @@ def _pattern_payload():
                     {
                         "context_type": "verification_gate_requirement",
                         "task": "Check cooldown package before treating as a mature pattern.",
-                    }
+                    },
+                    {
+                        "context_type": "agent_semantic_scope_review",
+                        "evidence_scope": "current_case",
+                        "claim_scope": "case_only",
+                        "verdict": "supported",
+                        "reason": "The Agent confirmed this is a current-case observation.",
+                        "safe_evidence_refs": ["safe:architect-context-pattern"],
+                    },
                 ],
                 "planner_hint": "Try Hollow Focus cooldown package only as an advisory candidate.",
                 "verification_tasks": [

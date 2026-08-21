@@ -317,6 +317,8 @@ def test_deep_review_acceptance_persists_revision_pinned_mechanic_evidence(tmp_p
                 "status": "supports",
                 "pageTitle": "Damage conversion",
                 "sourceRef": source_ref,
+                "matchKind": "direct",
+                "relevanceReason": "The Agent read the page and confirmed it directly describes conversion order.",
             },
             "corroboration": ["source_artifact", "pinned_pob_static"],
             "decision": "keep",
@@ -353,6 +355,59 @@ def test_deep_review_acceptance_persists_revision_pinned_mechanic_evidence(tmp_p
         assert source_ref in observation_refs
     finally:
         con.close()
+
+
+def test_mechanic_audit_requires_agent_relevance_reason(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="mechanic-audit-missing-relevance.json",
+        components=[
+            {
+                "candidateName": "Resolved Only",
+                "componentKey": "skill:ResolvedOnlyPlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Resolved Only",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["mechanicAudit"] = [
+        {
+            "claim": "Atomic fixture claim.",
+            "claimType": "behavior_or_trigger",
+            "affectedRecords": ["聚焦机制链"],
+            "affectedCandidates": [],
+            "wiki": {
+                "status": "supports",
+                "pageTitle": "Fixture",
+                "sourceRef": "poe2wiki:page:855:rev:130794",
+                "matchKind": "direct",
+            },
+            "corroboration": ["source_artifact"],
+            "decision": "keep",
+        }
+    ]
+
+    report = run_phase4_deep_review_acceptance.accept_deep_review_candidates(
+        db_path=tmp_path / "memory.sqlite",
+        json_output=tmp_path / "report.json",
+        md_output=tmp_path / "report.md",
+        review_file=review_file,
+        review_payload=review,
+        graph_service=_graph_service(),
+        validation_only=True,
+    )
+
+    issues = [
+        issue
+        for item in report["deferredCandidates"]
+        for issue in item.get("validationIssues") or []
+    ]
+    assert any(
+        "wiki.relevanceReason" in str(issue.get("path") or issue.get("loc") or "")
+        for issue in issues
+    )
 
 
 def test_acceptance_uses_gear_base_for_non_weapon_item_bases(tmp_path):
@@ -1822,6 +1877,7 @@ def test_unresolved_jewel_sockets_deferral_requires_explicit_review_declaration(
 
     assert len(deferred) == 1
     assert deferred[0]["reason"] == "unresolved_jewel_sockets"
+
     assert deferred[0]["candidateKind"] == "research_case"
     assert deferred[0]["sampleId"] == "case:fix-001"
 
@@ -1927,24 +1983,51 @@ def test_unresolved_jewel_sockets_deferral_ignores_jewel_in_identity_fields():
     assert len(deferred) == 1
     assert deferred[0]["reason"] == "unresolved_jewel_sockets"
 
-    declared = {
+
+def test_typed_jewel_socket_states_close_active_and_other_spec_anomalies():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    counts = {
+        "status": "ok",
+        "activeAllocatedFilled": [],
+        "activeAllocatedEmpty": [{"nodeId": "100", "specId": "2"}],
+        "activeSocketedUnallocated": [
+            {"nodeId": "101", "specId": "2", "itemId": "7", "activeSpec": True}
+        ],
+        "otherSpecSocketed": [{"nodeId": "102", "specId": "1", "itemId": "8", "activeSpec": False}],
+    }
+    review = {
         "safeArtifactOnly": True,
-        "artifactIdentity": {"sampleId": "case:jewel-samples-001"},
+        "artifactIdentity": {"sampleId": "case:jewel-state-001"},
         "deepResearchRecords": [
             {
-                "sampleId": "case:jewel-samples-001",
-                "researchGroupId": "research:case:jewel-samples-001",
-                "caseRef": "source-hash:jewel-samples-001",
-                "safeEvidenceRefs": ["evidence:fix"],
-                "title": "Jewel state",
-                "recordKind": "open_question",
-                "summary": "jewel sockets are empty by design",
-                "content": "declared",
-                "components": [],
+                "recordKind": "passive_package",
+                "typedPayload": {
+                    "jewelSocketStates": [
+                        {"nodeId": "100", "specId": "2", "state": "empty"},
+                        {
+                            "nodeId": "101",
+                            "specId": "2",
+                            "itemId": "7",
+                            "state": "socketed_unallocated",
+                        },
+                        {
+                            "nodeId": "102",
+                            "specId": "1",
+                            "itemId": "8",
+                            "state": "other_spec",
+                        },
+                    ]
+                },
             }
         ],
     }
-    assert acceptance._unresolved_jewel_sockets_deferred(declared, counts) == []
+
+    assert acceptance._unresolved_jewel_sockets_deferred(review, counts) == []
+
+    review["deepResearchRecords"][0]["typedPayload"]["jewelSocketStates"].pop()
+    deferred = acceptance._unresolved_jewel_sockets_deferred(review, counts)
+    assert deferred[0]["reason"] == "unresolved_jewel_sockets"
 
 
 def test_unique_gem_diagnostics_labels_lineage_support_identity():
@@ -3154,9 +3237,7 @@ def test_formal_acceptance_safe_guard_scans_all_text_and_dynamic_keys():
             {"validationIssues": [{"submittedValue": raw_url}]}
         )
     with pytest.raises(ValueError, match="failed copy-safety"):
-        run_phase4_deep_review_acceptance._assert_safe(
-            {raw_url: "safe value"}
-        )
+        run_phase4_deep_review_acceptance._assert_safe({raw_url: "safe value"})
 
 
 def test_formal_copy_safety_guard_runs_before_writable_service_initialization(
@@ -5141,11 +5222,25 @@ def test_deep_review_acceptance_defers_invalid_candidate_but_accepts_valid_one(t
         "plannerHint": "Treat as advisory only.",
         "verificationGate": "Verify before planner use.",
         "verificationTasks": ["Verify before planner use."],
+        "claimScopeReview": {
+            "evidenceScope": "current_case",
+            "claimScope": "case_only",
+            "verdict": "rewrite_required",
+            "reason": "The Agent found that the wording overstates one case.",
+            "safeEvidenceRefs": ["safe:fixture-sample-001"],
+        },
     }
     good_candidate = {
         **bad_candidate,
         "title": "安全候选",
         "summary": "这是单样本观察。",
+        "claimScopeReview": {
+            "evidenceScope": "current_case",
+            "claimScope": "case_only",
+            "verdict": "supported",
+            "reason": "The Agent confirmed the wording is limited to one case.",
+            "safeEvidenceRefs": ["safe:fixture-sample-001"],
+        },
     }
     review = {
         "reportId": "phase4-deep-researcher-candidate-review-v1",
@@ -5168,7 +5263,14 @@ def test_deep_review_acceptance_defers_invalid_candidate_but_accepts_valid_one(t
     assert report["acceptedPatternCount"] == 0
     assert report["singleComponentObservationCount"] == 1
     assert report["deferredCandidateCount"] == 1
-    assert report["deferredCandidates"][0]["reason"] == "overclaimed_pattern_confidence"
+    assert report["deferredCandidates"][0]["reason"] == ("agent_semantic_scope_rewrite_required")
+    assert report["deferredCandidates"][0]["validationIssues"] == [
+        {
+            "loc": ["candidateReviews", "claimScopeReview"],
+            "msg": "The Agent found that the wording overstates one case.",
+            "type": "agent_semantic_scope_rewrite_required",
+        }
+    ]
     assert report["singleComponentObservations"][0]["titleZh"] == "安全候选"
 
 
@@ -5346,11 +5448,21 @@ def _write_review(
         "plannerHint": "Treat fixture pattern as advisory only.",
         "verificationGate": "Verify fixture selected skill before planner use.",
         "verificationTasks": ["Verify fixture selected skill before planner use."],
+        "claimScopeReview": {
+            "evidenceScope": "current_case",
+            "claimScope": "case_only",
+            "verdict": "supported",
+            "reason": "The Agent confirmed the text is limited to the current case.",
+            "safeEvidenceRefs": ["safe:fixture-sample-001"],
+        },
     }
     if candidate_overrides:
         candidate.update(candidate_overrides)
+    if candidate.get("transferScope") == "component":
+        candidate["claimScopeReview"]["claimScope"] = "conditional_transfer_hypothesis"
     review = {
         "reportId": "phase4-deep-researcher-candidate-review-v1",
+        "reviewContractVersion": "phase4-safe-review-v2",
         "safeArtifactOnly": True,
         "memoryUse": {
             "queries": [

@@ -390,6 +390,70 @@ def test_search_graph_components_discovers_candidates_without_resolving_endpoint
     assert "candidate_discovery_only" in result["caveats"]
 
 
+def test_search_graph_components_accent_folds_discovery_without_relaxing_resolver():
+    base = _snapshot()
+    accented = pg.GraphNode(
+        stable_key="support:MorriganInsight",
+        node_type="support_gem",
+        display_name="Mórrigan's Insight",
+        source_refs=(base.sources[0].source_id,),
+    )
+    snapshot = pg.GraphSnapshot(
+        snapshot_id=base.snapshot_id,
+        created_at=base.created_at,
+        sources=base.sources,
+        nodes=(*base.nodes, accented),
+        edges=base.edges,
+        aliases=base.aliases,
+        id_mappings=base.id_mappings,
+    )
+
+    discovery = pg.search_candidates(
+        snapshot,
+        "Morrigan's Insight",
+        expected_node_types=("support_gem",),
+    )
+    exact = pg.resolve_candidates(snapshot, "Morrigan's Insight")
+
+    assert discovery["candidate_keys"] == ["support:MorriganInsight"]
+    assert exact["status"] == "missing"
+
+
+def test_accent_folded_discovery_preserves_ambiguity():
+    base = _snapshot()
+    nodes = (
+        pg.GraphNode(
+            stable_key="support:AccentOne",
+            node_type="support_gem",
+            display_name="Mórrigan's Insight",
+            source_refs=(base.sources[0].source_id,),
+        ),
+        pg.GraphNode(
+            stable_key="support:AccentTwo",
+            node_type="support_gem",
+            display_name="Morrígan's Insight",
+            source_refs=(base.sources[0].source_id,),
+        ),
+    )
+    snapshot = pg.GraphSnapshot(
+        snapshot_id=base.snapshot_id,
+        created_at=base.created_at,
+        sources=base.sources,
+        nodes=(*base.nodes, *nodes),
+        edges=base.edges,
+        aliases=base.aliases,
+        id_mappings=base.id_mappings,
+    )
+
+    discovery = pg.search_candidates(
+        snapshot,
+        "Morrigan's Insight",
+        expected_node_types=("support_gem",),
+    )
+
+    assert discovery["candidate_keys"] == ["support:AccentOne", "support:AccentTwo"]
+
+
 def test_player_scope_includes_support_granted_player_payloads():
     result = _service().run_tool(
         "search_graph_components",

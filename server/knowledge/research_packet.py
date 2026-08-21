@@ -264,6 +264,45 @@ def _jewel_socket_map(root: ET.Element) -> dict[str, dict[str, Any]]:
     return item_map
 
 
+def _jewel_socket_assignments(root: ET.Element) -> list[dict[str, Any]]:
+    """Return every valid tree-jewel socket assignment without collapsing passive specs."""
+
+    tree = root.find("Tree")
+    items = root.find("Items")
+    if tree is None or items is None:
+        return []
+    active_spec = _active_spec_id(tree)
+    item_ids = {str(item.get("id")) for item in items.findall("Item") if item.get("id")}
+    assignments: list[dict[str, Any]] = []
+    for index, spec in enumerate(tree.findall("Spec"), start=1):
+        spec_id = _spec_id(spec, index)
+        sockets = spec.find("Sockets")
+        if sockets is None:
+            continue
+        for socket in sockets.findall("Socket"):
+            node_id = str(socket.get("nodeId") or "").strip()
+            item_id = str(socket.get("itemId") or "").strip()
+            if not node_id or item_id not in item_ids:
+                continue
+            try:
+                if int(item_id) <= 0:
+                    continue
+            except ValueError:
+                continue
+            assignments.append(
+                {
+                    "nodeId": node_id,
+                    "specId": spec_id,
+                    "itemId": item_id,
+                    "activeSpec": spec_id == active_spec,
+                }
+            )
+    return sorted(
+        assignments,
+        key=lambda item: (not item["activeSpec"], item["specId"], item["nodeId"], item["itemId"]),
+    )
+
+
 def jewel_counts(
     packet: dict[str, Any],
     sections: dict[str, list[dict[str, Any]]] | None = None,
@@ -282,14 +321,15 @@ def jewel_counts(
     normalized = _unwrap_packet(packet)
     if sections is None:
         sections = _packet_sections(normalized)
-    allocated = sum(
-        1
+    active_allocated_node_ids = {
+        str(item.get("nodeId") or "")
         for item in sections["passives"]
         if item.get("kind") == "allocated_node"
         and item.get("activeSpec") is True
         and "jewel_socket" in (item.get("nodeTypes") or [])
-    )
-    tree_socketed = sum(1 for item in sections["gear"] if item.get("socketSource") == "tree_socket")
+        and str(item.get("nodeId") or "")
+    }
+    allocated = len(active_allocated_node_ids)
     embedded = sum(
         1
         for item in sections["gear"]
@@ -300,6 +340,7 @@ def jewel_counts(
     raw_context = raw_context if isinstance(raw_context, dict) else {}
     xml = str(raw_context.get("rawXml") or "")
     status = "ok"
+    assignments: list[dict[str, Any]] = []
     if xml:
         try:
             root = ET.fromstring(xml)
@@ -307,6 +348,31 @@ def jewel_counts(
             root = None
         if root is not None:
             status = _tree_metadata_status(root)
+            assignments = _jewel_socket_assignments(root)
+    active_assignments = [item for item in assignments if item["activeSpec"]]
+    active_socketed_node_ids = {str(item["nodeId"]) for item in active_assignments}
+    active_filled = [
+        item for item in active_assignments if str(item["nodeId"]) in active_allocated_node_ids
+    ]
+    active_unallocated = [
+        item for item in active_assignments if str(item["nodeId"]) not in active_allocated_node_ids
+    ]
+    active_empty = [
+        {
+            "nodeId": node_id,
+            "specId": next(
+                (
+                    str(item.get("specId") or "")
+                    for item in sections["passives"]
+                    if str(item.get("nodeId") or "") == node_id and item.get("activeSpec") is True
+                ),
+                "",
+            ),
+        }
+        for node_id in sorted(active_allocated_node_ids - active_socketed_node_ids)
+    ]
+    other_spec_socketed = [item for item in assignments if not item["activeSpec"]]
+    tree_socketed = len(active_assignments)
     notes: list[str] = []
     if status != "ok":
         notes.append(
@@ -338,6 +404,10 @@ def jewel_counts(
         "treeSocketedJewelCount": tree_socketed,
         "embeddedJewelCount": embedded,
         "socketedJewelCount": tree_socketed + embedded,
+        "activeAllocatedFilled": active_filled,
+        "activeAllocatedEmpty": active_empty,
+        "activeSocketedUnallocated": active_unallocated,
+        "otherSpecSocketed": other_spec_socketed,
         "countNotes": notes,
         "status": status,
     }
@@ -354,14 +424,23 @@ def jewel_advisories(
             "packet, so allocated jewel sockets cannot be counted reliably; state the jewel "
             "situation explicitly in the review"
         ]
-    allocated = int(counts["allocatedJewelSocketCount"] or 0)
-    tree_socketed = int(counts["treeSocketedJewelCount"] or 0)
-    if allocated > 0 and tree_socketed == 0:
-        return [
-            f"{allocated} allocated jewel socket(s) carry no socketed jewel (empty or extraction "
-            "gap); the review must declare the jewel state explicitly"
-        ]
-    return []
+    advisories: list[str] = []
+    if counts.get("activeAllocatedEmpty"):
+        advisories.append(
+            f"{len(counts['activeAllocatedEmpty'])} active-spec allocated jewel socket(s) are "
+            "empty; the review must declare their state"
+        )
+    if counts.get("activeSocketedUnallocated"):
+        advisories.append(
+            f"{len(counts['activeSocketedUnallocated'])} active-spec jewel assignment(s) point "
+            "at unallocated socket nodes; treat their effects as unverified"
+        )
+    if counts.get("otherSpecSocketed"):
+        advisories.append(
+            f"{len(counts['otherSpecSocketed'])} jewel assignment(s) belong to non-active passive "
+            "specs and cannot satisfy active-spec jewel closure"
+        )
+    return advisories
 
 
 def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:

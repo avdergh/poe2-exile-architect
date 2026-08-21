@@ -156,6 +156,22 @@ class SocketRequirement(StrictModel):
     support_key: str | None = None
 
 
+class AgentSemanticScopeReviewRequirement(StrictModel):
+    """External Research Agent attestation for one submitted pattern claim."""
+
+    context_type: Literal["agent_semantic_scope_review"]
+    evidence_scope: Literal["current_case", "current_family", "multi_family"]
+    claim_scope: Literal[
+        "case_only",
+        "family_specific",
+        "conditional_transfer_hypothesis",
+        "population_pattern",
+    ]
+    verdict: Literal["supported"]
+    reason: str = Field(min_length=1, max_length=320)
+    safe_evidence_refs: list[str] = Field(min_length=1, max_length=12)
+
+
 ResearchContextRequirement = Annotated[
     graph_tools.VersionContext
     | graph_tools.ItemContext
@@ -168,7 +184,8 @@ ResearchContextRequirement = Annotated[
     | SpiritReservationRequirement
     | ItemRoleRequirement
     | WeaponSetRequirement
-    | SocketRequirement,
+    | SocketRequirement
+    | AgentSemanticScopeReviewRequirement,
     Field(discriminator="context_type"),
 ]
 
@@ -370,6 +387,57 @@ class BuildPatternProposal(StrictModel):
         role_keys = set(self.component_roles)
         if role_keys != component_keys:
             raise ValueError("component_roles keys must exactly match component_keys")
+        scope_reviews = [
+            requirement
+            for requirement in self.context_requirements
+            if isinstance(requirement, AgentSemanticScopeReviewRequirement)
+        ]
+        if len(scope_reviews) != 1:
+            raise ValueError(
+                "build patterns require exactly one agent_semantic_scope_review context requirement"
+            )
+        review = scope_reviews[0]
+        if not set(review.safe_evidence_refs) <= set(self.safe_evidence_refs):
+            raise ValueError(
+                "agent_semantic_scope_review safe_evidence_refs must be present on the pattern"
+            )
+        if (
+            self.transfer_scope != "family"
+            and review.claim_scope != "conditional_transfer_hypothesis"
+        ):
+            raise ValueError(
+                "transferable patterns require claim_scope=conditional_transfer_hypothesis"
+            )
+        if self.transfer_scope == "family" and self.confidence_tier == "case_observation":
+            if review.claim_scope != "case_only" or review.evidence_scope != "current_case":
+                raise ValueError(
+                    "case observations require current_case evidence and claim_scope=case_only"
+                )
+        if self.transfer_scope == "family" and self.confidence_tier in {
+            "recurring_observation",
+            "likely_pattern",
+        }:
+            allowed_scope_pairs = {
+                ("current_family", "family_specific"),
+                ("multi_family", "population_pattern"),
+            }
+            if (review.evidence_scope, review.claim_scope) not in allowed_scope_pairs:
+                raise ValueError(
+                    "recurring/likely Family patterns require current_family + family_specific "
+                    "or multi_family + population_pattern Agent review"
+                )
+        if self.transfer_scope == "family" and self.confidence_tier in {
+            "common_within_archetype",
+            "strong_ranking_hint",
+        }:
+            if (
+                review.claim_scope != "population_pattern"
+                or review.evidence_scope != "multi_family"
+            ):
+                raise ValueError(
+                    "population-level Family patterns require multi_family evidence and "
+                    "claim_scope=population_pattern"
+                )
         if self.transfer_scope != "family":
             if not self.applicability_axes:
                 raise ValueError("transferable patterns require applicability_axes")
@@ -656,6 +724,54 @@ class DeepResearchRecordProposal(StrictModel):
                         "typed_payload.supportCoverageExceptions entries must reference a resolved skill and provide reason/detail"
                     )
                 seen_support_exceptions.add(exception["skillKey"])
+        jewel_socket_states = self.typed_payload.get("jewelSocketStates")
+        if jewel_socket_states is not None:
+            if self.record_kind not in {"passive_package", "open_question", "modelability_caveat"}:
+                raise ValueError(
+                    "typed_payload.jewelSocketStates is only valid on passive_package, "
+                    "open_question, or modelability_caveat records"
+                )
+            if (
+                not isinstance(jewel_socket_states, list)
+                or not jewel_socket_states
+                or len(jewel_socket_states) > 12
+            ):
+                raise ValueError(
+                    "typed_payload.jewelSocketStates must be a non-empty list with at most 12 entries"
+                )
+            seen_jewel_states: set[tuple[str, str, str]] = set()
+            for state in jewel_socket_states:
+                if not isinstance(state, dict) or not set(state) <= {
+                    "nodeId",
+                    "specId",
+                    "itemId",
+                    "state",
+                }:
+                    raise ValueError(
+                        "typed_payload.jewelSocketStates entries may contain only nodeId, specId, itemId, and state"
+                    )
+                node_id = state.get("nodeId")
+                spec_id = state.get("specId")
+                item_id = state.get("itemId")
+                state_value = state.get("state")
+                if (
+                    not isinstance(node_id, str)
+                    or not node_id.strip()
+                    or not isinstance(spec_id, str)
+                    or not spec_id.strip()
+                    or state_value not in {"filled", "empty", "socketed_unallocated", "other_spec"}
+                    or (
+                        state_value != "empty"
+                        and (not isinstance(item_id, str) or not item_id.strip())
+                    )
+                ):
+                    raise ValueError(
+                        "typed_payload.jewelSocketStates entries require nodeId/specId, a canonical state, and itemId unless empty"
+                    )
+                identity = (node_id.strip(), spec_id.strip(), str(state_value))
+                if identity in seen_jewel_states:
+                    raise ValueError("typed_payload.jewelSocketStates must not contain duplicates")
+                seen_jewel_states.add(identity)
         source_specific_keys = self.typed_payload.get("sourceSpecificComponentKeys")
         if source_specific_keys is not None:
             if availability != "source_specific_random":
@@ -871,9 +987,6 @@ def validate_researcher_output(payload: Any) -> dict[str, Any]:
         transfer_error = _pattern_transfer_error(pattern)
         if transfer_error is not None:
             return public_error("overclaimed_transfer_scope", [transfer_error])
-        overclaim = _pattern_overclaim_error(pattern)
-        if overclaim is not None:
-            return public_error("overclaimed_pattern_confidence", [overclaim])
         evidence_error = _pattern_evidence_error(pattern)
         if evidence_error is not None:
             return public_error("insufficient_pattern_evidence", [evidence_error])
@@ -944,6 +1057,12 @@ def _allowed_values_for_location(location: tuple[Any, ...]) -> list[str]:
 def _pattern_evidence_error(pattern: BuildPatternProposal) -> str | None:
     if pattern.confidence_tier == "case_observation":
         return None
+    distinct_case_count = len(set(pattern.source_case_refs))
+    if distinct_case_count < pattern.sample_count:
+        return (
+            f"{pattern.confidence_tier} sample_count={pattern.sample_count} requires at least "
+            f"that many distinct source_case_refs (got {distinct_case_count})"
+        )
     if (
         pattern.confidence_tier == "recurring_observation"
         and pattern.sample_count >= 2
@@ -992,87 +1111,3 @@ def _pattern_transfer_error(pattern: BuildPatternProposal) -> str | None:
     if pattern.confidence_tier == "likely_pattern" and pattern.family_count < 2:
         return "likely transferable knowledge requires evidence from at least two Build Families"
     return None
-
-
-def _pattern_overclaim_error(pattern: BuildPatternProposal) -> str | None:
-    if pattern.confidence_tier not in {"case_observation", "recurring_observation"}:
-        return None
-    return case_observation_overclaim_error(
-        title=pattern.title,
-        summary=pattern.summary,
-        planner_hint=pattern.planner_hint,
-        confidence_tier=pattern.confidence_tier,
-    )
-
-
-def case_observation_overclaim_error(
-    *,
-    title: str,
-    summary: str,
-    planner_hint: str | None = None,
-    confidence_tier: str = "case_observation",
-) -> str | None:
-    """Reject population-level language from single-case observations or patterns."""
-    text = " ".join(str(value or "") for value in (title, summary, planner_hint)).casefold()
-    blocked = (
-        "usually",
-        "commonly",
-        "common",
-        "usual",
-        "often",
-        "typically",
-        "frequently",
-        "常见",
-        "通常",
-        "经常",
-        "常用",
-    )
-    found = [term for term in blocked if _has_unqualified_overclaim_term(text, term)]
-    if found:
-        return f"{confidence_tier} cannot use common-pattern language: " + ", ".join(found)
-    return None
-
-
-def _has_unqualified_overclaim_term(text: str, term: str) -> bool:
-    start = 0
-    while True:
-        index = text.find(term, start)
-        if index < 0:
-            return False
-        before = text[max(0, index - 48) : index]
-        after = text[index + len(term) : index + len(term) + 32]
-        context = before + term + after
-        if not _is_negated_or_guardrail_context(context):
-            return True
-        start = index + len(term)
-
-
-def _is_negated_or_guardrail_context(context: str) -> bool:
-    guardrails = (
-        "not ",
-        "not-",
-        "no ",
-        "do not",
-        "don't",
-        "cannot",
-        "can't",
-        "must not",
-        "should not",
-        "without sufficient",
-        "not claim",
-        "cannot use",
-        "不能",
-        "不得",
-        "不要",
-        "不应",
-        "不可",
-        "不是",
-        "不声明",
-        "不声称",
-        "禁止",
-        "不能声称",
-        "不能外推",
-        "不可外推",
-        "不外推",
-    )
-    return any(marker in context for marker in guardrails)

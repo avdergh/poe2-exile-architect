@@ -547,7 +547,6 @@ def _proposal(
     ]
 
     observations: list[dict[str, Any]] = []
-    patterns: list[dict[str, Any]] = []
     selected: list[dict[str, Any]] = []
     for spec in candidate_specs:
         component_keys = list(spec["components"].keys())
@@ -560,9 +559,6 @@ def _proposal(
         confidence_tier = _confidence_tier(len(refs), _family_count(samples, refs))
         if confidence_tier is None:
             continue
-        source_diversity = len(
-            {sample["sourceDiversityKey"] for sample in samples if sample["sampleId"] in refs}
-        )
         observation = {
             "observation_type": spec["pattern_type"],
             "title": spec["title"] + " observation",
@@ -585,31 +581,7 @@ def _proposal(
             "split": "train_context",
             "knowledge_scope": "global_seed",
         }
-        pattern = {
-            "pattern_type": spec["pattern_type"],
-            "title": spec["title"],
-            "summary": spec["summary"],
-            "component_keys": component_keys,
-            "component_roles": spec["components"],
-            "confidence_tier": confidence_tier,
-            "sample_count": len(refs),
-            "family_count": _family_count(samples, refs),
-            "source_diversity_count": source_diversity,
-            "denominator": len(samples),
-            "source_case_refs": refs,
-            "safe_evidence_refs": [f"safe:phase45:{_short_hash(spec['title'])}"],
-            "context_requirements": spec["context_requirements"],
-            "planner_hint": spec["planner_hint"],
-            "verification_tasks": spec["verification_tasks"],
-            "game_patch": "0.5.x",
-            "passive_tree_version": "0_5",
-            "pob_version_or_commit": "unknown",
-            "visibility": "creator_visible",
-            "split": "train_context",
-            "knowledge_scope": "global_seed",
-        }
         observations.append(observation)
-        patterns.append(pattern)
         selected.append(
             {
                 "title": spec["title"],
@@ -621,10 +593,13 @@ def _proposal(
             }
         )
 
+    # This builder is deterministic and cannot attest semantic claim scope. Keep the
+    # resolver-backed observations and safe candidate summaries for an external Agent, but do not
+    # fabricate durable Patterns. The Agent may author a reviewed proposal separately.
     return {
         "schema_version": 4,
         "build_design_observations": observations,
-        "patterns": patterns,
+        "patterns": [],
         "fragments": [],
         "semantic_edges": [],
     }, selected
@@ -691,28 +666,28 @@ def _review_report(
 ) -> dict[str, Any]:
     family_counts = Counter(sample["buildFamilyKey"] for sample in samples)
     pattern_summaries = []
-    for pattern in proposal["patterns"]:
+    for pattern in selected_patterns:
         pattern_summaries.append(
             {
                 "titleZh": _title_zh(pattern["title"]),
-                "patternType": pattern["pattern_type"],
-                "confidenceTier": pattern["confidence_tier"],
-                "sampleCount": pattern["sample_count"],
-                "familyCount": pattern["family_count"],
-                "componentKeys": pattern["component_keys"],
+                "patternType": pattern["patternType"],
+                "confidenceTier": pattern["confidenceTier"],
+                "sampleCount": pattern["sampleCount"],
+                "familyCount": pattern["familyCount"],
+                "componentKeys": pattern["componentKeys"],
                 "componentsZh": [
-                    f"{nodes_by_key[key].display_name} ({pattern['component_roles'][key]})"
-                    for key in pattern["component_keys"]
+                    nodes_by_key[key].display_name
+                    for key in pattern["componentKeys"]
                     if key in nodes_by_key
                 ],
                 "summaryZh": _summary_zh(pattern["title"]),
-                "plannerUseZh": _planner_use_zh(pattern["pattern_type"]),
+                "plannerUseZh": _planner_use_zh(pattern["patternType"]),
                 "caveatZh": "这是 planner advisory pattern，不是 hard legality，也不是完整 BD 配方。",
             }
         )
     return {
         "reportId": "phase4-pattern-bootstrap-researcher-review-v1",
-        "status": "ready_for_pattern_bootstrap_gate",
+        "status": "observation_only_agent_review_required",
         "safeArtifactOnly": True,
         "snapshotId": snapshot_id,
         "sampleCount": len(samples),
@@ -721,12 +696,15 @@ def _review_report(
         "familySampleCounts": dict(sorted(family_counts.items())),
         "observationProposalCount": len(proposal["build_design_observations"]),
         "patternProposalCount": len(proposal["patterns"]),
+        "agentReviewCandidateCount": len(selected_patterns),
+        "agentSemanticScopeReviewRequired": True,
         "selectedPatterns": selected_patterns,
         "patternsZh": pattern_summaries,
         "coverageNotesZh": [
             "本轮已经覆盖升华壳、主技能/副技能、support、keystone/notable、unique 与资源/触发/诅咒包。",
             "没有输出或持久化 raw PoB code、raw XML、完整装备表、完整天赋路径或完整 gem/support links。",
             "暗金相关 pattern 只选择 schema 当前能安全表达的 stable key；部分含特殊字符的 physical key 另列 schema follow-up。",
+            "Deterministic builder 只写 observation；外部 Agent 完成 typed semantic-scope review 后才能另行提出 Pattern。",
         ],
         "noRawMatureBuildMaterial": True,
     }

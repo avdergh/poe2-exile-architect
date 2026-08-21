@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 
+from scripts import build_phase45_pattern_bootstrap_proposal as proposal_builder
 from scripts import run_phase4_pattern_bootstrap as pattern_bootstrap
 from server.knowledge import physical_graph as pg
+from server.knowledge import research_models
 
 
 RAW_MARKERS = (
@@ -20,6 +22,55 @@ RAW_MARKERS = (
     "pobb.in/",
     "poe.ninja/",
 )
+
+
+def test_deterministic_pattern_builder_emits_observations_until_agent_scope_review():
+    nodes = {
+        "ascendancy:monk:martial_artist": pg.GraphNode(
+            "ascendancy:monk:martial_artist",
+            "ascendancy",
+            "Martial Artist",
+            ("fixture:phase45",),
+        ),
+        "skill:HollowFocusPlayer": pg.GraphNode(
+            "skill:HollowFocusPlayer",
+            "active_skill",
+            "Hollow Focus",
+            ("fixture:phase45",),
+        ),
+    }
+    samples = [
+        {
+            "sampleId": f"case:builder-{index}",
+            "buildFamilyKey": "bf-builder",
+            "sourceDiversityKey": f"source:{index}",
+            "guideVariantKey": f"variant:{index}",
+            "ascendancyKey": "ascendancy:monk:martial_artist",
+            "mainSkillKey": "skill:HollowFocusPlayer",
+            "activeSkills": ["skill:HollowFocusPlayer"],
+            "supports": [],
+            "passiveKeys": [],
+            "uniqueKeys": [],
+        }
+        for index in range(1, 3)
+    ]
+
+    proposal, selected = proposal_builder._proposal(samples, nodes, "snapshot:phase45")
+    review = proposal_builder._review_report(
+        samples=samples,
+        duplicate_inputs=[],
+        proposal=proposal,
+        selected_patterns=selected,
+        nodes_by_key=nodes,
+        snapshot_id="snapshot:phase45",
+    )
+
+    assert len(proposal["build_design_observations"]) == 1
+    assert proposal["patterns"] == []
+    assert research_models.validate_researcher_output(proposal)["status"] == "accepted"
+    assert review["status"] == "observation_only_agent_review_required"
+    assert review["agentReviewCandidateCount"] == 1
+    assert review["agentSemanticScopeReviewRequired"] is True
 
 
 def test_pattern_bootstrap_accepts_safe_manifest_and_external_pattern_proposal(tmp_path):
@@ -264,7 +315,15 @@ def _proposal():
                 ],
                 "safe_evidence_refs": ["safe:bootstrap-pattern"],
                 "context_requirements": [
-                    {"context_type": "verification_gate_requirement", "task": "Verify in Judge."}
+                    {"context_type": "verification_gate_requirement", "task": "Verify in Judge."},
+                    {
+                        "context_type": "agent_semantic_scope_review",
+                        "evidence_scope": "multi_family",
+                        "claim_scope": "population_pattern",
+                        "verdict": "supported",
+                        "reason": "The external reviewer confirmed the manifest supports this population-level wording.",
+                        "safe_evidence_refs": ["safe:bootstrap-pattern"],
+                    },
                 ],
                 "planner_hint": "Try this only as advisory search-space guidance.",
                 "verification_tasks": ["Verify in Judge."],

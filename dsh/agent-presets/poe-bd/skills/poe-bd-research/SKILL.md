@@ -23,8 +23,10 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - 主会话永不 claim、读取案例证据、编辑 review 或 accept，也不提供串行 fallback。
 - queue 前确认宿主的 Subagent 能共享同一 filesystem、runDir、checkout/runtime 和 Research MCP
   工具面。宿主只有 spawn 能力但无法确认这些共享语义时，失败关闭且不创建队列。
-- 最多同时运行 5 个当前 run 的案例研究 Worker；回访和其他任务不计入该业务上限，但仍受宿主总容量
-  限制。只在 `status.dispatchableCount > 0` 时创建新 Worker；该值包含 queued 与 lease 已过期、可由
+- 目标宿主容量是 6 个活动槽位：Controller 占 1 个，Research Worker、回访和其他
+  Subagent 共享剩余 5 个，超出部分排队。Research Worker 的业务并发上限仍为 5；宿主实际
+  总容量低于 6 时按可用槽位降级，并向用户报告实际 Worker 数，不得宣称已启用 5 Worker。
+  只在 `status.dispatchableCount > 0` 时创建新 Worker；该值包含 queued 与 lease 已过期、可由
   claim 原子回收的 claimed 案例。
 - 这是产品运行态，不得修改源码、测试、文档、schema、安装脚本或 plugin manifest。collector、运行
   绑定或 queue 失败时只报告 safe error 并停止，不在本次运行临场修代码。
@@ -113,9 +115,22 @@ status 命令都使用它；不得退回共享 `.poe-bd-research`。显式目录
 - 不指定 sampleId，不复制 Worker Skill 或逐案研究步骤；自然语言措辞可按当前上下文调整；
 - 宿主支持时使用无父上下文或最小上下文的新 Subagent。
 
-初始创建数取 `dispatchableCount`、有效 worker-count 与宿主可用容量的最小值。维护活动 Research Worker
-集合；任一 Worker 返回后读取其 safe outcome 并重新查询 status：只有 dispatchableCount 仍大于 0 才新建
-Worker 补位，已完成 agent 不处理第二案。
+初始创建数取 `dispatchableCount`、有效 worker-count 与宿主可用 Subagent 槽位的最小值；
+目标 6 总槽位下可同时运行 5 个 Worker。维护活动 Research Worker 集合与待回访队列。任一 Worker
+返回后读取其 safe outcome 并重新查询 status：
+
+1. `dispatchableCount > 0` 时先用释放的槽位创建全新 Worker，再处理回访；
+2. 回访已启用时，把 `sampleId → 原 agent` 加入待回访队列，不在仍有待研究案例时占用槽位；
+3. 已完成 agent 不处理第二个 Research 案例；后续回访仍发送给该原 agent。
+
+### Waiting Cadence
+
+- Worker 运行期间使用宿主的事件等待原语；Codex 使用 `wait_agent(timeout_ms=300000)`。Worker
+  完成或需要关注时由邮箱事件提前唤醒，不忙轮询。
+- 300 秒超时且状态无变化时，不查询 queue status；最多发送一条简短心跳后继续下一个
+  300 秒等待窗口。无变化心跳不得快于 5 分钟，不重复枚举相同的 Worker/lease 状态。
+- 只有 Worker 返回、发生 safe error、需要补位/验收恢复，或用户主动询问状态时才立即唤醒并查询
+  status。心跳不是 status 轮询授权。
 
 - `worker_capacity_reached` / `no_pending_cases` 是无 sampleId 的调度结果，不记业务失败。
 - `staleAcceptingCount > 0` 只表示可能存在中断的验收；不得自动回收或复制。等待对应活动 Worker
@@ -130,9 +145,10 @@ Worker 补位，已完成 agent 不处理第二案。
 
 ## Optional Revisit And Cleanup
 
-回访默认关闭。用户明确要求时，在原 Worker 完成 Research 后续聊同一 agent，只要求判断：高价值内容
-是否充分入库、是否发现工具/流程缺陷；只反馈，不修改。回访不占 Research Worker 上限，可与后续案例
-研究重叠。
+回访默认关闭。用户明确要求时，在原 Worker 完成 Research 后记录到待回访队列；只有
+当前 run 已无 dispatchable 案例且所有活动 Research Worker 均已结算后，才按原 agent 续聊。每次回访
+只要求判断：高价值内容是否充分入库、是否发现工具/流程缺陷；只反馈，不修改。回访和其他
+Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队。
 
 无回访时，只有全部案例 accepted、status 无 queued/claimed/accepting/rejected 且计数一致后才调用
 `mcp__poe_build__cleanup_completed_task_runtime(task_kind="research", task_id=<runId>)`。

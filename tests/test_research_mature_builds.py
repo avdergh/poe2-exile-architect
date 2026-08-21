@@ -1054,9 +1054,13 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert contract["topLevelTemplate"]["caseCoverage"]["supports"] == "evidence_missing"
     assert contract["topLevelTemplate"]["mechanicAudit"] == []
     assert contract["mechanicAuditTemplate"]["wiki"]["sourceRef"].startswith("poe2wiki:page:")
+    assert contract["mechanicAuditTemplate"]["wiki"]["matchKind"].startswith("direct")
+    assert "Research Agent" in contract["mechanicAuditTemplate"]["wiki"]["relevanceReason"]
     assert contract["mechanicAuditTemplate"]["decision"] == "keep"
     assert "contradicts" in contract["allowedValues"]["mechanicAuditWikiStatus"]
     assert "source_artifact" in contract["allowedValues"]["mechanicAuditCorroboration"]
+    assert "search_candidate" in contract["allowedValues"]["mechanicAuditMatchKind"]
+    assert contract["candidateTemplate"]["claimScopeReview"]["verdict"] == "supported"
     assert any("mechanic_chain 和 resource_engine" in rule for rule in contract["rules"])
     assert any("A / B" in rule for rule in contract["rules"])
     family_rules = [rule for rule in contract["rules"] if "BuildFamily" in rule]
@@ -1167,6 +1171,7 @@ def test_init_review_creates_pretty_utf8_skeleton_and_never_overwrites(tmp_path)
     assert text.endswith("\n")
     assert '\n  "caseCoverage": {' in text
     assert payload["reportId"] == "poe_bd_research_review"
+    assert payload["reviewContractVersion"] == "phase4-safe-review-v2"
     assert payload["safeArtifactOnly"] is True
     assert payload["artifactIdentity"] == {
         "sampleId": claimed["sampleId"],
@@ -1410,6 +1415,7 @@ def test_validate_only_structural_errors_return_validation_failed_not_runtime_fa
     review_file = output_dir / claimed["reviewFile"]
     review_file.parent.mkdir(parents=True)
     payload = {
+        "reviewContractVersion": "phase4-safe-review-v2",
         "safeArtifactOnly": True,
         "candidateReviews": [
             {
@@ -1425,6 +1431,13 @@ def test_validate_only_structural_errors_return_validation_failed_not_runtime_fa
                 "verificationGate": "测试 gate",
                 "verificationTasks": [],
                 "transferScope": "family",
+                "claimScopeReview": {
+                    "evidenceScope": "current_case",
+                    "claimScope": "case_only",
+                    "verdict": "supported",
+                    "reason": "The Agent confirmed this is a current-case claim.",
+                    "safeEvidenceRefs": [f"evidence:{claimed['packetSafeHash'][:16]}"],
+                },
             }
         ],
         "deepResearchRecords": [],
@@ -1538,9 +1551,9 @@ def test_validation_only_redacts_copyable_diagnostics_and_returns_safe_paths():
     assert by_loc[("mechanicAudit", "entries", 0, "claim")]["blockingFlags"] == [
         "long_guide_prose_like"
     ]
-    assert by_loc[
-        ("deepRecordWrite", "facts", "validationIssues", 0, "submittedValue")
-    ]["blockingFlags"] == ["raw_account_or_character_url"]
+    assert by_loc[("deepRecordWrite", "facts", "validationIssues", 0, "submittedValue")][
+        "blockingFlags"
+    ] == ["raw_account_or_character_url"]
     assert any(
         issue["loc"] == ["caveats", 1] and issue["type"] == "copy_safety"
         for issue in result["validationIssues"]
@@ -1617,6 +1630,52 @@ def test_validation_only_counts_forbidden_field_failures_as_blocking():
         }
     ]
     assert "private-account" not in str(result)
+
+
+def test_copy_safety_validation_failure_maps_derived_path_to_safe_origin():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    report = acceptance._copy_safety_validation_failure_report(
+        {"deferredCandidates": [{"caveats": ["机制说明" * 500]}]},
+        origin_sidecar={
+            ("deferredCandidates", "0"): {
+                "originLoc": ["deepResearchRecords", 3, "content"],
+                "originKind": "deep_research_record",
+                "safeTitle": "资源闭环",
+            }
+        },
+    )
+
+    issue = report["deferredCandidates"][0]["validationIssues"][0]
+    assert issue["originLoc"] == ["deepResearchRecords", 3, "content"]
+    assert issue["originKind"] == "deep_research_record"
+    assert issue["safeTitle"] == "资源闭环"
+    assert issue["flags"] == ["long_guide_prose_like"]
+    assert "机制说明" not in str(report)
+
+
+def test_copy_safety_origin_sidecar_does_not_guess_between_duplicate_titles():
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    sidecar = acceptance._diagnostic_origin_sidecar(
+        {
+            "deepResearchRecords": [
+                {"title": "同名记录", "recordKind": "resource_engine"},
+                {"title": "同名记录", "recordKind": "mechanic_chain"},
+            ]
+        },
+        {
+            "deferredCandidates": [
+                {
+                    "titleZh": "同名记录",
+                    "candidateKind": "deep_research_record",
+                    "caveats": ["机制说明" * 500],
+                }
+            ]
+        },
+    )
+
+    assert sidecar == {}
 
 
 def test_validation_transport_report_id_exemption_rejects_raw_markers_and_pob_codes():
@@ -1763,9 +1822,7 @@ def test_durable_write_preflight_treats_generic_oserror_as_unknown(tmp_path, mon
     assert result["unknownTargets"] == ["intakeLedger"]
 
 
-def test_validation_readiness_is_independent_from_durable_write_permission(
-    tmp_path, monkeypatch
-):
+def test_validation_readiness_is_independent_from_durable_write_permission(tmp_path, monkeypatch):
     from scripts import research_mature_builds
 
     source_file = tmp_path / "sample.txt"
@@ -2443,6 +2500,7 @@ def test_accept_identity_allows_plural_safe_evidence_refs(tmp_path, monkeypatch)
     review_file = output_dir / claimed["reviewFile"]
     review_file.parent.mkdir(parents=True)
     payload = {
+        "reviewContractVersion": "phase4-safe-review-v2",
         "safeArtifactOnly": True,
         "deepResearchRecords": [
             {
@@ -2481,6 +2539,68 @@ def test_accept_identity_allows_plural_safe_evidence_refs(tmp_path, monkeypatch)
 
     assert accepted["status"] == "accepted"
     assert calls[0]["review_file"] == review_file
+
+
+def test_v1_contract_upgrade_keeps_claimed_lease_and_reuses_ordinary_accept(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-research-temp-contract-upgrade",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+    legacy = json.loads(review_file.read_text(encoding="utf-8"))
+    legacy.pop("reviewContractVersion")
+    review_file.write_text(json.dumps(legacy), encoding="utf-8")
+
+    upgrade = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+    )
+
+    assert upgrade["status"] == "validation_failed"
+    assert upgrade["errorCode"] == "review_contract_upgrade_required"
+    assert upgrade["queueStateChanged"] is False
+    assert "ordinary accept" in upgrade["nextAction"]
+    assert research_mature_builds.queue_status(output_dir=output_dir)["claimedCount"] == 1
+
+    legacy["reviewContractVersion"] = "phase4-safe-review-v2"
+    review_file.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
+        lambda **_kwargs: {
+            "status": "accepted",
+            "acceptedPatternCount": 0,
+            "acceptedDeepRecordCount": 1,
+            "acceptedSemanticEdgeCount": 0,
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "accepted"},
+            "deepRecordWrite": {"status": "accepted"},
+            "semanticEdgeWrite": {"status": "accepted"},
+        },
+    )
+
+    accepted = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+    )
+
+    assert accepted["status"] == "accepted"
+    assert research_mature_builds.queue_status(output_dir=output_dir)["acceptedCount"] == 1
 
 
 def test_retry_accept_rejected_case_without_lease(tmp_path, monkeypatch):
@@ -2983,6 +3103,7 @@ def _expire_case_lease(db_path: Path, sample_id: str) -> None:
 
 def _write_claim_review(path: Path, claimed: dict, *, case_ref: str | None = None) -> None:
     payload = {
+        "reviewContractVersion": "phase4-safe-review-v2",
         "safeArtifactOnly": True,
         "deepResearchRecords": [
             {
@@ -3122,7 +3243,15 @@ def test_compact_accept_result_strips_bulk_blocks_and_keeps_quality_summary():
         },
         "sourceEvidenceDiagnostics": {"available": True, "unstructuredSourceSupportMentions": []},
         "patternWrite": {"status": "accepted", "patternIds": ["bdp-1"]},
-        "deepRecordWrite": {"status": "accepted", "recordWrites": [{"title": "long canonical"}]},
+        "deepRecordWrite": {
+            "status": "accepted",
+            "recordWrites": [
+                {
+                    "title": "long canonical",
+                    "crossFamilyDuplicateAdvisories": ["safe duplicate advisory"],
+                }
+            ],
+        },
         "deferredCandidates": [],
         "noRawMatureBuildMaterial": True,
     }
@@ -3141,6 +3270,7 @@ def test_compact_accept_result_strips_bulk_blocks_and_keeps_quality_summary():
     assert "deepRecordWrite" not in compact
     assert "deferredCandidates" not in compact
     assert compact["acceptedDeepRecordCount"] == 2
+    assert compact["writeAdvisoryCounts"] == {"crossFamilyDuplicate": 1}
     assert compact["status"] == "accepted"
     assert compact["noRawMatureBuildMaterial"] is True
 
@@ -3192,6 +3322,10 @@ def test_research_packet_captures_tree_jewels_via_sockets_mapping():
     assert counts["treeSocketedJewelCount"] == 1
     assert counts["embeddedJewelCount"] == 0
     assert counts["socketedJewelCount"] == 1
+    assert [item["nodeId"] for item in counts["activeAllocatedFilled"]] == [socket_ids[0]]
+    assert counts["activeAllocatedEmpty"] == []
+    assert counts["activeSocketedUnallocated"] == []
+    assert counts["otherSpecSocketed"] == []
     assert isinstance(counts["countNotes"], list)
     assert any("active passive spec" in note for note in counts["countNotes"])
     assert any("tree socket" in note for note in counts["countNotes"])
@@ -3275,6 +3409,43 @@ def test_research_packet_jewel_counts_allocated_scope_is_active_spec_only():
     assert counts["treeSocketedJewelCount"] == 0
     assert any("carry no socketed tree jewel" in note for note in counts["countNotes"])
     assert any("jewel socket" in item for item in research_packet.jewel_advisories(packet))
+
+
+def test_research_packet_jewel_counts_classifies_active_and_other_specs_per_socket():
+    from server.knowledge import research_packet
+
+    metadata = research_packet._passive_node_metadata("0_5")
+    socket_ids = [
+        node_id
+        for node_id, meta in metadata.items()
+        if "jewel_socket" in (meta.get("nodeTypes") or [])
+    ]
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Mercenary" ascendClassName="Gemling Legionnaire" mainSocketGroup="1" />
+  <Tree activeSpec="2">
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]}"><Sockets><Socket nodeId="{socket_ids[0]}" itemId="1"/></Sockets></Spec>
+    <Spec treeVersion="0_5" nodes="{socket_ids[0]},{socket_ids[1]}">
+      <Sockets>
+        <Socket nodeId="{socket_ids[0]}" itemId="2"/>
+        <Socket nodeId="{socket_ids[2]}" itemId="3"/>
+      </Sockets>
+    </Spec>
+  </Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nOther Spec Jewel\nEmerald\nItem Level: 80</Item>
+    <Item id="2">Rarity: RARE\nActive Jewel\nEmerald\nItem Level: 80</Item>
+    <Item id="3">Rarity: RARE\nUnallocated Jewel\nEmerald\nItem Level: 80</Item>
+    <ItemSet id="1" />
+  </Items>
+</PathOfBuilding2>
+"""
+    counts = research_packet.jewel_counts({"rawContext": {"rawXml": xml}})
+
+    assert [item["nodeId"] for item in counts["activeAllocatedFilled"]] == [socket_ids[0]]
+    assert [item["nodeId"] for item in counts["activeAllocatedEmpty"]] == [socket_ids[1]]
+    assert [item["nodeId"] for item in counts["activeSocketedUnallocated"]] == [socket_ids[2]]
+    assert [item["nodeId"] for item in counts["otherSpecSocketed"]] == [socket_ids[0]]
 
 
 def test_research_packet_jewel_counts_drops_stale_socket_references():
@@ -3711,9 +3882,7 @@ def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path, monkeypatc
     replace_observations: list[dict] = []
 
     def replace_after_observing_complete_old_packet(source, destination):
-        replace_observations.append(
-            json.loads(Path(destination).read_text(encoding="utf-8"))
-        )
+        replace_observations.append(json.loads(Path(destination).read_text(encoding="utf-8")))
         assert Path(source).name != "packet.json"
         real_replace(source, destination)
 
@@ -3931,6 +4100,27 @@ def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
     review_file = output_dir / claimed["reviewFile"]
     review_file.parent.mkdir(parents=True)
     _write_claim_review(review_file, claimed)
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["artifactIdentity"] = {
+        "sampleId": claimed["sampleId"],
+        "caseRef": claimed["sourceHashRef"],
+        "safeEvidenceRef": f"evidence:{claimed['packetSafeHash'][:16]}",
+        "packetSafeHash": claimed["packetSafeHash"],
+    }
+    review["deepResearchRecords"] = [
+        {**review["deepResearchRecords"][0], "title": "Selected record"},
+        {**review["deepResearchRecords"][0], "title": "Other record"},
+    ]
+    review["candidateReviews"] = [{"title": "Excluded candidate"}]
+    review["semanticEdges"] = [{"edge_type": "synergizes_with"}]
+    review["mechanicAudit"] = [
+        {
+            "affectedRecords": ["Selected record", "Other record"],
+            "affectedCandidates": ["Excluded candidate"],
+        },
+        {"affectedRecords": ["Other record"], "affectedCandidates": []},
+    ]
+    review_file.write_text(json.dumps(review), encoding="utf-8")
     calls: list[dict] = []
 
     def fake_accept(**kwargs):
@@ -3969,6 +4159,46 @@ def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
     assert "note" in result["singleRecordValidation"]
     payload = calls[0]["review_payload"]
     assert len(payload["deepResearchRecords"]) == 1
+    assert payload["candidateReviews"] == []
+    assert payload["semanticEdges"] == []
+    assert payload["mechanicAudit"] == [
+        {"affectedRecords": ["Selected record"], "affectedCandidates": []}
+    ]
+    assert result["sliceContext"] == {
+        "recordIndex": 0,
+        "recordTitle": "Selected record",
+        "excludedMechanicAuditCount": 1,
+        "excludedCandidateCount": 1,
+        "excludedSemanticEdgeCount": 1,
+        "outOfSliceReferences": ["Excluded candidate", "Other record"],
+    }
+
+
+def test_only_record_slice_excludes_audit_when_record_title_is_ambiguous():
+    from scripts import research_mature_builds
+
+    sliced, context = research_mature_builds._slice_review_for_record(
+        {
+            "deepResearchRecords": [
+                {"title": "Shared title", "recordKind": "resource_engine"},
+                {"title": "Shared title", "recordKind": "mechanic_chain"},
+            ],
+            "candidateReviews": [],
+            "semanticEdges": [],
+            "mechanicAudit": [
+                {
+                    "affectedRecords": ["Shared title"],
+                    "affectedCandidates": [],
+                }
+            ],
+        },
+        0,
+    )
+
+    assert sliced["mechanicAudit"] == []
+    assert context["ambiguousRecordTitle"] == "Shared title"
+    assert context["ambiguousMechanicAuditCount"] == 1
+    assert context["outOfSliceReferences"] == ["Shared title"]
 
 
 def test_accept_only_record_guards_out_of_range_and_non_validation(tmp_path, monkeypatch):

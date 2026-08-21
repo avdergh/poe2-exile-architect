@@ -74,6 +74,13 @@ MECHANIC_AUDIT_CLAIM_TYPES = {
     "conversion_or_transform",
 }
 MECHANIC_AUDIT_WIKI_STATUSES = {"supports", "contradicts", "silent", "unavailable"}
+MECHANIC_AUDIT_MATCH_KINDS = {
+    "direct",
+    "redirect",
+    "search_candidate",
+    "local_corpus",
+    "unavailable",
+}
 MECHANIC_AUDIT_DECISIONS = {"keep", "revise", "defer"}
 MECHANIC_AUDIT_CORROBORATION = {
     "source_artifact",
@@ -209,38 +216,100 @@ def _unresolved_jewel_sockets_deferred(
     review: dict[str, Any],
     jewel_counts: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Defer a case whose allocated jewel sockets carry no socketed jewel and whose review
-    never declares the jewel state.
-
-    ``tree_data_missing`` stays advisory-only (the packet cannot prove sockets are empty);
-    a review that mentions jewels anywhere counts as a declaration.
-    """
+    """Require typed declarations for anomalous active/other-spec tree-jewel assignments."""
     if not isinstance(jewel_counts, dict):
         return []
     if str(jewel_counts.get("status") or "") in {"tree_data_missing", "sockets_absent"}:
         return []
-    allocated = int(jewel_counts.get("allocatedJewelSocketCount") or 0)
-    # Only tree sockets count toward the closure gate: a jewel in an embedded equipment
-    # socket cannot fill an empty tree socket, so it must not suppress the declaration.
-    tree_socketed = jewel_counts.get("treeSocketedJewelCount")
-    if tree_socketed is None:
-        tree_socketed = jewel_counts.get("socketedJewelCount") or 0
-    tree_socketed = int(tree_socketed or 0)
-    if allocated <= 0 or tree_socketed > 0:
-        return []
-    if _review_declares_jewels(review):
+    state_fields = {
+        "activeAllocatedFilled",
+        "activeAllocatedEmpty",
+        "activeSocketedUnallocated",
+        "otherSpecSocketed",
+    }
+    if not any(field in jewel_counts for field in state_fields):
+        allocated = int(jewel_counts.get("allocatedJewelSocketCount") or 0)
+        tree_socketed = int(
+            jewel_counts.get("treeSocketedJewelCount")
+            if jewel_counts.get("treeSocketedJewelCount") is not None
+            else jewel_counts.get("socketedJewelCount") or 0
+        )
+        if allocated <= 0 or tree_socketed > 0 or _review_declares_jewels(review):
+            return []
+        sample_id = str((review.get("artifactIdentity") or {}).get("sampleId") or "")
+        return [
+            {
+                "titleZh": "已分配珠宝槽未声明珠宝状态",
+                "sampleId": sample_id,
+                "reason": "unresolved_jewel_sockets",
+                "componentKeys": [],
+                "caveats": [
+                    "Legacy jewel counts cannot identify individual nodes; declare the empty or "
+                    "socketed tree-jewel state explicitly before accepting"
+                ],
+                "candidateKind": "research_case",
+            }
+        ]
+    expected: set[tuple[str, str, str, str]] = set()
+    for field, state in (
+        ("activeAllocatedFilled", "filled"),
+        ("activeAllocatedEmpty", "empty"),
+        ("activeSocketedUnallocated", "socketed_unallocated"),
+        ("otherSpecSocketed", "other_spec"),
+    ):
+        for item in jewel_counts.get(field) or []:
+            if not isinstance(item, dict):
+                continue
+            expected.add(
+                (
+                    str(item.get("nodeId") or ""),
+                    str(item.get("specId") or ""),
+                    str(item.get("itemId") or ""),
+                    state,
+                )
+            )
+    submitted: set[tuple[str, str, str, str]] = set()
+    for record in review.get("deepResearchRecords") or []:
+        if not isinstance(record, dict):
+            continue
+        typed_payload = record.get("typedPayload") or {}
+        if not isinstance(typed_payload, dict):
+            continue
+        for item in typed_payload.get("jewelSocketStates") or []:
+            if not isinstance(item, dict):
+                continue
+            submitted.add(
+                (
+                    str(item.get("nodeId") or ""),
+                    str(item.get("specId") or ""),
+                    str(item.get("itemId") or ""),
+                    str(item.get("state") or ""),
+                )
+            )
+    invalid = sorted(submitted - expected)
+    required = {item for item in expected if item[3] != "filled"}
+    missing = sorted(required - submitted)
+    if not invalid and not missing:
         return []
     sample_id = str((review.get("artifactIdentity") or {}).get("sampleId") or "")
     return [
         {
-            "titleZh": "已分配珠宝槽未声明珠宝状态",
+            "titleZh": "天赋树珠宝槽状态未闭合",
             "sampleId": sample_id,
-            "reason": "unresolved_jewel_sockets",
+            "reason": "invalid_schema" if invalid else "unresolved_jewel_sockets",
             "componentKeys": [],
             "caveats": [
-                f"{allocated} allocated jewel socket(s) carry no socketed jewel and the review "
-                "never mentions jewels; declare the jewel state explicitly (empty sockets, or "
-                "socketed gems with their radius/Time-Lost conditions) before accepting"
+                "jewelSocketStates must exactly declare packet-derived empty, active-unallocated, "
+                "and other-spec assignments; equipment jewel sockets cannot close tree sockets"
+            ],
+            "validationIssues": [
+                {
+                    "loc": ["deepResearchRecords", "typedPayload", "jewelSocketStates"],
+                    "msg": (
+                        f"invalid declarations={len(invalid)}, missing required states={len(missing)}"
+                    ),
+                    "type": "value_error",
+                }
             ],
             "candidateKind": "research_case",
         }
@@ -654,11 +723,15 @@ def accept_deep_review_candidates(
         "coverageAdvisories": coverage_advisories,
         "recordKindAdvisories": record_kind_advisories,
     }
+    copy_safety_origins = _diagnostic_origin_sidecar(review, prewrite_diagnostics)
     try:
         _assert_safe(prewrite_diagnostics)
     except ValueError:
         if validation_only:
-            return _copy_safety_validation_failure_report(prewrite_diagnostics)
+            return _copy_safety_validation_failure_report(
+                prewrite_diagnostics,
+                origin_sidecar=copy_safety_origins,
+            )
         raise
     service = research_memory.ResearchMemoryService(
         db_path=Path(db_path),
@@ -720,6 +793,9 @@ def accept_deep_review_candidates(
         "recordWrites": [],
         "knowledgeKeys": [],
         "buildFamilyKeys": [],
+        "inferredBuildFamilyKeys": [],
+        "resolvedTargetFamilyKeys": [],
+        "familyResolutionPreview": [],
         "createdRecordCount": 0,
         "updatedRecordCount": 0,
         "evidenceAddedCount": 0,
@@ -865,6 +941,15 @@ def accept_deep_review_candidates(
         if deep_result.get("status") == "accepted"
         else 0,
         "acceptedBuildFamilyKeys": list(deep_result.get("buildFamilyKeys") or [])
+        if records_visible
+        else [],
+        "inferredBuildFamilyKeys": list(deep_result.get("inferredBuildFamilyKeys") or [])
+        if records_visible
+        else [],
+        "resolvedTargetFamilyKeys": list(deep_result.get("resolvedTargetFamilyKeys") or [])
+        if records_visible
+        else [],
+        "familyResolutionPreview": list(deep_result.get("familyResolutionPreview") or [])
         if records_visible
         else [],
         "siblingFamilyHints": list(deep_result.get("siblingFamilyHints") or [])
@@ -1982,20 +2067,34 @@ def _build_payload(
                 }
             )
             continue
-        overclaim = research_models.case_observation_overclaim_error(
-            title=str(candidate["title"]),
-            summary=str(candidate["summary"]),
-            planner_hint=str(candidate["plannerHint"]),
-        )
-        if overclaim:
+        scope_review = candidate["claimScopeReview"]
+        if scope_review["verdict"] != "supported":
+            rewrite_required = scope_review["verdict"] == "rewrite_required"
             deferred.append(
                 {
                     "titleZh": candidate["title"],
                     "sampleId": sample_id,
-                    "reason": "overclaimed_pattern_confidence",
+                    "reason": (
+                        "agent_semantic_scope_rewrite_required"
+                        if rewrite_required
+                        else "agent_semantic_scope_deferred"
+                    ),
                     "componentKeys": [],
-                    "caveats": [overclaim],
+                    "caveats": [scope_review["reason"]],
                     "candidateKind": "build_pattern",
+                    **(
+                        {
+                            "validationIssues": [
+                                {
+                                    "loc": ["candidateReviews", "claimScopeReview"],
+                                    "msg": scope_review["reason"],
+                                    "type": "agent_semantic_scope_rewrite_required",
+                                }
+                            ]
+                        }
+                        if rewrite_required
+                        else {}
+                    ),
                 }
             )
             continue
@@ -2254,6 +2353,14 @@ def _build_payload(
                 {
                     "context_type": "verification_gate_requirement",
                     "task": candidate["verificationGate"],
+                },
+                {
+                    "context_type": "agent_semantic_scope_review",
+                    "evidence_scope": scope_review["evidenceScope"],
+                    "claim_scope": scope_review["claimScope"],
+                    "verdict": "supported",
+                    "reason": scope_review["reason"],
+                    "safe_evidence_refs": scope_review["safeEvidenceRefs"],
                 },
             ],
             "planner_hint": candidate["plannerHint"],
@@ -3358,6 +3465,36 @@ def _prepare_mechanic_audit(
                     f"must be one of {sorted(MECHANIC_AUDIT_WIKI_STATUSES)}",
                 )
             )
+        match_kind = str(wiki.get("matchKind") or "").strip()
+        relevance_reason = str(wiki.get("relevanceReason") or "").strip()
+        if match_kind not in MECHANIC_AUDIT_MATCH_KINDS:
+            issues.append(
+                issue(
+                    f"mechanicAudit[{index}].wiki.matchKind",
+                    f"must be one of {sorted(MECHANIC_AUDIT_MATCH_KINDS)}",
+                )
+            )
+        if not relevance_reason or len(relevance_reason) > 320:
+            issues.append(
+                issue(
+                    f"mechanicAudit[{index}].wiki.relevanceReason",
+                    "must explain the Agent content judgment in 1-320 characters",
+                )
+            )
+        if wiki_status == "unavailable" and match_kind != "unavailable":
+            issues.append(
+                issue(
+                    f"mechanicAudit[{index}].wiki.matchKind",
+                    "wiki.status=unavailable requires matchKind=unavailable",
+                )
+            )
+        if wiki_status != "unavailable" and match_kind == "unavailable":
+            issues.append(
+                issue(
+                    f"mechanicAudit[{index}].wiki.matchKind",
+                    "matchKind=unavailable requires wiki.status=unavailable",
+                )
+            )
         if decision not in MECHANIC_AUDIT_DECISIONS:
             issues.append(
                 issue(
@@ -3427,14 +3564,15 @@ def _prepare_mechanic_audit(
         source_ref = str(wiki.get("sourceRef") or "").strip()
         if " / " in page_title:
             compound_wiki_query_count += 1
-        if wiki_status in {"supports", "contradicts"}:
+        if wiki_status != "unavailable":
             if not page_title:
                 issues.append(issue(f"mechanicAudit[{index}].wiki.pageTitle", "must be non-empty"))
             if not POE2WIKI_REVISION_REF.fullmatch(source_ref):
                 issues.append(
                     issue(
                         f"mechanicAudit[{index}].wiki.sourceRef",
-                        "must be a revision-pinned poe2wiki:page:<id>:rev:<id> reference",
+                        "a content judgment requires a revision-pinned "
+                        "poe2wiki:page:<id>:rev:<id> reference",
                     )
                 )
             else:
@@ -3534,6 +3672,7 @@ def _prepare_mechanic_audit(
                 "claim": claim,
                 "claimType": claim_type,
                 "wikiStatus": wiki_status,
+                "matchKind": match_kind,
                 "decision": decision,
                 "sourceRef": source_ref or None,
                 "corroboration": corroboration,
@@ -3748,6 +3887,20 @@ def _structural_schema_issues(
                     "deep review safeEvidenceRefs must be a list",
                 )
             )
+            safe_evidence = []
+        try:
+            _claim_scope_review(
+                candidate.get("claimScopeReview"),
+                transfer_scope=str(candidate.get("transferScope") or "family").strip(),
+                candidate_safe_evidence_refs=_safe_evidence_refs(candidate),
+            )
+        except ValueError as exc:
+            issues.append(
+                _container_issue(
+                    ["candidateReviews", index, "claimScopeReview"],
+                    str(exc),
+                )
+            )
         if issues:
             groups.append((sample_id, "build_pattern", issues))
     records = review.get("deepResearchRecords") or []
@@ -3859,6 +4012,11 @@ def _candidate_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
         components = candidate.get("components") or []
         if not isinstance(components, list):
             raise ValueError("deep review components must be a list")
+        claim_scope_review = _claim_scope_review(
+            candidate.get("claimScopeReview"),
+            transfer_scope=str(candidate.get("transferScope") or "family").strip(),
+            candidate_safe_evidence_refs=_safe_evidence_refs(candidate),
+        )
         normalized.append(
             {
                 "sampleId": _required(candidate, "sampleId"),
@@ -3882,12 +4040,70 @@ def _candidate_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
                     candidate, "applicabilityRequirements"
                 ),
                 "exclusionConditions": _optional_string_list(candidate, "exclusionConditions"),
+                "claimScopeReview": claim_scope_review,
                 "gamePatch": str(candidate.get("gamePatch") or "0.5.4"),
                 "passiveTreeVersion": str(candidate.get("passiveTreeVersion") or "0_5"),
                 "pobVersionOrCommit": str(candidate.get("pobVersionOrCommit") or "unknown"),
             }
         )
     return normalized
+
+
+def _claim_scope_review(
+    value: Any,
+    *,
+    transfer_scope: str,
+    candidate_safe_evidence_refs: list[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("candidate claimScopeReview must be an object")
+    required = {
+        "evidenceScope",
+        "claimScope",
+        "verdict",
+        "reason",
+        "safeEvidenceRefs",
+    }
+    if set(value) != required:
+        raise ValueError("candidate claimScopeReview must contain only the canonical fields")
+    evidence_scope = str(value.get("evidenceScope") or "").strip()
+    claim_scope = str(value.get("claimScope") or "").strip()
+    verdict = str(value.get("verdict") or "").strip()
+    reason = str(value.get("reason") or "").strip()
+    evidence_refs = value.get("safeEvidenceRefs")
+    if evidence_scope != "current_case":
+        raise ValueError("claimScopeReview.evidenceScope must be current_case")
+    expected_claim_scope = (
+        "conditional_transfer_hypothesis" if transfer_scope == "component" else "case_only"
+    )
+    if claim_scope != expected_claim_scope:
+        raise ValueError(
+            "claimScopeReview.claimScope must be case_only for family candidates and "
+            "conditional_transfer_hypothesis for component candidates"
+        )
+    if verdict not in {"supported", "rewrite_required", "defer"}:
+        raise ValueError("claimScopeReview.verdict must be supported, rewrite_required, or defer")
+    if not reason or len(reason) > 320:
+        raise ValueError("claimScopeReview.reason must contain 1-320 characters")
+    if (
+        not isinstance(evidence_refs, list)
+        or not evidence_refs
+        or len(evidence_refs) > 12
+        or any(not isinstance(item, str) or not item.strip() for item in evidence_refs)
+    ):
+        raise ValueError("claimScopeReview.safeEvidenceRefs must be a non-empty string list")
+    normalized_refs = sorted({str(item).strip() for item in evidence_refs})
+    if not set(normalized_refs) <= set(candidate_safe_evidence_refs):
+        raise ValueError(
+            "claimScopeReview.safeEvidenceRefs must be present on the candidate safeEvidenceRefs"
+        )
+    return {
+        "evidenceScope": evidence_scope,
+        "claimScope": claim_scope,
+        "verdict": verdict,
+        "reason": reason,
+        "safeEvidenceRefs": normalized_refs,
+    }
 
 
 def _unstructured_candidate_source_mentions(
@@ -5018,7 +5234,69 @@ def _assert_safe(report: dict[str, Any]) -> None:
         raise ValueError(f"unsafe deep review acceptance report failed copy-safety: {flags}")
 
 
-def _copy_safety_validation_failure_report(value: dict[str, Any]) -> dict[str, Any]:
+def _diagnostic_origin_sidecar(
+    review: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> dict[tuple[str, ...], dict[str, Any]]:
+    """Map derived diagnostic paths back to safe source-review locations."""
+
+    def unique_title_indexes(values: Any) -> dict[str, int]:
+        indexes: dict[str, list[int]] = {}
+        for index, value in enumerate(values or []):
+            if not isinstance(value, dict):
+                continue
+            title = str(value.get("title") or "").strip()
+            if title:
+                indexes.setdefault(title, []).append(index)
+        return {title: positions[0] for title, positions in indexes.items() if len(positions) == 1}
+
+    records = unique_title_indexes(review.get("deepResearchRecords"))
+    candidates = unique_title_indexes(review.get("candidateReviews"))
+    sidecar: dict[tuple[str, ...], dict[str, Any]] = {}
+    for index, item in enumerate(diagnostics.get("deferredCandidates") or []):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("titleZh") or "").strip()
+        kind = str(item.get("candidateKind") or "research_case")
+        validation_issues = item.get("validationIssues") or []
+        issue_loc = None
+        if validation_issues and isinstance(validation_issues[0], dict):
+            candidate_loc = validation_issues[0].get("loc")
+            if isinstance(candidate_loc, list):
+                issue_loc = candidate_loc
+        if issue_loc is None and kind == "deep_research_record" and title in records:
+            issue_loc = ["deepResearchRecords", records[title]]
+        if (
+            issue_loc is None
+            and kind in {"build_pattern", "candidate_review"}
+            and title in candidates
+        ):
+            issue_loc = ["candidateReviews", candidates[title]]
+        if issue_loc is not None:
+            sidecar[("deferredCandidates", str(index))] = {
+                "originLoc": issue_loc,
+                "originKind": kind,
+                "safeTitle": title,
+            }
+    return sidecar
+
+
+def _longest_origin_match(
+    loc: tuple[str, ...],
+    sidecar: dict[tuple[str, ...], dict[str, Any]],
+) -> dict[str, Any]:
+    for length in range(len(loc), 0, -1):
+        match = sidecar.get(loc[:length])
+        if match is not None:
+            return match
+    return {}
+
+
+def _copy_safety_validation_failure_report(
+    value: dict[str, Any],
+    *,
+    origin_sidecar: dict[tuple[str, ...], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return path-only copy-safety issues for validate-only without echoing source text."""
 
     diagnostics = _copy_safety_diagnostics(value)
@@ -5029,14 +5307,22 @@ def _copy_safety_validation_failure_report(value: dict[str, Any]) -> dict[str, A
         }
         for path in copy_safety.find_forbidden_paths(value)
     )
-    issues = [
-        {
+    issues = []
+    for item in diagnostics:
+        loc = [str(part) for part in item["loc"]]
+        origin = _longest_origin_match(tuple(loc), origin_sidecar or {})
+        issue = {
             "loc": item["loc"],
+            "flags": list(item["flags"]),
             "msg": "review text failed copy-safety: " + ", ".join(item["flags"]),
             "type": "copy_safety",
         }
-        for item in diagnostics
-    ]
+        if origin:
+            issue["originLoc"] = origin.get("originLoc", item["loc"])
+            issue["originKind"] = origin.get("originKind", "unknown")
+            if origin.get("safeTitle"):
+                issue["safeTitle"] = origin["safeTitle"]
+        issues.append(issue)
     if not issues:
         issues.append(
             {
@@ -5064,7 +5350,14 @@ def _copy_safety_validation_failure_report(value: dict[str, Any]) -> dict[str, A
                 "validationIssues": issues,
             }
         ],
-        "copySafetyDiagnostics": diagnostics,
+        "copySafetyDiagnostics": [
+            {
+                key: issue[key]
+                for key in ("loc", "originLoc", "originKind", "safeTitle", "flags")
+                if key in issue
+            }
+            for issue in issues
+        ],
         "patternWrite": {"status": "accepted", "validationOnly": True},
         "deepRecordWrite": {"status": "accepted", "validationOnly": True},
         "semanticEdgeWrite": {"status": "accepted", "validationOnly": True},

@@ -2070,10 +2070,11 @@ def find_supports_for(skill: str, limit: int = 25) -> dict[str, Any]:
 
 @mcp.tool()
 def explain_mechanic(topic: str) -> dict[str, Any]:
-    """Explain a Path of Exile 2 mechanic (corpus — offline, deterministic).
+    """Read one exact PoE2 mechanic reference or return local discovery candidates.
 
     Returns our evergreen `principle` (hand-authored) plus the matching auto-refreshed `wiki`
-    page when one exists (attributed: PoE2 Wiki, CC BY-NC-SA 3.0 — cite it when you use it).
+    page when an exact title exists (attributed: PoE2 Wiki, CC BY-NC-SA 3.0). Fuzzy/full-text
+    matches are candidates only; fetch a selected exact title and let the Agent judge relevance.
     Curated principle topics include: resistances, ailments, armour, evasion, energy_shield,
     spirit, critical_strike, ehp, accuracy, recovery. If nothing matches, use `search_mechanics`
     to browse, or `lookup_mechanic` to fetch a page live from the wiki.
@@ -2085,8 +2086,9 @@ def explain_mechanic(topic: str) -> dict[str, Any]:
 def search_mechanics(query: str, limit: int = 8) -> dict[str, Any]:
     """Full-text search the bundled wiki mechanics tier (corpus — offline, deterministic).
 
-    Returns matching page titles + snippets + source links so you can pick one to read with
-    `explain_mechanic`. Wiki content is PoE2 Wiki, CC BY-NC-SA 3.0 — attribute it when quoting.
+    Returns candidate page titles + snippets + source links; candidates never authorize a claim.
+    Pick one, read it with `explain_mechanic(exact_title)`, then let the Agent record
+    supports/contradicts/silent. Wiki content is PoE2 Wiki, CC BY-NC-SA 3.0.
     For a page not bundled here, use `lookup_mechanic` (live wiki fetch).
     """
     results = corpus.search_mechanics(query, limit=limit)
@@ -3361,16 +3363,22 @@ def get_meta_archetype_trends(league: str | None = None, limit: int = 10) -> dic
 
 
 @mcp.tool()
-def lookup_mechanic(topic: str) -> dict[str, Any]:
-    """Fetch a concise mechanic/skill/item explanation LIVE from the PoE2 Wiki (live — network).
+def lookup_mechanic(
+    topic: str,
+    cursor: int | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Fetch a direct PoE2 Wiki page or paged full-text candidates (live — network).
 
     The long-tail escape hatch: use this only when `explain_mechanic`/`search_mechanics` don't
-    have the topic in the bundled corpus. Returns a short lead extract + source link, attributed
-    (PoE2 Wiki, CC BY-NC-SA 3.0 — cite it). Time-sensitive and may be outdated; the engine
+    have the topic in the bundled corpus. Direct/redirect pages include a bounded extract. A
+    full-text fallback returns candidates only; fetch a selected exact title, read it, and let the
+    Agent judge supports/contradicts/silent. Page identity never authorizes semantic relevance.
+    Content is attributed (PoE2 Wiki, CC BY-NC-SA 3.0 — cite it). Time-sensitive; the engine
     remains the source of truth for any number. Returns {available: false} if the wiki is
     unreachable. Single, user-triggered, read-only — it never sends your build anywhere.
     """
-    return live_wiki.lookup_mechanic(topic)
+    return live_wiki.lookup_mechanic(topic, cursor=cursor, limit=limit)
 
 
 @mcp.tool()

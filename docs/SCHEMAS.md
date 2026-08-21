@@ -729,6 +729,17 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   `tool_name="resolve_graph_component"`、`status="resolved"`、`stable_key`、`snapshot_id`、
   `evidence_path_nodes` 和 safe `source_refs`。后端必须复核它与 proposed endpoint stable key
   和当前 graph snapshot 一致；缺失、错配或 stale evidence 必须拒绝。
+- `AgentSemanticScopeReviewRequirement`：Pattern 新写入必须保存外部 Research Agent 的 typed
+  适用范围审核（当前案例证据、case-only 或 conditional-transfer-hypothesis、supported verdict、
+  safe evidence refs）。它进入既有 `context_requirements` JSON，不增加 SQLite 列；旧 Pattern 查询时
+  标记为 `legacy_unattested`，不得按自然语言措辞提升权重。`recurring_observation` / `likely_pattern`
+  必须使用 `current_family + family_specific` 或 `multi_family + population_pattern`，且非单案 Pattern
+  的 `sample_count` 不能超过 distinct `source_case_refs`；审核 evidence refs 必须属于 Pattern 自身。
+- Safe review contract v2 的 `mechanicAudit.wiki` 保存候选来源 `matchKind` 与 Agent 的
+  `relevanceReason`。页面标题、redirect、ID 与搜索排名只证明页面身份/候选来源，`wiki.status` 才是
+  Agent 阅读内容后的 supports/contradicts/silent 判断。
+- Deep-record validate-only 同时返回 `inferredBuildFamilyKeys`、`resolvedTargetFamilyKeys` 和
+  `familyResolutionPreview`；兼容 `buildFamilyKeys` 使用只读 `join/expand/new` 后的 target key。
 - `ResearchContextRequirement`：discriminated union，不允许开放 `Dict[str, Any]`。它只复用 Phase 3
   `GraphToolContext` 中可持久化、结构封闭的 `version_context`、`item_context`、`socket_context`
   和 `passive_context`，并补充 research-only 的 lifecycle stage、transition gate、verification

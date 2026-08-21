@@ -42,6 +42,8 @@ def _review(*, wiki_status: str, decision: str, corroboration: list[str]) -> dic
                     "status": wiki_status,
                     "pageTitle": "Damage conversion",
                     "sourceRef": WIKI_REF,
+                    "matchKind": "unavailable" if wiki_status == "unavailable" else "direct",
+                    "relevanceReason": "The Agent reviewed the page content for this atomic claim.",
                 },
                 "corroboration": corroboration,
                 "decision": decision,
@@ -118,6 +120,45 @@ def test_mechanic_audit_does_not_accept_wiki_only_claims():
     assert {item["reason"] for item in deferred} == {"wiki_only_mechanic_claim"}
 
 
+def test_mechanic_audit_silent_judgment_requires_exact_pinned_page_identity():
+    review = _review(
+        wiki_status="silent",
+        decision="keep",
+        corroboration=["source_artifact"],
+    )
+    review["mechanicAudit"][0]["wiki"].update(
+        {"matchKind": "search_candidate", "pageTitle": "", "sourceRef": ""}
+    )
+
+    prepared, diagnostics, deferred = acceptance._prepare_mechanic_audit(review)
+
+    assert prepared["deepResearchRecords"] == []
+    assert prepared["candidateReviews"] == []
+    assert diagnostics["schemaIssueCount"] == 1
+    assert {item["reason"] for item in deferred} == {"invalid_schema"}
+    issue_paths = {item["path"] for item in diagnostics["entries"][0]["validationIssues"]}
+    assert issue_paths >= {
+        "mechanicAudit[0].wiki.pageTitle",
+        "mechanicAudit[0].wiki.sourceRef",
+    }
+
+
+def test_mechanic_audit_search_candidate_origin_is_valid_after_exact_pinned_read():
+    review = _review(
+        wiki_status="silent",
+        decision="keep",
+        corroboration=["source_artifact"],
+    )
+    review["mechanicAudit"][0]["wiki"]["matchKind"] = "search_candidate"
+
+    prepared, diagnostics, deferred = acceptance._prepare_mechanic_audit(review)
+
+    assert deferred == []
+    assert diagnostics["schemaIssueCount"] == 0
+    assert diagnostics["pinnedRevisionCount"] == 1
+    assert prepared["deepResearchRecords"][0]["title"] == "转换链"
+
+
 def test_mechanic_audit_reports_missing_high_risk_record_coverage_without_blocking():
     review = _review(
         wiki_status="supports",
@@ -149,6 +190,8 @@ def test_mechanic_audit_warns_about_compound_wiki_page_queries():
         "status": "unavailable",
         "pageTitle": "Alpha / Beta",
         "sourceRef": "",
+        "matchKind": "unavailable",
+        "relevanceReason": "The live source was unavailable; no semantic support was claimed.",
     }
 
     _prepared, diagnostics, deferred = acceptance._prepare_mechanic_audit(review)

@@ -173,10 +173,15 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "allow_implicit_invocation: false" in worker_metadata
     assert "default_prompt" not in worker_metadata
     assert "gearResponsibilities" in worker
+    assert 'response_profile="create_compact"' in worker
+    assert "claimScopeReview" in worker
+    assert "relevanceReason" in worker
+    assert "accept --validate-only --compact" in worker
     assert "在 validate-only 和正式 accept 前复核每个最终对象" in worker
     assert "worker-brief" in guide
     assert "atomically returns the safe `workerPrompt`" in guide
-    assert "coordinates up" in guide and "to five Research workers" in guide
+    assert "targets six" in guide and "up to five shared subagent slots" in guide
+    assert "wait_agent(timeout_ms=300000)" in guide
     assert "never claims cases or reads case evidence" in guide
     assert "最多 5 个普通 Research subagent" in phase4
     assert "poe-bd-research-worker" in phase4
@@ -218,7 +223,7 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "review-contract" in guide
     assert "init-review" in guide
     assert "accept --validate-only" in guide
-    assert "Plain `accept` is the only durable writer" in guide
+    assert "Plain `accept` is the" in guide and "only durable writer" in guide
     assert "fullyResolvedForAccept" in guide
     assert "review-contract" in worker
     assert "unresolvedUniqueComponentCount" in phase4
@@ -247,8 +252,12 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "poe-bd-research-worker" in controller
     assert "runDir" in controller
     assert "status.dispatchableCount > 0" in controller
-    assert "最多同时运行 5 个" in controller
-    assert "回访和其他任务不计入该业务上限" in controller
+    assert "Research Worker 的业务并发上限仍为 5" in controller
+    assert "目标宿主容量是 6 个活动槽位" in controller
+    assert "wait_agent(timeout_ms=300000)" in controller
+    assert "不得快于 5 分钟" in controller
+    assert "待回访队列" in controller
+    assert "先用释放的槽位创建全新 Worker" in controller
     assert "两个新 Worker 中连续重复" in controller
     assert "反馈已返回不等于获得 cleanup 授权" in controller
     assert "创建新的 supplement run" in controller
@@ -273,6 +282,8 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "sampleId + safe outcome" in worker
     assert "accepted 时附 safe acceptance 摘要" in worker
     assert "`build_family_keys` 只接收查询已返回的 `bf-...`" in worker
+    assert '`detail_level="record" + response_profile="create_compact"`' in worker
+    assert "retry-accept --sample-id <sampleId> --compact" in worker
     assert "`durableWritePreflight`" in worker
     assert "`permission_required`" in worker
     assert "`write_handle_ready`" in worker
@@ -325,6 +336,12 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     codex_manifest = json.loads(
         (REPO_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
+    packaged_codex_manifest = json.loads(
+        (REPO_ROOT / "poe-bd-creator-plugin" / ".codex-plugin" / "plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert codex_manifest["version"] == packaged_codex_manifest["version"]
     assert all(
         "poe-bd-research-worker" not in prompt
         for prompt in codex_manifest["interface"]["defaultPrompt"]

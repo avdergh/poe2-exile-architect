@@ -1297,8 +1297,15 @@ def test_exact_family_query_indexes_the_seventh_critical_record_and_allows_exact
         "failure_mode",
     }
 
+    fragment_query = service.query_research_memory("Projectile overlap principle")
+    fragment_write = service.propose_research_fragments(
+        _fragment_payload(),
+        dedupe_query_ref=fragment_query["dedupeQueryRef"],
+    )
+    assert fragment_write["status"] == "accepted"
+
     exact_deep_read = service.query_research_memory(
-        "",
+        "Projectile overlap principle",
         build_family_keys=[family_key],
         record_ids=record_ids,
         detail_level="record",
@@ -1307,9 +1314,11 @@ def test_exact_family_query_indexes_the_seventh_critical_record_and_allows_exact
         limit=1,
     )
     assert {row["recordId"] for row in exact_deep_read["deepResearchRecords"]} == set(record_ids)
+    assert exact_deep_read["results"] == []
     deep_receipt = service.read_query_receipt(exact_deep_read["dedupeQueryRef"])
     assert deep_receipt is not None
     assert set(deep_receipt["result"]["deepReadRecordIds"]) == set(record_ids)
+    assert deep_receipt["result"]["memoryItemIds"] == []
 
 
 def test_deep_record_resolution_enrichment_updates_existing_knowledge_unit(tmp_path):
@@ -1494,7 +1503,9 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
             "WHERE build_family_key = ?",
             (legacy_key, current_key),
         )
-        con.execute("DELETE FROM research_build_families WHERE build_family_key = ?", (current_key,))
+        con.execute(
+            "DELETE FROM research_build_families WHERE build_family_key = ?", (current_key,)
+        )
         con.commit()
     finally:
         con.close()
@@ -1503,6 +1514,20 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
     second_record = second["deep_research_records"][0]
     second_record["research_group_id"] = "research:legacy-family-second-source"
     second_record["source_case_refs"] = ["source-hash:legacy-family-second"]
+    preview = service.validate_deep_research_records(second)
+
+    assert preview["inferredBuildFamilyKeys"] == [current_key]
+    assert preview["resolvedTargetFamilyKeys"] == [legacy_key]
+    assert preview["buildFamilyKeys"] == [legacy_key]
+    assert preview["familyResolutionPreview"] == [
+        {
+            "researchGroupId": "research:legacy-family-second-source",
+            "inferredKey": current_key,
+            "targetKey": legacy_key,
+            "relation": "join",
+            "sourceKey": None,
+        }
+    ]
     result = service.propose_deep_research_records(second)
 
     assert result["createdBuildFamilyCount"] == 0
@@ -1518,8 +1543,7 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
         assert {
             str(row["build_family_key"])
             for row in con.execute(
-                "SELECT build_family_key FROM deep_research_records "
-                "WHERE superseded_by_id IS NULL"
+                "SELECT build_family_key FROM deep_research_records WHERE superseded_by_id IS NULL"
             ).fetchall()
         } == {legacy_key}
     finally:
@@ -2185,6 +2209,20 @@ def test_context_requirements_accept_phase3_graph_tool_context(tmp_path):
 
 
 def _pattern_payload(confidence_tier: str = "case_observation") -> dict[str, object]:
+    semantic_evidence_scope = (
+        "multi_family"
+        if confidence_tier in {"common_within_archetype", "strong_ranking_hint"}
+        else "current_family"
+        if confidence_tier in {"recurring_observation", "likely_pattern"}
+        else "current_case"
+    )
+    semantic_claim_scope = (
+        "population_pattern"
+        if confidence_tier in {"common_within_archetype", "strong_ranking_hint"}
+        else "family_specific"
+        if confidence_tier in {"recurring_observation", "likely_pattern"}
+        else "case_only"
+    )
     return {
         "schema_version": 4,
         "build_design_observations": [
@@ -2233,7 +2271,15 @@ def _pattern_payload(confidence_tier: str = "case_observation") -> dict[str, obj
                 "source_case_refs": ["case:la-safe"],
                 "safe_evidence_refs": ["safe:la:hash"],
                 "context_requirements": [
-                    {"context_type": "lifecycle_stage_requirement", "stages": ["endgame_budget"]}
+                    {"context_type": "lifecycle_stage_requirement", "stages": ["endgame_budget"]},
+                    {
+                        "context_type": "agent_semantic_scope_review",
+                        "evidence_scope": semantic_evidence_scope,
+                        "claim_scope": semantic_claim_scope,
+                        "verdict": "supported",
+                        "reason": "The Agent confirmed this text only describes the current case.",
+                        "safe_evidence_refs": ["safe:la:hash"],
+                    },
                 ],
                 "planner_hint": "Try this as an advisory projectile package candidate.",
                 "verification_tasks": ["Verify support legality with socket helper."],
@@ -2272,12 +2318,37 @@ def test_memory_query_returns_creator_patterns_and_semantic_edges(tmp_path):
 
     assert [row["edgeId"] for row in recalled["semanticEdges"]] == edge_result["edgeIds"]
     assert [row["patternId"] for row in recalled["buildPatterns"]] == pattern_result["patternIds"]
+    assert recalled["buildPatterns"][0]["semanticScopeReview"]["state"] == "reviewed"
+    assert recalled["semanticEdges"][0]["contextRequirements"]
+    assert recalled["noRawMatureBuildMaterial"] is True
+
+
+def test_memory_query_marks_existing_pattern_without_agent_review_as_legacy(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(),
+    )
+    accepted = service.propose_build_patterns(_pattern_payload())
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        con.execute(
+            "UPDATE research_build_patterns SET context_requirements = '[]' WHERE pattern_id = ?",
+            (accepted["patternIds"][0],),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    recalled = service.query_research_memory(
+        "projectile",
+        component_keys=["skill:LightningArrowPlayer"],
+    )
+
+    assert recalled["buildPatterns"][0]["semanticScopeReview"] == {"state": "legacy_unattested"}
     assert recalled["buildPatterns"][0]["confidenceTier"] == "case_observation"
     assert recalled["buildPatterns"][0]["componentRoles"]["support:Scattershot"] == (
         "support_modifier"
     )
-    assert recalled["semanticEdges"][0]["contextRequirements"]
-    assert recalled["noRawMatureBuildMaterial"] is True
 
 
 def test_pattern_payload_rejects_single_component_pattern():
@@ -2342,6 +2413,13 @@ def _as_transfer_candidate(
             "safe_evidence_refs": [f"safe:{case_ref}"],
         }
     )
+    semantic_review = next(
+        item
+        for item in pattern["context_requirements"]
+        if item.get("context_type") == "agent_semantic_scope_review"
+    )
+    semantic_review["claim_scope"] = "conditional_transfer_hypothesis"
+    semantic_review["safe_evidence_refs"] = [f"safe:{case_ref}"]
     return payload
 
 
@@ -2543,6 +2621,12 @@ def test_propose_build_patterns_refreshes_source_refs_on_idempotent_update(tmp_p
     second["build_design_observations"][0]["safe_evidence_refs"] = ["safe:new-ref"]
     second["patterns"][0]["source_case_refs"] = ["case:new-ref"]
     second["patterns"][0]["safe_evidence_refs"] = ["safe:new-ref"]
+    semantic_review = next(
+        item
+        for item in second["patterns"][0]["context_requirements"]
+        if item["context_type"] == "agent_semantic_scope_review"
+    )
+    semantic_review["safe_evidence_refs"] = ["safe:new-ref"]
 
     assert service.propose_build_patterns(first)["status"] == "accepted"
     assert service.propose_build_patterns(second)["status"] == "accepted"
@@ -2692,26 +2776,77 @@ def test_propose_build_patterns_rejects_visibility_or_version_mismatch_observati
     assert result["errorCode"] == "missing_build_design_observation"
 
 
-def test_pattern_payload_rejects_case_observation_using_common_language():
-    payload = _pattern_payload()
-    payload["patterns"][0]["summary"] = "This commonly appears as a usual package."
-
-    result = research_models.validate_researcher_output(payload)
-
-    assert result["status"] == "error"
-    assert result["errorCode"] == "overclaimed_pattern_confidence"
-
-
-def test_pattern_payload_allows_negated_common_language_guardrail():
+def test_pattern_payload_accepts_multilingual_language_with_typed_agent_scope_review():
     payload = _pattern_payload()
     payload["patterns"][0]["summary"] = (
-        "This is a single-sample observation and cannot be claimed as common."
+        "This commonly appears; 这是常见组合；これは一般的です；이 조합은 흔합니다."
     )
-    payload["patterns"][0]["planner_hint"] = "不能外推为常见组合，只能作为低置信观察。"
 
     result = research_models.validate_researcher_output(payload)
 
     assert result["status"] == "accepted"
+
+
+def test_pattern_payload_requires_typed_agent_scope_review():
+    payload = _pattern_payload()
+    payload["patterns"][0]["context_requirements"] = [
+        item
+        for item in payload["patterns"][0]["context_requirements"]
+        if item["context_type"] != "agent_semantic_scope_review"
+    ]
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+
+
+def test_pattern_payload_rejects_intermediate_confidence_with_case_only_review():
+    payload = _pattern_payload(confidence_tier="recurring_observation")
+    pattern = payload["patterns"][0]
+    pattern["sample_count"] = 2
+    pattern["source_case_refs"] = ["case:la-safe", "case:la-second"]
+    review = next(
+        item
+        for item in pattern["context_requirements"]
+        if item["context_type"] == "agent_semantic_scope_review"
+    )
+    review["evidence_scope"] = "current_case"
+    review["claim_scope"] = "case_only"
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
+
+
+def test_pattern_payload_binds_intermediate_scope_review_to_distinct_case_evidence():
+    payload = _pattern_payload(confidence_tier="recurring_observation")
+    pattern = payload["patterns"][0]
+    pattern["sample_count"] = 2
+
+    missing_case = research_models.validate_researcher_output(payload)
+    pattern["source_case_refs"] = ["case:la-safe", "case:la-second"]
+    accepted = research_models.validate_researcher_output(payload)
+
+    assert missing_case["status"] == "error"
+    assert missing_case["errorCode"] == "insufficient_pattern_evidence"
+    assert accepted["status"] == "accepted"
+
+
+def test_pattern_payload_rejects_scope_review_evidence_not_bound_to_pattern():
+    payload = _pattern_payload()
+    review = next(
+        item
+        for item in payload["patterns"][0]["context_requirements"]
+        if item["context_type"] == "agent_semantic_scope_review"
+    )
+    review["safe_evidence_refs"] = ["safe:not-on-pattern"]
+
+    result = research_models.validate_researcher_output(payload)
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "invalid_schema"
 
 
 def test_propose_build_patterns_updates_planner_fields_for_same_pattern_revision(tmp_path):
@@ -2731,7 +2866,15 @@ def test_propose_build_patterns_updates_planner_fields_for_same_pattern_revision
         {
             "context_type": "verification_gate_requirement",
             "task": "Verify the revised resource state before reuse.",
-        }
+        },
+        {
+            "context_type": "agent_semantic_scope_review",
+            "evidence_scope": "current_case",
+            "claim_scope": "case_only",
+            "verdict": "supported",
+            "reason": "The Agent confirmed the revision remains limited to one case.",
+            "safe_evidence_refs": ["safe:la:hash"],
+        },
     ]
     revised["patterns"][0]["planner_hint"] = "Use the revised planner guidance."
     revised["patterns"][0]["verification_tasks"] = [

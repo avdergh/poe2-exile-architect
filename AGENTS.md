@@ -51,6 +51,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   agent。
 - 模糊组件查询只用于候选发现：先 `search_graph_components`，再用
   `resolve_graph_component` 确认 stable key；模糊或向量相似度不能直接授权 semantic edge。
+- 机制全文搜索同样只用于候选发现。页面标题、redirect、ID、搜索排名和 revision 只绑定页面身份；
+  Research Agent 必须阅读选定页面内容，在 `mechanicAudit` 写 supports/contradicts/silent 与
+  `relevanceReason`，并保留至少一项独立 corroboration。
+- 单案例 Pattern 的自然语言范围由 `claimScopeReview` typed Agent 审核，不得使用任何语言的关键词/
+  否定词表判定是否过度外推；Pattern 权重只由 typed confidence 与样本/Family/来源证据授权。
 - Family identity 统一使用玩家 `active_skill` 的 `skill:` stable key。物理图已确认关联的
   `gem:` key 可以作为 Research 查询别名，但不能直接替代 FamilyTarget 或
   Family 身份权威的 stable key 集合；typed receipt 必须保存两者的等价 key 集合。

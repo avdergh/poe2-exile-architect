@@ -21,7 +21,9 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
    mechanic/keystone/skill/interaction works — e.g. whether a skill *shotguns* (overlaps multiple
    hits on one target), what limits its rate (cast speed vs cooldown vs mana), or how a support
    behaves — **look it up first** (`explain_mechanic` / `lookup_mechanic`) or prove it with a
-   controlled engine probe. Guessing wastes turns and ships wrong claims.
+   controlled engine probe. Full-text results are candidates only: read a selected exact page and
+   let the Agent judge whether its content supports, contradicts, or is silent on the atomic claim.
+   Guessing or treating a search rank as semantic proof wastes turns and ships wrong claims.
 4. **When DPS is far short of endgame, find the missing *multiplier*, don't tweak margins.** The
    dominant multiplier is build-specific — it could be crit (a meta nuke runs ~98% crit / 7× multi),
    a "more"-multiplier stack, ailment/DoT, minions, or "+levels". Find it with `rank_levers`; don't
@@ -97,7 +99,8 @@ review-contract share the runtime mandatory checklist. This guide keeps only the
   bounded transient evidence. `inspect` lists sections; `read` paginates them; `search` locates a
   concrete name but never replaces complete section reads.
 - `query_research_memory`: compare the independently reconstructed case with accepted memory.
-  Query summaries first and deep-read only selected record IDs.
+  Query summaries first with `response_profile=create_compact`, inspect Family coverage/index/
+  premise catalog, then deep-read only selected record IDs until the critical premises close.
 - `graph_tool_query(tool_name="search_graph_components")`: discover concrete graph candidates by
   name and type. Candidate similarity is not endpoint authority.
 - `graph_tool_query(tool_name="resolve_graph_component")`: confirm a stable physical-graph key.
@@ -112,8 +115,11 @@ review-contract share the runtime mandatory checklist. This guide keeps only the
   canonical enums just before writing.
 - `scripts/research_mature_builds.py init-review`: atomically create the current lease's UTF-8,
   two-space-indented review skeleton without overwriting an existing artifact.
-- `scripts/research_mature_builds.py accept --validate-only`: run the real acceptance logic without
-  changing durable memory or queue state. Plain `accept` is the only durable writer.
+- `scripts/research_mature_builds.py accept --validate-only --compact`: run the real acceptance
+  logic without changing durable memory or queue state. Clean validation/accept/retry use compact;
+  any deferred/unresolved/gap/failure automatically returns the full report. Plain `accept` is the
+  only durable writer. `review_contract_upgrade_required` leaves the case claimed: update the same
+  review and rerun plain `accept` with the same lease instead of calling `retry-accept`.
 
 If tools are not shown eagerly, use the host's normal tool discovery/search by exact name before
 declaring them unavailable. The unified MCP exposes the research tools; this behavior is not based
@@ -121,8 +127,11 @@ on a documented tool-count cap.
 
 ### Runtime flow
 
-- The main conversation loads `poe-bd-research`, creates or resumes the queue, and coordinates up
-  to five Research workers. It never claims cases or reads case evidence. Each fresh subagent must
+- The main conversation loads `poe-bd-research`, creates or resumes the queue, and targets six
+  active host slots: one Controller plus up to five shared subagent slots. Research has scheduling
+  priority; revisits and other subagent work queue until the current run's Research workers settle.
+  A host exposing fewer than six total slots must report the reduced effective Worker count. The
+  Controller never claims cases or reads case evidence. Each fresh subagent must
   explicitly load `poe-bd-research-worker` with the existing absolute runDir, resolve its runtime
   from the installed Skill/MCP environment, claim exactly one case, own that lease through
   acceptance, and stop afterward.
@@ -147,7 +156,8 @@ on a documented tool-count cap.
 - This is a runtime product workflow. Do not edit source, tests, docs, schemas or installers while
   executing it. Report safe collector/source/runtime errors and stop.
 - Script order is Controller `queue`, then explicit Worker `claim -> inspect/read/search -> memory/graph research
-  -> review-contract -> init-review -> edit safe review -> accept --validate-only -> accept`, followed
+  -> review-contract -> init-review -> edit safe review -> accept --validate-only --compact ->
+  accept --compact`, followed
   by main `status` and cleanup.
 - A non-dry-run `queue` without an explicit output directory creates
   `.poe-bd-research/runs/<runId>` and returns `runDir`. Preserve that value as `--output-dir` for
@@ -157,6 +167,9 @@ on a documented tool-count cap.
   directly; `worker-brief` is resume-only. Do not rely only on a local `SKILL.md` path.
 - A worker stops after accepting its single case and returns sampleId plus a safe outcome. The Controller starts a fresh worker for
   later queued cases; workers never carry transient evidence across cases.
+- Wait on worker mailbox events with a 300-second window (`wait_agent(timeout_ms=300000)` in
+  Codex). Completion wakes the Controller early. An unchanged timeout does not authorize a queue
+  status read; emit at most one concise unchanged heartbeat per five minutes and continue waiting.
 - Reconstruct skills/supports, rotation, mechanism chains, gear and passive responsibilities,
   resource/defense engines, tradeoffs, failure conditions and modelability gaps before querying
   durable memory. The lease workerPrompt/review-contract own the full mandatory checklist; the

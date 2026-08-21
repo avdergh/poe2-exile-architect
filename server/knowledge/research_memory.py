@@ -676,9 +676,7 @@ class ResearchMemoryService:
         build_family_keys = sorted(
             {str(key).strip() for key in build_family_keys or [] if str(key).strip()}
         )
-        invalid_family_keys = [
-            key for key in build_family_keys if not key.startswith("bf-")
-        ]
+        invalid_family_keys = [key for key in build_family_keys if not key.startswith("bf-")]
         if invalid_family_keys:
             return research_models.public_error(
                 "invalid_identity_parameter",
@@ -726,9 +724,12 @@ class ResearchMemoryService:
         try:
             now = _now()
             family_discovery = detail_level == "family"
+            # Explicit record IDs define an exact deep-read lane. The natural-language query is
+            # still recorded and can shape transferable context, but it must not reopen the
+            # legacy fragment FTS lane and silently widen the receipt's evidence set.
             rows = (
                 []
-                if family_discovery or (record_ids and not query.strip() and not component_keys)
+                if family_discovery or record_ids
                 else self._query_rows(con, query, component_key_groups, limit)
             )
             results = [self._fragment_result(row) for row in rows]
@@ -1111,8 +1112,14 @@ class ResearchMemoryService:
             and research_identity.knowledge_key(record, families_by_group[record.research_group_id])
             is None
         ]
-        family_keys = sorted(
+        inferred_family_keys = sorted(
             {family.key for family in families_by_group.values() if family is not None}
+        )
+        resolved_families, family_resolution_preview = self._preview_family_targets(
+            families_by_group
+        )
+        family_keys = sorted(
+            {family.key for family in resolved_families.values() if family is not None}
         )
         sibling_hints: list[dict[str, Any]] = []
         if family_keys and self.db_path and os.path.exists(self.db_path):
@@ -1136,11 +1143,55 @@ class ResearchMemoryService:
             "unkeyedRecordCount": len(unkeyed_records),
             "unkeyedRecordTitles": unkeyed_records,
             "buildFamilyKeys": family_keys,
+            "inferredBuildFamilyKeys": inferred_family_keys,
+            "resolvedTargetFamilyKeys": family_keys,
+            "familyResolutionPreview": family_resolution_preview,
             "siblingFamilyHints": sibling_hints,
             "nextStep": "Write the validated candidates to the leased safe review and run accept.",
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def _preview_family_targets(
+        self,
+        families_by_group: dict[str, research_identity.BuildFamilyIdentity | None],
+    ) -> tuple[
+        dict[str, research_identity.BuildFamilyIdentity | None],
+        list[dict[str, Any]],
+    ]:
+        """Resolve point-in-time Family targets without creating, merging, or updating rows."""
+
+        resolved = dict(families_by_group)
+        previews: list[dict[str, Any]] = []
+        con: sqlite3.Connection | None = None
+        if self.db_path and os.path.exists(self.db_path):
+            try:
+                con = mature_learning.connect(self.db_path)
+            except sqlite3.Error:
+                con = None
+        try:
+            for group_id, family in families_by_group.items():
+                if family is None:
+                    continue
+                target = family
+                relation = "new"
+                source_key: str | None = None
+                if con is not None:
+                    target, relation, source_key = self._resolve_family_target(con, family=family)
+                resolved[group_id] = target
+                previews.append(
+                    {
+                        "researchGroupId": group_id,
+                        "inferredKey": family.key,
+                        "targetKey": target.key,
+                        "relation": relation,
+                        "sourceKey": source_key,
+                    }
+                )
+        finally:
+            if con is not None:
+                con.close()
+        return resolved, sorted(previews, key=lambda item: item["researchGroupId"])
 
     def validate_research_fragments(
         self,
@@ -3913,6 +3964,12 @@ class ResearchMemoryService:
             weight_scope = "same_primary_skill"
         else:
             weight_scope = transfer_scope
+        context_requirements = _loads(row["context_requirements"], [])
+        semantic_reviews = [
+            item
+            for item in context_requirements
+            if isinstance(item, dict) and item.get("context_type") == "agent_semantic_scope_review"
+        ]
         result = {
             "patternId": row["pattern_id"],
             "patternType": row["pattern_type"],
@@ -3934,7 +3991,12 @@ class ResearchMemoryService:
             "originFamilyKeys": _loads(row["origin_family_keys"], []),
             "scopeWeightCap": RESEARCH_MEMORY_SCOPE_WEIGHTS.get(weight_scope, 1.0),
             "confidenceWeight": TRANSFER_CONFIDENCE_WEIGHTS.get(str(row["confidence_tier"]), 1.0),
-            "contextRequirements": _loads(row["context_requirements"], []),
+            "contextRequirements": context_requirements,
+            "semanticScopeReview": (
+                {"state": "reviewed", **semantic_reviews[-1]}
+                if semantic_reviews
+                else {"state": "legacy_unattested"}
+            ),
             "plannerHint": row["planner_hint"],
             "verificationTasks": _loads(row["verification_tasks"], []),
             "gamePatch": row["game_patch"],

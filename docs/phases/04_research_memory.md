@@ -202,7 +202,10 @@ validate-only（acceptance 是唯一持久化写入方）。
 
 ## 产品化入口
 
-研究运行态由 Controller 建立/恢复队列并编排最多 5 个普通 Research subagent。Controller 不领取或
+研究运行态由 Controller 建立/恢复队列并编排最多 5 个普通 Research subagent。目标宿主总容量为
+6 个活动槽位（Controller 1 + Subagent 5）；回访和其他 Subagent 与 Research 共享后 5 个槽位，
+超出部分排队。Research 补位优先，回访在当前 run 全部案例结算后再续聊原 agent。等待采用
+300 秒事件窗口，无变化心跳最多每 5 分钟一次，超时不反复查询 status。Controller 不领取或
 读取案例；每个 subagent 显式加载 `poe-bd-research-worker`，使用同一绝对 runDir 并从安装环境解析
 runtime，claim 且只处理一案。无共享 filesystem/runtime/MCP 的宿主在 queue 前失败关闭，不回退
 主会话研究。
@@ -274,8 +277,10 @@ Phase 4.5 的 mature BD 设计观察包括：
 
 提取采用两段式：先形成 `BuildDesignObservation`，再把 resolver-backed、copy-safe、证据足够的
 部分提升为 semantic edge / cooccurrence pattern / planner hint。单样本只能写
-`case_observation`，不能声称 usually / commonly / 常见。跨样本 pattern 必须由样本数、
-family count、source diversity 和 resolver-backed evidence 支撑。
+`case_observation`；自然语言范围由外部 Research Agent 在 `claimScopeReview` 中作 typed 语义审核，
+后端不维护任何语言关键词/否定词表。跨样本 pattern 必须由样本数、family count、source diversity
+和 resolver-backed evidence 支撑，typed `confidenceTier` 永远高于正文措辞；中间置信档的 Agent
+审核必须明确是 Family 范围或多 Family 总体范围，不能继续携带 current-case/case-only 审核。
 
 Pattern 的 `component` 作用域表示在 Family 知识之上授予有条件的跨 Family 迁移资格，不是与
 Family 归属互斥的低权重分类。它在 `origin_family_keys` 对应 Family 内按 Family 权重召回，在其他
@@ -285,6 +290,20 @@ Family 才进入较低权重公用通道。单案 Researcher 只有在候选解�
 transfer key：同一 Family 的重复来源只增强 Family 内证据，不授权跨 Family 晋升；第二个独立 Family
 出现同一结构后才晋升为 `recurring_observation`。公用知识最高为 `likely_pattern`，
 `common_within_archetype` / `strong_ranking_hint` 只保留给 Family/Archetype 内排序。
+
+机制校对同样由 Agent 主导：`explain_mechanic` / `lookup_mechanic` 的全文命中只返回候选；Agent 按
+精确页面读取有界内容后，在 `mechanicAudit.wiki` 写 `matchKind`、`relevanceReason` 和
+`supports/contradicts/silent`。除 unavailable 外，任何内容判断都必须绑定精确页面标题与 pinned
+revision；页面身份与 revision 只绑定证据，不代替语义判断。
+
+validate-only 的 Family 回执使用现有库的只读 `join/expand/new` 解析，分别返回 inferred key、resolved
+target key 与 relation；正式 accept 在写事务中重新解析。组件 discovery 对 Unicode 重音作 NFKD 折叠，
+但 exact resolver、stable key 和 external ID 不放宽。珠宝闭合按活动 passive spec 的逐槽状态区分
+filled、empty、socketed-unallocated 与 other-spec，装备珠宝孔不能抵扣树槽。
+
+调试与上下文成本合同：copy-safety 派生错误带安全 originLoc；`--only-record` 同步裁剪关联 audit、
+candidate 与 edge；Worker 宽查 Memory 使用 summary/create_compact，选中 Family 后按 record ID 深读；
+clean validate/accept 使用 `--compact`，任何 deferred/unresolved/gap/failure 自动回退完整报告。
 
 实际 skill 保留 `docs/research/EXTRACTION_METHOD.md` 的精简执行版，并带一个脱敏合格机制链示例和
 一个浅层反例；worker prompt 不重复整套方法和 schema。没有 resolver 工具时，worker 仍应提交具体组件名称、职责和查询词；
@@ -405,7 +424,7 @@ case 研究都应执行：
 4. **禁止猜 key 路径**：所有组件先 `search_graph_components` 再 `resolve_graph_component`；
    支持宝石的 metadata 路径可能有 `Items/Gem` 与 `Items/Gems` 两种形式，猜错会被判
    component_type_mismatch 或 missing。
-5. **silent / unavailable 不丢结论**：`lookup_mechanic` 返回 silent 或语料无文本的机制，直接以
+5. **silent / unavailable 不丢结论**：Agent 阅读机制候选后判断为 silent，或工具返回 unavailable，直接以
    样本证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task
    （wiki 佐证不是要求，论坛 BD 多数机制没有对应 wiki 页面）。
 6. **所有启用技能组都要盘点，但不机械卡死**：Family 主技能、核心副技能以及结论实际依赖的

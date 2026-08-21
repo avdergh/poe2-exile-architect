@@ -120,6 +120,8 @@ archetype commitment, not slot-by-slot hill-climbing.
 included skill actors and DoT components. Their difference is not automatically a lower/upper-bound
 interval: real single-target damage depends on uptime, rotation and per-skill projectile overlap.
 Verify the specific skill (`explain_mechanic`/`lookup_mechanic`/in-game) and compare like-for-like.
+Full-text mechanic hits are candidates only: read the selected exact page and judge whether its
+content actually supports the claim before using it.
 The engine's enemy
 conditions are **off by default**, so a bare stat read understates a real fight: use
 `apply_combat_profile` to switch on the shock/curse/charges/boss-tier the build actually maintains

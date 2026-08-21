@@ -13,6 +13,8 @@ is CC BY-NC-SA 3.0; the result carries its source URL + license so callers attri
 from __future__ import annotations
 
 import json
+import html
+import re
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -45,7 +47,9 @@ def _extract(title: str) -> dict | None:
             "titles": title,
         }
     )
-    for _pid, p in res.get("query", {}).get("pages", {}).items():
+    query = res.get("query", {})
+    match_kind = "redirect" if query.get("redirects") else "direct"
+    for _pid, p in query.get("pages", {}).items():
         if "missing" in p:
             return None
         text = (p.get("extract") or "").strip()
@@ -70,34 +74,83 @@ def _extract(title: str) -> dict | None:
                 if page_id > 0 and revision_id > 0
                 else None
             ),
+            "matchKind": match_kind,
         }
     return None
 
 
-def lookup_mechanic(topic: str) -> dict[str, Any]:
-    """Fetch a concise wiki extract for `topic` live (best-effort). Tries the title directly,
-    then a search, returning the top result's lead extract with attribution."""
+def lookup_mechanic(
+    topic: str,
+    *,
+    cursor: int | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Fetch one direct page or return paged search candidates for Agent review.
+
+    Page identity never authorizes semantic relevance. A direct/redirect result includes a bounded
+    extract; a full-text fallback returns candidates only, which the Agent must select and fetch by
+    exact title before recording a mechanic-audit judgment.
+    """
     topic = (topic or "").strip()
     if not topic:
         return {"available": False, "error": "empty topic"}
     try:
         rec = _extract(topic)
         if rec is None:
-            # fall back to search → best title → extract
+            page_size = max(1, min(int(limit), 20))
+            offset = max(0, int(cursor or 0))
             s = _api(
-                {"action": "query", "list": "search", "srsearch": topic, "srlimit": 1},
+                {
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": topic,
+                    "srlimit": page_size,
+                    "sroffset": offset,
+                    "srprop": "snippet",
+                },
                 timeout=12.0,
             )
             hits = s.get("query", {}).get("search", [])
             if not hits:
-                return {"available": True, "found": False, "topic": topic, "results": []}
-            rec = _extract(hits[0]["title"])
-            if rec is None:
-                return {"available": True, "found": False, "topic": topic, "results": []}
+                return {
+                    "available": True,
+                    "found": False,
+                    "topic": topic,
+                    "requestedTopic": topic,
+                    "resultKind": "search_candidates",
+                    "candidates": [],
+                    "continuation": None,
+                }
+            candidates = []
+            for hit in hits:
+                raw_snippet = str(hit.get("snippet") or "")
+                snippet = html.unescape(re.sub(r"<[^>]+>", "", raw_snippet)).strip()
+                candidates.append(
+                    {
+                        "title": str(hit.get("title") or ""),
+                        "pageId": int(hit.get("pageid") or 0),
+                        "snippet": snippet[:600],
+                        "matchKind": "search_candidate",
+                    }
+                )
+            next_offset = (s.get("continue") or {}).get("sroffset")
+            return {
+                "available": True,
+                "found": False,
+                "topic": topic,
+                "requestedTopic": topic,
+                "resultKind": "search_candidates",
+                "candidates": candidates,
+                "continuation": ({"cursor": int(next_offset)} if next_offset is not None else None),
+                "note": "Search results are candidates only. Fetch a selected exact title, read "
+                "its content, and let the Research Agent judge supports/contradicts/silent.",
+            }
         return {
             "available": True,
             "found": True,
             "topic": topic,
+            "requestedTopic": topic,
+            "resultKind": rec["matchKind"],
             "title": rec["title"],
             "text": rec["text"],
             "url": rec["url"],
@@ -106,13 +159,16 @@ def lookup_mechanic(topic: str) -> dict[str, Any]:
             "revisionTimestamp": rec["revisionTimestamp"],
             "permanentUrl": rec["permanentUrl"],
             "sourceRef": rec["sourceRef"],
+            "matchKind": rec["matchKind"],
+            "candidates": [],
+            "continuation": None,
             "excerptKind": "lead_and_early_sections",
             "license": LICENSE,
             "source": SOURCE,
             "attribution": f"{SOURCE}, {LICENSE} — {rec['permanentUrl'] or rec['url']}",
-            "note": "Live wiki fetch with revision-pinned provenance. The content may still be "
-            "wrong or outdated. Engine remains the source of truth for numbers. Attribute the "
-            "source when you quote it.",
+            "note": "A page was retrieved with revision-pinned provenance; found does not mean "
+            "the page supports the requested claim. The Research Agent must read it and record "
+            "supports/contradicts/silent with independent corroboration.",
         }
     except Exception as e:  # noqa: BLE001 - network/timeout: degrade gracefully
         return {"available": False, "error": f"wiki unreachable: {e}", "topic": topic}
