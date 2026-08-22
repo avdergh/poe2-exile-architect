@@ -74,6 +74,18 @@ def test_codex_distribution_requires_helper_and_release_databases() -> None:
     assert '"mcp>=1.2,<2"' in bundle
 
 
+def test_codex_distribution_excludes_temporarily_disabled_research_loop() -> None:
+    from scripts import build_codex_plugin
+
+    ignored = build_codex_plugin._plugin_source_ignore(
+        str(ROOT / "poe-bd-creator-plugin" / "skills"),
+        ["poe-bd-create", "poe-bd-research", "poe-bd-research-loop"],
+    )
+
+    assert build_codex_plugin.DISABLED_CODEX_SKILLS == {"poe-bd-research-loop"}
+    assert ignored == {"poe-bd-research-loop"}
+
+
 def test_github_checkout_contains_offline_create_seeds() -> None:
     required = (
         "data/corpus.sqlite",

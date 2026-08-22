@@ -50,7 +50,7 @@ Agent“使用 `poe-bd-create` skill 创建一个 PoE2 BD”或“使用 `poe-bd
 OpenCode 安装器只链接 `poe-bd-research`、其显式专用 `poe-bd-research-worker` 和
 `poe-bd-create`，并安全合并
 `~/.config/opencode/opencode.json` 的 `mcp` 下四个 server 条目。它不会迁移依赖 Codex Desktop 任务
-编排能力的 `poe-bd-research-loop` / `poe-bd-learning-loop`。
+编排能力的 `poe-bd-learning-loop`。
 
 ### 从开源仓库安装
 
@@ -96,13 +96,9 @@ shell。
 ./install.sh --uninstall opencode
 ```
 
-Codex 安装四个用户工作流 skill 与一个显式 Research Worker；Claude Code、Cursor 和 OpenCode
+Codex 当前安装三个用户工作流 skill 与一个显式 Research Worker；Claude Code、Cursor 和 OpenCode
 安装可移植的 Research Controller/Worker 与 Create。安装器不会覆盖已有真实目录或同名非托管 MCP 配置；JSON 客户端首次修改前会保留
 `.poe-bd-creator.bak`，并用本地指纹回执确保卸载只删除自己写入且未被用户修改的条目。
-
-Codex Desktop 的 `poe-bd-research-loop` 需要独立的 `poe-research-orchestrator` checkout。设置
-`POE_RESEARCH_ORCHESTRATOR_DIR`，或把它放在本项目 checkout 的同级目录；Skill 会校验标记文件后
-使用，不依赖盘符、用户名或固定绝对路径。完整说明见[多 Agent 安装指南](docs/MULTI_AGENT_INSTALL.md)。
 
 安装器会为 Codex、Claude Code、Cursor 和 OpenCode 注册本项目四个按域拆分的 MCP server
 （`poe_knowledge_mcp` / `poe_build_mcp` / `poe_research_mcp` / `poe_learning_mcp`）。Codex 修改

@@ -89,11 +89,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 发布插件内的普通 Research 必须通过 `start_research_run / claim_research_case /
   inspect_research_case / read_research_case / search_research_case / get_research_review_contract /
   initialize_research_review / validate_research_review / accept_research_review /
-  retry_research_review / cleanup_research_run` 管理运行态；旧 run 只可用
-  `adopt_legacy_research_run` 接入。新 run 只能保存
-  在 user-data 并以 opaque `runRef` 暴露；不得把 queue/review/quarantine 写入调用者项目、源码仓库或
+  retry_research_review / cleanup_research_run` 管理运行态。新 run 只能保存在 user-data 并以 opaque
+  `runRef` 暴露；不得把 queue/review/quarantine 写入调用者项目、源码仓库或
   插件 cache，也不得要求 Agent shell 编辑运行态文件。`scripts/research_mature_builds.py` 只保留仓库
-  开发和显式 legacy 恢复入口。
+  开发兼容入口。
 - Create 当前默认禁止 `optimize_build` 和全局被动树重排。Agent 已经决定的机械变更应通过
   `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout / passive_delta /
   required_gear / ordinary_gear / config` 职能拆成小事务；不得把整个 BD 混进一个批次。只有以
@@ -195,8 +194,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/ASSISTANT_GUIDE.md`：通过 MCP 展示给 LLM client 的 runtime 指南。
 - `docs/research/`：研究流程的历史设计与方法归档（`MEMORY_SYSTEM_DESIGN.md`、
   `EXTRACTION_METHOD.md`、`BD_KNOWLEDGE.md`、`AGENT_MEMORY_SYSTEM_RESEARCH.md`）；现行运行合同
-  以 `/poe-bd-research` Controller、显式 `/poe-bd-research-worker`、claim 的 `workerPrompt` 与
-  `review-contract` 为准。
+  以 `/poe-bd-research` Controller、显式 `/poe-bd-research-worker` 与 typed
+  `get_research_review_contract` 为准；CLI `workerPrompt` 只保留仓库开发兼容。
 - `scripts/verify.ps1`：验证 profile。
 
 根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的

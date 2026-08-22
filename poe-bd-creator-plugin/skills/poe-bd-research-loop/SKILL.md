@@ -83,7 +83,7 @@ Review 在同一任务中发送：
 ```text
 model: gpt-5.6-sol
 thinking: xhigh
-prompt: 只做审查，不修改代码、数据库或运行产物。基于本任务保存的 safe review/accept/status 摘要、opaque runRef 和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、未解析项和暂缓项是否合理；报告计数是否与实际写入一致。运行态只能通过 typed Research MCP 查询，不读取或编辑 run 文件。
+prompt: 只做审查，不修改代码、数据库或运行产物。基于本任务上下文中完整的 safe review、validation/accept/status 回执、opaque runRef 和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、未解析项和暂缓项是否合理；报告计数是否与实际写入一致。运行态只能通过 typed Research MCP 查询，不读取或编辑 run 文件；不得把完整安全产物降级为只看摘要。
 
 （"五项研究覆盖"指 review-contract 的 caseCoverage 五维：supports / rotation / passiveAscendancy / gearRoles / resourceDefense。）
 
@@ -110,7 +110,7 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 
 修复并验证成功的问题精炼记录到 ${notesRoot}/resolved-issues.md；真正未解决的问题才写入 ${notesRoot}/unresolved-issues.md，写入前检查同义条目。若 review 没有可执行问题，不修改代码、数据或 notes，直接说明无需修复。
 
-修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录使用 `start_research_run(re_research_run_ref=..., supplement_focus=...)` 创建补充研究轮并经 typed validate/hash-bound accept（created+updated ≥1，否则补充轮无效），或使用 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
+修正 Research Memory 的唯一合法通道是 durable writer：同 case 补录使用 `start_research_run(re_research_run_ref=..., supplement_focus=...)`，由服务从原 run quarantine 以完全相同的 PoB 重建同 case 补充研究轮，保持原 case/researchGroup/Family 身份并只补缺口，再经 typed validate/accept 入库（created+updated ≥1，否则补充轮无效）；或使用 `server/knowledge/research_maintenance.py` 的 `calibrate_phase4_research_contract_v1` / `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`（见 docs/phases/04_research_memory.md「存量修正通道」）。不得绕过 acceptance 直接改库，也不得手工编辑 SQLite、safe review 或运行产物；只删除错误数据而没有保留修正版时不得输出 yes。
 
 最终必须单独输出一行 `POE_FIX_DATA_REPAIRED: yes` 或 `POE_FIX_DATA_REPAIRED: no`。只有实际写入、更新、重建或替换了修正后仍保留在数据库中的研究数据时才输出 yes；纯代码、测试、notes、artifact 修改，或只删除错误数据而没有保留修正版时输出 no。
 ```
@@ -120,7 +120,7 @@ prompt: 先核实上一步 review 的 findings，不要未经验证直接照单�
 ```text
 model: gpt-5.6-sol
 thinking: xhigh
-prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数据，不扩大到未修改数据，不进行新研究或代码修复。基于原 review findings、Fix 结果、safe typed Research receipts 和实际数据库内容，核对修正版的事实、证据、关系、Family/Pattern 和计数是否正确。不得读取或编辑 run 文件。
+prompt: 只复审上一步 Fix 实际修复并保留在数据库中的研究数据，不扩大到未修改数据，不进行新研究或代码修复。基于原 review findings、Fix 结果、本任务中完整的 safe review 与 validation/accept/status typed artifacts，以及实际数据库内容，核对修正版的事实、证据、关系、Family/Pattern 和计数是否正确。不得读取或编辑 run 文件，也不得只依据摘要判断。
 
 对每个修正版重新读取完整持久化对象，检查全对象语义闭环；特别核对组件或职责变化后是否仍残留旧的 conditions、typedPayload、contextRequirements、plannerHint、verificationTasks 或错误来源归属，不能只复查 Fix 声称修改的字段。
 

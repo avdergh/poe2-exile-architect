@@ -78,7 +78,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 144
+    assert len(tools) == 143
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -129,7 +129,6 @@ def test_tool_surface_intact():
         "get_meta_archetype_trends",
         "graph_tool_query",
         "start_research_run",
-        "adopt_legacy_research_run",
         "get_research_run_status",
         "claim_research_case",
         "cleanup_research_run",
@@ -295,10 +294,7 @@ def test_research_memory_tools_expose_public_schemas():
     assert tools["start_research_run"].inputSchema["properties"]["limit"]["type"] == "integer"
     assert tools["claim_research_case"].inputSchema["properties"]["run_ref"]["type"] == "string"
     assert tools["validate_research_review"].inputSchema["properties"]["review"]["type"] == "object"
-    assert (
-        tools["accept_research_review"].inputSchema["properties"]["expected_review_hash"]["type"]
-        == "string"
-    )
+    assert tools["accept_research_review"].inputSchema["properties"]["review"]["type"] == "object"
     assert (
         tools["validate_researcher_output"].inputSchema["properties"]["payload"]["type"] == "object"
     )

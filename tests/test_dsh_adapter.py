@@ -54,9 +54,21 @@ def test_adapt_skills_regenerates_the_checked_in_tree(tmp_path):
         )
     controller = (out / "poe-bd-research" / "SKILL.md").read_text(encoding="utf-8")
     worker = (out / "poe-bd-research-worker" / "SKILL.md").read_text(encoding="utf-8")
+    assert not (out / "poe-bd-research-loop").exists()
     assert "subagent" in controller and "send_message" in controller
+    assert "mcp__poe_research__start_research_run" in controller
+    assert "queue 由 DSH shell" not in controller
+    assert "`fork_turns=none`" not in controller
+    assert "wait_agent(" not in controller
+    assert "必须 fork" not in controller
     assert "DSH Worker" in worker
     assert "skill` 工具加载本 skill" in worker
+    assert "mcp__poe_research__claim_research_case" in worker
+    assert "取得 runDir 后用 shell" not in worker
+    assert "`enableGlobal1` / `enableGlobal2` 是单颗 gem 的 granted-effect 开关" in worker
+    assert "`weaponSetScope` 才是技能组级字段" in worker
+    assert "`global` / `weapon_set_1` /\n  `weapon_set_2`" in worker
+    assert "不得根据任一 gem 的 global-effect 开关推断武器切换" in worker
 
 
 def test_adapt_check_reports_stale_generated_files(tmp_path):

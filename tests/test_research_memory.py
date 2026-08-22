@@ -4049,6 +4049,339 @@ def _family_deep_payload(
     return payload
 
 
+def test_family_secondary_metadata_reconciles_additions_and_removals(tmp_path):
+    source = ("fixture:phase4",)
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode("skill:ClearSkillPlayer", "active_skill", "Clear Skill", source),
+                pg.GraphNode("skill:CometPlayer", "active_skill", "Comet", source),
+                pg.GraphNode("skill:LightningRodPlayer", "active_skill", "Lightning Rod", source),
+            ]
+        ),
+    )
+    clear_payload = _family_deep_payload(
+        title="清图副技能包",
+        group="research:secondary-clear",
+        sources=("case:secondary-clear",),
+    )
+    clear_record = clear_payload["deep_research_records"][0]
+    clear_record["component_keys"].append("skill:ClearSkillPlayer")
+    clear_record["component_mentions"].append(
+        {
+            "candidate_name": "Clear Skill",
+            "role": "clear_skill",
+            "resolver_query": "Clear Skill",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:ClearSkillPlayer",
+            "resolution_status": "resolved",
+        }
+    )
+    triggered_payload = _family_deep_payload(
+        title="触发载荷机制链",
+        group="research:secondary-triggered",
+        sources=("case:secondary-triggered",),
+    )
+    triggered_record = triggered_payload["deep_research_records"][0]
+    triggered_record["record_kind"] = "mechanic_chain"
+    triggered_record["component_keys"] = [
+        "skill:LightningArrowPlayer",
+        "skill:CometPlayer",
+    ]
+    triggered_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Comet",
+            "role": "triggered_payload",
+            "resolver_query": "Comet",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:CometPlayer",
+            "resolution_status": "resolved",
+        },
+    ]
+    triggered_record["typed_payload"] = {}
+
+    first = service.propose_deep_research_records(clear_payload)
+    second = service.propose_deep_research_records(triggered_payload)
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        family_key = first["buildFamilyKeys"][0]
+        assert second["buildFamilyKeys"] == [family_key]
+        row = con.execute(
+            "SELECT secondary_skill_keys FROM research_build_families WHERE build_family_key = ?",
+            (family_key,),
+        ).fetchone()
+        assert json.loads(row["secondary_skill_keys"]) == [
+            "skill:ClearSkillPlayer",
+            "skill:CometPlayer",
+        ]
+    finally:
+        con.close()
+
+    explicit = _family_deep_payload(
+        title="显式核心副技能",
+        group="research:secondary-explicit",
+        sources=("case:secondary-explicit",),
+    )
+    explicit_record = explicit["deep_research_records"][0]
+    explicit_record["record_kind"] = "mechanic_chain"
+    explicit_record["component_keys"] = [
+        "skill:LightningArrowPlayer",
+        "skill:LightningRodPlayer",
+    ]
+    explicit_record["component_mentions"] = [
+        {
+            "candidate_name": "Lightning Arrow",
+            "role": "primary_damage",
+            "resolver_query": "Lightning Arrow",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningArrowPlayer",
+            "resolution_status": "resolved",
+        },
+        {
+            "candidate_name": "Lightning Rod",
+            "role": "generator",
+            "resolver_query": "Lightning Rod",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:LightningRodPlayer",
+            "resolution_status": "resolved",
+        },
+    ]
+    explicit_record["typed_payload"] = {"familyCoreSkillKeys": ["skill:LightningRodPlayer"]}
+    service.propose_deep_research_records(explicit)
+    corroborating = json.loads(json.dumps(explicit, ensure_ascii=False))
+    corroborating_record = corroborating["deep_research_records"][0]
+    corroborating_record["research_group_id"] = "research:secondary-explicit-b"
+    corroborating_record["source_case_refs"] = ["case:secondary-explicit-b"]
+    corroborating_record["safe_evidence_refs"] = ["safe:secondary-explicit-b"]
+    service.propose_deep_research_records(corroborating)
+    explicit_record["typed_payload"].pop("familyCoreSkillKeys")
+    service.propose_deep_research_records(explicit)
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT secondary_skill_keys FROM research_build_families WHERE build_family_key = ?",
+            (family_key,),
+        ).fetchone()
+        assert "skill:LightningRodPlayer" not in json.loads(row["secondary_skill_keys"])
+    finally:
+        con.close()
+
+
+def test_family_backfill_v8_repairs_stale_secondary_metadata(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
+    )
+    accepted = service.propose_deep_research_records(_family_deep_payload())
+    family_key = accepted["buildFamilyKeys"][0]
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        con.execute(
+            "UPDATE research_build_families SET secondary_skill_keys = ? "
+            "WHERE build_family_key = ?",
+            (json.dumps(["skill:StaleSecondaryPlayer"]), family_key),
+        )
+        con.execute(
+            "INSERT INTO meta(key, value) VALUES "
+            "('phase4_build_family_backfill_version', '7') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    repaired = service.backfill_deep_research_knowledge()
+    assert repaired["status"] == "applied"
+    assert repaired["version"] == "8"
+    assert repaired["updatedFamilySecondaryCount"] == 1
+    assert service.backfill_deep_research_knowledge()["status"] == "already_applied"
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT secondary_skill_keys FROM research_build_families WHERE build_family_key = ?",
+            (family_key,),
+        ).fetchone()
+        assert json.loads(row["secondary_skill_keys"]) == []
+    finally:
+        con.close()
+
+
+def test_family_identity_revision_removes_unreferenced_old_family(tmp_path):
+    source = ("fixture:phase4",)
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode("skill:OtherPrimaryPlayer", "active_skill", "Other Primary", source),
+                pg.GraphNode("skill:ClearSkillPlayer", "active_skill", "Clear Skill", source),
+            ]
+        ),
+    )
+    payload = _family_deep_payload()
+    record = payload["deep_research_records"][0]
+    record["component_keys"].append("skill:ClearSkillPlayer")
+    record["component_mentions"].append(
+        {
+            "candidate_name": "Clear Skill",
+            "role": "clear_skill",
+            "resolver_query": "Clear Skill",
+            "expected_node_types": ["active_skill"],
+            "scope": "player",
+            "component_key": "skill:ClearSkillPlayer",
+            "resolution_status": "resolved",
+        }
+    )
+    first = service.propose_deep_research_records(payload)
+    old_family_key = first["buildFamilyKeys"][0]
+    pattern_result = service.propose_build_patterns(
+        _as_transfer_candidate(
+            _pattern_payload(),
+            family_key=old_family_key,
+            case_ref="case:family-revision-pattern",
+            title="Family revision pattern",
+        )
+    )
+
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        active = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?",
+            (first["recordIds"][0],),
+        ).fetchone()
+        columns = [
+            str(item[0])
+            for item in con.execute("SELECT * FROM deep_research_records LIMIT 0").description
+        ]
+        for status in ("stale", "quarantined", "deprecated"):
+            values = dict(active)
+            values.update(
+                {
+                    "record_id": f"drr-family-revision-{status}",
+                    "research_group_id": f"research:family-revision-{status}",
+                    "knowledge_key": f"rk-family-revision-{status}",
+                    "source_case_refs": json.dumps([f"case:family-revision-{status}"]),
+                    "status": status,
+                    "superseded_by_id": (first["recordIds"][0] if status == "deprecated" else None),
+                }
+            )
+            con.execute(
+                f"INSERT INTO deep_research_records({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                tuple(values[column] for column in columns),
+            )
+        con.execute(
+            """
+            INSERT INTO research_build_family_evidence(
+                build_family_key, source_case_ref, first_seen_at, last_seen_at
+            ) VALUES (?, 'case:family-revision-history', '2025-01-01T00:00:00Z',
+                      '2025-01-02T00:00:00Z')
+            """,
+            (old_family_key,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    record["component_keys"] = [
+        "skill:OtherPrimaryPlayer",
+        "skill:ClearSkillPlayer",
+        "support:Scattershot",
+    ]
+    record["component_mentions"][0].update(
+        {
+            "candidate_name": "Other Primary",
+            "resolver_query": "Other Primary",
+            "component_key": "skill:OtherPrimaryPlayer",
+        }
+    )
+    record["typed_payload"]["supportPackages"][0]["skillKey"] = "skill:OtherPrimaryPlayer"
+    revised = service.propose_deep_research_records(payload)
+    new_family_key = revised["buildFamilyKeys"][0]
+
+    assert new_family_key != old_family_key
+    assert revised["removedOrphanBuildFamilyCount"] == 1
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        assert (
+            con.execute(
+                "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                (old_family_key,),
+            ).fetchone()
+            is None
+        )
+        assert (
+            con.execute(
+                "SELECT count(*) FROM deep_research_records WHERE build_family_key = ? "
+                "AND status IN ('valid', 'needs_revalidation')",
+                (new_family_key,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert {
+            str(row["status"])
+            for row in con.execute(
+                "SELECT status FROM deep_research_records "
+                "WHERE record_id LIKE 'drr-family-revision-%' "
+                "AND build_family_key = ?",
+                (new_family_key,),
+            ).fetchall()
+        } == {"stale", "quarantined", "deprecated"}
+        assert json.loads(
+            con.execute(
+                "SELECT origin_family_keys FROM research_build_patterns WHERE pattern_id = ?",
+                (pattern_result["patternIds"][0],),
+            ).fetchone()["origin_family_keys"]
+        ) == [new_family_key]
+        history_evidence = con.execute(
+            """
+            SELECT first_seen_at, last_seen_at
+            FROM research_build_family_evidence
+            WHERE build_family_key = ? AND source_case_ref = 'case:family-revision-history'
+            """,
+            (new_family_key,),
+        ).fetchone()
+        assert dict(history_evidence) == {
+            "first_seen_at": "2025-01-01T00:00:00Z",
+            "last_seen_at": "2025-01-02T00:00:00Z",
+        }
+        evidence_count = con.execute(
+            "SELECT count(*) FROM research_build_family_evidence WHERE build_family_key = ?",
+            (new_family_key,),
+        ).fetchone()[0]
+        assert (
+            con.execute(
+                "SELECT evidence_count FROM research_build_families WHERE build_family_key = ?",
+                (new_family_key,),
+            ).fetchone()[0]
+            == evidence_count
+        )
+        assert (
+            con.execute(
+                "SELECT count(*) FROM research_build_family_evidence WHERE build_family_key = ?",
+                (old_family_key,),
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        con.close()
+
+
 def _drift_row_key(db_path: Path, record_id: str, drifted_key: str) -> None:
     """Simulate the historical backfill drift: knowledge_key rewritten in place, id untouched."""
     con = mature_learning.connect(db_path)

@@ -9,7 +9,6 @@ from pathlib import Path
 from ..main import (  # noqa: F401  (re-registered below)
     _SessionIsolatedFastMCP,
     accept_research_review,
-    adopt_legacy_research_run,
     append_evidence_to_fragment,
     build_research_packet,
     claim_research_case,
@@ -45,7 +44,6 @@ mcp = _SessionIsolatedFastMCP("poe-research-mcp", instructions=_INSTRUCTIONS)
 
 _TOOLS = (
     accept_research_review,
-    adopt_legacy_research_run,
     append_evidence_to_fragment,
     build_research_packet,
     claim_research_case,

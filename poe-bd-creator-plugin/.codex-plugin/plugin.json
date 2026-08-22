@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.4.5+codex.20260822020212",
+  "version": "0.4.5+codex.20260822053921",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -33,7 +33,6 @@
       "/poe-bd-create \u6211\u60f3\u8981\u4e00\u4e2a\u9002\u5408\u7ec8\u5c40\u653b\u575a\u7684 Deadeye \u5f13\u7cfb BD",
       "/poe-bd-create \u7ed9\u6211\u4e00\u4e2a 80 \u7ea7\u7684\u9ad8\u4e0a\u9650\u6b66\u50e7\u7ec8\u5c40 BD",
       "/poe-bd-research --limit 20",
-      "/poe-bd-research-loop \u4f7f\u7528\u6211\u9644\u5e26\u7684 Markdown \u4efb\u52a1\u6587\u6863",
       "/poe-bd-learning-loop \u4f7f\u7528 10 \u4e2a\u540c Family \u540c\u7b49\u7ea7\u6848\u4f8b\u505a\u5bf9\u7167\u5b66\u4e60"
     ],
     "brandColor": "#2563EB"

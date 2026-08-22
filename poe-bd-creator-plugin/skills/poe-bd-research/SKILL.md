@@ -36,11 +36,12 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 - `--ascendancy NAME`：可重复，对已渲染结果做本地升华筛选。
 - `--class NAME`：可重复，透传 poe.ninja 的 `class` 参数；`Blood+Mage` 先归一，不得二次编码。
 - `--level-min N` / `--level-max N`：默认 90–100；这是区间，精确等级需令两者相等。
-- `--source-file PATH`：单个本地 PoB code/XML。
-- `--source-batch-file PATH`：本地批量输入；每案由独立 Worker 处理。
+- `--source-file ABSOLUTE_PATH`：单个本地 PoB code/XML；产品态只接收绝对路径。
+- `--source-batch-file ABSOLUTE_PATH`：本地批量输入；每案由独立 Worker 处理；产品态只接收绝对路径。
 - `--expected-source-count N`：本地输入的预期案例数；不符时不创建队列。
 - `--resume --run-ref REF`：恢复新产品队列；仍由 Controller 派发全新的单案 Worker。
-- `--legacy-run-dir PATH`：只用于把无活动 lease 的旧 run 复制进 user-data runtime；源目录保留。
+- `--supplement-sample-id ID`：可重复；仅与既有 `runRef` 的补录同时使用，精确选择已 accepted
+  且 quarantine 可恢复的 sampleId；空、未知、未接受或不可恢复目标在创建新 run 前失败关闭。
 - `--dry-run`：只验证 collector，不建队列、不产生知识。
 
 快速粘贴的裸 PoB code、pobb.in/pastebin 链接或 raw XML 先保存到 OS temp 文件，再替换成
@@ -56,7 +57,7 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 - 小批量提取：真实 `limit=20`；
 - 大批量提取：真实 `limit=50`；
-- 恢复已有队列：用户提供 runRef；旧任务只有 legacy runDir 时先走 typed adoption；
+- 恢复已有队列：用户提供 runRef；
 - 链路预检：`limit=5 --dry-run`，仅在用户明确只想验证链路时使用。
 
 用户已给案例数量、输入或分析意图时直接执行真实 queue，不要用 dry-run 替代。由
@@ -65,8 +66,8 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 ## Typed Tool Binding
 
-产品态只使用 Research MCP 的 `start_research_run / adopt_legacy_research_run /
-get_research_run_status / cleanup_research_run`。工具未显示时先按精确名做 tool discovery；缺失时停止，不搜索仓库、不解析
+产品态只使用 Research MCP 的 `start_research_run / get_research_run_status /
+cleanup_research_run`。工具未显示时先按精确名做 tool discovery；缺失时停止，不搜索仓库、不解析
 插件安装路径，也不回退 shell CLI。工具返回的 `runRef` 是唯一运行身份；不得向 Worker 传 runDir、
 reviewFile、插件 cache path 或 Research DB path。
 
@@ -74,11 +75,13 @@ reviewFile、插件 cache path 或 Research DB path。
 
 ## Queue
 
-调用 `start_research_run` 并逐字段传入用户参数。live collector 外层超时至少 10 分钟；超时后按
+调用 `start_research_run` 并逐字段传入用户参数。定向补录传
+`re_research_run_ref + supplement_sample_ids + supplement_focus`；省略
+`supplement_sample_ids` 才保持全 run 补录。live collector 外层超时至少 10 分钟；超时后按
 runtime failure 停止，不在同一 turn 重复 queue。非 dry-run 返回 `runId + runRef` 与安全计数；保存
 runRef，后续 status/Worker 只使用它。`--resume` 调用
-`get_research_run_status(run_ref=<runRef>)`；旧绝对 runDir 先调用
-`adopt_legacy_research_run(legacy_run_dir=<旧路径>)`，活动 lease 未结算时停止，不复制/抢占。
+`get_research_run_status(run_ref=<runRef>)`。普通新任务始终创建独立 run；只有用户显式提供已有 runRef
+并要求 resume 时才复用，不能覆盖既有 queue 或把新任务写进旧 run。
 
 ## Worker Scheduling
 
@@ -137,7 +140,10 @@ Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队�
 
 - 等用户明确确认或放弃全部反馈；
 - 批准知识补录时，Controller 结束旧 Worker assignment，使用原 runRef 通过
-  `re_research_run_ref + supplement_focus` 创建新的 supplement run，再把新 runRef 作为新的显式
+  `re_research_run_ref + supplement_sample_ids + supplement_focus` 让服务从原 run quarantine
+  使用完全相同的 PoB 只重建用户批准的同 case；省略 sampleId 列表才表示重建全部案例。补录保持原 researchGroup/Family
+  身份并只补既有缺口；本轮必须产生
+  `created+updated >= 1`，否则补录无效。再把新 runRef 作为新的显式
   Worker assignment 续发给
   原 agent；不得要求旧 Worker 在原 assignment 中 queue 或领取第二案；
 - 批准工具/流程修复时，follow-up 必须明确 Worker 运行态已经结束，本轮切换为普通开发任务，不再

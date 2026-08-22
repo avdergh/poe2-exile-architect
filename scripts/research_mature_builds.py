@@ -44,7 +44,7 @@ from server.knowledge import (  # noqa: E402
 )
 from server.learning.file_lock import interprocess_file_lock  # noqa: E402
 
-DEFAULT_OUTPUT_DIR = paths.research_runtime_dir()
+DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
 RUNS_DIRNAME = "runs"
 QUEUE_DB_FILENAME = "poe_bd_research_queue.sqlite"
 DEFAULT_TEMP_DIRNAME = "poe-bd-creator-research-packets"
@@ -137,6 +137,7 @@ def queue_cases(
     dry_run: bool = False,
     intake_ledger_path: str | Path | None = None,
     re_research_run_dir: str | Path | None = None,
+    supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
 ) -> dict[str, Any]:
     """Create or resume a safe mature-build research queue.
@@ -188,6 +189,9 @@ def queue_cases(
             raise ValueError(
                 f"--re-research run directory has no {QUEUE_DB_FILENAME}: {re_research_run_dir}"
             )
+    elif supplement_sample_ids is not None:
+        raise ValueError("supplement_sample_ids require --re-research")
+    normalized_supplement_ids = _normalize_supplement_sample_ids(supplement_sample_ids)
     normalized_ninja_classes = legacy_batch._normalize_ninja_classes(ninja_classes or [])
     local_sources = legacy_batch._local_sources(source_file_values, source_batch_file_values)
     collector_stats: dict[str, Any] = {
@@ -202,11 +206,22 @@ def queue_cases(
         "reResearchRunDir": _display_path(Path(re_research_run_dir)) if re_research_run_dir else "",
         "reSupplementCaseCount": 0,
         "reSupplementSkippedUnrecoverableCount": 0,
+        "requestedSupplementSampleCount": len(normalized_supplement_ids or []),
+        "selectedSupplementSampleCount": 0,
+        "selectedSupplementSampleIds": [],
+        "missingSupplementSampleCount": 0,
+        "missingSupplementSampleIds": [],
+        "notAcceptedSupplementSampleCount": 0,
+        "notAcceptedSupplementSampleIds": [],
+        "unrecoverableSupplementSampleCount": 0,
+        "unrecoverableSupplementSampleIds": [],
         "levelMin": max(0, int(level_min or 0)),
         "levelMax": max(0, int(level_max or 0)),
         "requestedSampleCount": (
             len(local_sources)
             if source_file_values or source_batch_file_values
+            else len(normalized_supplement_ids)
+            if normalized_supplement_ids is not None
             else max(0, int(limit))
         ),
         "expectedSourceCount": (
@@ -233,10 +248,15 @@ def queue_cases(
     if re_research_run_dir is not None:
         re_research_cases, re_unrecoverable = _cases_from_prior_run(
             Path(re_research_run_dir),
+            supplement_sample_ids=normalized_supplement_ids,
             supplement_focus=supplement_focus,
         )
         source_input_summary["reSupplementCaseCount"] = len(re_research_cases)
         source_input_summary["reSupplementSkippedUnrecoverableCount"] = re_unrecoverable
+        source_input_summary["selectedSupplementSampleCount"] = len(re_research_cases)
+        source_input_summary["selectedSupplementSampleIds"] = [
+            str(case.get("sampleId") or "") for case in re_research_cases
+        ]
     cases = (
         re_research_cases
         if re_research_run_dir is not None
@@ -317,6 +337,33 @@ def queue_cases(
             "uniqueLocalCaseCount": str(source_input_summary["uniqueLocalCaseCount"]),
             "duplicateLocalSourceCount": str(source_input_summary["duplicateLocalSourceCount"]),
             "requestedSampleCount": str(source_input_summary["requestedSampleCount"]),
+            "requestedSupplementSampleCount": str(
+                source_input_summary["requestedSupplementSampleCount"]
+            ),
+            "selectedSupplementSampleCount": str(
+                source_input_summary["selectedSupplementSampleCount"]
+            ),
+            "selectedSupplementSampleIds": json.dumps(
+                source_input_summary["selectedSupplementSampleIds"], ensure_ascii=False
+            ),
+            "missingSupplementSampleCount": str(
+                source_input_summary["missingSupplementSampleCount"]
+            ),
+            "missingSupplementSampleIds": json.dumps(
+                source_input_summary["missingSupplementSampleIds"], ensure_ascii=False
+            ),
+            "notAcceptedSupplementSampleCount": str(
+                source_input_summary["notAcceptedSupplementSampleCount"]
+            ),
+            "notAcceptedSupplementSampleIds": json.dumps(
+                source_input_summary["notAcceptedSupplementSampleIds"], ensure_ascii=False
+            ),
+            "unrecoverableSupplementSampleCount": str(
+                source_input_summary["unrecoverableSupplementSampleCount"]
+            ),
+            "unrecoverableSupplementSampleIds": json.dumps(
+                source_input_summary["unrecoverableSupplementSampleIds"], ensure_ascii=False
+            ),
             "intakePagesFetched": str(source_input_summary["intakePagesFetched"]),
             "intakePageRowsSeen": str(source_input_summary["intakePageRowsSeen"]),
             "intakeSkippedAlreadyResearched": str(
@@ -1120,7 +1167,6 @@ def load_review_payload(
     result = {
         "status": "loaded",
         "sampleId": str(row["sample_id"]),
-        "reviewHash": review_payload_hash(review),
         "review": review,
         "noRawMatureBuildMaterial": True,
     }
@@ -1166,20 +1212,10 @@ def save_review_payload(
     result = {
         "status": "saved",
         "sampleId": str(row["sample_id"]),
-        "reviewHash": review_payload_hash(canonical),
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
     return result
-
-
-def review_payload_hash(review_payload: dict[str, Any]) -> str:
-    """Stable safe-review hash used to bind validation to formal acceptance."""
-
-    canonical = json.dumps(
-        review_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return "review-sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _slice_review_for_record(
@@ -1613,7 +1649,6 @@ def save_rejected_review_payload(
         "status": "saved",
         "sampleId": str(row["sample_id"]),
         "reviewFile": review_path.relative_to(output_root.resolve()).as_posix(),
-        "reviewHash": review_payload_hash(canonical),
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1974,6 +2009,27 @@ def queue_status(
         ),
         "uniqueLocalCaseCount": int(metadata.get("uniqueLocalCaseCount") or 0),
         "duplicateLocalSourceCount": int(metadata.get("duplicateLocalSourceCount") or 0),
+        "requestedSupplementSampleCount": int(metadata.get("requestedSupplementSampleCount") or 0),
+        "selectedSupplementSampleCount": int(metadata.get("selectedSupplementSampleCount") or 0),
+        "selectedSupplementSampleIds": json.loads(
+            str(metadata.get("selectedSupplementSampleIds") or "[]")
+        ),
+        "missingSupplementSampleCount": int(metadata.get("missingSupplementSampleCount") or 0),
+        "missingSupplementSampleIds": json.loads(
+            str(metadata.get("missingSupplementSampleIds") or "[]")
+        ),
+        "notAcceptedSupplementSampleCount": int(
+            metadata.get("notAcceptedSupplementSampleCount") or 0
+        ),
+        "notAcceptedSupplementSampleIds": json.loads(
+            str(metadata.get("notAcceptedSupplementSampleIds") or "[]")
+        ),
+        "unrecoverableSupplementSampleCount": int(
+            metadata.get("unrecoverableSupplementSampleCount") or 0
+        ),
+        "unrecoverableSupplementSampleIds": json.loads(
+            str(metadata.get("unrecoverableSupplementSampleIds") or "[]")
+        ),
         "intakePagesFetched": int(metadata.get("intakePagesFetched") or 0),
         "intakePageRowsSeen": int(metadata.get("intakePageRowsSeen") or 0),
         "intakeSkippedAlreadyResearched": int(metadata.get("intakeSkippedAlreadyResearched") or 0),
@@ -3061,9 +3117,95 @@ def _safe_case_row_from_case(
     }
 
 
+def _normalize_supplement_sample_ids(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    normalized = sorted({str(value).strip() for value in values if str(value).strip()})
+    if not normalized:
+        raise ValueError("supplement_sample_ids must contain at least one sampleId")
+    if len(normalized) > 50:
+        raise ValueError("supplement_sample_ids may contain at most 50 unique sampleIds")
+    return normalized
+
+
+def inspect_supplement_selection(
+    prior_run_root: Path,
+    supplement_sample_ids: list[str],
+) -> dict[str, Any]:
+    """Validate a targeted supplement selection without exposing private run paths."""
+
+    requested = _normalize_supplement_sample_ids(supplement_sample_ids)
+    assert requested is not None
+    prior_db = prior_run_root / QUEUE_DB_FILENAME
+    prior_quarantine = _quarantine_dir(prior_run_root)
+    with sqlite3.connect(prior_db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT sample_id, status, source_hash, source_hash_ref FROM cases ORDER BY id"
+        ).fetchall()
+    by_id = {str(row["sample_id"]): row for row in rows}
+    missing = sorted(set(requested) - set(by_id))
+    not_accepted = sorted(
+        sample_id
+        for sample_id in requested
+        if sample_id in by_id and str(by_id[sample_id]["status"] or "") != "accepted"
+    )
+    unrecoverable: list[str] = []
+    for sample_id in requested:
+        row = by_id.get(sample_id)
+        if row is None or sample_id in not_accepted:
+            continue
+        raw = _verified_quarantine_raw(prior_quarantine, row)
+        if not raw:
+            unrecoverable.append(sample_id)
+    return {
+        "status": ("ok" if not (missing or not_accepted or unrecoverable) else "invalid"),
+        "requestedSupplementSampleCount": len(requested),
+        "selectedSupplementSampleCount": (
+            len(requested) if not (missing or not_accepted or unrecoverable) else 0
+        ),
+        "selectedSupplementSampleIds": (
+            requested if not (missing or not_accepted or unrecoverable) else []
+        ),
+        "missingSupplementSampleCount": len(missing),
+        "missingSupplementSampleIds": missing,
+        "notAcceptedSupplementSampleCount": len(not_accepted),
+        "notAcceptedSupplementSampleIds": not_accepted,
+        "unrecoverableSupplementSampleCount": len(unrecoverable),
+        "unrecoverableSupplementSampleIds": sorted(unrecoverable),
+        "noRawMatureBuildMaterial": True,
+    }
+
+
+def _verified_quarantine_raw(prior_quarantine: Path, row: Any) -> str:
+    sample_id = str(row["sample_id"] or "").strip()
+    source_hash = str(row["source_hash"] or "").strip()
+    source_hash_ref = str(row["source_hash_ref"] or "").strip()
+    if not sample_id or not source_hash:
+        return ""
+    quarantine_path = prior_quarantine / f"{source_hash}.json"
+    try:
+        payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return ""
+    raw = str(payload.get("rawImportCode") or "")
+    if not raw:
+        return ""
+    if str(payload.get("sampleId") or "").strip() != sample_id:
+        return ""
+    if str(payload.get("sourceHash") or "").strip() != source_hash:
+        return ""
+    if str(payload.get("sourceHashRef") or "").strip() != source_hash_ref:
+        return ""
+    if hashlib.sha256(raw.encode("utf-8")).hexdigest() != source_hash:
+        return ""
+    return raw
+
+
 def _cases_from_prior_run(
     prior_run_root: Path,
     *,
+    supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
 ) -> tuple[list[dict[str, Any]], int]:
     """Re-queue completed cases of a prior run as local supplement research.
@@ -3073,6 +3215,14 @@ def _cases_from_prior_run(
     are skipped (their raw source is unrecoverable). Supplement cases keep the prior
     ``sampleId`` for traceability and chain the ``supplementContext`` focus text.
     """
+    selected_ids = _normalize_supplement_sample_ids(supplement_sample_ids)
+    if selected_ids is not None:
+        selection = inspect_supplement_selection(prior_run_root, selected_ids)
+        if selection["status"] != "ok":
+            raise ValueError(
+                "invalid targeted supplement selection: "
+                + json.dumps(selection, ensure_ascii=False, sort_keys=True)
+            )
     prior_db = prior_run_root / QUEUE_DB_FILENAME
     prior_quarantine = _quarantine_dir(prior_run_root)
     cases: list[dict[str, Any]] = []
@@ -3081,25 +3231,20 @@ def _cases_from_prior_run(
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT sample_id, source_hash, source_hash_ref, source_type, character_ref,
+            SELECT sample_id, status, source_hash, source_hash_ref, source_type, character_ref,
                    league, level, class_name, ascendancy, main_skill
               FROM cases
              ORDER BY id
             """
         ).fetchall()
     for row in rows:
+        if selected_ids is not None and str(row["sample_id"] or "") not in selected_ids:
+            continue
         source_hash = str(row["source_hash"] or "").strip()
         if not source_hash:
             skipped += 1
             continue
-        quarantine_path = prior_quarantine / f"{source_hash}.json"
-        raw = ""
-        if quarantine_path.exists():
-            try:
-                payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
-                raw = str(payload.get("rawImportCode") or "")
-            except (OSError, ValueError):
-                raw = ""
+        raw = _verified_quarantine_raw(prior_quarantine, row)
         if not raw:
             skipped += 1
             continue
@@ -3216,6 +3361,33 @@ def _queue_report(
         "reSupplementCaseCount": int(source_input_summary.get("reSupplementCaseCount") or 0),
         "reSupplementSkippedUnrecoverableCount": int(
             source_input_summary.get("reSupplementSkippedUnrecoverableCount") or 0
+        ),
+        "requestedSupplementSampleCount": int(
+            source_input_summary.get("requestedSupplementSampleCount") or 0
+        ),
+        "selectedSupplementSampleCount": int(
+            source_input_summary.get("selectedSupplementSampleCount") or 0
+        ),
+        "selectedSupplementSampleIds": list(
+            source_input_summary.get("selectedSupplementSampleIds") or []
+        ),
+        "missingSupplementSampleCount": int(
+            source_input_summary.get("missingSupplementSampleCount") or 0
+        ),
+        "missingSupplementSampleIds": list(
+            source_input_summary.get("missingSupplementSampleIds") or []
+        ),
+        "notAcceptedSupplementSampleCount": int(
+            source_input_summary.get("notAcceptedSupplementSampleCount") or 0
+        ),
+        "notAcceptedSupplementSampleIds": list(
+            source_input_summary.get("notAcceptedSupplementSampleIds") or []
+        ),
+        "unrecoverableSupplementSampleCount": int(
+            source_input_summary.get("unrecoverableSupplementSampleCount") or 0
+        ),
+        "unrecoverableSupplementSampleIds": list(
+            source_input_summary.get("unrecoverableSupplementSampleIds") or []
         ),
         "samples": samples,
         "dryRun": bool(dry_run),
@@ -3807,6 +3979,8 @@ def _claim_payload(
         **identity_hint,
         "leaseToken": lease_token,
         "leaseExpiresAt": str(row["lease_expires_at"]),
+        "supplement": bool(row["supplement"]),
+        "supplementContext": str(row["supplement_context"] or ""),
         "reviewFile": review_file,
         "workerPrompt": worker_prompt,
         "noRawMatureBuildMaterial": True,
@@ -4205,6 +4379,29 @@ def _queue_cli_output_dir(args: argparse.Namespace) -> tuple[str | None, Path]:
     return _allocate_run_output_dir(DEFAULT_OUTPUT_DIR)
 
 
+def _preflight_queue_cli(args: argparse.Namespace) -> None:
+    if args.supplement_sample_id is not None and not args.re_research:
+        raise ValueError("--supplement-sample-id requires --re-research")
+    if not args.re_research:
+        return
+    if args.source_file or args.source_batch_file:
+        raise ValueError("--re-research cannot be combined with local source input")
+    if args.resume:
+        raise ValueError("--re-research cannot be combined with --resume")
+    if args.expected_source_count is not None:
+        raise ValueError("--re-research cannot be combined with --expected-source-count")
+    prior = Path(args.re_research)
+    if not (prior / QUEUE_DB_FILENAME).is_file():
+        raise ValueError(f"--re-research run directory has no {QUEUE_DB_FILENAME}")
+    if args.supplement_sample_id is not None:
+        selection = inspect_supplement_selection(prior, args.supplement_sample_id)
+        if selection["status"] != "ok":
+            raise ValueError(
+                "invalid targeted supplement selection: "
+                + json.dumps(selection, ensure_ascii=False, sort_keys=True)
+            )
+
+
 def _attach_run_location(report: dict[str, Any], *, run_id: str, run_dir: Path) -> None:
     display_dir = _display_path(run_dir)
     report.update({"runId": run_id, "runDir": display_dir})
@@ -4520,6 +4717,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional focus checklist injected into the supplement-round worker brief "
         "(e.g. '骷髅军团各宝宝配装、资源账本').",
     )
+    queue_parser.add_argument(
+        "--supplement-sample-id",
+        action="append",
+        default=None,
+        help="With --re-research, re-queue only these exact prior-run sampleIds. Repeatable.",
+    )
     queue_parser.add_argument("--ttl-seconds", type=int, default=24 * 60 * 60)
     queue_parser.add_argument(
         "--intake-ledger",
@@ -4572,7 +4775,8 @@ def main(argv: list[str] | None = None) -> int:
     read_parser.add_argument(
         "--node-type",
         default=None,
-        help="passives only: keystone|notable|jewel_socket|ascendancy|mastery|normal",
+        help="passives only: keystone|notable|jewel_socket|granted_jewel_socket|"
+        "ascendancy|mastery|normal",
     )
     read_parser.add_argument(
         "--exclude-routing",
@@ -4649,32 +4853,39 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_rewrite_lease_token_argv(effective_argv))
     try:
         if args.command == "queue":
+            _preflight_queue_cli(args)
             run_id, output_dir = _queue_cli_output_dir(args)
-            report = queue_cases(
-                league_url=args.league,
-                limit=args.limit,
-                worker_count=args.worker_count,
-                level_min=args.level_min,
-                level_max=args.level_max,
-                ascendancies=list(args.ascendancy or []),
-                ninja_classes=list(args.ninja_classes or []),
-                source_files=[Path(item) for item in args.source_file],
-                source_batch_files=[Path(item) for item in args.source_batch_file],
-                expected_source_count=args.expected_source_count,
-                sample_start_index=args.sample_start_index,
-                output_dir=output_dir,
-                queue_db_path=args.queue_db_path,
-                temp_root=args.temp_root,
-                ttl_seconds=args.ttl_seconds,
-                current_patch=args.current_patch,
-                passive_tree_version=args.passive_tree_version,
-                pob_version_or_commit=args.pob_version_or_commit,
-                resume=args.resume,
-                dry_run=args.dry_run,
-                intake_ledger_path=args.intake_ledger,
-                re_research_run_dir=args.re_research,
-                supplement_focus=args.supplement_focus,
-            )
+            try:
+                report = queue_cases(
+                    league_url=args.league,
+                    limit=args.limit,
+                    worker_count=args.worker_count,
+                    level_min=args.level_min,
+                    level_max=args.level_max,
+                    ascendancies=list(args.ascendancy or []),
+                    ninja_classes=list(args.ninja_classes or []),
+                    source_files=[Path(item) for item in args.source_file],
+                    source_batch_files=[Path(item) for item in args.source_batch_file],
+                    expected_source_count=args.expected_source_count,
+                    sample_start_index=args.sample_start_index,
+                    output_dir=output_dir,
+                    queue_db_path=args.queue_db_path,
+                    temp_root=args.temp_root,
+                    ttl_seconds=args.ttl_seconds,
+                    current_patch=args.current_patch,
+                    passive_tree_version=args.passive_tree_version,
+                    pob_version_or_commit=args.pob_version_or_commit,
+                    resume=args.resume,
+                    dry_run=args.dry_run,
+                    intake_ledger_path=args.intake_ledger,
+                    re_research_run_dir=args.re_research,
+                    supplement_sample_ids=args.supplement_sample_id,
+                    supplement_focus=args.supplement_focus,
+                )
+            except BaseException:
+                if run_id is not None:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise
             if run_id is not None:
                 _attach_run_location(report, run_id=run_id, run_dir=output_dir)
             _print_json(report)

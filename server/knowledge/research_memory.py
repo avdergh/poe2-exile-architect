@@ -30,7 +30,7 @@ DIRECTIONAL_EDGE_TYPES = {
 }
 VALID_REVALIDATION_TARGET_KINDS = {"fragment", "semantic_edge", "build_pattern"}
 VALID_REVALIDATION_OUTCOMES = {"still_valid", "invalidated", "changed_scope", "needs_review"}
-BUILD_FAMILY_BACKFILL_VERSION = "7"
+BUILD_FAMILY_BACKFILL_VERSION = "8"
 RESEARCH_MEMORY_SCOPE_WEIGHTS = {
     "exact_family": 1.0,
     "same_primary_skill": 0.9,
@@ -536,6 +536,8 @@ class ResearchMemoryService:
                         (stale_key,),
                     )
 
+            updated_family_secondary_count = self._reconcile_build_family_secondary_skill_keys(con)
+
             family_by_source: dict[str, str] = {}
             for group_id, family in family_by_group.items():
                 for row in groups[group_id]:
@@ -608,6 +610,7 @@ class ResearchMemoryService:
                 "skippedInvalidRecordCount": skipped_invalid_record_count,
                 "evidenceAddedCount": evidence_added_count,
                 "familyEvidenceAddedCount": family_evidence_added_count,
+                "updatedFamilySecondaryCount": updated_family_secondary_count,
                 "updatedPatternOriginCount": updated_pattern_origin_count,
             }
         finally:
@@ -1348,6 +1351,8 @@ class ResearchMemoryService:
             record_writes: list[dict[str, Any]] = []
             knowledge_keys: set[str] = set()
             build_family_keys: set[str] = set()
+            affected_build_family_keys: set[str] = set()
+            family_relocation_targets: dict[str, set[str]] = {}
             created_record_count = 0
             updated_record_count = 0
             evidence_added_count = 0
@@ -1492,6 +1497,28 @@ class ResearchMemoryService:
                 created_record_count += int(persisted["created"])
                 updated_record_count += int(not persisted["created"])
                 evidence_added_count += int(persisted["evidence_added_count"])
+                previous_family_key = persisted.get("previous_build_family_key")
+                if previous_family_key:
+                    affected_build_family_keys.add(str(previous_family_key))
+                current_family = families_by_group.get(record.research_group_id)
+                if current_family is not None:
+                    affected_build_family_keys.add(current_family.key)
+                    if previous_family_key and previous_family_key != current_family.key:
+                        family_relocation_targets.setdefault(str(previous_family_key), set()).add(
+                            current_family.key
+                        )
+            self._reconcile_build_family_secondary_skill_keys(
+                con, family_keys=affected_build_family_keys
+            )
+            removed_orphan_family_count = self._delete_unreferenced_build_families(
+                con,
+                family_keys=affected_build_family_keys - build_family_keys,
+                relocation_targets={
+                    source_key: next(iter(target_keys))
+                    for source_key, target_keys in family_relocation_targets.items()
+                    if len(target_keys) == 1
+                },
+            )
             sibling_hints = _sibling_family_hints(con, build_family_keys)
             con.commit()
         except BaseException:
@@ -1511,6 +1538,7 @@ class ResearchMemoryService:
             "evidenceAddedCount": evidence_added_count,
             "familyEvidenceAddedCount": family_evidence_added_count,
             "createdBuildFamilyCount": created_build_family_count,
+            "removedOrphanBuildFamilyCount": removed_orphan_family_count,
             "unkeyedRecordCount": len(unkeyed_record_titles),
             "unkeyedRecordTitles": unkeyed_record_titles,
             "researchGroupIds": sorted(
@@ -1652,12 +1680,14 @@ class ResearchMemoryService:
             return {
                 "record_id": record_id,
                 "knowledge_key": knowledge_key,
+                "previous_build_family_key": None,
                 "created": True,
                 "evidence_added_count": evidence_added_count,
                 "crossFamilyDuplicateAdvisories": cross_family_advisories,
             }
 
         record_id = str(existing["record_id"])
+        previous_build_family_key = str(existing["build_family_key"] or "") or None
         old_knowledge_key = str(existing["knowledge_key"] or "")
         merged_sources = sorted(
             set(_loads(existing["source_case_refs"], [])) | set(record.source_case_refs)
@@ -1675,8 +1705,10 @@ class ResearchMemoryService:
             and stored_typed_payload.get(key) != record.typed_payload.get(key)
             for key in ("familyCoreSkillKeys", "resourceMechanisms")
         )
-        same_source_revision = set(_loads(existing["source_case_refs"], [])) == set(
-            record.source_case_refs
+        stored_source_refs = set(_loads(existing["source_case_refs"], []))
+        incoming_source_refs = set(record.source_case_refs)
+        same_source_revision = (
+            bool(incoming_source_refs) and incoming_source_refs <= stored_source_refs
         )
         use_incoming = (
             identity_changed
@@ -1749,6 +1781,7 @@ class ResearchMemoryService:
         return {
             "record_id": record_id,
             "knowledge_key": knowledge_key,
+            "previous_build_family_key": previous_build_family_key,
             "created": False,
             "evidence_added_count": evidence_added_count,
             "crossFamilyDuplicateAdvisories": cross_family_advisories,
@@ -2140,6 +2173,7 @@ class ResearchMemoryService:
                     "at": now,
                 }
             )
+        self._reconcile_build_family_secondary_skill_keys(con, family_keys={dst_key})
         return {"moved": moved, "deprecated": deprecated, "dst_family_key": dst_key}
 
     def _upsert_build_family(
@@ -2200,6 +2234,208 @@ class ResearchMemoryService:
             (family.key, now, family.key),
         )
         return added
+
+    @staticmethod
+    def _reconcile_build_family_secondary_skill_keys(
+        con: sqlite3.Connection,
+        *,
+        family_keys: Iterable[str] | None = None,
+    ) -> int:
+        """Rebuild mutable Family secondary metadata from current durable records."""
+
+        normalized_keys = sorted(
+            {str(value).strip() for value in family_keys or [] if str(value).strip()}
+        )
+        params: tuple[Any, ...] = ()
+        where = ""
+        if family_keys is not None:
+            if not normalized_keys:
+                return 0
+            placeholders = ", ".join("?" for _ in normalized_keys)
+            where = f"WHERE build_family_key IN ({placeholders})"
+            params = tuple(normalized_keys)
+        families = con.execute(
+            f"""
+            SELECT build_family_key, primary_skill_key, primary_skill_keys,
+                   secondary_skill_keys
+            FROM research_build_families
+            {where}
+            ORDER BY build_family_key
+            """,
+            params,
+        ).fetchall()
+        updated = 0
+        for family in families:
+            family_key = str(family["build_family_key"])
+            primary_keys = _loads(family["primary_skill_keys"], None)
+            if not primary_keys:
+                primary_key = str(family["primary_skill_key"] or "").strip()
+                primary_keys = [primary_key] if primary_key else []
+            records = con.execute(
+                """
+                SELECT record_kind, component_mentions, typed_payload
+                FROM deep_research_records
+                WHERE build_family_key = ?
+                  AND status IN ('valid', 'needs_revalidation')
+                  AND superseded_by_id IS NULL
+                ORDER BY record_id
+                """,
+                (family_key,),
+            ).fetchall()
+            secondary = set(research_identity.automatic_family_skill_keys(records))
+            secondary.update(
+                key
+                for record in records
+                for key in research_identity.family_core_skill_keys(record)
+            )
+            secondary -= {str(value) for value in primary_keys}
+            normalized_secondary = sorted(secondary)
+            stored_secondary = sorted(_loads(family["secondary_skill_keys"], []))
+            if normalized_secondary == stored_secondary:
+                continue
+            con.execute(
+                """
+                UPDATE research_build_families
+                SET secondary_skill_keys = ?
+                WHERE build_family_key = ?
+                """,
+                (_json(normalized_secondary), family_key),
+            )
+            updated += 1
+        return updated
+
+    @staticmethod
+    def _delete_unreferenced_build_families(
+        con: sqlite3.Connection,
+        *,
+        family_keys: Iterable[str],
+        relocation_targets: dict[str, str],
+    ) -> int:
+        removed = 0
+        for family_key in sorted(
+            {str(value).strip() for value in family_keys if str(value).strip()}
+        ):
+            live = con.execute(
+                """
+                SELECT 1 FROM deep_research_records
+                WHERE build_family_key = ?
+                  AND status IN ('valid', 'needs_revalidation')
+                  AND superseded_by_id IS NULL
+                LIMIT 1
+                """,
+                (family_key,),
+            ).fetchone()
+            if live is not None:
+                continue
+
+            target_key = str(relocation_targets.get(family_key) or "").strip()
+            if target_key and target_key != family_key:
+                target_exists = con.execute(
+                    "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
+                    (target_key,),
+                ).fetchone()
+                if target_exists is None:
+                    continue
+                con.execute(
+                    "UPDATE deep_research_records SET build_family_key = ? "
+                    "WHERE build_family_key = ?",
+                    (target_key, family_key),
+                )
+                con.execute(
+                    """
+                    INSERT INTO research_build_family_evidence(
+                        build_family_key, source_case_ref, first_seen_at, last_seen_at
+                    )
+                    SELECT ?, source_case_ref, first_seen_at, last_seen_at
+                    FROM research_build_family_evidence
+                    WHERE build_family_key = ?
+                    ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                        first_seen_at = min(
+                            research_build_family_evidence.first_seen_at,
+                            excluded.first_seen_at
+                        ),
+                        last_seen_at = max(
+                            research_build_family_evidence.last_seen_at,
+                            excluded.last_seen_at
+                        )
+                    """,
+                    (target_key, family_key),
+                )
+                con.execute(
+                    """
+                    UPDATE research_build_families
+                    SET evidence_count = (
+                        SELECT count(*) FROM research_build_family_evidence
+                        WHERE build_family_key = ?
+                    )
+                    WHERE build_family_key = ?
+                    """,
+                    (target_key, target_key),
+                )
+                pattern_rows = con.execute(
+                    """
+                    SELECT pattern_id, transfer_scope, origin_family_keys
+                    FROM research_build_patterns
+                    WHERE EXISTS (
+                        SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
+                        WHERE json_each.value = ?
+                    )
+                    """,
+                    (family_key,),
+                ).fetchall()
+                for pattern_row in pattern_rows:
+                    origin_family_keys = sorted(
+                        {
+                            target_key if str(key) == family_key else str(key)
+                            for key in _loads(pattern_row["origin_family_keys"], [])
+                        }
+                    )
+                    family_count = (
+                        len(origin_family_keys)
+                        if str(pattern_row["transfer_scope"]) == "component"
+                        else None
+                    )
+                    con.execute(
+                        """
+                        UPDATE research_build_patterns
+                        SET origin_family_keys = ?,
+                            family_count = CASE WHEN ? IS NULL THEN family_count ELSE ? END
+                        WHERE pattern_id = ?
+                        """,
+                        (
+                            _json(origin_family_keys),
+                            family_count,
+                            family_count,
+                            str(pattern_row["pattern_id"]),
+                        ),
+                    )
+            else:
+                remaining_reference = con.execute(
+                    "SELECT 1 FROM deep_research_records WHERE build_family_key = ? LIMIT 1",
+                    (family_key,),
+                ).fetchone()
+                pattern_reference = con.execute(
+                    """
+                    SELECT 1 FROM research_build_patterns
+                    WHERE EXISTS (
+                        SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
+                        WHERE json_each.value = ?
+                    )
+                    LIMIT 1
+                    """,
+                    (family_key,),
+                ).fetchone()
+                if remaining_reference is not None or pattern_reference is not None:
+                    continue
+            con.execute(
+                "DELETE FROM research_build_family_evidence WHERE build_family_key = ?",
+                (family_key,),
+            )
+            removed += con.execute(
+                "DELETE FROM research_build_families WHERE build_family_key = ?",
+                (family_key,),
+            ).rowcount
+        return removed
 
     def _upsert_deep_record_evidence(
         self,

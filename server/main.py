@@ -2908,6 +2908,7 @@ def start_research_run(
     sample_start_index: int = 1,
     dry_run: bool = False,
     re_research_run_ref: str | None = None,
+    supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
 ) -> dict[str, Any]:
     """Create one mature-build Research queue in private user data and return an opaque runRef.
@@ -2929,18 +2930,9 @@ def start_research_run(
         sample_start_index=sample_start_index,
         dry_run=dry_run,
         re_research_run_ref=re_research_run_ref,
+        supplement_sample_ids=supplement_sample_ids,
         supplement_focus=supplement_focus,
     )
-
-
-@mcp.tool()
-def adopt_legacy_research_run(legacy_run_dir: str) -> dict[str, Any]:
-    """Copy one inactive legacy run out of a checkout/plugin cache into user-data runtime.
-
-    The source is preserved. A live claimed/accepting lease blocks adoption until it settles.
-    Durable Research Memory and intake-ledger paths are never migrated by this operation.
-    """
-    return research_workflow.adopt_legacy_run(legacy_run_dir=legacy_run_dir)
 
 
 @mcp.tool()
@@ -3033,13 +3025,13 @@ def validate_research_review(
 def accept_research_review(
     run_ref: str,
     lease_token: str,
-    expected_review_hash: str,
+    review: dict[str, Any],
 ) -> dict[str, Any]:
-    """Accept the exact safe review previously validated under the same hash and lease."""
+    """Formally validate and accept the supplied safe review under the same lease."""
     return research_workflow.accept_review(
         run_ref=run_ref,
         lease_token=lease_token,
-        expected_review_hash=expected_review_hash,
+        review=review,
     )
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from scripts import research_mature_builds
 from server import paths
 from server.compute import pob_code
@@ -34,6 +36,9 @@ def test_typed_research_run_never_uses_checkout_or_plugin_cache(tmp_path, monkey
     runtime = _configure_user_data(monkeypatch, tmp_path)
     source = tmp_path / "sample.txt"
     source.write_text(_sample_code(), encoding="utf-8")
+    foreign_project = tmp_path / "unrelated-project"
+    foreign_project.mkdir()
+    monkeypatch.chdir(foreign_project)
 
     queued = research_workflow.start_run(
         source_files=[str(source)],
@@ -53,6 +58,7 @@ def test_typed_research_run_never_uses_checkout_or_plugin_cache(tmp_path, monkey
     status = research_workflow.run_status(run_ref=queued["runRef"])
     assert status["queuedCount"] == 1
     assert status["runRef"] == queued["runRef"]
+    assert list(foreign_project.iterdir()) == []
     cleanup_calls: list[dict] = []
 
     def fake_cleanup_completed_run(**kwargs):
@@ -87,9 +93,114 @@ def test_typed_research_run_never_uses_checkout_or_plugin_cache(tmp_path, monkey
     ]
 
 
-def test_typed_worker_keeps_review_in_memory_and_binds_accept_to_validation_hash(
+def test_typed_research_run_targets_valid_supplement_sample_ids_before_allocating(
     tmp_path, monkeypatch
 ):
+    runtime = _configure_user_data(monkeypatch, tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text(_sample_code(), encoding="utf-8")
+    prior = research_workflow.start_run(
+        source_files=[str(source)], expected_source_count=1, limit=1
+    )
+    prior_dir = runtime / "runs" / prior["runId"]
+    queue_db = prior_dir / research_mature_builds.QUEUE_DB_FILENAME
+    with sqlite3.connect(queue_db) as con:
+        sample_id = str(con.execute("SELECT sample_id FROM cases").fetchone()[0])
+
+    before = sorted((runtime / "runs").iterdir())
+    missing_ref = research_workflow.start_run(supplement_sample_ids=[sample_id])
+    assert missing_ref["errorCode"] == "supplement_sample_ids_require_re_research_run_ref"
+    assert sorted((runtime / "runs").iterdir()) == before
+
+    not_accepted = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"],
+        supplement_sample_ids=[sample_id],
+    )
+    assert not_accepted["status"] == "supplement_selection_invalid"
+    assert not_accepted["notAcceptedSupplementSampleIds"] == [sample_id]
+    assert sorted((runtime / "runs").iterdir()) == before
+
+    unknown = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"],
+        supplement_sample_ids=["case:missing"],
+    )
+    assert unknown["status"] == "supplement_selection_invalid"
+    assert unknown["missingSupplementSampleIds"] == ["case:missing"]
+    assert sorted((runtime / "runs").iterdir()) == before
+
+    with sqlite3.connect(queue_db) as con:
+        con.execute("UPDATE cases SET status = 'accepted' WHERE sample_id = ?", (sample_id,))
+        con.commit()
+    source_conflict = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"],
+        supplement_sample_ids=[sample_id],
+        source_files=[str(source)],
+    )
+    assert source_conflict["errorCode"] == "re_research_source_input_conflict"
+    assert sorted((runtime / "runs").iterdir()) == before
+    count_conflict = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"],
+        supplement_sample_ids=[sample_id],
+        expected_source_count=1,
+    )
+    assert count_conflict["errorCode"] == "re_research_expected_source_count_conflict"
+    assert sorted((runtime / "runs").iterdir()) == before
+
+    selected = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"],
+        supplement_sample_ids=[sample_id, sample_id],
+        supplement_focus="只更正目标机制",
+    )
+    assert selected["status"] == "queued"
+    assert selected["requestedSupplementSampleCount"] == 1
+    assert selected["selectedSupplementSampleCount"] == 1
+    assert selected["requestedSampleCount"] == 1
+    assert selected["selectedSupplementSampleIds"] == [sample_id]
+    assert selected["missingSupplementSampleCount"] == 0
+    assert selected["notAcceptedSupplementSampleCount"] == 0
+    assert selected["unrecoverableSupplementSampleCount"] == 0
+    assert [sample["sampleId"] for sample in selected["samples"]] == [sample_id]
+    assert "runDir" not in selected
+    selected_status = research_workflow.run_status(run_ref=selected["runRef"])
+    assert selected_status["requestedSampleCount"] == 1
+    assert selected_status["selectedSupplementSampleIds"] == [sample_id]
+
+    after_selected = sorted((runtime / "runs").iterdir())
+    empty = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"], supplement_sample_ids=[]
+    )
+    assert empty["errorCode"] == "invalid_supplement_sample_ids"
+    assert sorted((runtime / "runs").iterdir()) == after_selected
+
+    original_queue_cases = research_mature_builds.queue_cases
+
+    def fail_after_allocation(**_kwargs):
+        raise RuntimeError("synthetic queue failure")
+
+    monkeypatch.setattr(research_mature_builds, "queue_cases", fail_after_allocation)
+    with pytest.raises(RuntimeError, match="synthetic queue failure"):
+        research_workflow.start_run(
+            re_research_run_ref=prior["runRef"],
+            supplement_sample_ids=[sample_id],
+        )
+    assert sorted((runtime / "runs").iterdir()) == after_selected
+    monkeypatch.setattr(research_mature_builds, "queue_cases", original_queue_cases)
+
+    quarantine_file = next((prior_dir / "quarantine").glob("*.json"))
+    quarantine_file.unlink()
+    unrecoverable = research_workflow.start_run(
+        re_research_run_ref=prior["runRef"], supplement_sample_ids=[sample_id]
+    )
+    assert unrecoverable["status"] == "supplement_selection_invalid"
+    assert unrecoverable["unrecoverableSupplementSampleIds"] == [sample_id]
+    assert sorted((runtime / "runs").iterdir()) == after_selected
+
+
+def test_legacy_cli_default_remains_repo_local():
+    assert research_mature_builds.DEFAULT_OUTPUT_DIR == paths.BUNDLE_ROOT / ".poe-bd-research"
+
+
+def test_typed_worker_keeps_review_in_memory_for_validate_and_accept(tmp_path, monkeypatch):
     _configure_user_data(monkeypatch, tmp_path)
     source = tmp_path / "sample.txt"
     source.write_text(_sample_code(), encoding="utf-8")
@@ -136,71 +247,139 @@ def test_typed_worker_keeps_review_in_memory_and_binds_accept_to_validation_hash
         lease_token=claimed["leaseToken"],
         review=review,
     )
-    rejected = research_workflow.accept_review(
-        run_ref=queued["runRef"],
-        lease_token=claimed["leaseToken"],
-        expected_review_hash="review-sha256:" + "0" * 64,
-    )
     accepted = research_workflow.accept_review(
         run_ref=queued["runRef"],
         lease_token=claimed["leaseToken"],
-        expected_review_hash=validated["reviewHash"],
+        review=review,
     )
 
     assert validated["status"] == "validation_passed"
-    assert rejected["errorCode"] == "review_changed_after_validation"
     assert accepted["status"] == "accepted"
     assert len(calls) == 2
     assert calls[0]["validation_only"] is True
     assert calls[0]["memory_db_path"] == tmp_path / "memory.sqlite"
     assert calls[1]["memory_db_path"] == tmp_path / "memory.sqlite"
+    assert "reviewHash" not in validated
+    assert "reviewHash" not in accepted
 
 
-def test_legacy_run_adoption_waits_for_active_lease_then_copies_without_deleting_source(
-    tmp_path, monkeypatch
-):
-    runtime = _configure_user_data(monkeypatch, tmp_path)
-    source_file = tmp_path / "sample.txt"
-    source_file.write_text(_sample_code(), encoding="utf-8")
-    legacy_base = tmp_path / "legacy" / ".poe-bd-research"
-    run_id, legacy_run = research_mature_builds._allocate_run_output_dir(legacy_base)
-    research_mature_builds.queue_cases(
-        source_files=[source_file],
-        expected_source_count=1,
-        limit=1,
-        output_dir=legacy_run,
+def test_typed_product_rejects_relative_local_source_paths(tmp_path, monkeypatch):
+    _configure_user_data(monkeypatch, tmp_path)
+
+    try:
+        research_workflow.start_run(source_files=["sample.txt"], expected_source_count=1)
+    except ValueError as exc:
+        assert str(exc) == "source_files entries must be absolute paths"
+    else:
+        raise AssertionError("relative product source path should be rejected")
+
+
+def test_typed_product_rejects_relative_runtime_root(monkeypatch):
+    monkeypatch.setattr(paths, "research_runtime_dir", lambda: Path("relative-research-root"))
+
+    try:
+        research_workflow.start_run(dry_run=True)
+    except ValueError as exc:
+        assert str(exc) == "Research user-data runtime root must be an absolute path"
+    else:
+        raise AssertionError("relative product runtime root should be rejected")
+
+
+def test_typed_claim_preserves_safe_supplement_context(tmp_path, monkeypatch):
+    _configure_user_data(monkeypatch, tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text(_sample_code(), encoding="utf-8")
+    queued = research_workflow.start_run(
+        source_files=[str(source)], expected_source_count=1, limit=1
     )
-    queue_db = legacy_run / research_mature_builds.QUEUE_DB_FILENAME
+    monkeypatch.setattr(
+        research_mature_builds,
+        "claim_case",
+        lambda **_kwargs: {
+            "status": "claimed",
+            "sampleId": "case:fixture",
+            "leaseToken": "lease-fixture",
+            "supplement": True,
+            "supplementContext": "补齐资源闭环",
+            "reviewFile": "reviews/private.json",
+            "workerPrompt": "private CLI prompt",
+        },
+    )
+
+    result = research_workflow.claim_case(run_ref=queued["runRef"])
+
+    assert result["supplement"] is True
+    assert result["supplementContext"] == "补齐资源闭环"
+    assert "reviewFile" not in result
+    assert "workerPrompt" not in result
+
+
+def test_typed_retry_resolves_review_inside_run_not_current_directory(tmp_path, monkeypatch):
+    runtime = _configure_user_data(monkeypatch, tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text(_sample_code(), encoding="utf-8")
+    queued = research_workflow.start_run(
+        source_files=[str(source)], expected_source_count=1, limit=1
+    )
+    run_dir = runtime / "runs" / queued["runId"]
+    claimed = research_workflow.claim_case(run_ref=queued["runRef"])
+    initialized = research_workflow.initialize_review(
+        run_ref=queued["runRef"], lease_token=claimed["leaseToken"]
+    )
+    review = initialized["review"]
+    review["deepResearchRecords"] = [
+        {
+            "sampleId": claimed["sampleId"],
+            "caseRef": review["artifactIdentity"]["caseRef"],
+            "safeEvidenceRef": review["artifactIdentity"]["safeEvidenceRef"],
+        }
+    ]
+    queue_db = run_dir / research_mature_builds.QUEUE_DB_FILENAME
     with sqlite3.connect(queue_db) as con:
-        sample_id = str(con.execute("SELECT sample_id FROM cases LIMIT 1").fetchone()[0])
         con.execute(
-            "UPDATE cases SET status = 'claimed', lease_token = 'fixture', "
-            "lease_owner = 'fixture', lease_expires_at = ? WHERE sample_id = ?",
-            ("2999-01-01T00:00:00+00:00", sample_id),
+            "UPDATE cases SET status = 'acceptance_rejected', lease_token = NULL, "
+            "lease_owner = NULL, lease_expires_at = NULL WHERE sample_id = ?",
+            (claimed["sampleId"],),
         )
         con.commit()
+    authoritative_review = next((run_dir / "reviews").glob("*-safe-review.json"))
+    relative_review = authoritative_review.relative_to(run_dir)
+    foreign_project = tmp_path / "foreign-project"
+    conflicting_review = foreign_project / relative_review
+    conflicting_review.parent.mkdir(parents=True)
+    conflicting_review.write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(foreign_project)
+    calls: list[dict] = []
 
-    blocked = research_workflow.adopt_legacy_run(legacy_run_dir=str(legacy_run))
-    assert blocked["status"] == "legacy_run_active"
-    assert blocked["activeLeaseCount"] == 1
+    def fake_accept_deep_review_candidates(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "accepted",
+            "acceptedPatternCount": 0,
+            "acceptedDeepRecordCount": 0,
+            "acceptedSemanticEdgeCount": 0,
+            "deferredCandidateCount": 0,
+        }
 
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        fake_accept_deep_review_candidates,
+    )
+    result = research_workflow.retry_review(
+        run_ref=queued["runRef"],
+        sample_id=claimed["sampleId"],
+        review=review,
+    )
+
+    assert result["status"] == "accepted"
+    assert calls[0]["review_file"] == authoritative_review
+    assert calls[0]["review_payload"]["safeArtifactOnly"] is True
+    assert calls[0]["review_payload"]["artifactIdentity"] == review["artifactIdentity"]
     with sqlite3.connect(queue_db) as con:
-        con.execute(
-            "UPDATE cases SET lease_expires_at = ? WHERE sample_id = ?",
-            ("2000-01-01T00:00:00+00:00", sample_id),
+        assert (
+            con.execute(
+                "SELECT status FROM cases WHERE sample_id = ?", (claimed["sampleId"],)
+            ).fetchone()[0]
+            == "accepted"
         )
-        con.commit()
-
-    adopted = research_workflow.adopt_legacy_run(legacy_run_dir=str(legacy_run))
-    adopted_dir = runtime / "runs" / run_id
-
-    assert adopted["status"] == "adopted"
-    assert adopted["runRef"] == f"research-run:{run_id}"
-    assert adopted["sourcePreserved"] is True
-    assert legacy_run.is_dir()
-    assert (adopted_dir / research_mature_builds.QUEUE_DB_FILENAME).is_file()
-    assert research_workflow.run_status(run_ref=adopted["runRef"])["claimedCount"] == 1
-    adopted_quarantine = sorted((adopted_dir / "quarantine").glob("*.json"))
-    legacy_quarantine = sorted((legacy_run / "quarantine").glob("*.json"))
-    assert len(adopted_quarantine) == len(legacy_quarantine) == 1
-    assert adopted_quarantine[0].read_bytes() == legacy_quarantine[0].read_bytes()

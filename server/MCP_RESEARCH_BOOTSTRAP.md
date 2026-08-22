@@ -15,4 +15,5 @@ queue, review, quarantine or database files directly.
 4. Edges require resolved stable keys, never fuzzy/vendor names; ambiguity fails closed.
 5. Fragment bodies stay bounded (Chinese ≤400 chars / English ≤250 words per record question).
 6. This server never calls a model provider, searches the working directory, or writes into a
-   checkout/plugin cache. It reads local source files only when their exact paths were submitted.
+   checkout/plugin cache. Product tools read local source files only from explicitly submitted
+   absolute paths.

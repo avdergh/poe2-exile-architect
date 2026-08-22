@@ -48,12 +48,8 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "research_succeeded=true" in skill
     assert "research_succeeded=false" in skill
     assert "--research-succeeded yes|no" in skill
-    assert (
-        "只做审查，不修改代码、数据库或运行产物。基于本任务保存的 safe review/accept/status "
-        "摘要、opaque runRef 和实际入库结果，核对：五项研究覆盖是否有具体证据；核心技能职责、"
-        "身份装备、天赋、触发、转换和资源机制是否事实一致；Family、Pattern、transfer scope、"
-        "未解析项和暂缓项是否合理；报告计数是否与实际写入一致。"
-    ) in skill
+    assert "完整的 safe review、validation/accept/status 回执" in skill
+    assert "不得把完整安全产物降级为只看摘要" in skill
     assert "运行态只能通过 typed Research MCP 查询，不读取或编辑 run 文件" in skill
     assert "不能因为组件成功解析就认为机制解释正确" in skill
     assert (
@@ -130,7 +126,7 @@ def test_desktop_research_loop_skill_has_visible_task_contract():
     assert "args:" not in metadata
     assert "cwd:" not in metadata
     assert "E:\\" not in metadata
-    assert "allow_implicit_invocation: true" in metadata
+    assert "allow_implicit_invocation: false" in metadata
 
 
 def test_desktop_research_loop_skill_uses_compact_low_churn_monitoring():
@@ -178,6 +174,17 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "claimScopeReview" in worker
     assert "relevanceReason" in worker
     assert "validate_research_review" in worker
+    assert "complete=false" in worker and "nextCursor" in worker
+    assert "不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实" in worker
+    assert "`enableGlobal1` / `enableGlobal2` 是单颗 gem 的 granted-effect 开关" in worker
+    assert "绝不是\n  武器组标志" in worker
+    assert "`weaponSetScope` 才是技能组级字段" in worker
+    assert "`global` / `weapon_set_1` /\n  `weapon_set_2`" in worker
+    assert "不得根据任一 gem 的 global-effect 开关推断武器切换" in worker
+    assert "durableWritePreflight.status=permission_required" in worker
+    assert "write_handle_ready" in worker and "advisory" in worker
+    assert "review_contract_upgrade_required" in worker
+    assert "案例仍是 claimed" in worker and "不能改走只处理 rejected 案例的 retry" in worker
     assert "在 typed validation 和正式 accept 前复核每个最终对象" in worker
     assert "initialize_research_review" in guide
     assert "in-memory safe review object" in guide
@@ -210,6 +217,8 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "预检 5 个样本（推荐）" not in phase4
     assert "No-Argument Behavior" in controller
     assert "--resume --run-ref REF" in controller
+    assert "普通新任务始终创建独立 run" in controller
+    assert "不能覆盖既有 queue" in controller
     assert "runRef" in controller
     assert "plugin cache" in guide
     assert "--class NAME" in controller
@@ -227,6 +236,8 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "accept_research_review" in guide
     assert "fullyResolvedForAccept" in guide
     assert "get_research_review_contract" in worker
+    assert "从原 run quarantine" in controller and "完全相同的 PoB" in controller
+    assert "created+updated >= 1" in controller
     assert "unresolvedUniqueComponentCount" in phase4
     for internal_contract in (
         "scripts/research_mature_builds.py",
@@ -261,7 +272,7 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "先用释放的槽位创建全新 Worker" in controller
     assert "两个新 Worker 中连续重复" in controller
     assert "反馈已返回不等于获得 cleanup 授权" in controller
-    assert "创建新的 supplement run" in controller
+    assert "re_research_run_ref" in controller and "supplement_sample_ids" in controller
     assert "Worker 运行态已经结束" in controller
     assert "POE_RESEARCH_SUCCEEDED: yes" in controller
     assert "claim --output-dir" not in controller
@@ -284,7 +295,11 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "`build_family_keys` 只接收查询已返回的 `bf-...`" in worker
     assert '`detail_level="record" + response_profile="create_compact"`' in worker
     assert "retry_research_review" in worker
-    assert "expected_review_hash=<reviewHash>" in worker
+    assert (
+        "accept_research_review(run_ref=<runRef>, lease_token=<leaseToken>, review=<review>)"
+        in worker
+    )
+    assert "adopt_legacy_research_run" not in controller
     assert "不得用 shell/file tool 编辑运行态" in worker
     assert "No-Argument Behavior" not in worker
     assert "--resume" not in worker
@@ -344,6 +359,10 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
         "poe-bd-research-worker" not in prompt
         for prompt in codex_manifest["interface"]["defaultPrompt"]
     )
+    assert all(
+        "poe-bd-research-loop" not in prompt
+        for prompt in codex_manifest["interface"]["defaultPrompt"]
+    )
     codex_mcp = json.loads((REPO_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert codex_manifest["mcpServers"] == "./.mcp.json"
     assert set(codex_mcp["mcpServers"]) == {
@@ -377,6 +396,10 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     assert codex_bundle["skills"] == "./skills/"
     assert all(
         "poe-bd-research-worker" not in prompt
+        for prompt in codex_bundle["interface"]["defaultPrompt"]
+    )
+    assert all(
+        "poe-bd-research-loop" not in prompt
         for prompt in codex_bundle["interface"]["defaultPrompt"]
     )
 

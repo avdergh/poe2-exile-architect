@@ -61,11 +61,13 @@ EXTRA_NOTES = {
     "poe-bd-research": """\
 > **DSH 映射**：Controller 用 `subagent` 后台启动显式
 > `poe-bd-research-worker`，等待后台结算，并用 `send_message` 续聊回访。
-> queue 由 DSH shell（Windows 为 pwsh）执行，外层超时至少 `600000ms`。
+> queue、status 与 cleanup 使用 `mcp__poe_research__*` typed 工具；不得回退 shell。
+> 每个 Research Worker 的 assignment 必须携带 opaque runRef、用户原始研究请求和授权上下文。
 """,
     "poe-bd-research-worker": """\
 > **DSH Worker**：只允许 Controller 显式用 `skill` 工具加载本 skill；从 assignment
-> 取得 runDir 后用 shell 执行单案流程，不创建或恢复 queue。
+> 取得 opaque runRef 后使用 `mcp__poe_research__*` typed 工具执行单案流程，不使用 shell，
+> 不创建或恢复 queue。assignment 必须包含用户原始研究请求和授权上下文。
 """,
     "poe-bd-learning-loop": """\
 > **DSH 映射（重要）**：Codex Desktop 任务原语（`create_thread` /
@@ -74,14 +76,6 @@ EXTRA_NOTES = {
 > `send_message` 推进阶段；等待 → 子代理后台结算通知；`$poe-bd-create` →
 > 加载 `poe-bd-create` skill。任务初始化/恢复语义（不创建重复任务、不重放
 > 已消费阶段）保持不变。
-""",
-    "poe-bd-research-loop": """\
-> **DSH 映射（重要）**：Codex Desktop 任务原语与 `poe_research_orchestrator`
-> MCP 是 Codex 环境的编排方式，本 preset 不提供。DSH 下等效编排：主会话
-> （控制任务）用 `subagent` 启动研究子代理（后台运行、可续聊），用
-> `send_message` 按阶段发送固定提示词，等待子代理结算通知，以 poe-bd 的 MCP
-> 状态工具作为检查点事实源。`poe_research_orchestrator` MCP 若需保留，须在
-> DSH 中单独注册。
 """,
 }
 
@@ -145,6 +139,27 @@ POLISH = {
         (
             "当前宿主由安装器管理的 `poe-knowledge-mcp`（或任一 `poe-*-mcp`）条目中的",
             "当前宿主 MCP 注册中 `poe-knowledge-mcp`（或任一 `poe-*-mcp`）行的",
+        ),
+        (
+            "必须 fork 包含用户本次研究请求/授权的最近上下文；不得使用 `fork_turns=none`。Subagent 继承父任务\n"
+            "  权限模式，但用户授权上下文仍需可见，不能只由 Controller 转述。",
+            "必须用 `subagent` 后台派发并在 assignment 中携带用户本次研究请求/授权上下文；\n"
+            "  不得创建缺少父任务信息的空上下文 Worker，也不能只由 Controller 转述授权。",
+        ),
+        (
+            "- Worker 运行期间使用宿主的事件等待原语；Codex 使用 `wait_agent(timeout_ms=300000)`。Worker\n"
+            "  完成或需要关注时由邮箱事件提前唤醒，不忙轮询。\n"
+            "- 300 秒超时且状态无变化时，不查询 queue status；最多发送一条简短心跳后继续下一个\n"
+            "  300 秒等待窗口。无变化心跳不得快于 5 分钟，不重复枚举相同的 Worker/lease 状态。\n"
+            "- 只有 Worker 返回、发生 safe error、需要补位/验收恢复，或用户主动询问状态时才立即唤醒并查询\n"
+            "  status。心跳不是 status 轮询授权。",
+            "- Worker 运行期间依赖 DSH `subagent` 的后台结算通知，不调用 Codex `wait_agent`，也不忙轮询。\n"
+            "- 只有 Worker 结算、发生 safe error、需要补位/验收恢复，或用户主动询问状态时才查询 status；\n"
+            "  无变化时不发送心跳或重复枚举相同 Worker/lease。",
+        ),
+        (
+            "不得使用 `fork_turns=none`",
+            "不得使用不含父任务信息的空上下文派发",
         ),
     ],
 }
@@ -233,6 +248,19 @@ def check_clean(
             leftovers.append(f"{rel}: legacy poe_*_mcp__ prefix remains")
         if _LEGACY_SERVER_RE.search(text) or _LEGACY_WILDCARD in text:
             leftovers.append(f"{rel}: bare poe_*_mcp server reference remains")
+        if rel.as_posix().endswith("poe-bd-research/SKILL.md"):
+            for forbidden in (
+                "queue 由 DSH shell",
+                "`fork_turns=none`",
+                "wait_agent(",
+                "必须 fork",
+            ):
+                if forbidden in text:
+                    leftovers.append(f"{rel}: stale DSH Research instruction remains: {forbidden}")
+        if rel.as_posix().endswith("poe-bd-research-worker/SKILL.md"):
+            for forbidden in ("取得 runDir 后用 shell", "`fork_turns=none`"):
+                if forbidden in text:
+                    leftovers.append(f"{rel}: stale DSH Worker instruction remains: {forbidden}")
         prefixed = tool_to_prefixed(mapping)
         for tool, full in prefixed.items():
             if boundary_re(tool).search(text):

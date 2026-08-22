@@ -303,6 +303,32 @@ def _jewel_socket_assignments(root: ET.Element) -> list[dict[str, Any]]:
     )
 
 
+def _jewel_socket_kinds(root: ET.Element) -> dict[tuple[str, str], str]:
+    tree = root.find("Tree")
+    if tree is None:
+        return {}
+    kinds: dict[tuple[str, str], str] = {}
+    for index, spec in enumerate(tree.findall("Spec"), start=1):
+        spec_id = _spec_id(spec, index)
+        metadata = _passive_node_metadata(str(spec.get("treeVersion") or ""))
+        sockets = spec.find("Sockets")
+        if sockets is None:
+            continue
+        for socket in sockets.findall("Socket"):
+            node_id = str(socket.get("nodeId") or "").strip()
+            if not node_id:
+                continue
+            node_types = (metadata.get(node_id) or {}).get("nodeTypes") or []
+            kinds[(spec_id, node_id)] = (
+                "granted_jewel_socket"
+                if "granted_jewel_socket" in node_types
+                else "tree_socket"
+                if "jewel_socket" in node_types
+                else "unknown"
+            )
+    return kinds
+
+
 def jewel_counts(
     packet: dict[str, Any],
     sections: dict[str, list[dict[str, Any]]] | None = None,
@@ -326,8 +352,22 @@ def jewel_counts(
         for item in sections["passives"]
         if item.get("kind") == "allocated_node"
         and item.get("activeSpec") is True
-        and "jewel_socket" in (item.get("nodeTypes") or [])
+        and any(
+            node_type in (item.get("nodeTypes") or [])
+            for node_type in ("jewel_socket", "granted_jewel_socket")
+        )
         and str(item.get("nodeId") or "")
+    }
+    active_socket_kind_by_node = {
+        str(item.get("nodeId") or ""): (
+            "granted_jewel_socket"
+            if "granted_jewel_socket" in (item.get("nodeTypes") or [])
+            else "tree_socket"
+        )
+        for item in sections["passives"]
+        if item.get("kind") == "allocated_node"
+        and item.get("activeSpec") is True
+        and str(item.get("nodeId") or "") in active_allocated_node_ids
     }
     allocated = len(active_allocated_node_ids)
     embedded = sum(
@@ -341,6 +381,8 @@ def jewel_counts(
     xml = str(raw_context.get("rawXml") or "")
     status = "ok"
     assignments: list[dict[str, Any]] = []
+    assignment_socket_kinds: dict[tuple[str, str], str] = {}
+    root: ET.Element | None = None
     if xml:
         try:
             root = ET.fromstring(xml)
@@ -349,13 +391,26 @@ def jewel_counts(
         if root is not None:
             status = _tree_metadata_status(root)
             assignments = _jewel_socket_assignments(root)
+            assignment_socket_kinds = _jewel_socket_kinds(root)
     active_assignments = [item for item in assignments if item["activeSpec"]]
     active_socketed_node_ids = {str(item["nodeId"]) for item in active_assignments}
     active_filled = [
-        item for item in active_assignments if str(item["nodeId"]) in active_allocated_node_ids
+        {
+            **item,
+            "socketKind": active_socket_kind_by_node.get(str(item["nodeId"]), "unknown"),
+        }
+        for item in active_assignments
+        if str(item["nodeId"]) in active_allocated_node_ids
     ]
     active_unallocated = [
-        item for item in active_assignments if str(item["nodeId"]) not in active_allocated_node_ids
+        {
+            **item,
+            "socketKind": assignment_socket_kinds.get(
+                (str(item["specId"]), str(item["nodeId"])), "unknown"
+            ),
+        }
+        for item in active_assignments
+        if str(item["nodeId"]) not in active_allocated_node_ids
     ]
     active_empty = [
         {
@@ -368,10 +423,20 @@ def jewel_counts(
                 ),
                 "",
             ),
+            "socketKind": active_socket_kind_by_node.get(node_id, "unknown"),
         }
         for node_id in sorted(active_allocated_node_ids - active_socketed_node_ids)
     ]
-    other_spec_socketed = [item for item in assignments if not item["activeSpec"]]
+    other_spec_socketed = [
+        {
+            **item,
+            "socketKind": assignment_socket_kinds.get(
+                (str(item["specId"]), str(item["nodeId"])), "unknown"
+            ),
+        }
+        for item in assignments
+        if not item["activeSpec"]
+    ]
     tree_socketed = len(active_assignments)
     notes: list[str] = []
     if status != "ok":
@@ -491,6 +556,8 @@ def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
                 "name": str(gem.get("name") or ""),
                 "skillId": str(gem.get("skillId") or ""),
                 "nameSource": str(gem.get("nameSource") or "gem_name"),
+                "enableGlobal1": bool(gem.get("enableGlobal1")),
+                "enableGlobal2": bool(gem.get("enableGlobal2")),
             }
             for gem in enabled_gems
             if not gem.get("isSupport") and str(gem.get("name") or "")
@@ -500,6 +567,8 @@ def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
                 "name": str(gem.get("name") or ""),
                 "gemId": str(gem.get("gemId") or ""),
                 "nameSource": str(gem.get("nameSource") or "gem_name"),
+                "enableGlobal1": bool(gem.get("enableGlobal1")),
+                "enableGlobal2": bool(gem.get("enableGlobal2")),
             }
             for gem in enabled_gems
             if gem.get("isSupport") and str(gem.get("name") or "")
@@ -512,6 +581,7 @@ def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
             {
                 "groupRef": f"skill-set:{skill_set_id}:group:{group_index}",
                 "slot": str(item.get("slot") or ""),
+                "weaponSetScope": str(item.get("weaponSetScope") or "global"),
                 "mainActiveSkill": str(item.get("mainActiveSkill") or ""),
                 "mainActiveSkillCalcs": str(item.get("mainActiveSkillCalcs") or ""),
                 "activeSkills": active_skills,
@@ -536,7 +606,8 @@ def read_packet_section(
     """Read one structured packet section with stable, character-bounded pagination.
 
     ``node_type`` filters the passives section by node kind (keystone/notable/jewel_socket/
-    ascendancy/mastery, or ``normal`` for small nodes); it is ignored for other sections.
+    granted_jewel_socket/ascendancy/mastery, or ``normal`` for small nodes); it is ignored
+    for other sections.
     ``exclude_routing`` (passives + normal only) drops pure routing/attribute nodes whose
     stats add no build signal (e.g. "+5 to any Attribute"), to cut low-information pagination.
     """
@@ -789,6 +860,8 @@ def _skill_items(root: ET.Element) -> list[dict[str, Any]]:
                         "quality": _optional_int(gem.get("quality")),
                         "enabled": _xml_bool(gem.get("enabled"), default=True),
                         "isSupport": _is_support_gem(gem),
+                        "enableGlobal1": _xml_bool(gem.get("enableGlobal1"), default=True),
+                        "enableGlobal2": _xml_bool(gem.get("enableGlobal2"), default=False),
                     }
                 )
             result.append(
@@ -798,6 +871,7 @@ def _skill_items(root: ET.Element) -> list[dict[str, Any]]:
                     "groupIndex": group_index,
                     "enabled": _xml_bool(group.get("enabled"), default=True),
                     "slot": str(group.get("slot") or ""),
+                    "weaponSetScope": _skill_group_weapon_set_scope(str(group.get("slot") or "")),
                     "mainActiveSkill": str(group.get("mainActiveSkill") or ""),
                     "mainActiveSkillCalcs": str(group.get("mainActiveSkillCalcs") or ""),
                     "gems": gems,
@@ -1046,6 +1120,7 @@ def _passive_node_metadata(tree_version: str) -> dict[str, dict[str, Any]]:
                 ("isNotable", "notable"),
                 ("isAscendancy", "ascendancy"),
                 ("isJewelSocket", "jewel_socket"),
+                ("containJewelSocket", "granted_jewel_socket"),
                 ("isMastery", "mastery"),
             )
             if node.get(field) is True
@@ -1169,6 +1244,15 @@ def _xml_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
     return str(value).casefold() in {"1", "true"}
+
+
+def _skill_group_weapon_set_scope(slot: str) -> str:
+    normalized = str(slot or "").strip()
+    if re.match(r"^Weapon [12] Swap(?:\s|$)", normalized, re.IGNORECASE):
+        return "weapon_set_2"
+    if re.match(r"^Weapon [12](?:\s|$)", normalized, re.IGNORECASE):
+        return "weapon_set_1"
+    return "global"
 
 
 def _is_support_gem(gem: ET.Element) -> bool:

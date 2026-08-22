@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import multiprocessing
 import sqlite3
@@ -207,11 +208,29 @@ def test_queue_re_research_requires_prior_queue_db(tmp_path, monkeypatch):
         )
 
 
+def test_cli_targeted_supplement_preflight_does_not_allocate_run(tmp_path, capsys, monkeypatch):
+    from scripts import research_mature_builds
+
+    output_root = tmp_path / ".poe-bd-research"
+    monkeypatch.setattr(research_mature_builds, "DEFAULT_OUTPUT_DIR", output_root)
+
+    code = research_mature_builds.main(["queue", "--supplement-sample-id", "case:fixture"])
+
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "collector_failed"
+    runs_root = output_root / research_mature_builds.RUNS_DIRNAME
+    assert not runs_root.exists() or list(runs_root.iterdir()) == []
+
+
 def test_cases_from_prior_run_skips_rows_without_quarantine_material(tmp_path):
     from scripts import research_mature_builds
 
     prior = tmp_path / "prior"
     prior.mkdir()
+    raw_source = _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)
+    source_hash = hashlib.sha256(raw_source.encode("utf-8")).hexdigest()
+    source_hash_ref = f"source-hash:{source_hash[:16]}"
     db_path = prior / research_mature_builds.QUEUE_DB_FILENAME
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -245,8 +264,8 @@ def test_cases_from_prior_run_skips_rows_without_quarantine_material(tmp_path):
                 "case:with-quarantine",
                 "accepted",
                 "local_pob_code_file",
-                "hash-with-material",
-                "source-hash:hash-with",
+                source_hash,
+                source_hash_ref,
                 "league-x",
                 95,
                 "Ranger",
@@ -285,10 +304,11 @@ def test_cases_from_prior_run_skips_rows_without_quarantine_material(tmp_path):
     quarantine.mkdir()
     payload = {
         "sampleId": "case:with-quarantine",
-        "sourceHash": "hash-with-material",
-        "rawImportCode": _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        "sourceHash": source_hash,
+        "sourceHashRef": source_hash_ref,
+        "rawImportCode": raw_source,
     }
-    (quarantine / "hash-with-material.json").write_text(
+    (quarantine / f"{source_hash}.json").write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
     )
 
@@ -300,7 +320,48 @@ def test_cases_from_prior_run_skips_rows_without_quarantine_material(tmp_path):
     assert cases[0]["sampleId"] == "case:with-quarantine"
     assert cases[0]["supplement"] is True
     assert cases[0]["supplementContext"] == "聚焦清单"
-    assert cases[0]["sourceHash"] == "hash-with-material"
+    assert cases[0]["sourceHash"] == source_hash
+
+    selected, selected_skipped = research_mature_builds._cases_from_prior_run(
+        prior,
+        supplement_sample_ids=["case:with-quarantine", "case:with-quarantine"],
+        supplement_focus="定向聚焦",
+    )
+    assert selected_skipped == 0
+    assert [case["sampleId"] for case in selected] == ["case:with-quarantine"]
+    assert selected[0]["supplementContext"] == "定向聚焦"
+
+    quarantine_path = quarantine / f"{source_hash}.json"
+    for field, value in (
+        ("sampleId", "case:other"),
+        ("sourceHash", "0" * 64),
+        ("rawImportCode", raw_source + "tampered"),
+    ):
+        tampered = dict(payload)
+        tampered[field] = value
+        quarantine_path.write_text(json.dumps(tampered), encoding="utf-8")
+        selection = research_mature_builds.inspect_supplement_selection(
+            prior, ["case:with-quarantine"]
+        )
+        assert selection["status"] == "invalid"
+        assert selection["unrecoverableSupplementSampleIds"] == ["case:with-quarantine"]
+    quarantine_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid targeted supplement selection"):
+        research_mature_builds._cases_from_prior_run(
+            prior,
+            supplement_sample_ids=["case:missing"],
+        )
+    with pytest.raises(ValueError, match="invalid targeted supplement selection"):
+        research_mature_builds._cases_from_prior_run(
+            prior,
+            supplement_sample_ids=["case:without-quarantine"],
+        )
+    with pytest.raises(ValueError, match="at least one sampleId"):
+        research_mature_builds._cases_from_prior_run(
+            prior,
+            supplement_sample_ids=[],
+        )
 
 
 def test_queue_forwards_optional_ninja_class_filter(tmp_path, monkeypatch):
@@ -3199,8 +3260,11 @@ def test_research_packet_builds_safe_active_skill_evidence_manifest():
             "name": "Controlled Destruction",
             "gemId": "SupportGemControlledDestruction",
             "nameSource": "gem_name",
+            "enableGlobal1": True,
+            "enableGlobal2": False,
         }
     ]
+    assert manifest["activeSkillGroups"][0]["weaponSetScope"] == "global"
     assert manifest["noRawMatureBuildMaterial"] is True
     serialized = json.dumps(manifest, ensure_ascii=False)
     assert "<Skills" not in serialized
@@ -3338,6 +3402,134 @@ def test_research_packet_captures_tree_jewels_via_sockets_mapping():
     inspected = research_packet.inspect_packet(packet)
     assert inspected["unslottedItemCount"] == 1
     assert "Spare Staff" in inspected["unslottedItemNames"]
+
+
+def test_research_packet_counts_ascendancy_granted_jewel_socket():
+    from server.knowledge import research_packet
+
+    node_id = "17788"
+    metadata = research_packet._passive_node_metadata("0_5")
+    assert "granted_jewel_socket" in metadata[node_id]["nodeTypes"]
+    filled_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Witch" ascendClassName="Abyssal Lich" />
+  <Tree activeSpec="1">
+    <Spec treeVersion="0_5" nodes="{node_id}">
+      <Sockets><Socket nodeId="{node_id}" itemId="1"/></Sockets>
+    </Spec>
+  </Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nPhylactery Jewel\nEmerald\nItem Level: 80</Item>
+    <ItemSet id="1" />
+  </Items>
+</PathOfBuilding2>
+"""
+    filled = research_packet.jewel_counts({"rawContext": {"rawXml": filled_xml}})
+    assert filled["allocatedJewelSocketCount"] == 1
+    assert filled["activeAllocatedFilled"] == [
+        {
+            "nodeId": node_id,
+            "specId": "1",
+            "itemId": "1",
+            "activeSpec": True,
+            "socketKind": "granted_jewel_socket",
+        }
+    ]
+    assert filled["activeSocketedUnallocated"] == []
+
+    empty_xml = filled_xml.replace(f'<Socket nodeId="{node_id}" itemId="1"/>', "")
+    empty = research_packet.jewel_counts({"rawContext": {"rawXml": empty_xml}})
+    assert empty["allocatedJewelSocketCount"] == 1
+    assert empty["activeAllocatedEmpty"] == [
+        {
+            "nodeId": node_id,
+            "specId": "1",
+            "socketKind": "granted_jewel_socket",
+        }
+    ]
+
+
+def test_research_packet_uses_unknown_socket_kind_without_tree_metadata():
+    from server.knowledge import research_packet
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Witch" ascendClassName="Abyssal Lich" />
+  <Tree activeSpec="1">
+    <Spec treeVersion="missing" nodes="123">
+      <Sockets><Socket nodeId="123" itemId="1"/></Sockets>
+    </Spec>
+  </Tree>
+  <Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nUnknown Socket Jewel\nEmerald</Item>
+    <ItemSet id="1" />
+  </Items>
+</PathOfBuilding2>
+"""
+    counts = research_packet.jewel_counts({"rawContext": {"rawXml": xml}})
+    assert counts["status"] == "tree_data_missing"
+    assert counts["activeSocketedUnallocated"][0]["socketKind"] == "unknown"
+
+
+def test_research_packet_distinguishes_global_effect_flags_from_group_weapon_set():
+    from server.knowledge import research_packet
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PathOfBuilding2>
+  <Build level="90" className="Ranger" ascendClassName="Deadeye" />
+  <Skills activeSkillSet="1">
+    <SkillSet id="1">
+      <Skill enabled="true" mainActiveSkill="1" slot="Weapon 1">
+        <Gem nameSpec="Spark" skillId="SparkPlayer" enabled="true" />
+        <Gem nameSpec="Both Support" gemId="Metadata/Items/Gems/SupportGemBoth" enabled="true" enableGlobal1="true" enableGlobal2="true" />
+      </Skill>
+      <Skill enabled="true" mainActiveSkill="1" slot="Weapon 1 Swap">
+        <Gem nameSpec="Arc" skillId="ArcPlayer" enabled="true" enableGlobal1="false" enableGlobal2="true" />
+      </Skill>
+      <Skill enabled="true" mainActiveSkill="1" slot="Helmet">
+        <Gem nameSpec="Ice Nova" skillId="IceNovaPlayer" enabled="true" />
+        <Gem nameSpec="Disabled Support" gemId="Metadata/Items/Gems/SupportGemDisabled" enabled="true" enableGlobal1="false" enableGlobal2="false" />
+      </Skill>
+    </SkillSet>
+  </Skills>
+  <Tree activeSpec="1"><Spec treeVersion="0_5" nodes=""><Sockets /></Spec></Tree>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding2>
+"""
+    packet = {"rawContext": {"rawXml": xml}}
+    groups = research_packet._packet_sections(packet)["skills"]
+    gems = {gem["name"]: gem for group in groups for gem in group["gems"]}
+    assert (
+        gems["Spark"]["enableGlobal1"],
+        gems["Spark"]["enableGlobal2"],
+    ) == (True, False)
+    assert (
+        gems["Arc"]["enableGlobal1"],
+        gems["Arc"]["enableGlobal2"],
+    ) == (False, True)
+    assert "weaponSetScope" not in gems["Spark"]
+    assert "weaponSetScope" not in gems["Both Support"]
+    assert [group["weaponSetScope"] for group in groups] == [
+        "weapon_set_1",
+        "weapon_set_2",
+        "global",
+    ]
+
+    manifest = research_packet.build_skill_evidence_manifest(packet)["activeSkillGroups"]
+    assert [group["weaponSetScope"] for group in manifest] == [
+        "weapon_set_1",
+        "weapon_set_2",
+        "global",
+    ]
+    manifest_gems = {
+        item["name"]: item
+        for group in manifest
+        for key in ("activeSkills", "supports")
+        for item in group[key]
+    }
+    assert manifest_gems["Arc"]["enableGlobal2"] is True
+    assert manifest_gems["Disabled Support"]["enableGlobal1"] is False
+    assert "weaponSetScope" not in manifest_gems["Arc"]
 
 
 def test_research_packet_jewel_counts_counts_embedded_item_sockets():

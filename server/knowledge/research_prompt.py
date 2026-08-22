@@ -15,9 +15,10 @@ DEEP_RESEARCH_PLAYBOOK = r"""
 Use this compact method for every case. It is the runtime form of the calibrated mature-build
 extraction method, not an optional reading list.
 
-1. Inventory every enabled skill group, support, granted skill, weapon set, ascendancy choice,
-   notable/keystone/local jewel package, and gear slot with a non-generic job. Do not trust the
-   imported main-skill pointer as the build identity.
+1. Inventory every enabled skill group, support, granted skill, group-level weapon-set scope,
+   ascendancy choice, notable/keystone/local jewel package, and gear slot with a non-generic job.
+   `enableGlobal1` / `enableGlobal2` are per-gem granted-effect toggles, not weapon-set flags. Do
+   not trust the imported main-skill pointer as the build identity.
 2. Assign skill roles before evaluating numbers: sustained damage, clear, boss/burst, generator,
    consumer/payoff, trigger host, triggered payload, mark/control, movement, defense, reservation.
 3. Reconstruct events as generator -> state -> transformer -> payoff -> refresh. State what fails

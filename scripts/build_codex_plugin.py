@@ -13,6 +13,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = {"win32": "win-x64", "darwin": "mac-arm64", "linux": "linux-x64"}
+DISABLED_CODEX_SKILLS = {"poe-bd-research-loop"}
+
+
+def _plugin_source_ignore(directory: str, names: list[str]) -> set[str]:
+    ignored = {name for name in names if name == "__pycache__" or name.endswith(".pyc")}
+    if Path(directory).name == "skills":
+        ignored.update(DISABLED_CODEX_SKILLS.intersection(names))
+    return ignored
 
 
 def build_codex_plugin(
@@ -47,8 +55,11 @@ def build_codex_plugin(
         ROOT / "poe-bd-creator-plugin",
         plugin_stage,
         dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        ignore=_plugin_source_ignore,
     )
+    for skill_name in DISABLED_CODEX_SKILLS:
+        if (plugin_stage / "skills" / skill_name).exists():
+            raise RuntimeError(f"disabled Codex skill was packaged: {skill_name}")
 
     required = (
         ".codex-plugin/plugin.json",

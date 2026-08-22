@@ -79,7 +79,7 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   (`start_research_run`, `claim_research_case`, `inspect_research_case`, `read_research_case`,
   `search_research_case`, `get_research_review_contract`, `initialize_research_review`,
   `validate_research_review`, `accept_research_review`, `retry_research_review`,
-  `get_research_run_status`, `adopt_legacy_research_run`, `cleanup_research_run`,
+  `get_research_run_status`, `cleanup_research_run`,
   `build_research_packet`, `validate_researcher_output`, `query_research_memory`,
   `propose_deep_research_records`, `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
   `propose_build_patterns`, `submit_revalidation_result`,
@@ -119,11 +119,16 @@ files. This guide keeps only the always-injected contract.
 - `submit_revalidation_result`: renew, narrow or supersede accepted knowledge after version review.
 - `get_research_review_contract` / `initialize_research_review`: return the exact v2 contract and
   an in-memory safe review object; no Agent filesystem edit is required.
-- `validate_research_review`: atomically save and validate the safe object, returning a reviewHash.
-- `accept_research_review`: accepts only that exact validated hash. `retry_research_review` owns the
-  rejected-case repair path. Problems automatically retain full diagnostics.
-- `adopt_legacy_research_run`: copies an inactive old run into user-data runtime while preserving
-  the source; live claimed/accepting leases block adoption.
+- `validate_research_review`: save and validate the complete safe object without durable writes.
+  Inspect `durableWritePreflight`; `permission_required` stops formal accept and
+  `write_handle_ready` remains advisory rather than a SQLite transaction guarantee.
+- `accept_research_review`: formally validates and accepts the complete safe object supplied under
+  the same lease. `retry_research_review` owns the rejected-case repair path. Compact output is only
+  used for clean results; failures, deferred candidates, unresolved components and coverage gaps
+  retain full diagnostics.
+- `review_contract_upgrade_required` is raised before queue CAS: the case remains claimed and must
+  be repaired, revalidated and ordinarily accepted under the same lease, never sent to rejected-case
+  retry.
 - `cleanup_research_run`: removes one completed or explicitly abandoned private runtime by runRef;
   accepted Research Memory, ledger history, release seeds and user exports are preserved.
 
@@ -162,9 +167,13 @@ on a documented tool-count cap.
   executing it. Report safe collector/source/runtime errors and stop.
 - Tool order is Controller `start_research_run`, then explicit Worker
   `claim -> inspect/read/search -> memory/graph research -> contract -> initialize in-memory review
-  -> validate -> hash-bound accept`, followed by Controller status and cleanup.
-- New runs return only `runId + runRef`; filesystem paths remain server-private. Legacy absolute
-  runs require typed adoption after all live leases settle.
+  -> validate -> accept`, followed by Controller status and cleanup.
+- New runs return only `runId + runRef`; filesystem paths remain server-private. New work always
+  creates an independent run; only explicit resume reuses an existing runRef.
+- Supplement runs rebuild the exact same source case from the original run quarantine, preserve its
+  case/research-group/Family identity, and must create or update at least one record. Prefer
+  `supplement_sample_ids` for approved targeted corrections; omitting it re-queues the whole prior
+  run. Invalid, unaccepted or unrecoverable selected sampleIds fail before a new run is allocated.
 - A worker stops after accepting its single case and returns sampleId plus a safe outcome. The Controller starts a fresh worker for
   later queued cases; workers never carry transient evidence across cases.
 - Wait on worker mailbox events with a 300-second window (`wait_agent(timeout_ms=300000)` in
@@ -189,10 +198,10 @@ on a documented tool-count cap.
   `typedPayload.resourceMechanisms` when no resolved physical resource component identifies it.
 - Do not invent role, axis or pattern enums. A canonical role describes build function and may be
   compatible with more than one physical graph node type; follow the just-in-time compatibility
-  map and resolver evidence, and put every resolved stable key in `componentKey`. Write the review
-  as UTF-8, two-space-indented JSON so a bounded repair can edit one field safely. Edit only the
-  lease-bound review file; do not assemble the complete JSON with PowerShell here-strings,
-  inline `ConvertTo-Json`, or `Set-Content`.
+  map and resolver evidence, and put every resolved stable key in `componentKey`. Keep the complete
+  safe review in model working state, starting from `initialize_research_review`, and submit that
+  object through typed validate/accept tools. Never edit a lease-bound review file or assemble JSON
+  with shell/file tools.
 - `readyForAccept=true` means a safe subset can be accepted. Prefer
   `fullyResolvedForAccept=true` / `acceptanceMode=clean`; for `partial_with_deferred`, repair
   type/role/query/key mistakes before accepting and retain only genuine source or bounded ambiguity

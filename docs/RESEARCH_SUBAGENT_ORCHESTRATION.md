@@ -36,8 +36,7 @@ Subagent 共享剩余槽位。Research Worker 业务上限为 5；回访和其�
   时仍保留现有显式恢复边界，不新增后台调度、自动抢占、WAL 或 provider loop。
 - Windows 使用 msvcrt 文件锁；macOS/Linux 使用 `fcntl.flock`。macOS 目前属于设计兼容而非实机认证。
 - 发布插件的运行态只位于 user-data `research/runs`，Agent 通过 Research MCP 访问 queue、review 和
-  acceptance；调用者项目和插件 cache 均保持只读/无运行态。旧 run 只有在无 live lease 时才能经
-  typed adoption 复制，源目录保留。
+  acceptance；调用者项目和插件 cache 均保持只读/无运行态。
 
 ## 完成条件
 

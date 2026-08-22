@@ -90,10 +90,7 @@ MCP 行的 `cwd`/`PYTHONPATH` 从环境变量 `POE_BD_CREATOR_ROOT` 解析，回
 
 - DSH 只桥 MCP **tools**，不桥 MCP instructions；运行指引通过 preset 人设与 skill
   注入，不依赖 `MCP_*_BOOTSTRAP.md`。
-- `poe-bd-research-loop` 依赖 Codex Desktop 任务原语与 `poe_research_orchestrator`
-  MCP，本适配不提供；skill 头部的「DSH 映射」说明给出了 DSH 子代理等效编排，
-  尚未逐阶段验证。`poe-bd-learning-loop` 同理（Desktop 任务 → `subagent` +
-  `send_message`）。
+- `poe-bd-learning-loop` 使用 DSH 的 `subagent` + `send_message` 映射 Desktop 任务。
 - stdio 子进程环境会被 scrub（凭据类变量与 `DSH_*`），`PYTHONUTF8`/`PYTHONPATH`
   已在行内显式声明。
 - 动态 Cordis 插件（`cordis_define`/`cordis_run`）不是本适配的交付形态，仅适合
