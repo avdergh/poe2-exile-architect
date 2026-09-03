@@ -6,8 +6,11 @@ snapshot, but a staged route with transition gates and feedback memory.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from server import paths
 from server.knowledge import lifecycle
 
 
@@ -372,7 +375,7 @@ def test_verify_stage_metrics_does_not_infer_sustain_from_mana_pool_multiple():
     assert result["pass"] is False
     assert result["status"] == "failed"
     assert {"resists_capped", "basic_defense_online"} <= set(result["failedChecks"])
-    assert "sustain_ok" in result["unknownChecks"]
+    assert "sustain_ok" in result["failedChecks"]
     assert "engine-computed" in result["evidenceTags"]
 
 
@@ -526,7 +529,7 @@ def test_verify_stage_metrics_classifies_mana_flask_dependency_and_boss_risk():
     assert "sustain_ok" in result["failedChecks"]
 
 
-def test_verify_stage_metrics_model_gap_flask_assisted_passes_with_disclosure():
+def test_verify_stage_metrics_model_gap_flask_assisted_stays_unknown_with_disclosure():
     from server.knowledge import lifecycle_verification
 
     result = lifecycle_verification.verify_stage_metrics(
@@ -552,16 +555,22 @@ def test_verify_stage_metrics_model_gap_flask_assisted_passes_with_disclosure():
     sustain = result["observations"]["manaSustain"]
     assert sustain["classification"] == "model_gap_flask_assisted"
     assert sustain["unmodelledManaMechanisms"] == ["Mana Remnants", "Lavianga's Spirits"]
-    # The numeric deficit stays fully disclosed even though the gate passes.
+    assert sustain["bossRisk"] == "unmodelled_recovery_requires_verification"
+    # The numeric deficit stays fully disclosed; the result passes only with explicit
+    # verificationRequired because the recovery throughput is outside PoB.
     assert sustain["netDeficitPerSecond"] == pytest.approx(38.6096, rel=1e-4)
     assert sustain["secondsFromFull"] == pytest.approx(13.8049, rel=1e-4)
     assert "sustain_ok" not in result["failedChecks"]
     assert "sustain_ok" not in result["unknownChecks"]
     assert result["pass"] is True
-    assert any("unmodelled_mana_layer_present" in caveat for caveat in result["caveats"])
+    assert result["observations"]["resourceSustain"]["verificationRequired"] is True
+    assert any(
+        "unmodelled_mana_recovery_requires_verification" in caveat
+        for caveat in result["caveats"]
+    )
 
 
-def test_verify_stage_metrics_model_gap_does_not_weaken_plain_flask_dependency():
+def test_verify_stage_metrics_model_gap_does_not_require_a_mana_flask():
     from server.knowledge import lifecycle_verification
 
     result = lifecycle_verification.verify_stage_metrics(
@@ -585,8 +594,224 @@ def test_verify_stage_metrics_model_gap_does_not_weaken_plain_flask_dependency()
     )
 
     sustain = result["observations"]["manaSustain"]
-    assert sustain["classification"] == "unsustainable"
+    assert sustain["classification"] == "model_gap_flask_assisted"
+    assert sustain["bossRisk"] == "unmodelled_recovery_requires_verification"
+    assert "sustain_ok" not in result["failedChecks"]
+    assert "sustain_ok" not in result["unknownChecks"]
+    assert result["pass"] is True
+
+
+def test_endgame_final_uses_required_sustain_and_advisory_pinnacle_checks():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "endgame_final",
+        stats={
+            "Life": 3268,
+            "Mana": 710,
+            "ManaUnreserved": 710,
+            "ManaCost": 85,
+            "Speed": 2.905,
+            "ManaRegenRecovery": 67.6,
+            "ManaLeechGainRate": 31.87,
+            "ManaOnHitRate": 0,
+            "TotalEHP": 26811,
+        },
+        defenses={"totalEHP": 26811},
+        state={"mainSkillSocketed": True, "manaFlaskEquipped": True},
+    )
+
     assert "sustain_ok" in result["failedChecks"]
+    assert result["pass"] is False
+    assert set(result["advisoryUnknownChecks"]) == {
+        "core_threshold_met",
+        "upgrade_budget_ready",
+        "pinnacle_ready",
+    }
+
+
+def test_lifetap_life_cost_cannot_pass_when_mana_cost_is_zero():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={
+            "Life": 3000,
+            "LifeUnreserved": 3000,
+            "LifeUnreservedPercent": 100,
+            "Mana": 500,
+            "ManaUnreserved": 500,
+            "ManaUnreservedPercent": 100,
+            "ManaCost": 0,
+            "LifeCost": 90,
+            "Speed": 2.0,
+            "NetLifeRegen": 41,
+            "LifeLeechGainRate": 0,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 12000,
+        },
+    )
+
+    resource = result["observations"]["resourceSustain"]
+    assert resource["manaSustain"]["classification"] == "sustainable_baseline"
+    assert resource["lifeSustain"]["classification"] == "unsustainable"
+    assert resource["lifeSustain"]["grossDemandPerSecond"] == pytest.approx(180)
+    assert "sustain_ok" in result["failedChecks"]
+
+
+def test_life_cost_passes_with_sufficient_combined_recovery_without_on_hit_double_count():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {
+            "Life": 3000,
+            "LifeUnreserved": 3000,
+            "LifeUnreservedPercent": 100,
+            "Mana": 500,
+            "ManaUnreserved": 500,
+            "ManaUnreservedPercent": 100,
+            "ManaCost": 0,
+            "LifeCost": 50,
+            "Speed": 2.0,
+            "NetLifeRegen": 40,
+            "LifeLeechGainRate": 70,
+            "LifeOnHitRate": 70,
+        },
+        mana_flask_equipped=False,
+    )
+
+    life = result["lifeSustain"]
+    assert life["recoveryPerSecond"] == pytest.approx(110)
+    assert life["classification"] == "sustainable_baseline"
+
+
+def test_flat_and_percent_life_costs_are_checked_as_one_upfront_payment():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {
+            "Life": 1000,
+            "LifeUnreserved": 1000,
+            "LifeUnreservedPercent": 100,
+            "Mana": 500,
+            "ManaCost": 0,
+            "LifeCost": 600,
+            "LifePercentCost": 60,
+            "Speed": 1,
+            "LifeRegenRecovery": 100,
+        },
+        mana_flask_equipped=False,
+    )
+
+    assert result["lifeSustain"]["upfrontPayable"] is False
+    assert result["lifeSustain"]["combinedUpfrontCost"] == pytest.approx(1200)
+    assert result["lifeSustain"]["classification"] == "unsustainable"
+
+
+def test_life_per_second_cost_shapes_contribute_to_demand():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {
+            "Life": 2000,
+            "LifeUnreserved": 2000,
+            "LifeUnreservedPercent": 100,
+            "Mana": 500,
+            "ManaCost": 0,
+            "LifeCost": 0,
+            "LifePercentCost": 0,
+            "LifePerSecondCost": 20,
+            "LifePercentPerSecondCost": 1,
+            "Speed": 1,
+            "LifeRegenRecovery": 10,
+        },
+        mana_flask_equipped=False,
+    )
+
+    life = result["lifeSustain"]
+    assert life["grossDemandPerSecond"] == pytest.approx(40)
+    assert life["netDeficitPerSecond"] == pytest.approx(30)
+    assert life["classification"] == "unsustainable"
+
+
+def test_mana_percent_and_per_second_cost_shapes_contribute_to_demand():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {
+            "Life": 2000,
+            "Mana": 1000,
+            "ManaUnreserved": 1000,
+            "ManaUnreservedPercent": 100,
+            "ManaCost": 10,
+            "ManaPercentCost": 1,
+            "ManaPerSecondCost": 5,
+            "ManaPercentPerSecondCost": 1,
+            "Speed": 2,
+            "ManaRegenRecovery": 20,
+            "ManaLeechGainRate": 0,
+        },
+        mana_flask_equipped=False,
+    )
+
+    mana = result["manaSustain"]
+    assert mana["grossDemandPerSecond"] == pytest.approx(15)
+    assert mana["netDeficitPerSecond"] == pytest.approx(0)
+
+
+def test_pob_derived_per_second_cost_is_not_added_to_cost_times_speed_again():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {
+            "Life": 3000,
+            "LifeUnreserved": 3000,
+            "LifeCost": 56,
+            "LifePerSecondCost": 80,
+            "Speed": 1.428571,
+            "LifeRegenRecovery": 100,
+            "Mana": 500,
+            "ManaCost": 0,
+        },
+        mana_flask_equipped=False,
+    )
+
+    life = result["lifeSustain"]
+    assert life["grossDemandPerSecond"] == pytest.approx(80)
+    assert life["classification"] == "sustainable_baseline"
+
+
+def test_verify_stage_metrics_preserves_model_gap_when_rate_evidence_is_incomplete():
+    from server.knowledge import lifecycle_verification
+
+    result = lifecycle_verification.verify_stage_metrics(
+        "maps_entry",
+        stats={
+            "Life": 2600,
+            "Mana": 533,
+            "ManaUnreserved": 533,
+            "ManaCost": 45.384615,
+            "ManaRegenRecovery": 58.4,
+        },
+        defenses={
+            "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+            "totalEHP": 12000,
+        },
+        state={"manaFlaskEquipped": False},
+        unmodelled_mana_mechanisms=["Mana Remnants"],
+    )
+
+    sustain = result["observations"]["manaSustain"]
+    assert sustain["evidenceStatus"] == "incomplete"
+    assert sustain["classification"] == "model_gap_flask_assisted"
+    assert sustain["bossRisk"] == "unmodelled_recovery_requires_verification"
+    assert "sustain_ok" not in result["failedChecks"]
+    assert any(
+        "unmodelled_mana_recovery_requires_verification" in caveat
+        for caveat in result["caveats"]
+    )
 
 
 def test_verify_stage_metrics_returns_repair_actions_for_failed_maps_entry():
@@ -998,10 +1223,21 @@ def test_promote_technique_rejects_missing_evidence_ids(tmp_path, monkeypatch):
     assert lifecycle.load_memory()["technique_cards"] == {}
 
 
-def test_current_compatibility_claim_prefers_installed_runtime(tmp_path, monkeypatch):
+def test_current_compatibility_claim_prefers_compatible_installed_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("POE2_MCP_DATA", str(tmp_path))
+    (tmp_path / "pob" / "PathOfBuilding-PoE2" / "src").mkdir(parents=True)
+    (tmp_path / "pob" / "PathOfBuilding-PoE2" / "runtime" / "lua").mkdir(parents=True)
+    (tmp_path / "pob" / "pob_headless.lua").write_text("-- compatible", encoding="utf-8")
     (tmp_path / "installed.json").write_text(
-        '{"game_patch":"9.9.9","passive_tree":"9_9","pob_commit":"abc"}',
+        json.dumps(
+            {
+                "app_version": "999.0",
+                "engine_contract": paths.POB_RUNTIME_CONTRACT,
+                "game_patch": "9.9.9",
+                "passive_tree": "9_9",
+                "pob_commit": "abc",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1009,6 +1245,50 @@ def test_current_compatibility_claim_prefers_installed_runtime(tmp_path, monkeyp
 
     assert claim["game_patch"] == "9.9.9"
     assert claim["passive_tree"] == "9_9"
+
+
+def test_current_compatibility_claim_ignores_old_installed_runtime(tmp_path, monkeypatch):
+    user_data = tmp_path / "user-data"
+    bundle = tmp_path / "bundle"
+    monkeypatch.setattr(paths, "user_data_dir", lambda: user_data)
+    monkeypatch.setattr(paths, "BUNDLE_ROOT", bundle)
+    (user_data / "pob" / "PathOfBuilding-PoE2" / "src").mkdir(parents=True)
+    (user_data / "pob" / "PathOfBuilding-PoE2" / "runtime" / "lua").mkdir(parents=True)
+    (user_data / "pob" / "pob_headless.lua").write_text("-- old", encoding="utf-8")
+    (user_data / "installed.json").write_text(
+        json.dumps(
+            {
+                "app_version": "0.1.39",
+                "engine_contract": 1,
+                "game_patch": "9.9.9",
+                "passive_tree": "9_9",
+                "pob_commit": "old",
+            }
+        ),
+        encoding="utf-8",
+    )
+    compatibility = bundle / "data" / "compatibility" / "pob.json"
+    compatibility.parent.mkdir(parents=True)
+    compatibility.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "commit": "bundle",
+                        "game_patch": "0.5.4",
+                        "passive_tree": "0_5",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    claim = lifecycle.current_compatibility_claim()
+
+    assert claim["commit"] == "bundle"
+    assert claim["game_patch"] == "0.5.4"
+    assert claim["passive_tree"] == "0_5"
 
 
 def test_feedback_ids_do_not_collide_within_same_second(tmp_path, monkeypatch):

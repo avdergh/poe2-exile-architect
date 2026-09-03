@@ -6,7 +6,7 @@ payloads that only contain ascendancy popularity.
 
 from __future__ import annotations
 
-from server.live import meta
+from server.live import meta, prices
 
 
 def test_archetype_trends_are_unavailable_for_ascendancy_only_payload():
@@ -285,3 +285,30 @@ def test_archetype_trends_sanitizes_nested_ascendancy_and_provider_tags():
     assert row["evidenceTags"] == ["live-meta", "archetype-trend"]
     assert "must not leak" not in str(result)
     assert "engine-computed" not in row["evidenceTags"]
+
+
+def test_league_selector_accepts_display_and_slug_variants():
+    leagues = [{"leagueName": "Runes of Aldur", "leagueUrl": "runesofaldur"}]
+
+    assert meta._select(leagues, "Runes of Aldur") == leagues[0]
+    assert meta._select(leagues, "runes-of-aldur") == leagues[0]
+    assert meta._select(leagues, "https://poe.ninja/poe2/builds/runesofaldur") == leagues[0]
+    assert meta._select(leagues, "/poe2/builds/runesofaldur") == leagues[0]
+
+
+def test_price_league_selector_accepts_display_slug_and_url(monkeypatch):
+    leagues = [
+        {
+            "Value": "Runes of Aldur",
+            "BaseCurrencyText": "Exalted Orb",
+            "IsCurrent": True,
+        }
+    ]
+    monkeypatch.setattr(prices, "_get", lambda _path: leagues)
+
+    for token in (
+        "Runes of Aldur",
+        "runes-of-aldur",
+        "https://poe2scout.com/economy/runes-of-aldur",
+    ):
+        assert prices.resolve_league(token)["name"] == "Runes of Aldur"

@@ -54,15 +54,15 @@ def _active_set_groups(xml: str) -> list[tuple[str, str]]:
     return _SKILL_GROUP.findall(xml)
 
 
-def _active_name_specs(body: str) -> list[str]:
-    """Group's enabled, non-support gem nameSpecs in document order.
+def _active_gem_attributes(body: str) -> list[dict[str, str]]:
+    """Group's enabled, named, non-support gems in document order.
 
     Mirrors the engine's active-only ``displaySkillList``: it contains only
     enabled, non-support gems; support gems carry ``SupportGem`` in their gem
     id or a ``Support``-prefixed skill id (the same heuristic as
     ``research_packet._is_support_gem``).
     """
-    specs: list[str] = []
+    values: list[dict[str, str]] = []
     for tag in _GEM_TAG.findall(body):
         attrs = _tag_attributes(tag)
         name = str(attrs.get("nameSpec") or "").strip()
@@ -75,8 +75,31 @@ def _active_name_specs(body: str) -> list[str]:
         enabled_value = attrs.get("enabled")
         if enabled_value is not None and str(enabled_value).casefold() not in {"1", "true"}:
             continue
-        specs.append(name)
-    return specs
+        values.append(attrs)
+    return values
+
+
+def _active_name_specs(body: str) -> list[str]:
+    return [str(attrs.get("nameSpec") or "") for attrs in _active_gem_attributes(body)]
+
+
+def _selected_active_group(
+    build_attrs: dict[str, str],
+    groups: list[tuple[str, str]],
+) -> tuple[str, str] | None:
+    group_value = build_attrs.get("mainSocketGroup", "").strip()
+    if not groups:
+        return None
+    if not group_value:
+        return groups[0]
+    if group_value.isdigit():
+        positional = int(group_value)
+        if 1 <= positional <= len(groups):
+            return groups[positional - 1]
+    for tag, body in groups:
+        if _tag_attributes(tag).get("id") == group_value:
+            return tag, body
+    return None
 
 
 def main_skill_from_pob_xml(xml: str) -> str | None:
@@ -107,25 +130,12 @@ def main_skill_from_pob_xml(xml: str) -> str | None:
     if not isinstance(xml, str) or not xml.strip():
         return None
     build_attrs = _build_attributes(xml)
-    group_value = build_attrs.get("mainSocketGroup", "").strip()
     groups = _active_set_groups(xml)
     if not groups:
         return _first_name_spec(xml)
-    selected: tuple[str, str] | None = None
-    if group_value:
-        if group_value.isdigit():
-            positional = int(group_value)
-            if 1 <= positional <= len(groups):
-                selected = groups[positional - 1]
-        if selected is None:
-            for tag, body in groups:
-                if _tag_attributes(tag).get("id") == group_value:
-                    selected = (tag, body)
-                    break
-        if selected is None:
-            return _first_name_spec(xml)
-    else:
-        selected = groups[0]
+    selected = _selected_active_group(build_attrs, groups)
+    if selected is None:
+        return _first_name_spec(xml)
     name = _selected_gem_name(_tag_attributes(selected[0]), selected[1])
     if name:
         return name
@@ -135,27 +145,50 @@ def main_skill_from_pob_xml(xml: str) -> str | None:
     return None
 
 
+def main_skill_identity_from_pob_xml(xml: str) -> dict[str, str] | None:
+    """Return the exact selected active gem identity without document-order fallback."""
+
+    if not isinstance(xml, str) or not xml.strip():
+        return None
+    selected = _selected_active_group(_build_attributes(xml), _active_set_groups(xml))
+    if selected is None:
+        return None
+    attrs = _selected_gem_attributes(_tag_attributes(selected[0]), selected[1])
+    if attrs is None:
+        return None
+    return {
+        "name": str(attrs.get("nameSpec") or ""),
+        "skillId": str(attrs.get("skillId") or ""),
+        "gemId": str(attrs.get("gemId") or ""),
+    }
+
+
 def _selected_gem_name(tag_attrs: dict[str, str], body: str) -> str | None:
+    attrs = _selected_gem_attributes(tag_attrs, body)
+    return str(attrs.get("nameSpec") or "") if attrs is not None else None
+
+
+def _selected_gem_attributes(
+    tag_attrs: dict[str, str], body: str
+) -> dict[str, str] | None:
     selector = str(
         tag_attrs.get("mainActiveSkill") or tag_attrs.get("mainActiveSkillCalcs") or ""
     ).strip()
-    name_specs = _active_name_specs(body)
-    if not name_specs:
+    active_gems = _active_gem_attributes(body)
+    if not active_gems:
         return None
     if not selector:
-        return name_specs[0]
+        return active_gems[0]
     if selector.isdigit():
         index = int(selector)
-        if 1 <= index <= len(name_specs):
-            return name_specs[index - 1]
+        if 1 <= index <= len(active_gems):
+            return active_gems[index - 1]
         return None
     wanted = selector.casefold()
-    for attrs in (_tag_attributes(tag) for tag in _GEM_TAG.findall(body)):
+    for attrs in active_gems:
         name = str(attrs.get("nameSpec") or "").strip()
-        if not name:
-            continue
         if name.casefold() == wanted or str(attrs.get("skillId") or "").casefold() == wanted:
-            return name
+            return attrs
     return None
 
 

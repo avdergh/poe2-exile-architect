@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Any, Callable
@@ -12,10 +13,18 @@ from pydantic import ValidationError
 
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
-from server.judge import evaluator, runner, sample_audit
+from server.judge import evaluator, rules, runner, sample_audit
 from server.knowledge import research_memory
 
-from . import evaluation_snapshots, models, preflight, progression_provenance, run_store
+from . import (
+    evaluation_snapshots,
+    mechanism_signature,
+    models,
+    preflight,
+    progression_provenance,
+    run_store,
+    validation_checkpoint,
+)
 
 
 def evaluate_generation_candidate(
@@ -26,6 +35,8 @@ def evaluate_generation_candidate(
     candidate_id: str,
     version_context: dict[str, Any],
     strict_mode: bool = False,
+    offense_skill_group_index: int | None = None,
+    expected_skill_name: str | None = None,
     engine_factory: Callable[[], Any] = PobEngine,
     timeout_seconds: float | None = 900.0,
     receipt_reader: Callable[[str], dict[str, Any] | None] | None = None,
@@ -41,6 +52,29 @@ def evaluate_generation_candidate(
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
         return _rejected(exc.code)
+    memory_mode = str(
+        ((bound_run.manifest or {}).get("experimentContext") or {}).get("memoryMode") or ""
+    )
+    draft_required = bool(
+        ((bound_run.manifest or {}).get("experimentContext") or {}).get(
+            "mechanismBlueprintRequired"
+        )
+    )
+    if memory_mode == "memory_assisted" and _family_discovery_binding(bound_run) is None:
+        return {
+            **_rejected("generation_family_discovery_required"),
+            "attemptConsumed": False,
+        }
+    if draft_required and not _draft_validation_matches(
+        bound_run,
+        candidate_id=candidate_id,
+        research_memory_ref=version.research_memory_ref,
+        memory_mode=memory_mode,
+    ):
+        return {
+            **_rejected("generation_draft_validation_required"),
+            "attemptConsumed": False,
+        }
 
     # Fail fast on research-receipt provenance before any attempt is consumed: the receipt is
     # bound into the trusted evaluation and cannot be replaced later, while validate/review only
@@ -116,8 +150,92 @@ def evaluate_generation_candidate(
             xml = active_engine.get_xml()
         except Exception:  # noqa: BLE001 - MCP response must not expose engine internals.
             return _rejected("active_build_snapshot_failed")
+        draft_marker = _read_draft_validation(bound_run)
+        mechanism_binding = None
+        if draft_required and draft_marker is not None:
+            draft_context = dict(draft_marker.get("calculationContext") or {})
+            draft_group = int(draft_context.get("groupIndex") or 0)
+            draft_skill = str(draft_context.get("skillName") or "")
+            if draft_group < 1 or not draft_skill:
+                return {
+                    **_rejected("generation_draft_validation_required"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
+            mechanism_binding = run_store.current_mechanism_binding(bound_run)
+            if mechanism_binding is None:
+                return {
+                    **_rejected("generation_draft_validation_required"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
+            if (offense_skill_group_index is None) != (expected_skill_name is None):
+                return {
+                    **_rejected("selected_skill_conflict"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
+            if offense_skill_group_index is None:
+                offense_skill_group_index = draft_group
+                expected_skill_name = draft_skill
+            elif (
+                int(offense_skill_group_index) != draft_group
+                or str(expected_skill_name or "").casefold() != draft_skill.casefold()
+            ):
+                return {
+                    **_rejected("selected_skill_conflict"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
+            if not existing_receipts and draft_marker.get("buildStateHash") != build_state_hash(xml):
+                return {
+                    **_rejected("generation_draft_state_changed"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
+            declared_signature = dict(draft_marker.get("mechanismSignature") or {})
+            observed_signature = mechanism_signature.observe(active_engine, declared_signature)
+            if (
+                not observed_signature.get("ok")
+                or not mechanism_signature.matches(
+                    declared_signature,
+                    dict(observed_signature.get("signature") or {}),
+                )
+                or observed_signature.get("signatureHash")
+                != draft_marker.get("mechanismSignatureHash")
+            ):
+                return {
+                    **_rejected("generation_mechanism_drift"),
+                    "attemptConsumed": False,
+                    "attemptCount": len(existing_receipts),
+                }
 
-        preflight_report = preflight.inspect_generation_snapshot(active_engine, xml)
+        quality_checkpoint: dict[str, Any] = {}
+        checkpoint_capable = all(
+            callable(getattr(active_engine, name, None))
+            for name in ("transaction_lock", "get_stats", "get_defenses", "get_build")
+        )
+        if checkpoint_capable:
+            quality_checkpoint = validation_checkpoint.inspect_generation_checkpoint(
+                active_engine,
+                strict_mode=strict_mode,
+                offense_skill_group_index=offense_skill_group_index,
+                expected_skill_name=expected_skill_name,
+            )
+        if checkpoint_capable and quality_checkpoint.get("status") == "error":
+            return {
+                **_rejected("generation_final_checks_incomplete"),
+                "finalCheckBlockers": ["checkpoint:inspection_error"],
+                "attemptConsumed": False,
+                "attemptCount": len(existing_receipts),
+            }
+        preflight_report = (
+            dict(quality_checkpoint.get("preflight") or {})
+            if quality_checkpoint.get("status") != "error"
+            else {}
+        )
+        if not preflight_report:
+            preflight_report = preflight.inspect_generation_snapshot(active_engine, xml)
         if not preflight_report.get("readyForJudge"):
             return {
                 **_rejected("generation_preflight_failed"),
@@ -130,10 +248,38 @@ def evaluate_generation_candidate(
                 "attemptConsumed": False,
                 "attemptCount": len(existing_receipts),
             }
+        final_check_blockers = (
+            _final_check_blockers(quality_checkpoint.get("createQualityChecklist") or {})
+            if checkpoint_capable
+            else []
+        )
+        if final_check_blockers:
+            return {
+                **_rejected("generation_final_checks_incomplete"),
+                "finalCheckBlockers": final_check_blockers,
+                "attemptConsumed": False,
+                "attemptCount": len(existing_receipts),
+            }
 
-        parsed = _parse_build_snapshot(xml)
+        try:
+            runtime_skill_groups = active_engine.call("list_skill_groups")
+        except Exception:  # noqa: BLE001 - XML root skills remain available to lightweight fakes.
+            runtime_skill_groups = None
+        parsed = _parse_build_snapshot(xml, runtime_skill_groups=runtime_skill_groups)
         if parsed.get("errorCode"):
             return _rejected(str(parsed["errorCode"]))
+        offense_selection = _resolve_offense_selection(
+            parsed,
+            offense_skill_group_index=offense_skill_group_index,
+            expected_skill_name=expected_skill_name,
+        )
+        if offense_selection.get("errorCode"):
+            return {
+                **_rejected(str(offense_selection["errorCode"])),
+                "attemptConsumed": False,
+                "expectedSkillName": expected_skill_name,
+                "offenseSkillGroupIndex": offense_skill_group_index,
+            }
 
         source_hash = evaluator.compute_source_hash(xml)
         semantic_state_hash = build_state_hash(xml)
@@ -144,7 +290,49 @@ def evaluate_generation_candidate(
             engine = engine_factory()
             try:
                 engine.load_build_xml(xml, name=snapshot_id)
-                captured["build"] = engine.get_build()
+                selector = getattr(engine, "select_judge_skill", None)
+                if callable(selector):
+                    selection = selector(
+                        offense_skill_group_index=int(offense_selection["groupIndex"]),
+                        expected_skill_name=str(offense_selection["skillName"]),
+                    )
+                    if selection.get("status") != "selected":
+                        raise ValueError("selected_skill_conflict")
+                    build = dict(engine.get_build())
+                else:
+                    # Lightweight test/fake engines may already provide an explicit selected
+                    # skill in their sanitized build readback.  Production PobEngine always uses
+                    # the typed selector above.
+                    build = dict(engine.get_build())
+                    selected = dict(build.get("judgeSelectedSkill") or {})
+                    if int(selected.get("groupIndex") or 0) != int(
+                        offense_selection["groupIndex"]
+                    ) or str(selected.get("skillName") or "") != str(
+                        offense_selection["skillName"]
+                    ):
+                        selected = {
+                            "groupIndex": int(offense_selection["groupIndex"]),
+                            "activeIndex": 1,
+                            "skillName": str(offense_selection["skillName"]),
+                            "sourceMetric": "unknown",
+                        }
+                    selection = {
+                        "selectedSkill": selected,
+                        "selectedSkillGroup": build.get("mainSkillGroup") or [],
+                        "supplementalSkills": list(build.get("judgeSupplementalSkills") or []),
+                        "calculationContext": {
+                            "groupIndex": int(offense_selection["groupIndex"]),
+                            "activeIndex": int(selected.get("activeIndex") or 1),
+                            "skillName": str(offense_selection["skillName"]),
+                            "sourceMetric": str(selected.get("sourceMetric") or "unknown"),
+                        },
+                    }
+                build["judgeSelectedSkill"] = dict(selection.get("selectedSkill") or {})
+                build["judgeSelectedSkillGroup"] = list(selection.get("selectedSkillGroup") or [])
+                build["judgeSupplementalSkills"] = list(selection.get("supplementalSkills") or [])
+                build["judgeCalculationContext"] = dict(selection.get("calculationContext") or {})
+                captured["build"] = build
+                engine._judge_build_override = build
                 return engine
             except Exception:
                 close = getattr(engine, "close", None)
@@ -163,9 +351,11 @@ def evaluate_generation_candidate(
         state = _build_state_ref(
             parsed,
             captured.get("build") or {},
-            completeness_advisories=[str(item) for item in preflight_report.get("advisories") or []]
-            if strict_mode
-            else [],
+            completeness_advisories=[
+                str(item)
+                for item in preflight_report.get("advisories") or []
+                if strict_mode or str(item) == "spirit_opportunity_review_required"
+            ],
             snapshot_id=snapshot_id,
             source_hash=source_hash,
             semantic_state_hash=semantic_state_hash,
@@ -182,6 +372,11 @@ def evaluate_generation_candidate(
         )
         receipt = {
             "candidateId": candidate_id,
+            **(
+                {"mechanismBinding": mechanism_binding}
+                if mechanism_binding is not None
+                else {}
+            ),
             "transientBuildState": state,
             "judgeAdvisoryReport": judge_report,
             "hardLegalityAudit": {
@@ -189,6 +384,23 @@ def evaluate_generation_candidate(
                 "stateHash": semantic_state_hash,
                 "validationRef": f"hard-legality:{semantic_state_hash[:24]}",
             },
+            "deliveryStatus": str(quality_checkpoint.get("deliveryStatus") or "candidate"),
+            "createQualityChecklist": dict(
+                quality_checkpoint.get("createQualityChecklist") or _unavailable_quality_checklist()
+            ),
+            "qualityRepairPlan": list(quality_checkpoint.get("qualityRepairPlan") or []),
+            "lifecycleVerification": dict(
+                quality_checkpoint.get("lifecycleVerification")
+                or {
+                    "stage": "unknown",
+                    "status": "unknown",
+                    "pass": False,
+                    "requiredChecks": [],
+                    "advisoryChecks": [],
+                    "failedChecks": [],
+                    "unknownChecks": ["quality_checkpoint_unavailable"],
+                }
+            ),
         }
         expected_attempt_index = len(existing_receipts)
         try:
@@ -241,7 +453,11 @@ def evaluate_generation_candidate(
             pass
 
 
-def _parse_build_snapshot(xml: str) -> dict[str, Any]:
+def _parse_build_snapshot(
+    xml: str,
+    *,
+    runtime_skill_groups: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         root = ET.fromstring(xml)
     except (ET.ParseError, TypeError, ValueError):
@@ -261,6 +477,11 @@ def _parse_build_snapshot(xml: str) -> dict[str, Any]:
     if skill_set is None:
         return {"errorCode": "missing_active_skill_group"}
 
+    runtime_by_index = {
+        int(group.get("index") or 0): group
+        for group in ((runtime_skill_groups or {}).get("groups") or [])
+        if isinstance(group, dict)
+    }
     groups: list[dict[str, Any]] = []
     for index, group in enumerate(skill_set.findall("Skill"), start=1):
         if not _xml_bool(group.get("enabled"), default=True):
@@ -273,6 +494,16 @@ def _parse_build_snapshot(xml: str) -> dict[str, Any]:
         active_names = [name for name in active_names if name]
         if not active_names:
             continue
+        runtime_group = runtime_by_index.get(index) or {}
+        runtime_names = [
+            str(active.get("name") or "").strip()
+            for active in (runtime_group.get("activeSkills") or [])
+            if isinstance(active, dict) and str(active.get("name") or "").strip()
+        ]
+        if runtime_names:
+            active_names = list(dict.fromkeys(runtime_names))
+        runtime_active = str(runtime_group.get("activeSkill") or "").strip()
+        active_skill = runtime_active if runtime_active in active_names else active_names[0]
         supports = [str(gem.get("nameSpec") or "").strip() for gem in gems if _is_support_gem(gem)]
         supports = [name for name in supports if name]
         is_main = str(index) == main_group
@@ -280,7 +511,7 @@ def _parse_build_snapshot(xml: str) -> dict[str, Any]:
             {
                 "groupIndex": index,
                 "role": "pob_main_group" if is_main else "additional_skill_group",
-                "activeSkill": active_names[0],
+                "activeSkill": active_skill,
                 "activeSkills": active_names,
                 "activeSkillCount": len(active_names),
                 "supports": supports,
@@ -298,6 +529,182 @@ def _parse_build_snapshot(xml: str) -> dict[str, Any]:
         "level": str(build.get("level") or "0"),
         "testedSkillGroups": groups,
         "equippedGearSlots": str(_equipped_gear_slot_count(root)),
+    }
+
+
+def _unavailable_quality_checklist() -> dict[str, dict[str, Any]]:
+    return {
+        name: {"status": "failed", "reasons": ["quality_checkpoint_unavailable"]}
+        for name in (
+            "skillSupportAudit",
+            "mechanismDependencies",
+            "bootstrapItems",
+            "gearAttainability",
+            "charmLoadout",
+            "jewelDecision",
+            "itemSockets",
+            "sustain",
+        )
+    }
+
+
+def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
+    """Select deterministic, state-bound final checks that must precede Judge."""
+
+    blockers: list[str] = []
+    for name in ("skillSupportAudit", "jewelDecision", "itemSockets"):
+        item = checklist.get(name) if isinstance(checklist, dict) else None
+        if not isinstance(item, dict):
+            blockers.append(f"{name}:missing_result")
+            continue
+        status = item.get("status")
+        if status in {"passed", "not_applicable"}:
+            continue
+        if status not in {"failed", "unknown"}:
+            blockers.append(f"{name}:invalid_status")
+            continue
+        reasons = [str(value) for value in item.get("reasons") or []]
+        if name == "skillSupportAudit":
+            reasons = [
+                value for value in reasons if not value.startswith("support_audit_inconclusive:")
+            ]
+        if not reasons and not (
+            name == "skillSupportAudit"
+            and any(
+                str(value).startswith("support_audit_inconclusive:")
+                for value in item.get("reasons") or []
+            )
+        ):
+            reasons = ["failed_without_reason"]
+        blockers.extend(f"{name}:{value}" for value in reasons)
+    sustain_item = checklist.get("sustain") if isinstance(checklist, dict) else None
+    if not isinstance(sustain_item, dict):
+        blockers.append("sustain:missing_result")
+    elif sustain_item.get("status") == "failed":
+        blockers.extend(
+            f"sustain:{value}" for value in sustain_item.get("reasons") or ["unsustainable"]
+        )
+    elif sustain_item.get("status") not in {"passed", "unknown", "not_applicable"}:
+        blockers.append("sustain:invalid_status")
+    return sorted(set(blockers))
+
+
+def _draft_validation_matches(
+    bound_run: run_store.BoundRun,
+    *,
+    candidate_id: str,
+    research_memory_ref: str,
+    memory_mode: str = "memory_assisted",
+) -> bool:
+    payload = _read_draft_validation(bound_run)
+    if payload is None:
+        return False
+    family_binding = _family_discovery_binding(bound_run)
+    family_ready = memory_mode == "no_memory" or family_binding is not None
+    premise_ready = (
+        payload.get("researchPremiseAuditReady") is False
+        if memory_mode == "no_memory"
+        else payload.get("researchPremiseAuditReady") is True
+    )
+    try:
+        blueprint = json.loads(
+            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (UnicodeDecodeError, OSError, json.JSONDecodeError):
+        blueprint = None
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("schemaVersion") == 2
+        and payload.get("candidateId") == candidate_id
+        and payload.get("researchMemoryRef") == research_memory_ref
+        and premise_ready
+        and family_ready
+        and (
+            memory_mode == "no_memory"
+            or payload.get("familyDiscoveryRef") == family_binding.get("familyDiscoveryRef")
+        )
+        and (
+            memory_mode == "no_memory"
+            or payload.get("selectedFamilyKey") == family_binding.get("selectedFamilyKey")
+        )
+        and isinstance(blueprint, dict)
+        and payload.get("mechanismBlueprintRef") == blueprint.get("blueprintRef")
+        and payload.get("mechanismBlueprintHash") == blueprint.get("blueprintHash")
+        and isinstance(payload.get("mechanismSignatureHash"), str)
+        and isinstance(payload.get("mechanismSignature"), dict)
+        and isinstance(payload.get("buildStateHash"), str)
+        and payload.get("noRawMaterial") is True
+    )
+
+
+def _read_draft_validation(bound_run: run_store.BoundRun) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(
+            (bound_run.run_dir / "draft-validation.json").read_text(encoding="utf-8")
+        )
+    except (UnicodeDecodeError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _family_discovery_binding(bound_run: run_store.BoundRun) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(
+            (bound_run.run_dir / "family-discovery.json").read_text(encoding="utf-8")
+        )
+    except (UnicodeDecodeError, OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schemaVersion") != 1
+        or payload.get("status") not in {"selected", "no_family"}
+        or not isinstance(payload.get("familyDiscoveryRef"), str)
+        or payload.get("noRawMaterial") is not True
+    ):
+        return None
+    return payload
+
+
+def _resolve_offense_selection(
+    parsed: dict[str, Any],
+    *,
+    offense_skill_group_index: int | None,
+    expected_skill_name: str | None,
+) -> dict[str, Any]:
+    groups = [dict(group) for group in parsed.get("testedSkillGroups") or []]
+    if not groups:
+        return {"errorCode": "selected_skill_conflict"}
+    expected = str(expected_skill_name or "").strip()
+    if expected.casefold().startswith(("load ", "reload ")):
+        return {"errorCode": "selected_skill_conflict"}
+    selected: dict[str, Any] | None = None
+    if offense_skill_group_index is not None:
+        selected = next(
+            (
+                group
+                for group in groups
+                if int(group.get("groupIndex") or 0) == int(offense_skill_group_index)
+            ),
+            None,
+        )
+    elif expected:
+        matches = [group for group in groups if expected in (group.get("activeSkills") or [])]
+        selected = matches[0] if len(matches) == 1 else None
+    else:
+        selected = next(
+            (group for group in groups if group.get("role") == "pob_main_group"),
+            None,
+        )
+    if selected is None:
+        return {"errorCode": "selected_skill_conflict"}
+    selected_name = expected or str(selected.get("activeSkill") or "")
+    if selected_name not in (selected.get("activeSkills") or []):
+        return {"errorCode": "selected_skill_conflict"}
+    return {
+        "groupIndex": int(selected["groupIndex"]),
+        "skillName": selected_name,
     }
 
 
@@ -319,9 +726,18 @@ def _build_state_ref(
         "equippedGearSlots": parsed["equippedGearSlots"],
         "passivePointsUsed": str(build.get("pointsUsed") or 0),
         "passivePointsAvailable": str(build.get("pointsAvailable") or 0),
-        "spiritUsed": str(build.get("spiritUsed") or 0),
-        "spiritAvailable": str(build.get("spiritAvailable") or 0),
     }
+    for key in (
+        "spiritAvailable",
+        "spiritReservedCapped",
+        "spiritUnreserved",
+        "spiritRequested",
+        "spiritOverBy",
+        "spiritUsed",
+        "activeWeaponSet",
+    ):
+        if build.get(key) is not None:
+            summary[key] = str(build[key])
     state = models.TransientBuildStateRef(
         status="available",
         snapshot_id=snapshot_id,
@@ -411,6 +827,7 @@ def _build_judge_report(
             str(result.get("finalClassification") or "unknown") if strict_mode else None
         ),
         selected_skill=_selected_skill_diagnostic(build),
+        calculation_context=(dict(build.get("judgeCalculationContext") or {}) or None),
         supplemental_skills=_supplemental_skill_diagnostics(build),
         skill_group_diagnostics=_skill_group_diagnostics(parsed, build),
         attribute_shortfalls=_attribute_shortfalls(build),
@@ -540,7 +957,7 @@ def _skill_group_diagnostics(
                 "activeSkillCount": len(active_skills),
                 "supports": supports,
                 "supportCount": len(supports),
-                "singleActiveSkillValid": len(active_skills) == 1,
+                "singleActiveSkillValid": rules.is_valid_active_skill_group(active_skills),
                 "groupOrigin": (
                     str(selected.get("groupOrigin") or "unknown")
                     if group_index == selected_index and isinstance(selected, dict)
@@ -582,7 +999,7 @@ def _skill_group_diagnostics(
                 "activeSkillCount": len(readback_active),
                 "supports": readback_supports,
                 "supportCount": len(readback_supports),
-                "singleActiveSkillValid": len(readback_active) == 1,
+                "singleActiveSkillValid": rules.is_valid_active_skill_group(readback_active),
                 "groupOrigin": str(selected.get("groupOrigin") or "unknown"),
                 "groupSource": (
                     str(selected.get("groupSource")) if selected.get("groupSource") else None

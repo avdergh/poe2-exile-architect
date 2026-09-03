@@ -80,6 +80,7 @@ def test_converter_status_and_success(tmp_path, monkeypatch):
     assert result["build"]["name"] == "Agent Build"
     assert json.loads(result["serializedBuild"])["name"] == "Agent Build"
     assert result["schemaValidation"] == {"status": "passed", "errors": []}
+    assert any(warning["code"] == "build-planner-guidance-only" for warning in result["warnings"])
 
 
 def test_converter_reads_utf8_provider_output_on_non_utf8_windows_locale(tmp_path, monkeypatch):
@@ -156,6 +157,103 @@ def test_single_stage_schema_rejects_level_interval_and_bad_ids():
         "invalid_skill_id",
         "single_stage_level_interval_present",
     ]
+
+
+def test_socket_guidance_is_prepended_by_slot_and_is_idempotent():
+    xml = """<PathOfBuilding2><Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nWeapon\nStriking Quarterstaff\nSockets: S S\nRune: Iron Rune\nItem Level: 82</Item>
+    <Item id="2">Rarity: RARE\nArmour\nAustere Garb\nSockets: S S\nRune: Body Rune\nItem Level: 82</Item>
+    <Item id="3">Rarity: RARE\nOffhand\nHardwood Club\nSockets: S\nItem Level: 82</Item>
+    <Item id="4">Rarity: RARE\nSwap Main\nExpert Sceptre\nSockets: S\nItem Level: 82</Item>
+    <Item id="5">Rarity: RARE\nSwap Offhand\nExpert Sceptre\nSockets: S S\nItem Level: 82</Item>
+    <Item id="6">Rarity: RARE\nTree Jewel\nRuby\nSockets: S\nItem Level: 82</Item>
+    <Item id="7">Rarity: UNIQUE\nExample Unique\nRuby Ring\nItem Level: 82</Item>
+    <ItemSet id="1"><Slot name="Weapon 1" itemId="1"/><Slot name="Weapon 2" itemId="3"/><Slot name="Weapon 1 Swap" itemId="4"/><Slot name="Weapon 2 Swap" itemId="5"/><Slot name="Body Armour" itemId="2"/><Slot name="Jewel 1" itemId="6"/><Slot name="Ring 1" itemId="7"/></ItemSet>
+    </Items></PathOfBuilding2>"""
+    build = {
+        "name": "Socket Fixture",
+        "inventory_slots": [
+            {"inventory_id": "Weapon1", "additional_text": "weapon guidance"},
+            {"inventory_id": "Offhand1", "additional_text": "offhand guidance"},
+            {"inventory_id": "Weapon2", "additional_text": "swap weapon guidance"},
+            {"inventory_id": "Offhand2", "additional_text": "swap offhand guidance"},
+            {"inventory_id": "BodyArmour1", "additional_text": "armour guidance"},
+            {"inventory_id": "Ring1", "unique_name": "Example Unique"},
+        ],
+    }
+
+    assert converter._prepend_socket_guidance(xml, build) == 5
+    assert converter._prepend_socket_guidance(xml, build) == 0
+    assert build["inventory_slots"][0]["additional_text"].startswith("<gold>{Sockets: 2}")
+    assert build["inventory_slots"][1]["additional_text"].startswith("<gold>{Sockets: 1}")
+    assert build["inventory_slots"][2]["additional_text"].startswith("<gold>{Sockets: 1}")
+    assert build["inventory_slots"][3]["additional_text"].startswith("<gold>{Sockets: 2}")
+    assert build["inventory_slots"][4]["additional_text"].startswith("<gold>{Sockets: 2}")
+    assert build["inventory_slots"][5] == {
+        "inventory_id": "Ring1",
+        "unique_name": "Example Unique",
+    }
+    build["inventory_slots"][0]["additional_text"] = "<gold>{Sockets: 1}\nweapon guidance"
+    assert converter._prepend_socket_guidance(xml, build) == 1
+    assert build["inventory_slots"][0]["additional_text"].startswith("<gold>{Sockets: 2}\n")
+    assert build["inventory_slots"][0]["additional_text"].count("Sockets:") == 1
+    assert converter.validate_single_stage_build(build) == []
+
+
+def test_convert_serializes_socket_guidance_after_mutation(tmp_path, monkeypatch):
+    node = _node_or_skip()
+    root = _provider(
+        tmp_path,
+        _valid_runner(
+            "payload.build.inventory_slots = [{ inventory_id: 'Weapon1', additional_text: 'Iron Rune' }, "
+            "{ inventory_id: 'BodyArmour1', additional_text: 'Body Rune' }, "
+            "{ inventory_id: 'Ring1', unique_name: 'Example Unique' }];"
+        ),
+    )
+    monkeypatch.setenv("POE_BD_BUILD_CONVERTER_DIR", str(root))
+    monkeypatch.setenv("POE_BD_NODE_EXECUTABLE", node)
+    xml = """<PathOfBuilding2><Items activeItemSet="1">
+    <Item id="1">Rarity: RARE\nWeapon\nStriking Quarterstaff\nSockets: S S\nRune: Iron Rune\nItem Level: 82</Item>
+    <Item id="2">Rarity: RARE\nArmour\nAustere Garb\nSockets: S S\nRune: Body Rune\nItem Level: 82</Item>
+    <ItemSet id="1"><Slot name="Weapon 1" itemId="1"/><Slot name="Body Armour" itemId="2"/></ItemSet>
+    </Items></PathOfBuilding2>"""
+
+    result = converter.convert_pob_xml(xml, source_hash="socket-source")
+
+    assert result["status"] == "ok"
+    assert json.loads(result["serializedBuild"]) == result["build"]
+    assert result["schemaValidation"] == {"status": "passed", "errors": []}
+    assert any(warning["code"] == "build-planner-guidance-only" for warning in result["warnings"])
+    assert set(result["build"]) <= {
+        "name",
+        "author",
+        "link",
+        "description",
+        "ascendancy",
+        "passives",
+        "skills",
+        "inventory_slots",
+    }
+
+
+def test_invalid_inventory_coordinates_fail_schema_without_converter_exception(tmp_path, monkeypatch):
+    node = _node_or_skip()
+    root = _provider(
+        tmp_path,
+        _valid_runner(
+            "payload.build.inventory_slots = [{ inventory_id: 'Weapon1', slot_x: 'invalid' }];"
+        ),
+    )
+    monkeypatch.setenv("POE_BD_BUILD_CONVERTER_DIR", str(root))
+    monkeypatch.setenv("POE_BD_NODE_EXECUTABLE", node)
+
+    result = converter.convert_pob_xml("<PathOfBuilding2/>", source_hash="invalid-slot-x")
+
+    assert result["status"] == "ok"
+    assert result["schemaValidation"] == {
+        "status": "failed",
+        "errors": ["invalid_inventory_slot_x"],
+    }
 
 
 def test_pinned_provider_converts_real_pob_fixture_without_level_intervals(monkeypatch):

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .. import paths
+from .league_tokens import normalize_league_token
 
 URL = "https://poe.ninja/poe2/api/data/build-index-state"
 # poe.ninja's edge rejects some non-browser clients, so present a browser-like UA.
@@ -65,12 +66,16 @@ def _is_main_league(name: str) -> bool:
 
 def _select(leagues: list[dict], override: str | None) -> dict | None:
     if override:
-        lo = override.lower()
+        token = normalize_league_token(override)
         return next(
             (
                 lb
                 for lb in leagues
-                if lo in ((lb.get("leagueName") or "").lower(), (lb.get("leagueUrl") or "").lower())
+                if token
+                in {
+                    normalize_league_token(lb.get("leagueName")),
+                    normalize_league_token(lb.get("leagueUrl")),
+                }
             ),
             None,
         )

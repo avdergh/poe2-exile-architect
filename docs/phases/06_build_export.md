@@ -34,6 +34,9 @@ Agent 在活动 PoB 中完成候选
 
 `.build` 是构筑指导文件，不是 PoB 的完整替代品。PoB 继续承担完整装备、天赋、技能、配置和
 数值计算；`.build` 负责在游戏内展示推荐升华、天赋、技能、辅助技能和装备槽提示。
+保存 artifact 前会执行一次轻量 PoB load/save round-trip，核对技能/辅助、装备数量、物品孔位/
+Rune 和天赋珠宝。`.build` 的限制通过 `guidanceOnly` 和 description 披露；PoB XML/导入码仍是权威。
+技术候选可以导出，但 artifact 与导出清单必须保留 `deliveryStatus=candidate`。
 
 ## 依赖
 
@@ -216,8 +219,9 @@ P6.3 状态：已完成。
   转换统计和 caveats，不包含 PoB XML。已完成
 - 新增 `export_final_pob_artifact`，默认同时写出桌面 PoB 可用的完整 XML 和导入码文本；响应仅返回
   本地路径，不把原始内容写入聊天或报告。已完成
-- 新增 `export_final_build_package` 作为稳定交付入口，一次生成并固定列出 PoB XML、导入码文本和
-  官方 `.build` 三项；部分失败时仍保留完整清单和错误码，避免 Agent 漏生成或漏报产物。已完成
+- 新增 `export_final_build_package` 作为稳定交付入口，一次生成并固定列出 PoB XML、导入码文本、
+  官方 `.build` 和公开 poe.ninja PoB 链接四项；部分失败时仍保留完整清单和错误码，避免 Agent
+  漏生成、漏上传或漏报产物。poe.ninja 项明确披露公开外部上传。已完成
 - skill 和 MCP instructions 已加入 artifact 保存后导出流程。已完成
 - 聚焦测试覆盖成功导出、损坏 artifact、error warning、provider 缺失/崩溃/协议错误/hash 不匹配
   和真实 fixture。已完成
@@ -236,7 +240,7 @@ P6.4 状态：已完成。
 2. 至少一次可信 Judge 通过；
 3. Agent 明确接受并保存最终 artifact；
 4. 重启 MCP 或新会话加载 artifact；
-5. 导出 PoB XML、PoB 导入码文本和单阶段 `.build`；
+5. 导出 PoB XML、PoB 导入码文本、单阶段 `.build`，并发布 poe.ninja PoB 分享链接；
 6. 在桌面 PoB 中打开 XML 或导入导入码，核对完整装备、天赋、技能组、配置和计算结果；
 7. 把 `.build` 放入游戏 `BuildPlanner` 目录或上传官网 Builds 页面；
 8. 在游戏内核对升华、天赋、技能/辅助和装备槽提示；
@@ -248,9 +252,10 @@ P6.4 状态：已完成。
 - PoB 中黄装应显示阶段合理 `Item Level`，且底材需求等级不高于角色等级；
 - 最终 artifact 不得保留 `Scaffold ...` 占位装备；
 - 核对符文/灵魂核心、天赋珠宝、生命/魔力药剂和腰带支持的护符是否已实际装备，或是否有明确
-  的阶段/预算理由不使用；
+  的阶段/机制理由不使用；价格不能作为省略理由；
 - 官方 `.build` 只能把黄装转为槽位提示文字，不能据此误判 PoB 内黄装是暗金；完整随机黄装仍以
-  PoB XML/导入码为准。
+  PoB XML/导入码为准。装备孔位和 Rune/Soul Core 同样通过 `additional_text` 展示；导出器应前置
+  `Sockets: N` 提示，并返回 info warning 说明该格式限制。
 
 P6.5 状态：人工验收通过，已完成。
 

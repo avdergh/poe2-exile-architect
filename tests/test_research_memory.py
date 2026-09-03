@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 import sqlite3
 
+import pytest
+
+from scripts import create_build
+from server import main as server_main
 from server.knowledge import mature_learning
 from server.knowledge import graph_tools as gt
 from server.knowledge import physical_graph as pg
@@ -707,7 +711,7 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
     mature_learning.initialize_store(db_path)
     con = mature_learning.connect(db_path)
     try:
-        assert mature_learning.schema_version(con) == 4
+        assert mature_learning.schema_version(con) == 5
         assert {
             "research_fragments",
             "research_fragment_evidence",
@@ -765,7 +769,20 @@ def test_query_receipt_preserves_typed_identity_and_safe_result_ids(tmp_path):
     assert receipt["request"]["primarySkillKey"] == "skill:target-attack"
     assert receipt["request"]["primarySkillKeys"] == ["skill:target-attack"]
     assert receipt["request"]["includeTransferable"] is True
-    assert receipt["result"] == {
+    assert {
+        key: receipt["result"][key]
+        for key in (
+            "buildFamilies",
+            "deepRecordIds",
+            "patternIds",
+            "semanticEdgeIds",
+            "memoryItemIds",
+            "deepReadRecordIds",
+            "familyRecordCoverage",
+            "familyPremiseCatalog",
+            "premiseAuditVersion",
+        )
+    } == {
         "buildFamilies": [],
         "deepRecordIds": [],
         "patternIds": [],
@@ -944,6 +961,10 @@ def test_exact_family_identity_is_not_filtered_by_goal_text_or_secondary_skill(t
         record["source_case_refs"] = [f"case:{group_id}"]
         record["safe_evidence_refs"] = [f"safe:{group_id}"]
         record["ascendancy_key"] = "ascendancy:monk:martial_artist"
+        if secondary_key:
+            # Family identity deliberately ignores secondary skills.  Use a different focused
+            # record kind so the two cases do not claim to be the same canonical knowledge unit.
+            record["record_kind"] = "skill_package"
         record["component_keys"] = [primary_key]
         record["component_mentions"] = [
             {
@@ -1371,7 +1392,7 @@ def test_deep_record_resolution_enrichment_updates_existing_knowledge_unit(tmp_p
         con.close()
 
 
-def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path):
+def test_equivalent_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
     first = _deep_record_payload()
@@ -1410,8 +1431,6 @@ def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path)
     second = json.loads(json.dumps(first))
     second_record = second["deep_research_records"][0]
     second_record["research_group_id"] = "research:second-source"
-    second_record["title"] = "另一种标题不会创建重复知识"
-    second_record["content"] = "第二个来源提供更完整的主技能职责和辅助使用边界。"
     second_record["source_case_refs"] = ["source-hash:second"]
 
     first_result = service.propose_deep_research_records(first)
@@ -1422,7 +1441,8 @@ def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path)
     assert first_result["evidenceAddedCount"] == 1
     assert second_result["createdRecordCount"] == 0
     assert second_result["createdBuildFamilyCount"] == 0
-    assert second_result["updatedRecordCount"] == 1
+    assert second_result["updatedRecordCount"] == 0
+    assert second_result["unchangedRecordCount"] == 1
     assert second_result["evidenceAddedCount"] == 1
     assert second_result["recordIds"] == first_result["recordIds"]
     assert second_result["buildFamilyKeys"] == first_result["buildFamilyKeys"]
@@ -1432,10 +1452,11 @@ def test_deep_records_canonicalize_across_sources_with_family_evidence(tmp_path)
     assert len(recalled) == 1
     assert recalled[0]["evidenceCount"] == 2
     assert recalled[0]["buildFamilyKey"] == first_result["buildFamilyKeys"][0]
-    family_result = service.query_research_memory("另一种标题")
+    family_result = service.query_research_memory(first_record["title"])
     assert family_result["buildFamilies"] == [
         {
             "buildFamilyKey": first_result["buildFamilyKeys"][0],
+            "knowledgeScope": "global_seed",
             "ascendancyKey": "ascendancy:monk:martial_artist",
             "primarySkillKey": "skill:LightningArrowPlayer",
             "primarySkillKeys": ["skill:LightningArrowPlayer"],
@@ -1485,12 +1506,13 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
         con.execute(
             """
             INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
                 secondary_skill_keys, evidence_count, created_at, last_seen_at
             )
-            SELECT ?, ascendancy_key, primary_skill_key, primary_skill_keys,
+            SELECT knowledge_scope, ?, ascendancy_key, primary_skill_key, primary_skill_keys,
                    secondary_skill_keys, evidence_count, created_at, last_seen_at
-            FROM research_build_families WHERE build_family_key = ?
+            FROM research_build_families
+            WHERE knowledge_scope = 'global_seed' AND build_family_key = ?
             """,
             (legacy_key, current_key),
         )
@@ -1524,6 +1546,7 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
             "researchGroupId": "research:legacy-family-second-source",
             "inferredKey": current_key,
             "targetKey": legacy_key,
+            "knowledgeScope": "global_seed",
             "relation": "join",
             "sourceKey": None,
         }
@@ -1550,7 +1573,7 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
         con.close()
 
 
-def test_record_writes_report_the_persisted_canonical_record(tmp_path):
+def test_cross_source_non_equivalent_canonical_record_is_rejected(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
     first = _deep_record_payload(
@@ -1581,26 +1604,9 @@ def test_record_writes_report_the_persisted_canonical_record(tmp_path):
     second_record["source_case_refs"] = ["source-hash:submitted"]
 
     first_result = service.propose_deep_research_records(first)
-    second_result = service.propose_deep_research_records(second)
-
-    write = second_result["recordWrites"][0]
-    assert write["recordId"] == first_result["recordIds"][0]
-    assert write["title"] == "本次提交标题"
-    assert write["submittedTitle"] == "本次提交标题"
-    assert write["canonicalContentMatchesSubmitted"] is False
-    assert write["canonicalRecord"] == {
-        "recordId": first_result["recordIds"][0],
-        "researchGroupId": "research:la-safe",
-        "buildFamilyKey": first_result["buildFamilyKeys"][0],
-        "knowledgeKey": first_result["knowledgeKeys"][0],
-        "evidenceCount": 2,
-        "recordKind": "skill_package",
-        "title": "最终保留的 canonical 标题",
-        "summary": first_record["summary"],
-        "componentKeys": ["skill:LightningArrowPlayer", "support:Scattershot"],
-        "sourceCaseRefs": ["source-hash:canonical", "source-hash:submitted"],
-        "safeEvidenceRefs": ["safe:la:hash"],
-    }
+    with pytest.raises(ValueError, match="duplicate_knowledge_identity_conflict"):
+        service.propose_deep_research_records(second)
+    assert first_result["createdRecordCount"] == 1
 
 
 def test_same_source_accepted_revision_can_replace_longer_canonical_prose(tmp_path):
@@ -1689,10 +1695,10 @@ def test_sibling_family_hints_flag_same_primary_different_secondary(tmp_path):
     con = mature_learning.connect(service.db_path)
     con.execute(
         """
-        INSERT INTO research_build_families(
-            build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
-            evidence_count, created_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, 0, ?, ?)
+            INSERT INTO research_build_families(
+                knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                evidence_count, created_at, last_seen_at
+            ) VALUES ('global_seed', ?, ?, ?, ?, 0, ?, ?)
         """,
         (
             "bf-alpha",
@@ -1706,9 +1712,9 @@ def test_sibling_family_hints_flag_same_primary_different_secondary(tmp_path):
     con.execute(
         """
         INSERT INTO research_build_families(
-            build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+            knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
             evidence_count, created_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, 0, ?, ?)
+        ) VALUES ('global_seed', ?, ?, ?, ?, 0, ?, ?)
         """,
         (
             "bf-beta",
@@ -1721,12 +1727,13 @@ def test_sibling_family_hints_flag_same_primary_different_secondary(tmp_path):
     )
     con.commit()
 
-    hints = research_memory._sibling_family_hints(con, {"bf-beta"})
+    hints = research_memory._sibling_family_hints(con, {("global_seed", "bf-beta")})
     con.close()
 
     assert hints == [
         {
             "familyKey": "bf-beta",
+            "knowledgeScope": "global_seed",
             "ascendancyKey": "ascendancy:mercenary:gemling_legionnaire",
             "primarySkillKeys": ["skill:TwisterPlayer"],
             "relation": "identical",
@@ -1970,11 +1977,11 @@ def test_historical_backfill_supersedes_only_high_confidence_duplicates(tmp_path
         )
         con.execute(
             """
-            INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
-                evidence_count, created_at, last_seen_at
-            ) VALUES (
-                'bf-legacy-secondary-split', 'ascendancy:monk:martial_artist',
+                INSERT INTO research_build_families(
+                    knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                    evidence_count, created_at, last_seen_at
+                ) VALUES (
+                    'global_seed', 'bf-legacy-secondary-split', 'ascendancy:monk:martial_artist',
                 'skill:LightningArrowPlayer', '["skill:UtilitySkillPlayer"]',
                 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
             )
@@ -1983,9 +1990,9 @@ def test_historical_backfill_supersedes_only_high_confidence_duplicates(tmp_path
         con.execute(
             """
             INSERT INTO research_build_family_evidence(
-                build_family_key, source_case_ref, first_seen_at, last_seen_at
+                knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
             ) VALUES (
-                'bf-legacy-secondary-split', 'source-hash:legacy-first',
+                'global_seed', 'bf-legacy-secondary-split', 'source-hash:legacy-first',
                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
             )
             """
@@ -3935,6 +3942,7 @@ def test_family_discovery_returns_top_ten_and_persists_exact_typed_receipt(tmp_p
     assert result["familyDiscovery"] == {
         "requestedCandidateCount": 10,
         "returnedCandidateCount": 10,
+        "outcome": "known_family_not_authorized",
         "coverage": "sufficient",
         "exactVersionOnly": True,
         "didNotBackfillWithStaleFamilies": True,
@@ -3965,6 +3973,223 @@ def test_family_discovery_returns_all_when_database_has_fewer_than_ten(tmp_path)
         assert len(result["buildFamilies"]) == count
         assert result["familyDiscovery"]["returnedCandidateCount"] == count
         assert result["familyDiscovery"]["coverage"] == expected_coverage
+
+
+def test_family_discovery_related_skill_matches_secondary_and_reports_revalidation(tmp_path):
+    service, _record_ids = _seed_family_discovery_service(tmp_path, 1)
+    db_path = tmp_path / "mature.sqlite"
+    con = mature_learning.connect(db_path)
+    try:
+        family = con.execute(
+            "SELECT build_family_key FROM research_build_families LIMIT 1"
+        ).fetchone()
+        con.execute(
+            "UPDATE research_build_families SET secondary_skill_keys = ? "
+            "WHERE build_family_key = ?",
+            ('["skill:GalvanicShardsPlayer"]', family["build_family_key"]),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:monk",
+        ascendancy_key="ascendancy:monk:martial_artist",
+        related_skill_key="skill:GalvanicShardsPlayer",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert len(result["buildFamilies"]) == 1
+    assert result["buildFamilies"][0]["secondarySkillKeys"] == ["skill:GalvanicShardsPlayer"]
+    assert result["buildFamilies"][0]["createEligibility"]["status"] in {
+        "authorized",
+        "needs_revalidation",
+    }
+    assert result["requestedRelatedSkillKey"] == "skill:GalvanicShardsPlayer"
+
+
+def test_tactician_family_first_golden_regression_discovers_before_primary_selection(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "mature.sqlite",
+        graph_service=_graph_service(
+            extra_nodes=[
+                pg.GraphNode("class:mercenary", "class", "Mercenary", ("fixture:phase4",)),
+                pg.GraphNode(
+                    "ascendancy:mercenary:tactician",
+                    "ascendancy",
+                    "Tactician",
+                    ("fixture:phase4",),
+                ),
+                pg.GraphNode(
+                    "skill:MeleeCrossbowPlayer",
+                    "active_skill",
+                    "Crossbow Shot",
+                    ("fixture:phase4",),
+                ),
+                pg.GraphNode(
+                    "skill:GalvanicShardsPlayer",
+                    "active_skill",
+                    "Galvanic Shards",
+                    ("fixture:phase4",),
+                ),
+            ]
+        ),
+    )
+    payload = _deep_record_payload(
+        "Tactician crossbow package requires current-version validation."
+    )
+    record = payload["deep_research_records"][0]
+    record.update(
+        {
+            "research_group_id": "research:tactician-golden",
+            "record_kind": "skill_package",
+            "title": "Tactician crossbow package",
+            "summary": "Family-first Tactician discovery fixture.",
+            "component_keys": ["skill:MeleeCrossbowPlayer"],
+            "component_mentions": [
+                {
+                    "candidate_name": "Crossbow Shot",
+                    "role": "primary_damage",
+                    "resolver_query": "Crossbow Shot",
+                    "expected_node_types": ["active_skill"],
+                    "scope": "player",
+                    "component_key": "skill:MeleeCrossbowPlayer",
+                    "resolution_status": "resolved",
+                }
+            ],
+            "source_case_refs": ["case:tactician-golden"],
+            "safe_evidence_refs": ["safe:tactician-golden"],
+            "class_key": "class:mercenary",
+            "ascendancy_key": "ascendancy:mercenary:tactician",
+        }
+    )
+    accepted = service.propose_deep_research_records(payload)
+    assert accepted["status"] == "accepted", accepted
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        family = con.execute(
+            "SELECT build_family_key FROM research_build_families "
+            "WHERE ascendancy_key = 'ascendancy:mercenary:tactician'"
+        ).fetchone()
+        assert family is not None
+        con.execute(
+            "UPDATE research_build_families SET secondary_skill_keys = ? "
+            "WHERE build_family_key = ?",
+            ('["skill:GalvanicShardsPlayer"]', family["build_family_key"]),
+        )
+        con.commit()
+        family_key = family["build_family_key"]
+    finally:
+        con.close()
+
+    discovered = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:mercenary",
+        ascendancy_key="ascendancy:mercenary:tactician",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+    related = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key="class:mercenary",
+        ascendancy_key="ascendancy:mercenary:tactician",
+        related_skill_key="skill:GalvanicShardsPlayer",
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+    )
+
+    assert [row["buildFamilyKey"] for row in discovered["buildFamilies"]] == [family_key]
+    assert [row["buildFamilyKey"] for row in related["buildFamilies"]] == [family_key]
+    assert related["buildFamilies"][0]["primarySkillKeys"] == ["skill:MeleeCrossbowPlayer"]
+    assert related["familyDiscovery"]["outcome"] != "no_family"
+
+
+def _terminal_compact_family_page(service, *, class_key: str, ascendancy_key: str):
+    raw = service.query_research_memory(
+        "",
+        detail_level="family",
+        class_key=class_key,
+        ascendancy_key=ascendancy_key,
+        game_patch="0.5.4",
+        passive_tree_version="0_5",
+        response_profile="create_compact",
+    )
+    page = service.start_retrieval_session(
+        server_main._compact_create_research_response(raw),
+        response_profile="create_compact",
+        run_ref=None,
+        claim_ref=None,
+    )
+    while not page["retrieval"]["complete"]:
+        page = service.continue_retrieval_session(page["retrieval"]["nextCursor"])
+    return page
+
+
+def test_real_compact_family_terminal_receipt_binds_selected_family(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("POE_BD_CREATE_RUNS_DIR", str(runs))
+    run = create_build.start_generation_run("memory_assisted")
+    service, _record_ids = _seed_family_discovery_service(tmp_path / "memory", 1)
+    page = _terminal_compact_family_page(
+        service,
+        class_key="class:monk",
+        ascendancy_key="ascendancy:monk:martial_artist",
+    )
+    family_key = page["buildFamilies"][0]["buildFamilyKey"]
+    receipt = service.read_query_receipt(page["dedupeQueryRef"])
+    monkeypatch.setattr(
+        create_build.research_memory,
+        "ResearchMemoryService",
+        lambda: service,
+    )
+
+    bound = create_build.record_generation_family_discovery(
+        str(run["runContext"]["runId"]),
+        str(run["runContext"]["runToken"]),
+        page["dedupeQueryRef"],
+        family_key,
+    )
+
+    assert page["retrieval"]["complete"] is True
+    assert receipt["request"]["detailLevel"] == "family"
+    assert receipt["request"]["classKey"] == "class:monk"
+    assert receipt["request"]["ascendancyKey"] == "ascendancy:monk:martial_artist"
+    assert receipt["result"]["familyDiscovery"]["outcome"] != "no_family"
+    assert receipt["result"]["buildFamilies"][0]["buildFamilyKey"] == family_key
+    assert bound["status"] == "recorded"
+    assert bound["selectedFamilyKey"] == family_key
+
+
+def test_real_compact_no_family_terminal_receipt_binds_empty_selection(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("POE_BD_CREATE_RUNS_DIR", str(runs))
+    run = create_build.start_generation_run("memory_assisted")
+    service, _record_ids = _seed_family_discovery_service(tmp_path / "memory", 0)
+    page = _terminal_compact_family_page(
+        service,
+        class_key="class:monk",
+        ascendancy_key="ascendancy:monk:martial_artist",
+    )
+    monkeypatch.setattr(
+        create_build.research_memory,
+        "ResearchMemoryService",
+        lambda: service,
+    )
+
+    bound = create_build.record_generation_family_discovery(
+        str(run["runContext"]["runId"]),
+        str(run["runContext"]["runToken"]),
+        page["dedupeQueryRef"],
+    )
+
+    assert page["familyDiscovery"]["outcome"] == "no_family"
+    assert bound["status"] == "recorded"
+    assert bound["bindingStatus"] == "no_family"
 
 
 def test_family_discovery_never_backfills_wrong_class_patch_or_status(tmp_path):
@@ -3999,9 +4224,18 @@ def test_family_discovery_never_backfills_wrong_class_patch_or_status(tmp_path):
         passive_tree_version="0_5",
     )
 
-    assert len(result["buildFamilies"]) == 1
-    assert result["familyDiscovery"]["coverage"] == "insufficient"
-    assert result["buildFamilies"][0]["primarySkillKey"] == "skill:FamilyDiscovery04"
+    assert len(result["buildFamilies"]) == 2
+    assert result["familyDiscovery"]["coverage"] == "limited"
+    assert {row["primarySkillKey"] for row in result["buildFamilies"]} == {
+        "skill:FamilyDiscovery02",
+        "skill:FamilyDiscovery04",
+    }
+    revalidation = next(
+        row
+        for row in result["buildFamilies"]
+        if row["primarySkillKey"] == "skill:FamilyDiscovery02"
+    )
+    assert revalidation["createEligibility"]["status"] == "needs_revalidation"
 
 
 def _family_deep_payload(
@@ -4287,9 +4521,9 @@ def test_family_identity_revision_removes_unreferenced_old_family(tmp_path):
             )
         con.execute(
             """
-            INSERT INTO research_build_family_evidence(
-                build_family_key, source_case_ref, first_seen_at, last_seen_at
-            ) VALUES (?, 'case:family-revision-history', '2025-01-01T00:00:00Z',
+                INSERT INTO research_build_family_evidence(
+                    knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
+                ) VALUES ('global_seed', ?, 'case:family-revision-history', '2025-01-01T00:00:00Z',
                       '2025-01-02T00:00:00Z')
             """,
             (old_family_key,),
@@ -4417,19 +4651,28 @@ def test_cross_family_duplicate_advisory_for_identical_component_set(tmp_path):
     assert first["createdRecordCount"] == 1
     assert first["recordWrites"][0]["crossFamilyDuplicateAdvisories"] == []
 
-    second = service.propose_deep_research_records(
-        _family_deep_payload(
-            title="投射物覆盖机制链（Deadeye 变体）",
-            group="research:deadeye-safe",
-            sources=("case:deadeye-safe",),
-            ascendancy_key="ascendancy:ranger:deadeye",
-        )
+    second_payload = _family_deep_payload(
+        title="投射物覆盖机制链（Deadeye 变体）",
+        group="research:deadeye-safe",
+        sources=("case:deadeye-safe",),
+        ascendancy_key="ascendancy:ranger:deadeye",
     )
+    preview = service.validate_deep_research_records(second_payload)
+    assert preview["status"] == "accepted"
+    assert preview["duplicateAdvisories"][0]["existingRecordId"] == first["recordIds"][0]
+    second = service.propose_deep_research_records(second_payload)
     assert second["status"] == "accepted"
     assert second["createdRecordCount"] == 1
     advisories = second["recordWrites"][0]["crossFamilyDuplicateAdvisories"]
     assert len(advisories) == 1
-    assert "其他 Build Family" in advisories[0]
+    assert advisories[0]["advisoryType"] == "cross_family_duplicate"
+    assert advisories[0]["advisoryOnly"] is True
+    assert advisories[0]["resolutionRequired"] is False
+    assert advisories[0]["existingRecordId"] == first["recordIds"][0]
+    assert advisories[0]["existingBuildFamilyKey"] == first["buildFamilyKeys"][0]
+    assert advisories[0]["candidateBuildFamilyKey"] == second["buildFamilyKeys"][0]
+    assert advisories[0]["matchReason"]["recordKind"] == first["recordWrites"][0]["recordKind"]
+    assert advisories[0]["fieldDifferences"]
 
 
 def test_persist_adopts_drifted_anchor_row_by_record_id(tmp_path):
@@ -4952,10 +5195,10 @@ def test_query_matches_multi_primary_family_by_any_primary_key(tmp_path):
         )
         con.execute(
             """
-            INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
-                primary_skill_keys, evidence_count, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                INSERT INTO research_build_families(
+                    knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                    primary_skill_keys, evidence_count, created_at, last_seen_at
+                ) VALUES ('global_seed', ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 "bf-multi-primary",

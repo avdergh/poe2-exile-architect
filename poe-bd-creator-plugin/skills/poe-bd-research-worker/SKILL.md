@@ -37,14 +37,16 @@ discovery；缺失时返回 safe failure，不搜索仓库、不解析插件路�
 
 ## Research Quality And Evidence
 
-- 研究质量优先于速度和上下文预算。必须完整读取全部要求的分区并盘点每个启用技能组；Family
-  主技能、核心副技能和结论依赖的高影响组保存精确 support 归属。低影响、内部 ID、multi-active
-  或无法唯一解析的组可保留为 caveat/verification task，但不得静默丢弃或机械否定整个案例。
+- 研究质量优先于速度和上下文预算。必须完整读取全部要求的分区并盘点每个启用技能容器；Family
+  主技能、核心副技能和结论依赖的高影响容器保存根技能与 socketed items。每个启用容器都必须写一条
+  `sourceSkillGroupReviews`，明确研究处置、辅助处置、受影响记录和简短原因；真实
+  `source_coverage_gap` 保持 partial，不能伪装 clean。低影响、内部 ID 或无法唯一解析的组可保留为
+  `needs_followup`/caveat，但不得静默丢弃或机械否定整个案例。
 - 技能、天赋和装备效果必须来自当前案例证据或 typed 工具事实。允许保留有价值的推断，但必须明确
   标为推断，不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实。
 - PoB 字段语义：`enableGlobal1` / `enableGlobal2` 是单颗 gem 的 granted-effect 开关，绝不是
   武器组标志；`weaponSetScope` 才是技能组级字段，取值为 `global` / `weapon_set_1` /
-  `weapon_set_2`。不得根据任一 gem 的 global-effect 开关推断武器切换、轮转状态或 support 归属。
+  `weapon_set_2`。不得根据任一 gem 的 global-effect 开关推断武器切换、轮转状态或插槽关系。
 - 重建并分别记录：主/副伤害技能及其 supports 和触发/生成-兑现关系；可执行轮转、爆发窗口及
   无小怪/Boss 变体；装备槽职责、暗金必要性、黄装替代和机会成本；核心天赋、升华、珠宝与武器组
   局部结构；资源闭环、防御层、失效条件及 PoB/Judge 不可建模部分。不要只复述属性共现或“仍需验证”。
@@ -70,9 +72,11 @@ discovery；缺失时返回 safe failure，不搜索仓库、不解析插件路�
    `nextCursor` 续页，不能用 `cursor+limit` 自行计算；字符预算截断会使实际返回条数小于 limit，
    自算会跳过中间证据。先独立重建案例，再查询 Research Memory，并通过
    `search_graph_components` → `resolve_graph_component` 确认 stable key。
-   Family 首次身份宽查固定用 `detail_level="summary" + response_profile="create_compact"`，并检查
+   Research 比较固定使用 `response_profile="full"`；`create_compact` 是 Create 专用的单案例授权
+   通道，会主动选择一条 `(knowledgeScope, sourceCaseRef)` lane，不能用来判断跨案例共有知识。
+   Family 首次身份宽查用 `detail_level="summary" + response_profile="full"`，并检查
    `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog`；选定 Family 后按 index 返回的
-   `record_ids` 使用 `detail_level="record" + response_profile="create_compact"` 精确深读，直到关键
+   `record_ids` 使用 `detail_level="record" + response_profile="full"` 精确深读，直到关键
    premise、失败条件和验证任务闭合，不设固定深读额度。Family 查询用
    `primary_skill_key=skill:/gem:`；`build_family_keys` 只接收查询已返回的 `bf-...`，未知时省略，禁止
    把技能 key 填进去。
@@ -90,7 +94,20 @@ discovery；缺失时返回 safe failure，不搜索仓库、不解析插件路�
 
 4. 以同一 `run_ref + lease_token` 调用 `initialize_research_review` 获取骨架。`already_exists`
    表示返回既有安全对象，不得清空重建。
-   在模型工作状态中补全 review，不写文件。
+   在模型工作状态中补全 review，不写文件。按 review contract 的 v3 模板处理：
+   - `supportPackages` 从 `skill-groups` 分区复制精确 `sourceGroupRef`、`rootSkillRef`，并让
+     `supportKeys` 与 `socketedItemRefs` 按相同顺序逐项对应；`skillKey` 是根技能，`supportKeys` 是
+     实际插在该根技能插槽中的辅助，`deliveryRole` 只填 `direct`。同一种辅助出现在不同根技能下时，
+     使用各自的 `socketedItemRef` 表明它们是不同物理实例；不得把同一实例重复绑定。socketed active
+     payload 与 host/payload 机制通过组件角色和机制记录表达，不得把 PoB 计算影响对象改写成物理插槽
+     归属；schema2 的任何记录只要结构化列出 resolved support，就必须把这些 support 各自放入一个真实
+     根技能包；`sourceGroupRef`、`rootSkillRef`、`socketedItemRefs` 只用于当前 lease 验收，不进入
+     durable identity；
+   - 装备正文型记录用 canonical `gearSubjects` 区分槽位/珠宝主题；
+   - 每条 durable record 明确 `sourceStateScope`，副武器/未知状态不能写成 active 常驻收益；
+   - 阅读 `pob-readback` 分区并填写 `pobReadbackAudit`；`reviewed/unmodelled` 必须原样填写该分区的
+     `snapshotRef`，`unavailable` 必须对应分区真实状态；只把 active snapshot 的安全资源/防御读回
+     当作当前 case evidence，不外推为 Family 通用数值。
 
 5. 调用
    `validate_research_review(run_ref=<runRef>, lease_token=<leaseToken>, review=<review>)`。
@@ -108,11 +125,12 @@ discovery；缺失时返回 safe failure，不搜索仓库、不解析插件路�
    deferred/unresolved/coverage gap/failure 都保留
    完整诊断；只有 clean validation/accept 才可使用 compact 摘要。不要把 validation/retry 当成新案例。
    不可恢复的 runtime 错误停止当前 Worker，保留 runRef/lease 状态并返回 safe failure。
-   `review_contract_upgrade_required` 发生在 queue CAS 前，案例仍是 claimed：补齐 v2 对象后用同一
+   `review_contract_upgrade_required` 发生在 queue CAS 前，案例仍是 claimed：把旧对象升级为 v3
+   并补齐新增字段后，用同一
    lease 重新 validate 并调用普通 accept，不能改走只处理 rejected 案例的 retry。
 
 7. claim 成功后的任何结束路径都返回 `sampleId + safe outcome`；accepted 时附 safe acceptance 摘要，
-   至少包含 acceptanceMode、created/updated/evidence counts、semantic edge count、deferred reasons、
+   至少包含 `writeReceiptRef`、acceptanceMode、created/updated/evidence counts、semantic edge count、deferred reasons、
    unresolved mention/unique component counts 和 mechanic/unique-gem diagnostics。不得输出 raw material。
 
 ## Supplemental Checks

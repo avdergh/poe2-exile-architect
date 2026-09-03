@@ -57,3 +57,17 @@ def normalize_skill_text(text: str, *, default_level: int | None = 20) -> str:
         else:
             out.append(line)
     return "\n".join(out)
+
+
+def requested_gem_names(text: str) -> list[str]:
+    """Return gem names requested by one normalized socket-group text."""
+
+    names: list[str] = []
+    for line in normalize_skill_text(text, default_level=None).splitlines():
+        value = line.strip()
+        if not value or _HEADER.match(value):
+            continue
+        value = re.sub(r"\s+\d+/\d+(?:\s+\S+)?\s*$", "", value).strip()
+        if value:
+            names.append(value)
+    return names

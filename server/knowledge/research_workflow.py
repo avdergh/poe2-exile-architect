@@ -296,15 +296,16 @@ def accept_review(
     review: dict[str, Any],
 ) -> dict[str, Any]:
     run_dir = _run_dir(run_ref)
-    research_mature_builds.save_review_payload(
+    saved = research_mature_builds.save_review_payload(
         output_dir=run_dir,
         lease_token=lease_token,
         review_payload=review,
+        _allow_accept_recovery=True,
     )
     result = research_mature_builds.accept_case(
         output_dir=run_dir,
         lease_token=lease_token,
-        review_file=_lease_review_path(run_dir, lease_token),
+        review_file=run_dir / str(saved["reviewFile"]),
         memory_db_path=paths.mature_learning_path(),
     )
     if research_mature_builds._should_compact_report(result):

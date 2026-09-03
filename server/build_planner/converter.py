@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from server import paths
+from server.compute import completeness
 from server.runtime.node import resolve_node_executable
 
 
@@ -21,6 +22,10 @@ MINIMUM_NODE_MAJOR = 20
 NODE_PROBE_TIMEOUT_SECONDS = 15
 _ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _GEM_RE = re.compile(r"^Metadata/Items/Gems?/")
+_SOCKET_GUIDANCE_RE = re.compile(
+    r"^\s*(?:<gold>\{)?Sockets:\s*(\d+)\}?\s*$",
+    re.IGNORECASE,
+)
 _INVENTORY_IDS = {
     "Weapon1",
     "Offhand1",
@@ -35,6 +40,25 @@ _INVENTORY_IDS = {
     "Ring2",
     "Belt1",
     "Flask1",
+}
+_SLOT_MAP = {
+    "Weapon 1": ("Weapon1", 0),
+    "Weapon 2": ("Offhand1", 0),
+    "Weapon 1 Swap": ("Weapon2", 0),
+    "Weapon 2 Swap": ("Offhand2", 0),
+    "Helmet": ("Helm1", 0),
+    "Body Armour": ("BodyArmour1", 0),
+    "Gloves": ("Gloves1", 0),
+    "Boots": ("Boots1", 0),
+    "Amulet": ("Amulet1", 0),
+    "Ring 1": ("Ring1", 0),
+    "Ring 2": ("Ring2", 0),
+    "Belt": ("Belt1", 0),
+    "Flask 1": ("Flask1", 0),
+    "Flask 2": ("Flask1", 1),
+    "Charm 1": ("Flask1", 2),
+    "Charm 2": ("Flask1", 3),
+    "Charm 3": ("Flask1", 4),
 }
 
 
@@ -147,6 +171,23 @@ def convert_pob_xml(
     stats = payload.get("stats")
     if not isinstance(build, dict) or not isinstance(warnings, list) or not isinstance(stats, dict):
         return _conversion_error("converter_protocol_error", marker)
+    _prepend_socket_guidance(xml, build)
+    if not any(
+        isinstance(warning, dict) and warning.get("code") == "build-planner-guidance-only"
+        for warning in warnings
+    ):
+        warnings = [
+            *warnings,
+            {
+                "level": "info",
+                "code": "build-planner-guidance-only",
+                "message": (
+                    "Rare/Magic gear, equipment sockets, Rune/Soul Core choices, and passive-tree "
+                    "jewels are shown as Build Planner guidance text; the exported PoB XML/import "
+                    "code remains authoritative."
+                ),
+            },
+        ]
     normalized_warnings = _normalize_warnings(warnings)
     if normalized_warnings is None:
         return _conversion_error("converter_protocol_error", marker)
@@ -165,6 +206,49 @@ def convert_pob_xml(
             "errors": validation_errors,
         },
     }
+
+
+def _prepend_socket_guidance(xml: str, build: dict[str, Any]) -> int:
+    """Make source PoB socket counts visible without inventing unsupported `.build` fields."""
+
+    gear = completeness.equipped_item_metadata(xml)
+    inventory = build.get("inventory_slots")
+    if not isinstance(inventory, list):
+        return 0
+    by_slot: dict[tuple[str, int], dict[str, Any]] = {}
+    for entry in inventory:
+        if not isinstance(entry, dict):
+            continue
+        inventory_id = entry.get("inventory_id")
+        slot_x = entry.get("slot_x", 0)
+        if slot_x is None:
+            slot_x = 0
+        if (
+            isinstance(inventory_id, str)
+            and isinstance(slot_x, int)
+            and not isinstance(slot_x, bool)
+            and slot_x >= 0
+        ):
+            by_slot[(inventory_id, slot_x)] = entry
+    changed = 0
+    for slot, item in gear.items():
+        if not isinstance(item, dict) or int(item.get("runeSockets") or 0) <= 0:
+            continue
+        target = _SLOT_MAP.get(str(slot))
+        entry = by_slot.get(target) if target is not None else None
+        if entry is None:
+            continue
+        existing = str(entry.get("additional_text") or "")
+        count = int(item.get("runeSockets") or 0)
+        desired = f"<gold>{{Sockets: {count}}}"
+        lines = existing.splitlines()
+        if lines and lines[0].strip() == desired:
+            continue
+        remaining = [line for line in lines if _SOCKET_GUIDANCE_RE.fullmatch(line) is None]
+        remaining_text = "\n".join(remaining)
+        entry["additional_text"] = desired + (f"\n{remaining_text}" if remaining_text else "")
+        changed += 1
+    return changed
 
 
 def validate_single_stage_build(build: dict[str, Any]) -> list[str]:
@@ -233,6 +317,14 @@ def validate_single_stage_build(build: dict[str, Any]) -> list[str]:
         if not isinstance(item, dict) or item.get("inventory_id") not in _INVENTORY_IDS:
             errors.append("invalid_inventory_id")
             break
+        for key in ("slot_x", "slot_y"):
+            coordinate = item.get(key)
+            if coordinate is not None and (
+                not isinstance(coordinate, int)
+                or isinstance(coordinate, bool)
+                or coordinate < 0
+            ):
+                errors.append(f"invalid_inventory_{key}")
     return sorted(set(errors))
 
 

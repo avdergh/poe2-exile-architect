@@ -396,7 +396,6 @@ def _default_gates() -> list[dict[str, Any]]:
             required_checks={
                 "resists_capped": True,
                 "sustain_ok": True,
-                "pob_model_supported": True,
             },
         ),
         make_transition_gate(
@@ -405,7 +404,8 @@ def _default_gates() -> list[dict[str, Any]]:
             required_level=90,
             required_checks={"core_threshold_met": True, "upgrade_budget_ready": True},
             caveats=[
-                "Do not switch if the endgame mechanic is unmodelled or still missing its key item."
+                "Do not switch while the key item or game-mechanic evidence is still missing; PoB "
+                "modelability alone is not a transition gate."
             ],
         ),
     ]
@@ -668,7 +668,6 @@ def _stage_plan(
             "resists_capped",
             "basic_defense_online",
             "sustain_ok",
-            "pob_model_supported",
         ],
         "risks": [transition_note],
         "cohortHints": cohort_hints,
@@ -996,7 +995,7 @@ def _source_gate_checks(to_stage: str) -> dict[str, Any]:
     if to_stage == "maps_entry":
         return {"resists_capped": True, "basic_defense_online": True}
     if to_stage == "endgame_budget":
-        return {"resists_capped": True, "sustain_ok": True, "pob_model_supported": True}
+        return {"resists_capped": True, "sustain_ok": True}
     if to_stage == "endgame_final":
         return {"core_threshold_met": True, "upgrade_budget_ready": True}
     return {}
@@ -1274,21 +1273,23 @@ def promote_technique_memory(
 def current_compatibility_claim() -> dict[str, Any]:
     """Best-effort latest local compatibility claim for patch-scoping memories.
 
-    User-data installed metadata wins because it describes the runtime that path resolution will
-    actually prefer after self-update. Bundled compatibility is only the development fallback.
+    User-data metadata is authoritative only when the complete compatible user PoB runtime pair is
+    actually selected.  An old ignored user runtime must not make a bundled engine claim the wrong
+    patch or passive tree.
     """
-    installed_path = paths.user_data_dir() / "installed.json"
-    try:
-        installed = json.loads(installed_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        installed = {}
-    if installed.get("game_patch") or installed.get("passive_tree"):
-        return {
-            "commit": installed.get("pob_commit"),
-            "game_patch": installed.get("game_patch"),
-            "passive_tree": installed.get("passive_tree"),
-            "source": "installed-runtime",
-        }
+    if paths.pob_runtime_pair().source == "user-data":
+        installed_path = paths.user_data_dir() / "installed.json"
+        try:
+            installed = json.loads(installed_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            installed = {}
+        if installed.get("game_patch") or installed.get("passive_tree"):
+            return {
+                "commit": installed.get("pob_commit"),
+                "game_patch": installed.get("game_patch"),
+                "passive_tree": installed.get("passive_tree"),
+                "source": "installed-runtime",
+            }
 
     p = paths.BUNDLE_ROOT / "data" / "compatibility" / "pob.json"
     try:

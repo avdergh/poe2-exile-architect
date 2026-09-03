@@ -24,7 +24,7 @@ from server.knowledge import copy_safety
 from . import artifacts, models
 
 
-LIFECYCLE_RECEIPT_SCHEMA_VERSION = 1
+LIFECYCLE_RECEIPT_SCHEMA_VERSION = 2
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:\-]{1,240}$")
 _LIFECYCLE_STAGES = {
     "campaign_early",
@@ -36,8 +36,14 @@ _LIFECYCLE_STAGES = {
 }
 
 
+class LifecycleObservationTarget(models.StrictModel):
+    group_index: int = Field(ge=1)
+    active_index: int = Field(ge=1)
+    skill_name: str = Field(min_length=1, max_length=160)
+
+
 class ArtifactLifecycleReceipt(models.StrictModel):
-    schema_version: Literal[1] = LIFECYCLE_RECEIPT_SCHEMA_VERSION
+    schema_version: Literal[2] = LIFECYCLE_RECEIPT_SCHEMA_VERSION
     verification_ref: str = Field(pattern=r"^lifecycle-verification:[a-f0-9]{16}$")
     artifact_id: str = Field(pattern=r"^final-build:[A-Za-z0-9\-]{3,100}$")
     source_hash: str = Field(min_length=1, max_length=120)
@@ -45,10 +51,12 @@ class ArtifactLifecycleReceipt(models.StrictModel):
     stage: str = Field(min_length=1, max_length=80)
     status: Literal["passed", "failed", "unknown"]
     passed: bool = Field(validation_alias="pass", serialization_alias="pass")
+    verification_required: bool = False
     failed_checks: list[str] = Field(default_factory=list, max_length=24)
     unknown_checks: list[str] = Field(default_factory=list, max_length=24)
     caveats: list[str] = Field(default_factory=list, max_length=12)
     evidence_tags: list[str] = Field(default_factory=list, max_length=8)
+    observation_target: LifecycleObservationTarget
     build_id: str | None = Field(default=None, max_length=120)
     created_at: str
     artifact_bound: Literal[True] = True
@@ -102,6 +110,15 @@ def save_artifact_lifecycle_receipt(
     selected = _select_result(result)
     if selected is None or selected["evaluatedSourceHash"] != source_hash:
         return models.rejected("invalid_artifact_lifecycle_result")
+    verified = artifacts.read_final_build_artifact_for_export(artifact_id)
+    if verified is None:
+        return models.rejected("invalid_artifact_lifecycle_result")
+    manifest, _xml = verified
+    if (
+        manifest.source_hash != source_hash
+        or _manifest_observation_target(manifest) != selected["observationTarget"]
+    ):
+        return models.rejected("artifact_lifecycle_observation_target_mismatch")
     verification_ref = _verification_ref(
         artifact_id=artifact_id,
         source_hash=source_hash,
@@ -117,10 +134,12 @@ def save_artifact_lifecycle_receipt(
             stage=selected["stage"],
             status=selected["status"],
             passed=selected["pass"],
+            verification_required=selected["verificationRequired"],
             failed_checks=selected["failedChecks"],
             unknown_checks=selected["unknownChecks"],
             caveats=selected["caveats"],
             evidence_tags=selected["evidenceTags"],
+            observation_target=selected["observationTarget"],
             build_id=selected["buildId"],
             created_at=datetime.now(timezone.utc).isoformat(),
             artifact_bound=True,
@@ -153,6 +172,7 @@ def save_artifact_lifecycle_receipt(
         "artifactId": artifact_id,
         "evaluatedSourceHash": source_hash,
         "restoredEngineSourceHash": restored_engine_source_hash,
+        "observationTarget": selected["observationTarget"],
         "artifactBound": True,
         "containsRawPob": False,
     }
@@ -192,12 +212,16 @@ def read_trusted_artifact_lifecycle_receipt(
                 "stage": receipt.stage,
                 "status": receipt.status,
                 "pass": receipt.passed,
+                "verificationRequired": receipt.verification_required,
                 "failedChecks": receipt.failed_checks,
                 "unknownChecks": receipt.unknown_checks,
                 "caveats": receipt.caveats,
                 "evidenceTags": receipt.evidence_tags,
                 "evaluatedSourceHash": receipt.source_hash,
                 "buildId": receipt.build_id,
+                "observationTarget": receipt.observation_target.model_dump(
+                    mode="json", by_alias=True
+                ),
             },
         )
     ):
@@ -206,7 +230,13 @@ def read_trusted_artifact_lifecycle_receipt(
     if verified is None:
         return None
     manifest, _xml = verified
-    if manifest.source_hash != receipt.source_hash:
+    judge_target = _manifest_observation_target(manifest)
+    if (
+        manifest.source_hash != receipt.source_hash
+        or judge_target is None
+        or judge_target
+        != receipt.observation_target.model_dump(mode="json", by_alias=True)
+    ):
         return None
     return receipt.model_dump(mode="json", by_alias=True)
 
@@ -241,6 +271,8 @@ def _select_result(result: dict[str, Any]) -> dict[str, Any] | None:
     evidence = tokens("evidenceTags", 8)
     caveats = result.get("caveats", [])
     build_id = result.get("buildId")
+    verification_required = result.get("verificationRequired", False)
+    observation_target = result.get("observationTarget")
     if (
         failed is None
         or unknown is None
@@ -249,19 +281,54 @@ def _select_result(result: dict[str, Any]) -> dict[str, Any] | None:
         or len(caveats) > 12
         or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in caveats)
         or (build_id is not None and not isinstance(build_id, str))
+        or not isinstance(verification_required, bool)
+        or not isinstance(observation_target, dict)
     ):
+        return None
+    try:
+        target = LifecycleObservationTarget.model_validate(observation_target)
+    except ValueError:
         return None
     return {
         "stage": stage,
         "status": status,
         "pass": passed,
+        "verificationRequired": verification_required,
         "failedChecks": failed,
         "unknownChecks": unknown,
         "caveats": list(caveats),
         "evidenceTags": evidence,
         "evaluatedSourceHash": source_hash,
         "buildId": build_id,
+        "observationTarget": target.model_dump(mode="json", by_alias=True),
     }
+
+
+def _manifest_observation_target(manifest: Any) -> dict[str, Any] | None:
+    judge = getattr(manifest, "judge_report", None)
+    context = getattr(judge, "calculation_context", None)
+    if context is None:
+        return None
+    dump = getattr(context, "model_dump", None)
+    payload = dump(mode="json", by_alias=True) if callable(dump) else context
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return LifecycleObservationTarget.model_validate(payload).model_dump(
+            mode="json", by_alias=True
+        )
+    except ValueError:
+        # Judge context includes sourceMetric; lifecycle identity intentionally binds only the
+        # group, active index and skill name.
+        selected = {
+            key: payload.get(key) for key in ("groupIndex", "activeIndex", "skillName")
+        }
+        try:
+            return LifecycleObservationTarget.model_validate(selected).model_dump(
+                mode="json", by_alias=True
+            )
+        except ValueError:
+            return None
 
 
 def _read_path(path: Path) -> dict[str, Any] | None:

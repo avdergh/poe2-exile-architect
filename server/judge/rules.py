@@ -9,6 +9,7 @@ MAX_SUPPORTS_PER_SKILL_V1 = 5
 ENDGAME_RESISTANCE_MIN_LEVEL = 80
 ENDGAME_ELEMENTAL_RESISTANCE_MINIMUM = 60.0
 ENDGAME_CHAOS_RESISTANCE_MINIMUM = 30.0
+SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD = 0.80
 
 CLASS_ASCENDANCY_PAIRS_V1: dict[str, set[str]] = {
     "Ranger": {"Deadeye", "Pathfinder"},
@@ -24,7 +25,6 @@ CLASS_ASCENDANCY_PAIRS_V1: dict[str, set[str]] = {
 DEFAULT_KNOWN_SUPPORTS_V1 = {
     "Arcane Tempo",
     "Brutality",
-    "Cast on Critical",
     "Controlled Destruction",
     "Considered Casting",
     "Concentrated Effect",
@@ -42,6 +42,52 @@ DEFAULT_KNOWN_SUPPORTS_V1 = {
     "Scattershot",
     "Unleash",
     "Wildshards",
+}
+
+# PoE2 meta/invocation hosts intentionally share a socket group with one or more payload active
+# skills. Treating every multi-active group as malformed silently rewrites valid in-game builds to
+# fit PoB's simpler calculation model. This list is a structural legality allow-list only; it does
+# not claim that PoB can calculate the host's trigger rate or the payload's true damage.
+META_SKILL_HOSTS_V1 = {
+    "Ancestral Warrior Totem",
+    "Animus Splinters",
+    "Cast on Critical",
+    "Cast on Block",
+    "Cast on Charm Use",
+    "Cast on Death",
+    "Cast on Dodge",
+    "Cast on Elemental Ailment",
+    "Cast on Freeze",
+    "Cast on Ignite",
+    "Cast on Melee Kill",
+    "Cast on Melee Stun",
+    "Cast on Minion Death",
+    "Cast on Shock",
+    "Cast when Damage Taken",
+    "Cast when Stunned",
+    "Cast while Channelling",
+    "Barrier Invocation",
+    "Blasphemy",
+    "Called Shots",
+    "Curse on Block",
+    "Demon Magus",
+    "Elemental Invocation",
+    "Feral Invocation",
+    "Ferocious Roar",
+    "Fire Spell on Hit",
+    "Hand of Chayula",
+    "Hollow Form",
+    "Hydra Familiar",
+    "Mirage Archer",
+    "Mirage Deadeye",
+    "Mortar Cannon",
+    "Pounce",
+    "Reaper's Invocation",
+    "Spell Totem",
+    "Spellslinger",
+    "Spirit Vessel",
+    "Summon Companion",
+    "Thundergod's Wrath",
 }
 
 PHYSICAL_INVALID_FAILURES = {
@@ -205,6 +251,8 @@ def check_class_ascendancy(
 
 
 def _is_support(gem: dict[str, Any], known_supports: set[str]) -> bool:
+    if str(gem.get("name") or "").strip() in META_SKILL_HOSTS_V1:
+        return False
     if "isSupport" in gem:
         return bool(gem.get("isSupport"))
     name = str(gem.get("name") or "")
@@ -227,9 +275,11 @@ def check_main_skill_group(
 
     active = [g for g in gems if not _is_support(g, known)]
     supports = [g for g in gems if _is_support(g, known)]
-    if len(active) != 1 and strict_active_skill_count:
+    active_names = [str(g.get("name") or "").strip() for g in active]
+    valid_active_composition = is_valid_active_skill_group(active_names)
+    if not valid_active_composition and strict_active_skill_count:
         failures.append("invalid_socket_setup")
-    elif len(active) != 1:
+    elif not valid_active_composition:
         caveats.append("external_multi_active_socket_group_caveat")
     if len(supports) > MAX_SUPPORTS_PER_SKILL_V1:
         failures.append("support_limit_exceeded")
@@ -242,6 +292,20 @@ def check_main_skill_group(
         failures.append("invalid_support_gem")
 
     return _dedupe(failures), caveats
+
+
+def is_valid_active_skill_group(active_names: list[str] | tuple[str, ...] | None) -> bool:
+    """Accept one ordinary active or one current payload host plus its socketed active(s).
+
+    This checks the socket-group shape only, not every host-to-payload tag restriction. PoB
+    modelability is reported separately and must never be used to delete a valid composition.
+    """
+
+    names = [str(name).strip() for name in (active_names or []) if str(name).strip()]
+    if len(names) == 1:
+        return True
+    hosts = [name for name in names if name in META_SKILL_HOSTS_V1]
+    return len(names) >= 2 and len(hosts) == 1
 
 
 def check_weapon_skill_compatibility(check: dict[str, Any] | None) -> dict[str, Any]:

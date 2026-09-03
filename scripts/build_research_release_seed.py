@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server.knowledge import mature_learning  # noqa: E402
+from server.knowledge import mature_learning, research_memory  # noqa: E402
 
 
 DEFAULT_SOURCE = mature_learning.mature_learning_path()
@@ -32,6 +32,8 @@ _OPERATIONAL_TABLES = (
     "technique_edges",
     "research_rejected_proposals",
     "research_dedupe_queries",
+    "research_query_sessions",
+    "research_record_write_receipts",
     "research_revalidation_events",
     "research_decay_events",
 )
@@ -97,6 +99,7 @@ def _backup_database(source: Path, target: Path) -> None:
 
 def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
     with closing(sqlite3.connect(path)) as con:
+        con.row_factory = sqlite3.Row
         if mature_learning.schema_version(con) != mature_learning.SCHEMA_VERSION:
             raise ValueError("Research Memory source schema does not match the release runtime")
         con.execute("PRAGMA foreign_keys = OFF")
@@ -104,54 +107,117 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
             con.execute(f"DELETE FROM {table}")
         safe_scope = (
             "visibility = 'creator_visible' AND split = 'train_context' "
-            "AND knowledge_scope IN ('global_seed', 'local_user') "
+            "AND knowledge_scope = 'global_seed' "
             "AND copy_safety_state = 'passed'"
         )
         for table in _SCOPED_TABLES:
             predicate = safe_scope
             if table != "research_build_design_observations":
                 predicate += " AND status = 'valid'"
+            if table == "deep_research_records":
+                predicate += (
+                    " AND record_schema_version = 2 AND projection_hash IS NOT NULL "
+                    "AND source_state_scope IN ('active_state', 'state_agnostic') "
+                    "AND COALESCE(json_extract(typed_payload, '$.availability'), 'standard') = 'standard'"
+                )
             con.execute(f"DELETE FROM {table} WHERE NOT ({predicate})")
+        con.execute("DELETE FROM research_source_provenance WHERE knowledge_scope <> 'global_seed'")
+        con.execute(
+            """
+            DELETE FROM deep_research_records
+            WHERE knowledge_scope = 'global_seed'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM deep_research_record_evidence AS evidence
+                  JOIN research_source_provenance AS provenance
+                    ON provenance.source_case_ref = evidence.source_case_ref
+                   AND provenance.knowledge_scope = evidence.knowledge_scope
+                  JOIN research_build_families AS family
+                    ON family.knowledge_scope = deep_research_records.knowledge_scope
+                   AND family.build_family_key = deep_research_records.build_family_key
+                  WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope
+                    AND evidence.knowledge_key = deep_research_records.knowledge_key
+                    AND evidence.accepted_projection_hash = deep_research_records.projection_hash
+                    AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
+              )
+            """
+        )
         con.execute(
             """
             DELETE FROM research_fragment_evidence
             WHERE fragment_id NOT IN (SELECT fragment_id FROM research_fragments)
                OR visibility <> 'creator_visible'
                OR split <> 'train_context'
-               OR knowledge_scope NOT IN ('global_seed', 'local_user')
+               OR knowledge_scope <> 'global_seed'
             """
         )
         con.execute(
             """
             DELETE FROM deep_research_record_evidence
-            WHERE knowledge_key NOT IN (
-                SELECT knowledge_key FROM deep_research_records WHERE knowledge_key IS NOT NULL
-            )
+            WHERE knowledge_scope <> 'global_seed'
+               OR NOT EXISTS (
+                    SELECT 1 FROM deep_research_records AS record
+                    WHERE record.knowledge_scope = deep_research_record_evidence.knowledge_scope
+                      AND record.knowledge_key = deep_research_record_evidence.knowledge_key
+                      AND record.status = 'valid'
+                      AND record.superseded_by_id IS NULL
+                      AND record.projection_hash =
+                          deep_research_record_evidence.accepted_projection_hash
+               )
+               OR source_state_scope NOT IN ('active_state', 'state_agnostic')
+               OR NOT EXISTS (
+                    SELECT 1 FROM research_source_provenance AS provenance
+                    WHERE provenance.source_case_ref =
+                          deep_research_record_evidence.source_case_ref
+                      AND provenance.knowledge_scope =
+                          deep_research_record_evidence.knowledge_scope
+               )
             """
         )
         con.execute(
             """
             DELETE FROM research_build_family_evidence
-            WHERE build_family_key NOT IN (
-                SELECT DISTINCT build_family_key
-                FROM deep_research_records
-                WHERE build_family_key IS NOT NULL
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM deep_research_records AS record
+                JOIN deep_research_record_evidence AS record_evidence
+                  ON record_evidence.knowledge_scope = record.knowledge_scope
+                 AND record_evidence.knowledge_key = record.knowledge_key
+                WHERE record.build_family_key = research_build_family_evidence.build_family_key
+                  AND record.knowledge_scope = research_build_family_evidence.knowledge_scope
+                  AND record_evidence.source_case_ref =
+                      research_build_family_evidence.source_case_ref
+                  AND record.knowledge_scope = 'global_seed'
+                  AND record.status = 'valid'
+                  AND record.superseded_by_id IS NULL
             )
             """
         )
         con.execute(
             """
             DELETE FROM research_build_families
-            WHERE build_family_key NOT IN (
-                SELECT DISTINCT build_family_key
-                FROM deep_research_records
-                WHERE build_family_key IS NOT NULL
+            WHERE NOT EXISTS (
+                SELECT 1 FROM deep_research_records AS record
+                WHERE record.knowledge_scope = research_build_families.knowledge_scope
+                  AND record.build_family_key = research_build_families.build_family_key
             )
             """
         )
         con.execute(
-            "DELETE FROM meta WHERE key NOT IN ('schema_version', 'phase4_build_family_backfill_version')"
+            """
+            UPDATE research_build_families
+            SET evidence_count = (
+                SELECT count(*) FROM research_build_family_evidence AS evidence
+                WHERE evidence.knowledge_scope = research_build_families.knowledge_scope
+                  AND evidence.build_family_key = research_build_families.build_family_key
+            )
+            """
         )
+        research_memory.ResearchMemoryService._reconcile_build_family_secondary_skill_keys(
+            con,
+            knowledge_scope="global_seed",
+        )
+        con.execute("DELETE FROM meta WHERE key <> 'schema_version'")
         now = datetime.now(timezone.utc).isoformat()
         for key, value in (
             ("release_seed_kind", mature_learning.RELEASE_SEED_KIND),
@@ -194,8 +260,6 @@ def _validate_seed(path: Path) -> dict[str, Any]:
                 )
             },
         }
-    if counts["familyCount"] < 1 or counts["recordCount"] < 1:
-        raise ValueError("Research release seed contains no usable Family knowledge")
     return counts
 
 

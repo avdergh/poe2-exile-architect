@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from server import main
-from server.compute import mutation_batch, passiveopt, skillgroups
+from server.compute import completeness, equipment, mutation_batch, passiveopt, skillgroups
 from server.compute.engine import PobEngineError
 from server.compute.state import build_state_hash
 
@@ -80,10 +80,9 @@ def test_functional_mutation_batches_chain_and_rollback_on_real_engine(engine):
             ),
             mutation_batch.BuildMutationOperation(
                 operation="equip_item",
-                raw=(
-                    "Rarity: Rare\nTransaction Staff\nSteelpoint Quarterstaff\n"
-                    "Item Level: 20\n120% increased Physical Damage"
-                ),
+                    raw=(
+                        "Rarity: Normal\nSteelpoint Quarterstaff\nItem Level: 20"
+                    ),
                 slot="Weapon 1",
             ),
         ],
@@ -144,8 +143,68 @@ def test_public_batch_equip_rolls_back_unverified_special_source_item(engine):
 
     assert result["ok"] is False
     assert result["rolledBack"] is True
-    assert result["errorCode"] == "item_legality_check_failed"
+    assert result["errorCode"] == "special_source_provenance_required"
     assert build_state_hash(engine.get_xml()) == before_hash
+
+
+def test_verified_equip_clears_inherited_rune_from_same_slot(engine):
+    engine.new_build()
+    old = (
+        "Rarity: Rare\nOld Rune Staff\nSteelpoint Quarterstaff\n"
+        "Item Level: 80\nSockets: S\nRune: Iron Rune\nImplicits: 1\n"
+        "{rune}+20 to Armour\n120% increased Physical Damage"
+    )
+    plain = (
+        "Rarity: Rare\nPlain Staff\nSteelpoint Quarterstaff\n"
+        "Item Level: 80\n120% increased Physical Damage"
+    )
+    assert engine.add_item(old, slot="Weapon 1")["ok"] is True
+
+    result = equipment.equip_item_verified(
+        engine,
+        raw=plain,
+        slot="Weapon 1",
+        craft_receipt_ref=None,
+    )
+
+    assert result["ok"] is True
+    assert result["readbackVerified"] is True
+    actual = completeness.equipped_item_text(engine.get_xml(), "Weapon 1") or ""
+    assert "Rune:" not in actual
+    assert "{rune}" not in actual
+
+
+def test_batch_equip_clears_inherited_rune_from_same_slot(engine):
+    engine.new_build()
+    old = (
+        "Rarity: Rare\nOld Rune Staff\nSteelpoint Quarterstaff\n"
+        "Item Level: 80\nSockets: S\nRune: Iron Rune\nImplicits: 1\n"
+        "{rune}+20 to Armour\n120% increased Physical Damage"
+    )
+    plain = (
+        "Rarity: Rare\nPlain Staff\nSteelpoint Quarterstaff\n"
+        "Item Level: 80\n120% increased Physical Damage"
+    )
+    assert engine.add_item(old, slot="Weapon 1")["ok"] is True
+    before = build_state_hash(engine.get_xml())
+
+    result = mutation_batch.apply_build_mutation_batch(
+        engine,
+        batch_kind="required_gear",
+        operations=[
+            mutation_batch.BuildMutationOperation(
+                operation="equip_item",
+                raw=plain,
+                slot="Weapon 1",
+            )
+        ],
+        expected_state_hash=before,
+        result_decorator=main._decorate_batch_mutation_result,
+    )
+
+    assert result["ok"] is True
+    actual = completeness.equipped_item_text(engine.get_xml(), "Weapon 1") or ""
+    assert "Rune:" not in actual
 
 
 def test_quiver_equip_is_rejected_in_batches():

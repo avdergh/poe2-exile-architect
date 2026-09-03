@@ -119,7 +119,9 @@ runRef，后续 status/Worker 只使用它。`--resume` 调用
 
 - `worker_capacity_reached` / `no_pending_cases` 是无 sampleId 的调度结果，不记业务失败。
 - `staleAcceptingCount > 0` 只表示可能存在中断的验收；不得自动回收或复制。等待对应活动 Worker
-  结算；若已无对应 Worker 仍保持 stale，则停止 cleanup/补位并报告显式恢复所需诊断。
+  结算；原 Worker 用同一 review/attempt 重放 accept 时，服务可从 final write receipt 幂等完成
+  ledger/queue 收尾，即使 lease 已过期也不重写 Memory。若已无对应 Worker 仍保持 stale，则停止
+  cleanup/补位并报告显式恢复所需诊断。
 - claim 后的 Worker 必须返回 `sampleId + safe outcome`；accepted 时还返回 safe acceptance 摘要。
 - 主会话保存 `sampleId → agent → acceptance → feedback`。
 - validate/retry 是原 Worker 的正常单案修复路径，不释放为新案例。
@@ -136,7 +138,8 @@ runRef，后续 status/Worker 只使用它。`--resume` 调用
 Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队。
 
 无回访时，只有全部案例 accepted、status 无 queued/claimed/accepting/rejected 且计数一致后才调用
-`mcp__poe_research__cleanup_research_run(run_ref=<runRef>)`。
+`mcp__poe_research__cleanup_research_run(run_ref=<runRef>)`。cleanup 还必须确认 accepted 案例的 write receipt/legacy
+receipt 已保存并完成 ledger reconciliation；任一缺口都保留 run，不手工删目录。
 
 只有用户明确决定放弃一个未完成 run 时，才可对同一工具传
 `abandon_incomplete=true`。该路径只释放由本 run 精确拥有、仍为 `queued` 的 intake-ledger 占位，
@@ -161,7 +164,8 @@ Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队�
 
 最终 status 和 Worker safe summaries 分别报告 accepted patterns、deep records、semantic edges、
 created/updated/evidence counts、acceptanceMode、deferred reasons、unresolved mention/unique component
-counts、mechanic audit 与 unique-gem diagnostics。不要把 partial_with_deferred 描述为 clean，也不要把
+counts、`writeReceiptRef`、mechanic audit 与 unique-gem diagnostics。不要把
+partial_with_deferred 描述为 clean，也不要把
 同一 unresolved 组件的多次 mention 当成多个不同组件。
 
 当调用方要求研究业务标记时，最终回答最后一行必须且只能包含一个：

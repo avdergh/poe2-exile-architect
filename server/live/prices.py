@@ -11,6 +11,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .league_tokens import normalize_league_token
+
 API = "https://poe2scout.com/api"
 REALM = "poe2"
 UA = {"User-Agent": "poe2-build-mcp/0.1"}
@@ -49,8 +51,9 @@ def resolve_league(override: str | None = None) -> dict[str, str]:
     """Return {name, base} for the chosen league, defaulting to the current league."""
     global _league_info
     if override:
+        token = normalize_league_token(override)
         for leag in _get(f"{REALM}/Leagues"):
-            if leag["Value"].lower() == override.lower():
+            if normalize_league_token(leag["Value"]) == token:
                 return {"name": leag["Value"], "base": leag.get("BaseCurrencyText", "")}
         return {"name": override, "base": ""}
     if _league_info is None:

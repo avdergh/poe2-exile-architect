@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -14,6 +15,26 @@ from server.knowledge import copy_safety
 FIELD_SOURCE = Literal["user_explicit", "agent_inferred", "defaulted", "unknown"]
 MEMORY_MODE = Literal["standard", "no_memory", "memory_assisted"]
 JUDGE_FEEDBACK_MODE = Literal["hard_only", "strict"]
+BLUEPRINT_EVIDENCE_STATUS = Literal[
+    "grounded",
+    "inferred",
+    "hypothesis",
+    "unknown",
+    "rejected",
+]
+BLUEPRINT_COVERAGE_STATUS = Literal["covered", "not_applicable", "unknown"]
+REQUIRED_BLUEPRINT_COVERAGE_AXES = frozenset(
+    {
+        "damage_delivery",
+        "clear",
+        "boss",
+        "defense",
+        "life_recovery",
+        "mana_recovery",
+        "spirit",
+        "rotation",
+    }
+)
 LIFECYCLE_STAGE = Literal[
     "campaign_early",
     "campaign_mid",
@@ -112,6 +133,9 @@ class GenerationExperimentContext(StrictModel):
     global_optimizer_allowed: Literal[False] = False
     passive_tree_optimization_mode: Literal["manual_targeted"] = "manual_targeted"
     mutation_batch_preferred: Literal[True] = True
+    # Current generation manifests opt in explicitly.  Older manifests omitted this field and
+    # must retain their pre-blueprint behaviour when they are resumed after a plugin update.
+    mechanism_blueprint_required: bool = False
 
 
 class AgentRefinedBuildPrompt(VersionedSafeModel):
@@ -194,8 +218,11 @@ class ResearchPremiseDecision(StrictModel):
 class ResearchMemoryUse(StrictModel):
     retrieval_outcome: Literal["matched", "no_matching_memory"]
     dedupe_query_refs: list[str] = Field(min_length=1)
+    comparison_dedupe_query_refs: list[str] = Field(default_factory=list, max_length=48)
     component_keys: list[str] = Field(default_factory=list, max_length=24)
     build_family_keys: list[str] = Field(default_factory=list, max_length=12)
+    selected_knowledge_scope: Literal["global_seed", "local_user"] | None = None
+    selected_source_case_ref: str | None = Field(default=None, min_length=3, max_length=240)
     deep_record_ids: list[str] = Field(default_factory=list)
     pattern_ids: list[str] = Field(default_factory=list, max_length=24)
     semantic_edge_ids: list[str] = Field(default_factory=list, max_length=24)
@@ -214,6 +241,7 @@ class ResearchMemoryUse(StrictModel):
     def _usage_is_traceable(self) -> "ResearchMemoryUse":
         list_fields = (
             "dedupe_query_refs",
+            "comparison_dedupe_query_refs",
             "component_keys",
             "build_family_keys",
             "deep_record_ids",
@@ -225,9 +253,14 @@ class ResearchMemoryUse(StrictModel):
             values = getattr(self, field_name)
             if len(values) != len(set(values)):
                 raise ValueError(f"{field_name} must not contain duplicates")
-        if any(not re.fullmatch(r"dq-[0-9a-f]{16}", ref) for ref in self.dedupe_query_refs):
+        all_query_refs = [*self.dedupe_query_refs, *self.comparison_dedupe_query_refs]
+        if any(not re.fullmatch(r"dq-[0-9a-f]{16}", ref) for ref in all_query_refs):
             raise ValueError(
-                "dedupe_query_refs must use query_research_memory dedupeQueryRef values"
+                "Research query refs must use query_research_memory dedupeQueryRef values"
+            )
+        if set(self.dedupe_query_refs) & set(self.comparison_dedupe_query_refs):
+            raise ValueError(
+                "comparison_dedupe_query_refs must be separate from the authoritative lane refs"
             )
 
         source_refs = set(self.source_refs())
@@ -266,12 +299,22 @@ class ResearchMemoryUse(StrictModel):
                         "returned by a record-detail query cannot be referenced)"
                     )
         else:
-            if source_refs or self.insight_decisions or self.premise_decisions:
+            if (
+                source_refs
+                or self.insight_decisions
+                or self.premise_decisions
+                or self.comparison_dedupe_query_refs
+            ):
                 raise ValueError("no_matching_memory cannot carry recalled items or decisions")
             if self.premise_audit_version is not None:
                 raise ValueError("no_matching_memory cannot enable premise audit")
             if not self.no_match_reason:
                 raise ValueError("no_matching_memory requires no_match_reason")
+            if (
+                self.selected_knowledge_scope is not None
+                or self.selected_source_case_ref is not None
+            ):
+                raise ValueError("no_matching_memory cannot select a Research source lane")
         return self
 
     def source_refs(self) -> list[str]:
@@ -288,6 +331,221 @@ class CompletenessAdvisoryDecision(StrictModel):
     advisory_code: str = Field(min_length=1)
     decision: Literal["deferred", "intentionally_unused"]
     reason: str = Field(min_length=1)
+
+
+class ResearchExecutionPackageDecision(StrictModel):
+    package_id: str = Field(pattern=r"^rep-[0-9a-f]{16}$")
+    decision: Literal[
+        "adopted",
+        "tested_and_rejected",
+        "not_applicable",
+        "retained_as_alternative",
+    ]
+    mechanism_rationale: str = Field(min_length=40, max_length=700)
+    build_application: str = Field(min_length=30, max_length=700)
+    verification_evidence_refs: list[str] = Field(min_length=1, max_length=16)
+    cross_case_plan_ref: str | None = Field(
+        default=None,
+        pattern=r"^xcp-[0-9a-f]{16}$",
+    )
+
+    @field_validator("verification_evidence_refs")
+    @classmethod
+    def _evidence_refs_are_safe(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("verification_evidence_refs must not contain duplicates")
+        if any(not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value) for value in values):
+            raise ValueError("verification_evidence_refs must use safe bounded references")
+        return values
+
+
+class CrossCaseMechanismPlan(StrictModel):
+    plan_id: str = Field(pattern=r"^xcp-[0-9a-f]{16}$")
+    source_case_refs: list[str] = Field(min_length=1, max_length=3)
+    source_package_ids: list[str] = Field(min_length=1, max_length=24)
+    target_companion_package_ids: list[str] = Field(min_length=1, max_length=24)
+    additional_companion_package_ids: list[str] = Field(default_factory=list, max_length=24)
+    mechanism_rationale: str = Field(min_length=80, max_length=1000)
+    compatibility_rationale: str = Field(min_length=80, max_length=1000)
+    tradeoff_rationale: str = Field(min_length=60, max_length=800)
+    implementation_plan: list[str] = Field(min_length=2, max_length=12)
+    conflict_resolution_plan: list[str] = Field(min_length=1, max_length=12)
+    verification_plan: list[str] = Field(min_length=2, max_length=12)
+    failure_exit_conditions: list[str] = Field(min_length=1, max_length=12)
+    evidence_refs: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator(
+        "source_case_refs",
+        "source_package_ids",
+        "target_companion_package_ids",
+        "additional_companion_package_ids",
+        "evidence_refs",
+    )
+    @classmethod
+    def _reference_lists_are_unique(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("cross-case plan reference lists must not contain duplicates")
+        if any(not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value) for value in values):
+            raise ValueError("cross-case plan references must use safe bounded values")
+        return values
+
+    @field_validator(
+        "implementation_plan",
+        "conflict_resolution_plan",
+        "verification_plan",
+        "failure_exit_conditions",
+    )
+    @classmethod
+    def _plan_steps_are_substantive(cls, values: list[str]) -> list[str]:
+        if any(len(value.strip()) < 24 for value in values):
+            raise ValueError("cross-case plan steps must be specific, not short generic claims")
+        return values
+
+
+class ResearchExecutionPlan(StrictModel):
+    contract_ref: str = Field(pattern=r"^rec-[0-9a-f]{16}$")
+    selected_design_case_ref: str = Field(min_length=3, max_length=240)
+    selected_variant_rationale: str = Field(min_length=80, max_length=1000)
+    coherence_summary: str = Field(min_length=80, max_length=1000)
+    package_decisions: list[ResearchExecutionPackageDecision] = Field(
+        min_length=1,
+        max_length=96,
+    )
+    cross_case_mechanism_plans: list[CrossCaseMechanismPlan] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+
+    @model_validator(mode="after")
+    def _execution_plan_has_unique_ids(self) -> "ResearchExecutionPlan":
+        package_ids = [item.package_id for item in self.package_decisions]
+        if len(package_ids) != len(set(package_ids)):
+            raise ValueError("research execution package decisions must not contain duplicates")
+        plan_ids = [item.plan_id for item in self.cross_case_mechanism_plans]
+        if len(plan_ids) != len(set(plan_ids)):
+            raise ValueError("cross-case mechanism plans must not contain duplicate plan IDs")
+        return self
+
+
+class MechanismBlueprintClaim(StrictModel):
+    claim_id: str = Field(pattern=r"^mbc-[0-9a-f]{16}$")
+    title: str = Field(min_length=4, max_length=160)
+    status: BLUEPRINT_EVIDENCE_STATUS
+    explanation: str = Field(min_length=80, max_length=1800)
+    source_refs: list[str] = Field(default_factory=list, max_length=20)
+    component_keys: list[str] = Field(default_factory=list, max_length=32)
+    conditions: list[str] = Field(default_factory=list, max_length=16)
+    failure_conditions: list[str] = Field(default_factory=list, max_length=16)
+    verification_tasks: list[str] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _claim_is_grounded_or_explicitly_unknown(self) -> "MechanismBlueprintClaim":
+        if len(self.source_refs) != len(set(self.source_refs)):
+            raise ValueError("mechanism blueprint source_refs must not contain duplicates")
+        if len(self.component_keys) != len(set(self.component_keys)):
+            raise ValueError("mechanism blueprint component_keys must not contain duplicates")
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value)
+            for value in [*self.source_refs, *self.component_keys]
+        ):
+            raise ValueError("mechanism blueprint references must use safe bounded values")
+        if self.status != "unknown" and not self.source_refs:
+            raise ValueError(
+                "grounded, inferred, hypothesis and rejected blueprint claims require evidence"
+            )
+        return self
+
+
+class MechanismBlueprintCoverage(StrictModel):
+    axis: str = Field(pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    status: BLUEPRINT_COVERAGE_STATUS
+    explanation: str = Field(min_length=40, max_length=800)
+    claim_refs: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _covered_axis_has_claims(self) -> "MechanismBlueprintCoverage":
+        if len(self.claim_refs) != len(set(self.claim_refs)):
+            raise ValueError("mechanism blueprint coverage claim_refs must not contain duplicates")
+        if any(not re.fullmatch(r"mbc-[0-9a-f]{16}", ref) for ref in self.claim_refs):
+            raise ValueError("mechanism blueprint coverage must reference blueprint claim IDs")
+        if self.status == "covered" and not self.claim_refs:
+            raise ValueError("covered mechanism blueprint axes require at least one claim")
+        return self
+
+
+class MechanismBlueprint(StrictModel):
+    """Free-form design dossier plus a thin evidence and coverage index."""
+
+    document: str = Field(min_length=800, max_length=20000)
+    claims: list[MechanismBlueprintClaim] = Field(min_length=4, max_length=64)
+    coverage: list[MechanismBlueprintCoverage] = Field(min_length=8, max_length=32)
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def _blueprint_is_deep_and_traceable(self) -> "MechanismBlueprint":
+        claim_ids = [item.claim_id for item in self.claims]
+        if len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("mechanism blueprint claims must not contain duplicate IDs")
+        coverage_axes = [item.axis for item in self.coverage]
+        if len(coverage_axes) != len(set(coverage_axes)):
+            raise ValueError("mechanism blueprint coverage axes must not contain duplicates")
+        missing_axes = sorted(REQUIRED_BLUEPRINT_COVERAGE_AXES - set(coverage_axes))
+        if missing_axes:
+            raise ValueError(
+                "mechanism blueprint coverage missing required axes: " + ", ".join(missing_axes)
+            )
+        claims_by_id = {item.claim_id: item for item in self.claims}
+        for item in self.coverage:
+            unknown = sorted(set(item.claim_refs) - set(claims_by_id))
+            if unknown:
+                raise ValueError(
+                    "mechanism blueprint coverage references unknown claims: "
+                    + ", ".join(unknown)
+                )
+            if item.status == "covered" and all(
+                claims_by_id[ref].status == "unknown" for ref in item.claim_refs
+            ):
+                raise ValueError("covered blueprint axes cannot rely only on unknown claims")
+        return self
+
+
+class GenerationMechanismBlueprintDraft(VersionedSafeModel):
+    candidate_id: str = Field(min_length=1)
+    research_memory_use: ResearchMemoryUse | None = None
+    research_execution_plan: ResearchExecutionPlan | None = None
+    tool_references: list[ToolReference] = Field(default_factory=list, min_length=1)
+    mechanism_blueprint: MechanismBlueprint
+
+    @model_validator(mode="after")
+    def _research_shape_is_consistent(self) -> "GenerationMechanismBlueprintDraft":
+        if self.research_memory_use is not None:
+            usage = self.research_memory_use
+            if self.version_context.research_memory_ref not in usage.dedupe_query_refs:
+                raise ValueError(
+                    "version_context research_memory_ref must identify a recorded memory query"
+                )
+            if usage.retrieval_outcome == "matched" and self.research_execution_plan is None:
+                raise ValueError("matched Research requires a research_execution_plan")
+            if usage.retrieval_outcome == "no_matching_memory" and self.research_execution_plan:
+                raise ValueError("no_matching_memory cannot carry a research_execution_plan")
+        elif self.research_execution_plan is not None:
+            raise ValueError("research_execution_plan requires research_memory_use")
+        return self
+
+
+def mechanism_blueprint_hash(blueprint: MechanismBlueprint | dict[str, Any]) -> str:
+    model = (
+        blueprint
+        if isinstance(blueprint, MechanismBlueprint)
+        else MechanismBlueprint.model_validate(blueprint)
+    )
+    encoded = json.dumps(
+        model.model_dump(mode="json", by_alias=True),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class PrototypeBuildCandidate(VersionedSafeModel):
@@ -312,6 +570,12 @@ class PrototypeBuildCandidate(VersionedSafeModel):
     tool_references: list[ToolReference] = Field(default_factory=list)
     memory_references: list[str] = Field(default_factory=list)
     research_memory_use: ResearchMemoryUse | None = None
+    research_execution_plan: ResearchExecutionPlan | None = None
+    mechanism_blueprint_ref: str | None = Field(
+        default=None,
+        pattern=r"^gbp-[0-9a-f]{16}$",
+    )
+    mechanism_blueprint: MechanismBlueprint | None = None
     rationale_summary: str = Field(min_length=1)
 
     @field_validator("current_output_stages", "target_lifecycle_stages", mode="before")
@@ -333,19 +597,92 @@ class PrototypeBuildCandidate(VersionedSafeModel):
                 for reference in self.tool_references
                 if reference.tool_name.casefold().endswith("query_research_memory")
             }
-            if not set(usage.dedupe_query_refs).issubset(memory_tool_refs):
+            required_query_refs = {
+                *usage.dedupe_query_refs,
+                *usage.comparison_dedupe_query_refs,
+            }
+            if not required_query_refs.issubset(memory_tool_refs):
                 raise ValueError(
-                    "research_memory_use query refs must match query_research_memory tool references"
+                    "research_memory_use authoritative and comparison query refs must match "
+                    "query_research_memory tool references"
                 )
             # This list is a denormalized review convenience. The typed usage object remains the
             # authority, so derive its complete trace set instead of asking the Agent to copy it.
             self.memory_references = _dedupe_strings(
-                [*self.memory_references, *usage.dedupe_query_refs, *usage.source_refs()]
+                [
+                    *self.memory_references,
+                    *usage.dedupe_query_refs,
+                    *usage.comparison_dedupe_query_refs,
+                    *usage.source_refs(),
+                ]
             )
             if self.version_context.research_memory_ref not in usage.dedupe_query_refs:
                 raise ValueError(
                     "version_context research_memory_ref must identify a recorded memory query"
                 )
+            if usage.retrieval_outcome == "matched":
+                if self.research_execution_plan is None:
+                    raise ValueError(
+                        "matched Research requires a research_execution_plan produced from the "
+                        "current execution contract"
+                    )
+                contract_refs = {
+                    reference.query_ref
+                    for reference in self.tool_references
+                    if reference.tool_name.casefold().endswith(
+                        "construct_research_execution_contract"
+                    )
+                }
+                if self.research_execution_plan.contract_ref not in contract_refs:
+                    raise ValueError(
+                        "research_execution_plan contract_ref must match a "
+                        "construct_research_execution_contract ToolReference"
+                    )
+                self.memory_references = _dedupe_strings(
+                    [*self.memory_references, self.research_execution_plan.contract_ref]
+                )
+            elif self.research_execution_plan is not None:
+                raise ValueError("no_matching_memory cannot carry a research_execution_plan")
+        elif self.research_execution_plan is not None:
+            raise ValueError("research_execution_plan requires research_memory_use")
+        if (self.mechanism_blueprint_ref is None) != (self.mechanism_blueprint is None):
+            raise ValueError(
+                "mechanism_blueprint_ref and mechanism_blueprint must be provided together"
+            )
+        if self.mechanism_blueprint_ref is not None:
+            blueprint_refs = {
+                reference.query_ref
+                for reference in self.tool_references
+                if reference.tool_name.casefold().endswith("validate_generation_blueprint")
+            }
+            if self.mechanism_blueprint_ref not in blueprint_refs:
+                raise ValueError(
+                    "mechanism_blueprint_ref must match a validate_generation_blueprint "
+                    "ToolReference"
+                )
+        return self
+
+
+class GenerationDraft(StrictModel):
+    """Judge-independent prompt/candidate contract validated before the first formal attempt."""
+
+    agent_refined_build_prompt: AgentRefinedBuildPrompt
+    prototype_build_candidate: PrototypeBuildCandidate
+
+    @model_validator(mode="after")
+    def _draft_is_consistent(self) -> "GenerationDraft":
+        prompt = self.agent_refined_build_prompt
+        candidate = self.prototype_build_candidate
+        if prompt.prompt_id != candidate.prompt_ref:
+            raise ValueError("candidate prompt_ref must match prompt_id")
+        if prompt.current_output_stages != candidate.current_output_stages:
+            raise ValueError("candidate current stages must match refined prompt")
+        if prompt.target_lifecycle_stages != candidate.target_lifecycle_stages:
+            raise ValueError("candidate lifecycle targets must match refined prompt")
+        if prompt.cross_stage_locked_dimensions != candidate.cross_stage_locked_dimensions:
+            raise ValueError("candidate locks must match refined prompt")
+        if not same_version(prompt.version_context, candidate.version_context):
+            raise ValueError("version_context mismatch inside generation draft")
         return self
 
 
@@ -441,7 +778,11 @@ def _require_completeness_advisory_decisions(
     state: TransientBuildStateRef,
 ) -> None:
     required = set(state.completeness_advisories)
-    recorded = {decision.advisory_code for decision in candidate.completeness_advisory_decisions}
+    decisions = {
+        decision.advisory_code: decision
+        for decision in candidate.completeness_advisory_decisions
+    }
+    recorded = set(decisions)
     missing = sorted(required - recorded)
     stale = sorted(recorded - required)
     if missing:
@@ -453,6 +794,12 @@ def _require_completeness_advisory_decisions(
         raise ValueError(
             "candidate carries completeness decisions absent from the trusted final snapshot: "
             + ", ".join(stale)
+        )
+    spirit_decision = decisions.get("spirit_opportunity_review_required")
+    if spirit_decision is not None and spirit_decision.decision != "intentionally_unused":
+        raise ValueError(
+            "spirit opportunity review must be completed or removed by adopting a valuable "
+            "reservation; it cannot remain deferred"
         )
 
 
@@ -484,6 +831,13 @@ class JudgeOffenseEvidence(StrictModel):
     score_policy: str = Field(min_length=1)
 
 
+class JudgeCalculationContext(StrictModel):
+    group_index: int = Field(ge=1)
+    active_index: int = Field(ge=1)
+    skill_name: str = Field(min_length=1)
+    source_metric: str = Field(min_length=1)
+
+
 class JudgeAdvisoryReport(StrictModel):
     report_id: str = Field(min_length=1)
     status: Literal["evaluated", "not_evaluated", "error"]
@@ -511,6 +865,7 @@ class JudgeAdvisoryReport(StrictModel):
     evaluator_version: str | None = None
     final_classification: str | None = None
     selected_skill: JudgeSelectedSkillDiagnostic | None = None
+    calculation_context: JudgeCalculationContext | None = None
     supplemental_skills: list[JudgeSupplementalSkillDiagnostic] = Field(default_factory=list)
     skill_group_diagnostics: list[JudgeSkillGroupDiagnostic] = Field(default_factory=list)
     attribute_shortfalls: list[AttributeShortfallDiagnostic] = Field(default_factory=list)

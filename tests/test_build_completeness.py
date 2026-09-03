@@ -93,6 +93,107 @@ def test_completeness_accepts_filled_stage_loadout_without_forcing_jewel_socket(
     assert report["passiveJewels"]["allocatedSockets"] == 0
 
 
+def test_completeness_requires_decisions_for_empty_or_partially_filled_rune_sockets():
+    engine = _CompletenessEngine(
+        {
+            "level": 95,
+            "gear": {
+                "Weapon 1": {
+                    "rarity": "RARE",
+                    "itemLevel": 82,
+                    "runeSockets": 2,
+                    "runes": ["Iron Rune"],
+                },
+                "Helmet": {
+                    "rarity": "RARE",
+                    "itemLevel": 82,
+                    "runeSockets": 1,
+                    "runes": [],
+                },
+            },
+        }
+    )
+
+    report = completeness.inspect_build_completeness(engine)
+
+    assert report["runes"]["decisionRequiredSlots"] == ["Weapon 1", "Helmet"]
+    assert report["runes"]["socketedSlots"] == []
+    assert report["runes"]["details"] == [
+        {
+            "slot": "Weapon 1",
+            "socketCapacity": 2,
+            "declaredRuneCount": 1,
+            "filledSockets": 0,
+            "runeProvenanceStatus": None,
+        },
+        {
+            "slot": "Helmet",
+            "socketCapacity": 1,
+            "declaredRuneCount": 0,
+            "filledSockets": 0,
+            "runeProvenanceStatus": None,
+        },
+    ]
+
+
+def test_endgame_magic_flask_with_open_affix_slot_is_advisory_only():
+    engine = _CompletenessEngine(
+        {
+            "level": 95,
+            "gear": {
+                "Flask 1": {"rarity": "UNIQUE", "base": "Gargantuan Life Flask"},
+                "Flask 2": {
+                    "rarity": "MAGIC",
+                    "base": "Ultimate Mana Flask",
+                    "affixPrefixes": 1,
+                    "affixSuffixes": 0,
+                },
+            },
+        }
+    )
+
+    report = completeness.inspect_build_completeness(engine)
+
+    assert not report["hardFailures"]
+    assert "endgame_flask_affix_slot_open" in report["advisories"]
+
+
+def test_completeness_distinguishes_missing_belt_property_from_effective_capacity():
+    engine = _CompletenessEngine(
+        {
+            "level": 90,
+            "charmLimit": 3,
+            "gear": {
+                "Belt": {"name": "Generated Belt", "rarity": "RARE", "itemLevel": 90},
+            },
+        }
+    )
+
+    report = completeness.inspect_build_completeness(engine)
+
+    assert report["charms"]["beltCapacity"] == 3
+    assert report["charms"]["beltPropertyCapacity"] is None
+    assert "charm_capacity_missing_property" in report["advisories"]
+
+
+def test_completeness_blocks_charms_over_effective_capacity():
+    engine = _CompletenessEngine(
+        {
+            "level": 90,
+            "charmLimit": 1,
+            "gear": {
+                "Belt": {"name": "Belt", "rarity": "RARE", "itemLevel": 90, "charmSlots": 1},
+                "Charm 1": {"base": "Grounding Charm", "rarity": "NORMAL"},
+                "Charm 2": {"base": "Thawing Charm", "rarity": "NORMAL"},
+            },
+        }
+    )
+
+    report = completeness.inspect_build_completeness(engine)
+
+    assert "equipped_charms_exceed_effective_capacity" in report["hardFailures"]
+
+
 def test_equipped_item_requirement_check_blocks_overlevel_base():
     result = rules.check_equipped_item_requirements(
         {
@@ -170,8 +271,14 @@ def test_equipped_item_metadata_reads_active_item_set_without_returning_raw_text
         "levelRequirement": 50,
         "runeSockets": 0,
         "runes": [],
+        "verifiedRuneCount": 0,
+        "runeProvenanceStatus": None,
+        "itemFingerprint": gear["Belt"]["itemFingerprint"],
         "charmSlots": 1,
         "isScaffold": False,
+        "affixPrefixes": 0,
+        "affixSuffixes": 0,
+        "topTierAffixes": 0,
         "affixLegality": None,
     }
     assert gear["Belt"]["affixLegality"] == {

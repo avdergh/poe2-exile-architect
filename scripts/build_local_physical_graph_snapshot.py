@@ -82,6 +82,7 @@ ALLOWED_SOURCE_SPECS: tuple[physical_graph.SourceInventorySpec, ...] = (
 POB_PASSIVE_TREE_VERSION = "0_5"
 POB_PASSIVE_TREE_SOURCE_ID = f"pob:passive_tree:{POB_PASSIVE_TREE_VERSION}"
 POB_UNIQUES_SOURCE_ID = "pob:uniques"
+POB_SKILL_PAYLOAD_TYPES_SOURCE_ID = "pob:skill_payload_types"
 
 INGESTERS: dict[
     str, Callable[[Path, physical_graph.GraphSource], physical_graph.GraphIngestionResult]
@@ -137,6 +138,12 @@ def build_local_snapshot_report(
     static_ingestions, static_source_reports, excluded_static_sources = _pob_static_ingestions(
         pob_root=pob_root,
         base_ingestion=ingestion_results[0],
+        known_skill_keys={
+            node.stable_key
+            for result in ingestion_results
+            for node in result.nodes
+            if node.node_type == "active_skill"
+        },
     )
     ingestion_results.extend(static_ingestions)
     static_sources.extend(source for source, _result, _report in static_source_reports)
@@ -251,6 +258,7 @@ def _pob_static_ingestions(
     *,
     pob_root: Path,
     base_ingestion: physical_graph.GraphIngestionResult,
+    known_skill_keys: set[str],
 ) -> tuple[
     list[physical_graph.GraphIngestionResult],
     list[tuple[physical_graph.GraphSource, physical_graph.GraphIngestionResult, dict[str, Any]]],
@@ -297,6 +305,44 @@ def _pob_static_ingestions(
         excluded["pob:passive_tree"] = (
             "excluded: pinned PoB passive tree source was not found at "
             f"{_safe_relative(passive_tree_path)}"
+        )
+
+    skill_paths = sorted((pob_root / "Data" / "Skills").glob("*.lua"))
+    if skill_paths:
+        source = physical_graph.GraphSource(
+            source_id=POB_SKILL_PAYLOAD_TYPES_SOURCE_ID,
+            kind="pinned_pob_skill_payload_types",
+            source_file=_safe_pob_relative(pob_root / "Data" / "Skills", pob_root=pob_root),
+            claims=(
+                physical_graph.SourceClaim("passive_tree_version", "not_applicable"),
+                physical_graph.SourceClaim("source_scope", "pinned_pob_skill_data"),
+                physical_graph.SourceClaim("endpoint_kind", "minion_payload"),
+            ),
+            expected_count=len(skill_paths),
+            confidence=0.95,
+            schema_version="pob_generated_skill_lua_v1",
+        )
+        result = physical_graph.ingest_pob_minion_payload_types(
+            skill_paths,
+            source=source,
+            known_skill_keys=known_skill_keys,
+        )
+        ingestions.append(result)
+        reports.append(
+            (
+                source,
+                result,
+                _source_report_for_relative(
+                    source,
+                    _safe_pob_relative(pob_root / "Data" / "Skills", pob_root=pob_root),
+                    result,
+                ),
+            )
+        )
+    else:
+        excluded["pob:skill_payload_types"] = (
+            "excluded: pinned PoB generated skill source directory is missing or empty at "
+            f"{_safe_relative(pob_root / 'Data' / 'Skills')}"
         )
 
     unique_paths = sorted((pob_root / "Data" / "Uniques").glob("**/*.lua"))

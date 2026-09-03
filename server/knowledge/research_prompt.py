@@ -8,7 +8,7 @@ from typing import Any
 from . import research_packet
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DEEP_RESEARCH_PLAYBOOK = r"""
 # DEEP RESEARCH PLAYBOOK
@@ -160,7 +160,7 @@ def build_researcher_prompt_package(
         "# STANDARD OPERATING PROCEDURE (SOP)\n"
         "You MUST execute the task in this strict order using available MCP tools. MUST NOT output "
         "the final JSON as regular text. DO NOT output your final analysis as markdown JSON. "
-        "ResearcherOutput schema_version=5 describes the tool payload shape, not a chat response.\n\n"
+        "ResearcherOutput schema_version=6 describes new durable deep records; schema 4/5 remain read/validate compatible.\n\n"
         "This prompt is for one build sample only. In batch workflows, analyze exactly the single "
         "quarantine packet shown in the current turn; never merge conclusions across multiple raw "
         "build samples inside one Researcher turn.\n\n"
@@ -248,7 +248,7 @@ def build_researcher_prompt_package(
         "resolvedSubject.stableKey -> stable_key, snapshotId -> snapshot_id, "
         "evidencePath.nodes -> evidence_path_nodes, and sourceRefs -> source_refs.\n\n"
         "## STEP 4: Submit Focused Deep Records and Derived Indexes\n"
-        "First call propose_deep_research_records with schema_version=5. One research case should "
+        "First call propose_deep_research_records with schema_version=6 and record_schema_version=2. One research case should "
         "normally produce multiple focused DeepResearchRecord objects sharing one "
         "research_group_id. Each record answers one main question; the record group carries case "
         "coverage. Then call propose_research_fragments, propose_build_patterns, and "
@@ -284,7 +284,7 @@ def build_researcher_prompt_package(
         '"source_case_refs":["case:..."],"safe_evidence_refs":["evidence:..."],'
         '"conditions":[],"failure_conditions":[],"typed_payload":{},"class_key":null,'
         '"ascendancy_key":null,"extraction_method_version":"deep_research_mvp_v1",'
-        '"record_schema_version":1,"game_patch":"...","passive_tree_version":"...",'
+        '"record_schema_version":2,"game_patch":"...","passive_tree_version":"...",'
         '"pob_version_or_commit":"...","visibility":"creator_visible",'
         '"split":"train_context","knowledge_scope":"global_seed"}]}\n'
         "- Direct MCP payload shape for propose_semantic_edges (structure-only skeleton; "
@@ -337,8 +337,10 @@ def build_researcher_prompt_package(
         "  4. unique item + passive / skill: classify as required/enabling, optional/chase, or "
         "budget_substitute.\n"
         "  5. support + active skill: a single pair may become an edge; when several supports "
-        "jointly define behavior, preserve the complete key package and skill-to-support ownership in "
-        "typed_payload.supportPackages. A skill_package must assign every structured support. "
+        "jointly define behavior, preserve the complete key package and root-skill socket layout in "
+        "typed_payload.supportPackages. Lease-bound v3 reviews pair each supportKey with the exact "
+        "socketedItemRef from skill-groups; distinct physical instances may share one stable key. "
+        "A skill_package must assign every structured support. "
         "Before claiming that a support creates, preserves, converts, or generates a mechanic for "
         "an active skill, rely on the review's combined fixed-point pairing check "
         "(support_skill_group_candidates, which simulates the PoB group's effective compatibility); "
@@ -346,7 +348,7 @@ def build_researcher_prompt_package(
         "the combined check when they disagree. Successful component resolution is not "
         "compatibility evidence.\n"
         "- Coverage: inventory every enabled source skill group. Family primary/core-secondary "
-        "groups and any durable conclusion that depends on exact ownership require "
+        "containers and any durable conclusion that depends on exact socket placement require "
         "supportPackages or a supportCoverageExceptions entry; low-impact, internal-id, "
         "multi-active, or unresolved groups may remain explicit caveats and do not block clean "
         "coverage by themselves. Family core groups additionally need at least two resolved "
@@ -396,7 +398,7 @@ def build_researcher_prompt_package(
         "strong ranking remains Family/archetype-only. Do not force transfer candidates.\n"
         "- A durable pattern must relate at least two distinct resolved components. A one-component "
         "candidate may remain a BuildDesignObservation but is not a reusable mechanism pattern.\n"
-        "- All new proposals use ResearcherOutput schema_version=5 fields and the fragment proposal "
+        "- All new deep proposals use ResearcherOutput schema_version=6 / record schema 2 fields and the fragment proposal "
         "uses the "
         "dedupeQueryRef from Step 2.\n"
         "- Semantic edge edge_type must be one of: enables_mechanic, scales_with, "
@@ -452,8 +454,9 @@ def build_researcher_prompt_package(
         f"5. Keep explanatory strings in {language}; schema field names and enum values remain in "
         "English.\n\n"
         "## YOUR FIRST MOVE\n"
-        "Begin immediately with STEP 1: inspect the case and read skills, gear, jewels, passives, "
-        "config, and build sections to completion before reconstructing the build. The jewels "
+        "Begin immediately with STEP 1: inspect the case and follow its recommendedReadOrder, "
+        "including skill-groups and pob-readback, to completion before reconstructing the build. "
+        "The skill-groups section is the authoritative root-skill/socketed-item hierarchy. The jewels "
         "section contains only tree jewels (the gear section keeps them for per-slot review). "
         "Do not query durable memory until that initial working model is complete.\n"
     )

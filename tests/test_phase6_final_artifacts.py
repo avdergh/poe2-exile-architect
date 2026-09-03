@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from server.generation import artifacts, evaluation, evaluation_snapshots, run_store
+from server.judge import hard_legality
 from server.knowledge import research_memory
 
 from tests.test_phase5_generation_evaluation import (
@@ -84,6 +86,147 @@ class _RestoreEngine:
         return {"mainSkill": "Lightning Arrow", "treeVersion": "0_5", "stats": {"Life": 1}}
 
 
+class _SpiritReadbackEngine:
+    def __init__(self, build: dict[str, object] | None) -> None:
+        self.build = build
+        self.closed = False
+
+    def load_build_xml(self, xml: str, name: str) -> dict[str, object]:
+        assert "PathOfBuilding" in xml
+        assert name.startswith("final-build:")
+        return {"loaded": True}
+
+    def get_build(self) -> dict[str, object]:
+        if self.build is None:
+            raise RuntimeError("legacy engine readback unavailable")
+        return self.build
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RoundTripEngine:
+    def __init__(self, *, drop_support: bool = False) -> None:
+        self.xml = BUILD_XML
+        self.drop_support = drop_support
+
+    @contextmanager
+    def transaction_lock(self):
+        yield
+
+    def get_xml(self) -> str:
+        return self.xml
+
+    def load_build_xml(self, xml: str, name: str = "") -> dict[str, object]:
+        if name == "final-artifact-round-trip" and self.drop_support:
+            xml = xml.replace(
+                '        <Gem nameSpec="Martial Tempo" gemId="Metadata/Items/Gems/SupportGemMartialTempo" skillId="SupportMartialTempoPlayer" />\n',
+                "",
+            )
+        self.xml = xml
+        return {"ok": True}
+
+
+def _with_passive_jewels(
+    assignments: list[tuple[int, int]],
+    *,
+    jewel_suffix: str = "",
+) -> str:
+    item_ids = sorted({item_id for _node_id, item_id in assignments})
+    items = "".join(
+        f'<Item id="{item_id}">Rarity: Rare\nTest Jewel\nEmerald\n'
+        f'Item Level: 82\n--------\n+10{jewel_suffix} to Dexterity</Item>'
+        for item_id in item_ids
+    )
+    sockets = "".join(
+        f'<Socket nodeId="{node_id}" itemId="{item_id}" />'
+        for node_id, item_id in assignments
+    )
+    return (
+        BUILD_XML.replace("<Sockets />", f"<Sockets>{sockets}</Sockets>")
+        .replace("<Items activeItemSet=\"1\">", f"<Items activeItemSet=\"1\">{items}")
+    )
+
+
+def test_final_pob_round_trip_detects_structural_loss():
+    passed = artifacts._validate_pob_round_trip(_RoundTripEngine(), BUILD_XML)
+    failed = artifacts._validate_pob_round_trip(
+        _RoundTripEngine(drop_support=True),
+        BUILD_XML,
+    )
+
+    assert passed["status"] == "passed"
+    assert all(passed["checks"].values())
+    assert failed["status"] == "failed"
+    assert failed["checks"]["skillGroupsAndSupports"] is False
+
+
+@pytest.mark.parametrize("count", [0, 1, 3, 4])
+def test_passive_jewel_summary_uses_active_tree_spec(count):
+    xml = _with_passive_jewels([(100 + index, 10 + index) for index in range(count)])
+    summary = artifacts._pob_structure_summary(xml)
+
+    assert summary is not None
+    assert len(summary["passiveJewels"]) == count
+
+
+def test_passive_jewel_summary_ignores_item_id_renumber_but_detects_move_or_replace():
+    baseline = artifacts._pob_structure_summary(_with_passive_jewels([(100, 10)]))
+    renumbered = artifacts._pob_structure_summary(_with_passive_jewels([(100, 99)]))
+    moved = artifacts._pob_structure_summary(_with_passive_jewels([(101, 10)]))
+    replaced = artifacts._pob_structure_summary(
+        _with_passive_jewels([(100, 10)], jewel_suffix="0")
+    )
+
+    assert baseline is not None and renumbered is not None
+    assert baseline["passiveJewels"] == renumbered["passiveJewels"]
+    assert baseline["passiveJewels"] != moved["passiveJewels"]
+    assert baseline["passiveJewels"] != replaced["passiveJewels"]
+
+
+def test_passive_jewel_summary_fails_closed_without_active_sockets():
+    missing = BUILD_XML.replace('<Tree activeSpec="1"><Spec><Sockets /></Spec></Tree>', "")
+    assert artifacts._pob_structure_summary(missing) is None
+
+
+def test_passive_jewel_summary_fails_closed_on_zero_item_socket_entry():
+    invalid = BUILD_XML.replace(
+        "<Sockets />", '<Sockets><Socket nodeId="100" itemId="0" /></Sockets>'
+    )
+    assert artifacts._pob_structure_summary(invalid) is None
+
+
+def test_inactive_spec_jewels_do_not_change_active_round_trip_summary():
+    active = _with_passive_jewels([(100, 10)])
+    with_inactive = active.replace(
+        "</Tree>",
+        '<Spec id="2"><Sockets><Socket nodeId="999" itemId="10" /></Sockets></Spec></Tree>',
+    )
+    baseline = artifacts._pob_structure_summary(active)
+    compared = artifacts._pob_structure_summary(with_inactive)
+    assert baseline is not None and compared is not None
+    assert baseline["passiveJewels"] == compared["passiveJewels"]
+
+
+def _legacy_artifact(tmp_path: Path, monkeypatch) -> tuple[str, Path]:
+    run_id, token, evaluated = _evaluate_passing(tmp_path, monkeypatch)
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+    artifact_id = str(saved["finalBuildArtifact"]["artifactId"])
+    artifact_dir = tmp_path / "artifacts" / run_id
+    manifest_path = artifact_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schemaVersion"] = 1
+    manifest.pop("hardLegalityAuditVersion", None)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return artifact_id, artifact_dir
+
+
 def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
     run_id, token, evaluation_result = _evaluate_passing(tmp_path, monkeypatch)
 
@@ -99,6 +242,10 @@ def test_save_list_and_restore_final_build_artifact(tmp_path, monkeypatch):
     assert saved["containsRawPob"] is False
     assert saved["finalBuildArtifact"]["judgeFeedbackMode"] == "hard_only"
     assert saved["finalBuildArtifact"]["judgeSubjectiveFeedbackSuppressed"] is True
+    assert (
+        saved["finalBuildArtifact"]["hardLegalityAuditVersion"]
+        == hard_legality.AUDIT_VERSION
+    )
     assert "judgeQualityBand" not in saved["finalBuildArtifact"]
     assert "judgeQualityWarnings" not in saved["finalBuildArtifact"]
     artifact_id = saved["finalBuildArtifact"]["artifactId"]
@@ -299,6 +446,57 @@ def test_save_rejects_failed_judge_and_does_not_persist_xml(tmp_path, monkeypatc
 
     assert saved["errorCode"] == "final_candidate_not_passed"
     assert "PathOfBuilding" not in (run_dir / "trusted-evaluation.json").read_text(encoding="utf-8")
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_rejects_legacy_evaluation_before_writing_artifact(tmp_path, monkeypatch):
+    run_id, token, evaluated = _evaluate_passing(tmp_path, monkeypatch)
+    run_dir = tmp_path / "runs" / run_id
+    latest_path = run_dir / "trusted-evaluation.json"
+    attempt_path = run_dir / "trusted-evaluations" / "attempt-0.json"
+    legacy = json.loads(latest_path.read_text(encoding="utf-8"))
+    legacy["schemaVersion"] = 1
+    legacy.pop("hardLegalityAudit", None)
+    latest_path.write_text(json.dumps(legacy), encoding="utf-8")
+    attempt_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "legacy_evaluation_requires_rejudge"
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_save_rejects_schema2_v1_evaluation_before_writing_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    run_id, token, evaluated = _evaluate_passing(tmp_path, monkeypatch)
+    run_dir = tmp_path / "runs" / run_id
+    latest_path = run_dir / "trusted-evaluation.json"
+    attempt_path = run_dir / "trusted-evaluations" / "attempt-0.json"
+    legacy = json.loads(latest_path.read_text(encoding="utf-8"))
+    legacy["schemaVersion"] = 2
+    legacy["hardLegalityAudit"]["auditVersion"] = "hard_legality_v1"
+    latest_path.write_text(json.dumps(legacy), encoding="utf-8")
+    attempt_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:final",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["status"] == "rejected"
+    assert saved["errorCode"] == "legacy_evaluation_requires_rejudge"
     assert not (tmp_path / "artifacts").exists()
 
 
@@ -535,3 +733,126 @@ def test_scaffold_gear_is_rejected_before_judge_and_cannot_reach_artifact_save(
     assert evaluated["attemptConsumed"] is False
     assert evaluated["attemptCount"] == 0
     assert "scaffold_gear_must_be_replaced" in evaluated["preflight"]["blockingIssues"]
+
+
+def test_legacy_artifact_is_not_delivery_eligible_before_spirit_revalidation(
+    tmp_path,
+    monkeypatch,
+):
+    artifact_id, _artifact_dir = _legacy_artifact(tmp_path, monkeypatch)
+
+    listed = artifacts.list_final_build_artifacts()
+
+    assert listed["artifacts"][0]["spiritValidationStatus"] == "legacy_spirit_unverified"
+    assert artifacts.read_final_build_artifact_for_export(artifact_id) is None
+
+
+def test_legacy_artifact_spirit_revalidation_requires_preview_and_approval(
+    tmp_path,
+    monkeypatch,
+):
+    artifact_id, artifact_dir = _legacy_artifact(tmp_path, monkeypatch)
+    manifest_before = (artifact_dir / "manifest.json").read_bytes()
+    xml_before = (artifact_dir / "build.xml").read_bytes()
+    build = {
+        "spiritAvailable": 100,
+        "spiritReservedCapped": 60,
+        "spiritUnreserved": 40,
+        "spiritRequested": 60,
+        "spiritOverBy": 0,
+        "spiritUsed": 60,
+        "activeWeaponSet": 1,
+    }
+    factory = lambda: _SpiritReadbackEngine(build)  # noqa: E731
+
+    preview = artifacts.preview_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+    )
+    assert preview["status"] == "preview_ready"
+    assert preview["proposedResult"]["outcome"] == "passed"
+    assert not (artifact_dir / "spirit-revalidation.json").exists()
+
+    denied = artifacts.apply_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+        expected_source_hash=preview["expectedSourceHash"],
+        revalidation_plan_hash=preview["revalidationPlanHash"],
+        user_approved=False,
+    )
+    stale = artifacts.apply_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+        expected_source_hash=preview["expectedSourceHash"],
+        revalidation_plan_hash="sha256:" + ("0" * 64),
+        user_approved=True,
+    )
+    assert denied["errorCode"] == "user_approval_required"
+    assert stale["errorCode"] == "stale_spirit_revalidation_preview"
+    assert not (artifact_dir / "spirit-revalidation.json").exists()
+
+    applied = artifacts.apply_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+        expected_source_hash=preview["expectedSourceHash"],
+        revalidation_plan_hash=preview["revalidationPlanHash"],
+        user_approved=True,
+    )
+    repeated = artifacts.apply_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+        expected_source_hash=preview["expectedSourceHash"],
+        revalidation_plan_hash=preview["revalidationPlanHash"],
+        user_approved=True,
+    )
+
+    assert applied["status"] == "applied"
+    assert repeated["status"] == "already_applied"
+    assert artifacts.read_final_build_artifact_for_export(artifact_id) is not None
+    assert (artifact_dir / "manifest.json").read_bytes() == manifest_before
+    assert (artifact_dir / "build.xml").read_bytes() == xml_before
+
+
+@pytest.mark.parametrize(
+    ("build", "expected_outcome"),
+    [
+        (
+            {
+                "spiritAvailable": 150,
+                "spiritReservedCapped": 150,
+                "spiritUnreserved": -227,
+                "spiritRequested": 377,
+                "spiritOverBy": 227,
+                "spiritUsed": 377,
+                "activeWeaponSet": 2,
+            },
+            "spirit_budget_exceeded",
+        ),
+        (None, "legacy_spirit_unverified"),
+    ],
+)
+def test_legacy_artifact_failed_spirit_revalidation_remains_ineligible(
+    tmp_path,
+    monkeypatch,
+    build,
+    expected_outcome,
+):
+    artifact_id, _artifact_dir = _legacy_artifact(tmp_path, monkeypatch)
+    factory = lambda: _SpiritReadbackEngine(build)  # noqa: E731
+    preview = artifacts.preview_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+    )
+    applied = artifacts.apply_final_artifact_spirit_revalidation(
+        factory,
+        artifact_id=artifact_id,
+        expected_source_hash=preview["expectedSourceHash"],
+        revalidation_plan_hash=preview["revalidationPlanHash"],
+        user_approved=True,
+    )
+
+    assert preview["proposedResult"]["outcome"] == expected_outcome
+    assert applied["revalidation"]["deliveryEligible"] is False
+    assert artifacts.read_final_build_artifact_for_export(artifact_id) is None
+    listed = artifacts.list_final_build_artifacts()
+    assert listed["artifacts"][0]["spiritValidationStatus"] == expected_outcome

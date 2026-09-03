@@ -24,6 +24,101 @@ def _source() -> pg.GraphSource:
     )
 
 
+def test_pinned_pob_minion_payload_types_are_endpoint_scoped(tmp_path: Path):
+    source = pg.GraphSource(
+        source_id="pob:skill_payload_types",
+        kind="pinned_pob_skill_payload_types",
+        source_file="Data/Skills/fixture.lua",
+    )
+    lua = tmp_path / "fixture.lua"
+    lua.write_text(
+        '''skills["SummonFixturePlayer"] = {
+\tname = "Fixture Minion",
+\tskillTypes = { [SkillType.Minion] = true, [SkillType.CreatesMinion] = true, },
+\tminionSkillTypes = { [SkillType.Attack] = true, [SkillType.Damage] = true, },
+}
+skills["OrdinaryPlayer"] = {
+\tname = "Ordinary",
+\tskillTypes = { [SkillType.Attack] = true, },
+}
+''',
+        encoding="utf-8",
+    )
+
+    result = pg.ingest_pob_minion_payload_types(
+        [lua],
+        source=source,
+        known_skill_keys={"skill:SummonFixturePlayer", "skill:OrdinaryPlayer"},
+    )
+
+    assert len(result.requirement_facts) == 1
+    fact = result.requirement_facts[0]
+    assert fact.component_key == "skill:SummonFixturePlayer"
+    assert fact.level_or_stage == "minion_payload_types"
+    assert fact.requirements == {
+        "endpoint_kind": "minion_payload",
+        "skill_types": ["Attack", "Damage"],
+    }
+
+
+def test_support_candidate_uses_minion_payload_types_without_widening_summon():
+    source = _source()
+    skill_key = "skill:SummonFixturePlayer"
+    support_key = "support:FixtureAttackSupport"
+    contract_key = "skill:FixtureAttackSupportContract"
+    snapshot = pg.build_snapshot(
+        sources=(source,),
+        nodes=(
+            pg.GraphNode(skill_key, "active_skill", "Fixture Minion", (source.source_id,)),
+            pg.GraphNode(support_key, "support_gem", "Attack Support", (source.source_id,)),
+            pg.GraphNode(contract_key, "active_skill", "Attack Contract", (source.source_id,)),
+            pg.GraphNode("skill_type:minion", "skill_type", "Minion", (source.source_id,)),
+        ),
+        edges=(
+            pg.GraphEdge("has_type", skill_key, "skill_type:minion", (source.source_id,)),
+            pg.GraphEdge("grants_skill", support_key, contract_key, (source.source_id,)),
+        ),
+        requirement_facts=(
+            pg.RequirementFact(
+                component_key=contract_key,
+                level_or_stage="support_contract",
+                requirements={
+                    "allowed_types_expr": ["Attack"],
+                    "excluded_types_expr": [],
+                    "supports_gems_only": False,
+                },
+                source_refs=(source.source_id,),
+            ),
+            pg.RequirementFact(
+                component_key=skill_key,
+                level_or_stage="minion_payload_types",
+                requirements={
+                    "endpoint_kind": "minion_payload",
+                    "skill_types": ["Attack", "Damage"],
+                },
+                source_refs=(source.source_id,),
+            ),
+        ),
+    )
+
+    active = pg.support_skill_candidate(
+        snapshot=snapshot,
+        support_key=support_key,
+        skill_key=skill_key,
+    )
+    payload = pg.support_skill_candidate(
+        snapshot=snapshot,
+        support_key=support_key,
+        skill_key=skill_key,
+        endpoint_kind="minion_payload",
+    )
+
+    assert active.status == "unsupported"
+    assert active.facts["endpoint_kind"] == "active_skill"
+    assert payload.status == "known"
+    assert payload.facts["endpoint_kind"] == "minion_payload"
+
+
 def test_source_claims_preserve_unknown_and_not_applicable_without_fake_versions():
     source = _source()
 

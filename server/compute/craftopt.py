@@ -15,13 +15,17 @@ the sum of those steps.
 
 from __future__ import annotations
 
+from copy import deepcopy
+import threading
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from ..judge import hard_legality
-from ..knowledge import item_legality
+from ..knowledge import item_legality, itemparse
 from ..runtime import craft_receipts
 from . import completeness, itemopt
 from .engine import PobEngine
+from .state import build_state_hash
 
 _num = itemopt._num
 _roll = itemopt._roll
@@ -42,7 +46,8 @@ def _build_item(
     parts = ["Rarity: Rare", "Crafted Item", base]
     if item_level is not None:
         parts.append(f"Item Level: {int(item_level)}")
-    implicits: list[str] = []
+    parts.extend(itemopt._generated_item_property_lines(base, ilvl=item_level))
+    implicits: list[str] = itemopt._generated_item_implicit_lines(base, ilvl=item_level)
     if runes:
         parts.append("Sockets: " + " ".join("S" for _ in runes))
         for name, _ in runes:
@@ -64,7 +69,89 @@ def _build_item(
 
 def _bare(base: str, item_level: int | None = None) -> str:
     level_line = f"Item Level: {int(item_level)}\n" if item_level is not None else ""
-    return f"Rarity: Rare\nCrafted Item\n{base}\n{level_line}--------\n"
+    properties = "".join(
+        f"{line}\n" for line in itemopt._generated_item_property_lines(base, ilvl=item_level)
+    )
+    implicit_lines = itemopt._generated_item_implicit_lines(base, ilvl=item_level)
+    implicit_text = (
+        f"Implicits: {len(implicit_lines)}\n" + "\n".join(implicit_lines) + "\n"
+        if implicit_lines
+        else "--------\n"
+    )
+    return f"Rarity: Rare\nCrafted Item\n{base}\n{level_line}{properties}{implicit_text}"
+
+
+def _without_socketed_runes(raw: str) -> str:
+    """Remove only socket/rune declarations while preserving every ordinary item line."""
+
+    lines = str(raw or "").replace("\r\n", "\n").splitlines()
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        value = lines[index].strip()
+        if value.startswith("Sockets:") or value.startswith("Rune:"):
+            index += 1
+            continue
+        if value.startswith("Implicits:"):
+            try:
+                count = int(value.split(":", 1)[1].strip())
+            except ValueError:
+                count = 0
+            implicits = lines[index + 1 : index + 1 + count]
+            kept = [line for line in implicits if not line.strip().startswith("{rune}")]
+            if kept:
+                output.append(f"Implicits: {len(kept)}")
+                output.extend(kept)
+            else:
+                output.append("--------")
+            index += 1 + count
+            continue
+        if value.startswith("{rune}"):
+            index += 1
+            continue
+        output.append(lines[index])
+        index += 1
+    return "\n".join(output)
+
+
+def _augment_item_with_runes(
+    raw: str,
+    runes: list[tuple[str, list[str]]],
+    *,
+    socket_capacity: int | None = None,
+) -> str:
+    existing_capacity = int(itemparse.semantic_item_structure(raw).get("runeSockets") or 0)
+    capacity = max(existing_capacity, len(runes), int(socket_capacity or 0))
+    base = _without_socketed_runes(raw)
+    lines = base.splitlines()
+    insertion = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("Implicits:") or set(line.strip()) == {"-"}
+        ),
+        len(lines),
+    )
+    declarations = ["Sockets: " + " ".join("S" for _ in range(capacity))]
+    declarations.extend(f"Rune: {name}" for name, _mods in runes)
+    lines[insertion:insertion] = declarations
+    rune_lines = ["{rune}" + mod for _name, mods in runes for mod in mods]
+    implicit_index = next(
+        (index for index, line in enumerate(lines) if line.strip().startswith("Implicits:")),
+        None,
+    )
+    if implicit_index is not None:
+        current = int(lines[implicit_index].split(":", 1)[1].strip())
+        lines[implicit_index] = f"Implicits: {current + len(rune_lines)}"
+        lines[implicit_index + 1 + current : implicit_index + 1 + current] = rune_lines
+    else:
+        separator = next(
+            (index for index, line in enumerate(lines) if set(line.strip()) == {"-"}),
+            len(lines),
+        )
+        replacement = [f"Implicits: {len(rune_lines)}", *rune_lines, "--------"]
+        lines[separator : separator + (1 if separator < len(lines) else 0)] = replacement
+    return "\n".join(lines)
 
 
 def craft_item(
@@ -79,6 +166,8 @@ def craft_item(
     use_essences: bool = True,
     use_corruption: bool = True,
     keep_resists_capped: bool = True,
+    elemental_resist_target: int | None = None,
+    chaos_resist_target: int | None = None,
 ) -> dict[str, Any]:
     """Craft the best-in-slot item using the full crafting system (runes + essences + corruption).
 
@@ -161,6 +250,8 @@ def craft_item(
             extra_mods=extra if (extra["prefixes"] or extra["suffixes"]) else None,
             special_affix_sources=essence_by_line or None,
             ilvl=ilvl,
+            elemental_resist_target=elemental_resist_target,
+            chaos_resist_target=chaos_resist_target,
         )
         essence_candidates_rejected = bool(
             not opt.get("ok")
@@ -199,10 +290,25 @@ def craft_item(
         chosen_runes: list[tuple[str, list[str]]] = []
         rune_options: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
         rune_cands: list[tuple[str, list[str]]] = []
+        resistance_profile = itemopt.gear_stage_profile(
+            build.get("level"),
+            stage="auto",
+            elemental_resist_target=elemental_resist_target,
+            chaos_resist_target=chaos_resist_target,
+        )
+        current_resists = engine.get_defenses().get("resistances") or {}
         for r in co.get("runes") or []:
             mod_lines = [
                 ml for ml in (r.get("mods") or []) if not str(ml).lower().startswith("bonded:")
             ]
+            remaining = itemopt._without_satisfied_resistances(
+                [{"text": line} for line in mod_lines],
+                current=current_resists,
+                elemental_target=int(resistance_profile["elementalResistTarget"]),
+                chaos_target=int(resistance_profile["chaosResistTarget"]),
+            )
+            if mod_lines and not remaining:
+                continue
             if mod_lines:
                 candidate = (str(r.get("name")), mod_lines)
                 rune_cands.append(candidate)
@@ -424,3 +530,372 @@ def craft_item(
         out["metricBare"] = r2(rare_stats.get(metric))
         out["metricCrafted"] = r2(final_stats.get(metric))
     return out
+
+
+def optimize_item_sockets(
+    engine: PobEngine,
+    *,
+    slot: str,
+    goals: dict[str, float],
+    socket_count: int,
+    elemental_resist_target: int | None = None,
+    chaos_resist_target: int | None = None,
+) -> dict[str, Any]:
+    """Preserve one equipped ordinary item and optimize only its rune/soul-core sockets."""
+
+    slot = itemopt._canonical_slot(slot)
+    if socket_count not in {1, 2}:
+        return {"ok": False, "errorCode": "socket_count_out_of_range"}
+    weights = {str(key): float(value) for key, value in goals.items() if _num(value) and value > 0}
+    if not weights:
+        return {"ok": False, "error": "goals must map stat names to positive weights"}
+    keys = list(weights)
+    build = engine.get_build()
+    snapshot = engine.get_xml()
+    raw = completeness.equipped_item_text(snapshot, slot)
+    if not raw:
+        return {"ok": False, "errorCode": "equipped_item_not_found", "slot": slot}
+    structure = itemparse.semantic_item_structure(raw)
+    if structure.get("corrupted"):
+        return {
+            "ok": False,
+            "errorCode": "incremental_socket_corrupted_item_unsupported",
+            "slot": slot,
+        }
+    item_level = structure.get("itemLevel")
+    if not isinstance(item_level, int):
+        return {"ok": False, "errorCode": "equipped_item_level_missing", "slot": slot}
+
+    base_raw = _without_socketed_runes(raw)
+    prepared_receipt: dict[str, Any] | None = None
+    final = base_raw
+    selected_sources: list[dict[str, Any]] = []
+    baseline_audit = hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(build, snapshot)
+    )
+    try:
+        engine.add_item(base_raw, slot=slot)
+        options = engine.crafting_options(slot)
+        if not isinstance(options, dict):
+            return {
+                "ok": False,
+                "errorCode": "invalid_crafting_options_result",
+                "slot": slot,
+            }
+        if not options.get("ok"):
+            return options
+        profile = itemopt.gear_stage_profile(
+            build.get("level"),
+            stage="auto",
+            elemental_resist_target=elemental_resist_target,
+            chaos_resist_target=chaos_resist_target,
+        )
+        current_resists = engine.get_defenses().get("resistances") or {}
+        candidates: list[tuple[str, list[str], dict[str, Any]]] = []
+        for option in options.get("runes") or []:
+            mods = [
+                str(line)
+                for line in (option.get("mods") or [])
+                if line and not str(line).casefold().startswith("bonded:")
+            ]
+            remaining = itemopt._without_satisfied_resistances(
+                [{"text": line} for line in mods],
+                current=current_resists,
+                elemental_target=int(profile["elementalResistTarget"]),
+                chaos_target=int(profile["chaosResistTarget"]),
+            )
+            if mods and not remaining:
+                continue
+            if mods:
+                candidates.append((str(option.get("name") or ""), mods, dict(option)))
+        if not candidates:
+            return {"ok": True, "changed": False, "slot": slot, "reason": "no_socket_options"}
+
+        baseline_stats = engine.get_stats(keys)["stats"]
+        denom = {key: max(abs(baseline_stats.get(key) or 0.0), 1.0) for key in keys}
+
+        def score(stats: dict[str, Any]) -> float:
+            return sum(
+                weight * (stats.get(key) or 0.0) / denom[key] for key, weight in weights.items()
+            )
+
+        chosen: list[tuple[str, list[str], dict[str, Any]]] = []
+        current_score = score(baseline_stats)
+        for _ in range(socket_count):
+            texts = [
+                _augment_item_with_runes(
+                    base_raw,
+                    [(name, mods) for name, mods, _option in [*chosen, candidate]],
+                    socket_capacity=socket_count,
+                )
+                for candidate in candidates
+            ]
+            results = engine.eval_items(slot, texts, keys=keys).get("results") or []
+            ranked = [
+                (score(stats if isinstance(stats, dict) else {}), candidate)
+                for stats, candidate in zip(results, candidates)
+            ]
+            if not ranked:
+                break
+            best_score, best = max(ranked, key=lambda value: value[0])
+            if best_score <= current_score + 1e-9:
+                break
+            chosen.append(best)
+            current_score = best_score
+        if not chosen:
+            return {
+                "ok": True,
+                "changed": False,
+                "slot": slot,
+                "reason": "no_beneficial_socket_option",
+            }
+
+        final = _augment_item_with_runes(
+            base_raw,
+            [(name, mods) for name, mods, _option in chosen],
+            socket_capacity=socket_count,
+        )
+        selected_sources = [
+            {"name": name, "lines": mods, "option": option} for name, mods, option in chosen
+        ]
+        runtime_context = craft_receipts.current_runtime_context(getattr(engine, "info", None))
+        prepared_receipt = craft_receipts.prepare_receipt(
+            final,
+            slot=slot,
+            item_level=item_level,
+            perfect_essences=[],
+            runes=selected_sources,
+            corruption=None,
+            runtime_context=runtime_context,
+        )
+        legality = item_legality.audit_item(
+            final,
+            slot=slot,
+            require_special_provenance=True,
+            prepared_receipt=prepared_receipt,
+        )
+        if not legality.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "generated_item_legality_check_failed",
+                "slot": slot,
+                "legalityCheck": legality,
+            }
+        engine.add_item(final, slot=slot)
+        final_xml = engine.get_xml()
+        canonical_final = completeness.equipped_item_text(final_xml, slot) or final
+        prepared_receipt = craft_receipts.prepare_receipt(
+            final,
+            canonical_item_text=canonical_final,
+            slot=slot,
+            item_level=item_level,
+            perfect_essences=[],
+            runes=selected_sources,
+            corruption=None,
+            runtime_context=runtime_context,
+        )
+        canonical_legality = item_legality.audit_item(
+            canonical_final,
+            slot=slot,
+            require_special_provenance=True,
+            prepared_receipt=prepared_receipt,
+        )
+        final_audit = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(
+                engine.get_build(),
+                final_xml,
+                item_legality_overrides={slot: canonical_legality},
+            )
+        )
+        regression = hard_legality.compare_audits_for_regression(baseline_audit, final_audit)
+        if not canonical_legality.get("ok") or regression["regressed"]:
+            return {
+                "ok": False,
+                "errorCode": "whole_build_legality_check_failed",
+                "slot": slot,
+                "roundTripLegalityCheck": canonical_legality,
+                "rejectionReasons": regression["reasons"],
+            }
+        final_stats = engine.get_stats(keys)["stats"]
+    finally:
+        engine.load_build_xml(snapshot)
+
+    if prepared_receipt is None:
+        return {"ok": False, "errorCode": "craft_receipt_prepare_failed"}
+    receipt = craft_receipts.persist_receipt(prepared_receipt)
+    if receipt.get("status") != "recorded":
+        return {"ok": False, "errorCode": receipt.get("errorCode") or "craft_receipt_write_failed"}
+    return {
+        "ok": True,
+        "changed": True,
+        "slot": slot,
+        "socketCount": len(selected_sources),
+        "socketCapacity": socket_count,
+        "filledSocketCount": len(selected_sources),
+        "remainingSocketCount": max(0, socket_count - len(selected_sources)),
+        "remainingDisposition": (
+            "no_positive" if len(selected_sources) < socket_count else "filled"
+        ),
+        "runes": [entry["name"] for entry in selected_sources],
+        "item": final,
+        "craftReceiptRef": receipt["craftReceiptRef"],
+        "itemFingerprint": receipt["itemFingerprint"],
+        "acceptedItemFingerprints": list(
+            (prepared_receipt or {}).get("acceptedItemFingerprints") or []
+        ),
+        "goals": weights,
+        "metricsBefore": {key: baseline_stats.get(key) for key in keys},
+        "metricsAfter": {key: final_stats.get(key) for key in keys},
+    }
+
+
+_SOCKET_DECISION_LOCK = threading.RLock()
+_SOCKET_BATCH_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, str]]] = WeakKeyDictionary()
+_SOCKET_ITEM_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, dict[str, str]]]] = (
+    WeakKeyDictionary()
+)
+_SOCKET_CARRY_STATES: WeakKeyDictionary[Any, dict[str, dict[str, Any]]] = WeakKeyDictionary()
+_SOCKET_DECISION_LIMIT_PER_ENGINE = 64
+
+
+def socket_batch_decisions_for_state(engine: Any, state_hash: str) -> dict[str, str]:
+    with _SOCKET_DECISION_LOCK:
+        try:
+            return deepcopy(
+                (_SOCKET_BATCH_DECISIONS.get(engine) or {}).get(state_hash) or {}
+            )
+        except TypeError:
+            return {}
+
+
+def carry_socket_decision_to_equipped_state(
+    engine: Any,
+    *,
+    input_state_hash: str,
+    output_state_hash: str,
+    slot: str,
+    item_fingerprint: str,
+) -> str | None:
+    """Carry one planned socket result only across its immediate item equip mutation."""
+
+    canonical = itemopt._canonical_slot(str(slot))
+    with _SOCKET_DECISION_LOCK:
+        pending_by_slot = (_SOCKET_ITEM_DECISIONS.get(engine) or {}).get(canonical) or {}
+        pending = pending_by_slot.get(str(item_fingerprint))
+        if not isinstance(pending, dict):
+            return None
+        source_state_hash = str(pending.get("sourceStateHash") or "")
+        if input_state_hash == source_state_hash:
+            accumulated: dict[str, str] = {}
+        else:
+            lineage = (_SOCKET_CARRY_STATES.get(engine) or {}).get(input_state_hash)
+            if not isinstance(lineage, dict) or lineage.get("sourceStateHash") != source_state_hash:
+                return None
+            accumulated = dict(lineage.get("decisions") or {})
+        decision = str(pending.get("decision") or "")
+        if not decision:
+            return None
+        accumulated[canonical] = decision
+        states = _SOCKET_BATCH_DECISIONS.setdefault(engine, {})
+        states[output_state_hash] = dict(accumulated)
+        while len(states) > _SOCKET_DECISION_LIMIT_PER_ENGINE:
+            states.pop(next(iter(states)))
+        carry_states = _SOCKET_CARRY_STATES.setdefault(engine, {})
+        carry_states[output_state_hash] = {
+            "sourceStateHash": source_state_hash,
+            "decisions": dict(accumulated),
+        }
+        while len(carry_states) > _SOCKET_DECISION_LIMIT_PER_ENGINE:
+            carry_states.pop(next(iter(carry_states)))
+        return decision
+
+
+def socket_decision_freshness(engine: Any, state_hash: str, slot: str) -> str:
+    """Return current/stale/missing for one slot's state- or item-bound socket decision."""
+
+    canonical = itemopt._canonical_slot(str(slot))
+    if canonical in socket_batch_decisions_for_state(engine, state_hash):
+        return "current"
+    with _SOCKET_DECISION_LOCK:
+        try:
+            state_decisions = _SOCKET_BATCH_DECISIONS.get(engine) or {}
+            item_decisions = _SOCKET_ITEM_DECISIONS.get(engine) or {}
+        except TypeError:
+            return "missing"
+        seen = any(canonical in values for values in state_decisions.values()) or bool(
+            item_decisions.get(canonical)
+        )
+    return "stale" if seen else "missing"
+
+
+def plan_item_sockets_batch(
+    engine: PobEngine,
+    *,
+    slot_socket_counts: dict[str, int],
+    goals: dict[str, float],
+    elemental_resist_target: int | None = None,
+    chaos_resist_target: int | None = None,
+) -> dict[str, Any]:
+    """Plan all requested ordinary-item sockets in one bounded MCP call."""
+
+    if not slot_socket_counts or len(slot_socket_counts) > 8:
+        return {"ok": False, "errorCode": "socket_batch_scope_invalid"}
+    snapshot_hash = build_state_hash(engine.get_xml())
+    results: list[dict[str, Any]] = []
+    decisions: dict[str, str] = {}
+    for raw_slot, count in slot_socket_counts.items():
+        slot = itemopt._canonical_slot(str(raw_slot))
+        result = optimize_item_sockets(
+            engine,
+            slot=slot,
+            goals=goals,
+            socket_count=int(count),
+            elemental_resist_target=elemental_resist_target,
+            chaos_resist_target=chaos_resist_target,
+        )
+        if not result.get("ok"):
+            decision = "failed"
+        elif result.get("changed"):
+            decision = (
+                "partial_no_positive"
+                if int(result.get("remainingSocketCount") or 0) > 0
+                else "socketed"
+            )
+        elif result.get("reason") == "no_beneficial_socket_option":
+            decision = "no_positive"
+        else:
+            decision = "not_applicable"
+        decisions[slot] = decision
+        results.append({"slot": slot, "decision": decision, **result})
+    with _SOCKET_DECISION_LOCK:
+        engine_decisions = _SOCKET_BATCH_DECISIONS.setdefault(engine, {})
+        engine_decisions[snapshot_hash] = dict(decisions)
+        while len(engine_decisions) > _SOCKET_DECISION_LIMIT_PER_ENGINE:
+            engine_decisions.pop(next(iter(engine_decisions)))
+        item_decisions = _SOCKET_ITEM_DECISIONS.setdefault(engine, {})
+        for result in results:
+            fingerprints = {
+                str(value)
+                for value in (
+                    result.get("acceptedItemFingerprints")
+                    or [result.get("itemFingerprint")]
+                )
+                if value
+            }
+            if not fingerprints:
+                continue
+            slot_decisions = item_decisions.setdefault(str(result["slot"]), {})
+            for fingerprint in fingerprints:
+                slot_decisions[fingerprint] = {
+                    "decision": str(result["decision"]),
+                    "sourceStateHash": snapshot_hash,
+                }
+            while len(slot_decisions) > _SOCKET_DECISION_LIMIT_PER_ENGINE:
+                slot_decisions.pop(next(iter(slot_decisions)))
+    return {
+        "ok": all(result.get("ok") for result in results),
+        "stateHash": snapshot_hash,
+        "results": results,
+        "decisions": decisions,
+        "readOnly": True,
+    }

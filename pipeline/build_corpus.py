@@ -32,6 +32,9 @@ SOURCE_FILES = [
 ]
 # Uniques (with full readable mods) come from the vendored PoB data, not RePoE.
 UNIQUES_DIR = REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src" / "Data" / "Uniques"
+GENERATED_UNIQUES_FILE = (
+    REPO_ROOT / "data" / "physical_graph" / "uniques" / "generated_uniques.lua"
+)
 # Build-relevant mod domains (skip monster/area/heist/etc.).
 MOD_DOMAINS = {"item", "flask"}
 
@@ -94,8 +97,13 @@ def clean_mod_line(t: str) -> str:
 def parse_uniques() -> list[dict]:
     """Parse PoB's Uniques/*.lua [[ ... ]] blocks into readable unique records."""
     out: list[dict] = []
-    for path in sorted(UNIQUES_DIR.glob("*.lua")):
-        item_type = path.stem
+    paths = list(sorted(UNIQUES_DIR.glob("*.lua")))
+    if GENERATED_UNIQUES_FILE.exists():
+        # The generated export carries the complete variant blocks; prefer it if a future static
+        # file also exposes a reduced entry with the same display name.
+        paths.insert(0, GENERATED_UNIQUES_FILE)
+    for path in paths:
+        generated = path == GENERATED_UNIQUES_FILE
         for block in BLOCK_RE.findall(path.read_text("utf-8")):
             lines = [
                 ln
@@ -106,6 +114,13 @@ def parse_uniques() -> list[dict]:
                 continue
             name = clean_mod_line(lines[0])
             base = clean_mod_line(lines[1])
+            item_type = (
+                "jewel"
+                if generated and "diamond" in base.casefold()
+                else "generated"
+                if generated
+                else path.stem
+            )
             text = "\n".join(clean_mod_line(ln) for ln in lines)
             out.append(
                 {

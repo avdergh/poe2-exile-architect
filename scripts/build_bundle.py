@@ -122,12 +122,17 @@ def main() -> int:
 
     research_seed = ROOT / "data" / "mature_build_learning" / "release.sqlite"
     if research_seed.is_file():
+        from server.knowledge import mature_learning
+
+        mature_learning.validate_release_seed(research_seed)
         _copy(
             research_seed,
             stage / "data" / "mature_build_learning" / "release.sqlite",
         )
     else:
-        print("NOTE: Research Memory release seed missing — Create Family recall will start empty.")
+        raise FileNotFoundError(
+            "Research Memory release seed missing; release bundles require a validated global seed"
+        )
 
     learning_seed = ROOT / "data" / "comparative_learning" / "learning-memory.seed.jsonl"
     if learning_seed.is_file():

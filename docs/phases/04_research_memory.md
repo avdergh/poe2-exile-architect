@@ -12,7 +12,7 @@
 知识/方法则在开发态手动回填本文档。`research-notes/` 与这两份文档是不同产物，不再互为替身。
 继续遵守单样本 observation、组内 pattern 和跨来源通用规律的证据分层。
 
-下一版深度 memory MVP 采用两层持久化方向：一次研究先按知识单元保存一组聚焦、安全的
+当前 0.5.0 深度 memory 采用两层持久化：一次研究先按知识单元保存一组聚焦、安全的
 `DeepResearchRecord`，再提炼 fragment/semantic edge/build pattern 作为召回索引。同一案例通过
 `research_group_id` 聚合，完整性由记录组共同保证；单条记录不能膨胀成整份案例报告。现有 fragment
 schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构化，也应先进入聚焦记录，后续再决定
@@ -21,13 +21,26 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 
 当前实现进度：
 
-- `deep_research_records` SQLite 存储和 strict `DeepResearchRecord` 合同：已完成；
+- SQLite schema 5、`ResearcherOutput` 4/5 双读与 6 新写、`DeepResearchRecord` schema 1 双读与
+  schema 2 新写：已完成；
+- canonical 以 `(knowledge_scope, knowledge_key)` 隔离；identity v2 纳入 gearSubjects 与
+  skill/support/host topology，同批和 DB active projection collision 均在写入前失败：已完成；
+- BuildFamily 的可变元数据/evidence 以 `(knowledge_scope, build_family_key)` 隔离；resolver、merge、
+  查询统计和 seed 均不得让 Local 改写 Global：已完成；
+- evidence 保存 accepted projection hash 与 source state；Create 授权单位固定为
+  `(knowledgeScope, sourceCaseRef)`，还必须有同 scope source provenance 与 scoped Family，
+  active/state-agnostic 才可用：已完成；
+- `create_compact` 使用唯一 retrieval session、单 cursor、固定 memory revision 和 ≤64 KiB page；
+  完整 `0..terminal` receipt 链才授权 Create；任意位置单项超限在写 session 前失败：已完成；
+- 单案例 acceptance 以 `BEGIN IMMEDIATE` 将 pattern/deep/edge/write receipt/一次 revision 原子提交，
+  queue 与 intake ledger 从 receipt 幂等收尾：已完成；
 - `propose_deep_research_records` MCP 候选校验工具：已完成；队列研究只由 `accept` 入库；
 - `query_research_memory(detail_level=summary|record)` 两级召回：已完成；
 - `BuildFamily`（升华 + 核心主/副技能）归类、kind-specific `knowledge_key`、跨 source canonical
   knowledge upsert 和逐来源 evidence：已完成；support、装备、防御和资源方案保留为 Family 内知识；
-- 历史 `DeepResearchRecord` 高置信回填：可识别记录归入 Family，同知识选择信息最完整的 canonical，
-  其他记录以 `deprecated/superseded_by_id` 保留审计；无法可靠识别的旧记录不强行合并；
+- 历史 `DeepResearchRecord` 默认 schema1/projection unknown/state unknown，不授权 Create。旧 Family
+  backfill 只允许纯 legacy global 集合；存在 schema2 或 local lane 时失败关闭，恢复走 v3
+  supplement/revalidation：已完成；
 - `/poe-bd-research` Controller、显式 `/poe-bd-research-worker` 单案流程、lease-bound worker brief
   和提交期 review contract：已完成；
 - 发布插件的 queue/claim/read/review/accept 产品链路已改为 typed Research MCP：新 run 位于
@@ -88,8 +101,9 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
    不得把"加等价行"当作修复——对已确定性归一的变体写行是零行为变化。
    `skill_package` / `mechanic_chain` 记录必须声明至少一个 `primary_damage` 组件；
   身份相同的新研究自动归入既有 Family（不新建 sibling 档案），超集主技能集合会扩展既有 Family
-  并合并其记录。`skill_package` 用 `supportPackages` 保存技能到辅助的归属，同技能不同辅助包保持
-  不同知识单元。无图节点的资源方式用 `resourceMechanisms` 形成轻量身份。
+  并合并其记录。schema2 的任何记录只要结构化包含 resolved support，就用 `supportPackages` 把每个
+  support 放入来源导出明确给出的根技能 socket package；同技能不同辅助包保持不同知识单元。无图节点的资源方式用
+  `resourceMechanisms` 形成轻量身份。
   `unkeyedDeepRecordCount > 0` 时只能报告 partial，不能报告 clean。
 - 签名词缀（极端掷骰 "Rolls only the minimum or maximum Damage value"、最低抗性伤害、元素地面
   交互、implicit "Allocates <passive>"、"Grants Skill: Level N"、Surpassing 额外投射、充能保留
@@ -149,7 +163,7 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
 
 - `ResearcherOutput schema_version=4` 基础合同、strict proposal schema、typed `context_requirements`
   和 structured rejection envelope。
-- 当前深度提取使用向后兼容的 `schema_version=5`，新增聚焦 `DeepResearchRecord`。
+- 当前深度新写使用 `schema_version=6` + record schema 2；schema 4/5 与 record schema 1 继续双读。
 - `build_research_packet` transient packet helper：raw PoB code/XML 只允许临时使用，支持
   tempfile 前缀目录、TTL 和清理。
 - `query_research_memory`、`propose_research_fragments`、`append_evidence_to_fragment`、
@@ -306,8 +320,9 @@ target key 与 relation；正式 accept 在写事务中重新解析。组件 dis
 filled、empty、socketed-unallocated 与 other-spec，装备珠宝孔不能抵扣树槽。
 
 调试与上下文成本合同：copy-safety 派生错误带安全 originLoc；`--only-record` 同步裁剪关联 audit、
-candidate 与 edge；Worker 宽查 Memory 使用 summary/create_compact，选中 Family 后按 record ID 深读；
-clean validate/accept 使用 `--compact`，任何 deferred/unresolved/gap/failure 自动回退完整报告。
+candidate 与 edge；Worker 使用 full 响应做跨案例对照并按 record ID 深读；create_compact 只供
+Create 的单 lane 授权。clean
+validate/accept 使用 compact 摘要，任何 deferred/unresolved/gap/failure 自动回退完整报告。
 
 实际 skill 保留 `docs/research/EXTRACTION_METHOD.md` 的精简执行版，并带一个脱敏合格机制链示例和
 一个浅层反例；worker prompt 不重复整套方法和 schema。没有 resolver 工具时，worker 仍应提交具体组件名称、职责和查询词；
@@ -322,14 +337,21 @@ accept gate 负责解析稳定 ID。`skill_package`、`mechanic_chain`、`rotati
 
 ## Create 精确 Family 召回合同
 
+Family discovery 以 class/ascendancy 为入口；用户指定技能仅作为同时匹配 primary/secondary 的
+`related_skill_key`。响应显式区分 `no_family` 与 `known_family_not_authorized`，并返回
+`primarySkillKeys/createEligibility`。选中 Family 后的授权查询只用稳定 `buildFamilyKey`。
+
 Family discovery 仍只返回适合比较的轻量摘要。`supportingRecordIds` 不是简单取 evidence 排名前几
 条，而是优先覆盖 `mechanic_chain / rotation / resource_engine / failure_mode` 等不同机制职责，
 避免高证据的装备记录把关键轮转或失败场景完全挤出候选摘要。
 
-选中 Family 后，`query_research_memory` 的 `limit` 只表示首轮展开多少条记录。服务端不能再把
-调用方请求暗中缩小为六条记录或六条关联上下文。精确 Family 响应还必须返回：
+选中 Family 后，Create 查询在固定 memory revision 上建立 actual-content manifest，按单一 cursor
+分页；每页最终 UTF-8 JSON 不超过 65,536 bytes。`limit` 只影响候选选择，不代表完整授权；只有
+同一 session 的 `0..terminal` 页链才完整。精确 Family 响应还必须返回：
 
 - `familyRecordCoverage`：当前精确版本下合格记录总数、已展开数量、各 record kind 数量和是否完整；
+- `requiredDeepReadRecordIds`：从支持包、非 optional 装备职责、资源机制、失败条件和核心机制代表
+  记录派生；Create draft 缺读任一项都会失败；
 - `familyRecordIndex`：本轮未展开记录的安全索引，包含 ID、类型、标题、摘要和稳定组件 key；
 - `familyPremiseCatalog`：`mechanic_chain / rotation / resource_engine / failure_mode` 中的条件与
   失败条件，每项使用稳定 `premiseId`；
@@ -431,10 +453,14 @@ case 研究都应执行：
 5. **silent / unavailable 不丢结论**：Agent 阅读机制候选后判断为 silent，或工具返回 unavailable，直接以
    样本证据与引擎读回为准写入记录；不需要因 wiki silent 额外标注 caveat 或 verification task
    （wiki 佐证不是要求，论坛 BD 多数机制没有对应 wiki 页面）。
-6. **所有启用技能组都要盘点，但不机械卡死**：Family 主技能、核心副技能以及结论实际依赖的
-   高影响组用 `supportPackages` / `supportCoverageExceptions` 保存精确归属；Gathering Storm /
-   Herald of Ice / Tempest Bell 等低影响、internal-id、multi-active 或无法唯一解析的非核心组可作为
-   content / caveat / verification task 保留，不因未完整结构化而单独阻断 clean。
+6. **所有启用技能组都要盘点**：每组写 `sourceSkillGroupReviews` 的 research/support disposition、
+   affected record 与原因。Family 主技能、核心副技能以及结论依赖组用 `supportPackages` 的
+   `sourceGroupRef + rootSkillRef` 保存精确根技能插槽关系，并让每个 `supportKey` 对应同序的
+   `socketedItemRef`。不同根技能下的同类辅助以不同物理实例 ref 消歧；同一实例不得重复归属。
+   这些 source-local refs 验收后丢弃，durable identity 仍只包含根技能与 support stable keys。
+   新 review 的 `deliveryRole` 固定为 `direct`；socketed payload 的 host/payload 机制单独记录。
+   低影响/internal-id 组可明确 `not_relevant` 或
+   `source_has_no_supports`，但 `needs_followup/source_coverage_gap` 必须保持 partial，不能 clean。
 7. **因果方向自查**：每个 resource_engine / mechanic_chain 写前核对生成 vs 消费方向（Rend 是
    Power Charge 消费者而非生成器）；与既有同组件 Family 记录对照。
 8. **未解析组件逐个 search**：任何 unresolved 计数出现时，先对该组件名执行一次
@@ -462,8 +488,15 @@ Research Memory 的 durable writer 只有 accept。修正既有记录两条路�
   `calibrate_research_contract_v1`（按 source_ref spec 重建记录 + 旧记录
   `deprecated + superseded_by_id` + force backfill，带 backup 与原子事务），以及
   `remove_exclusive_research_sources` / `cleanup_legacy_research_memory`；CLI 入口
-  `scripts/calibrate_phase4_research_contract.py`。适合批量确定性修正（装备职责、support
-  归属、availability 标记），不适合需要重新推理的方向性修正。
+`scripts/calibrate_phase4_research_contract.py`。适合批量确定性修正（装备职责、support
+归属、availability 标记），不适合需要重新推理的方向性修正。
+
+需要重新推理的 deep-record 合并使用 `ResearchMergePlan v1`：模型先提出逐字段方案，独立 reviewer
+复核，服务返回有界召回/evidence preview，用户批准后才按 Memory revision + plan hash CAS 写入。
+代码不得按标题、embedding 或组件共现自动决定合并。Reviewer 对陌生、版本敏感或冲突机制必须联网
+查 GGG、pinned PoB 或固定 revision Wiki；无法得到权威结论时保持 distinct。普通 partial case 仍按
+记录粒度入库：有效记录可召回，失败 proposal 被 deferred，安全 open question/gap 可保留，不能因一颗
+错误辅助禁用整个案例。
 
 ### 2026-08-07 修正记录（Tempest Flurry Hollow Palm 案例）
 

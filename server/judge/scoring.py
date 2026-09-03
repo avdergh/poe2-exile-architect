@@ -274,12 +274,16 @@ def score_metrics(
         band,
     )
     recovery_value = _score_recovery(metrics, caveats, breakdown, keystones, source_context, band)
-    mana_sustain = (breakdown.get("recovery") or {}).get("manaSustain") or {}
+    recovery_breakdown = breakdown.get("recovery") or {}
+    mana_sustain = recovery_breakdown.get("manaSustain") or {}
+    life_sustain = recovery_breakdown.get("lifeSustain") or {}
     if mana_sustain.get("classification") == "flask_assisted_required":
         quality_warnings.append("mana_flask_dependency")
         caveats.append("long_boss_mana_sustain_risk_caveat")
     elif mana_sustain.get("classification") == "unsustainable":
         playability_failures.append("mana_sustain_unsustainable")
+    if life_sustain.get("classification") == "unsustainable":
+        playability_failures.append("life_sustain_unsustainable")
     mobility_value = _score_mobility(metrics, caveats, breakdown, source_context, band)
     mobility_blocked = "mobility" in blocked
     if "mobility" in blocked:
@@ -738,7 +742,7 @@ def _score_recovery(
     observed_score = target_log_score(total_recovery, quality_floor=quality_floor, target=target)
     score = observed_score
     score_policy = "dynamic_recovery_pool"
-    mana_sustain = sustain.classify_mana_sustain(
+    resource_sustain = sustain.classify_resource_sustain(
         metrics,
         mana_flask_equipped=(
             metrics.get("ManaFlaskEquipped")
@@ -756,7 +760,9 @@ def _score_recovery(
         "sourceMetric": "dynamic_recovery_pool",
         "scorePolicy": score_policy,
         "diagnostics": _recovery_diagnostics(metrics, life_pool_source, primary_pool_source),
-        "manaSustain": mana_sustain,
+        "manaSustain": resource_sustain["manaSustain"],
+        "lifeSustain": resource_sustain["lifeSustain"],
+        "resourceSustain": resource_sustain,
     }
     return score
 

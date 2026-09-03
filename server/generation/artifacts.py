@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,18 +13,20 @@ from typing import Any
 from uuid import uuid4
 import xml.etree.ElementTree as ET
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from server import paths
-from server.compute import completeness
+from server.compute import completeness, pob_structure
 from server.compute.state import build_state_hash
 from server.knowledge import copy_safety
-from server.judge import evaluator
+from server.judge import evaluator, hard_legality
+from server.runtime.file_lock import interprocess_file_lock
 
 from . import evaluation_snapshots, models, run_store
 
 
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
+SPIRIT_REVALIDATION_SCHEMA_VERSION = 1
 
 
 class FinalBuildArtifactManifest(models.StrictModel):
@@ -38,6 +42,11 @@ class FinalBuildArtifactManifest(models.StrictModel):
     tested_skill_groups: list[models.TestedSkillGroup]
     judge_report: models.JudgeAdvisoryReport
     version_context: models.VersionContext
+    hard_legality_audit_version: str | None = None
+    delivery_status: str = "candidate"
+    create_quality_checklist: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    pob_round_trip: dict[str, Any] = Field(default_factory=dict)
+    lifecycle_verification: dict[str, Any] = Field(default_factory=dict)
     artifact_selection_ref: str | None = None
     selection_outcome: str = "latest_passing_attempt_selected"
     created_at: str
@@ -108,6 +117,22 @@ def save_final_build_artifact(
     receipt = receipts[attempt_index]
     if receipt.get("candidateId") != candidate_id:
         return models.rejected("trusted_evaluation_mismatch")
+    mechanism_required = bool(
+        ((bound_run.manifest or {}).get("experimentContext") or {}).get(
+            "mechanismBlueprintRequired"
+        )
+    )
+    if mechanism_required:
+        current_binding = run_store.current_mechanism_binding(bound_run)
+        if current_binding is None or receipt.get("mechanismBinding") != current_binding:
+            return models.rejected("trusted_evaluation_mechanism_binding_mismatch")
+    if receipt.get("schemaVersion") not in {2, 3}:
+        return models.rejected("legacy_evaluation_requires_rejudge")
+    audit_version = str(
+        (receipt.get("hardLegalityAudit") or {}).get("auditVersion") or ""
+    )
+    if audit_version not in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS:
+        return models.rejected("legacy_evaluation_requires_rejudge")
     try:
         state = models.TransientBuildStateRef.model_validate(receipt.get("transientBuildState"))
         judge = models.JudgeAdvisoryReport.model_validate(receipt.get("judgeAdvisoryReport"))
@@ -126,6 +151,11 @@ def save_final_build_artifact(
     ):
         return models.rejected("trusted_evaluation_mismatch")
 
+    target_level = int(state.safe_summary.get("level") or 0)
+    # A hard-legal but incomplete build may still be exported as a technical candidate. The
+    # trusted receipt and manifest retain ``deliveryStatus=candidate`` so no downstream surface can
+    # honestly relabel it as a recommended finished build.
+
     snapshot = evaluation_snapshots.read(
         run_id=bound_run.run_id,
         attempt_index=attempt_index,
@@ -133,7 +163,7 @@ def save_final_build_artifact(
         source_hash=str(state.source_hash),
     )
     expected_semantic_hash = state.semantic_state_hash
-    if receipt.get("schemaVersion") == 2:
+    if receipt.get("schemaVersion") in {2, 3}:
         legality = receipt.get("hardLegalityAudit") or {}
         if (
             legality.get("status") != "passed"
@@ -191,6 +221,12 @@ def save_final_build_artifact(
     blockers = completeness.artifact_blockers(xml)
     if blockers:
         return models.rejected(blockers[0], caveats=blockers[1:])
+    round_trip = _validate_pob_round_trip(active_engine, xml)
+    if target_level >= 90 and round_trip.get("status") != "passed":
+        return models.rejected(
+            "final_pob_round_trip_failed",
+            caveats=[str(round_trip.get("errorCode") or "round_trip_unavailable")],
+        )
 
     artifact_id = f"final-build:{uuid4()}"
     later_receipts = receipts[attempt_index + 1 :]
@@ -221,6 +257,14 @@ def save_final_build_artifact(
         tested_skill_groups=state.tested_skill_groups,
         judge_report=judge,
         version_context=judge.version_context,
+        hard_legality_audit_version=str(
+            (receipt.get("hardLegalityAudit") or {}).get("auditVersion") or ""
+        )
+        or None,
+        delivery_status=str(receipt.get("deliveryStatus") or "candidate"),
+        create_quality_checklist=dict(receipt.get("createQualityChecklist") or {}),
+        pob_round_trip=round_trip,
+        lifecycle_verification=dict(receipt.get("lifecycleVerification") or {}),
         artifact_selection_ref=selection_ref,
         selection_outcome=selection_outcome,
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -281,11 +325,110 @@ def save_final_build_artifact(
 
 
 def list_final_build_artifacts() -> dict[str, Any]:
-    manifests = [manifest for _, manifest in _iter_artifacts()]
-    manifests.sort(key=lambda item: item.created_at, reverse=True)
+    artifacts = _iter_artifacts()
+    artifacts.sort(key=lambda item: item[1].created_at, reverse=True)
     return {
         "status": "ok",
-        "artifacts": [_safe_manifest(manifest) for manifest in manifests],
+        "artifacts": [
+            _safe_manifest(manifest, artifact_dir=artifact_dir)
+            for artifact_dir, manifest in artifacts
+        ],
+        "containsRawPob": False,
+    }
+
+
+def preview_final_artifact_spirit_revalidation(
+    engine_factory: Any,
+    *,
+    artifact_id: str,
+) -> dict[str, Any]:
+    """Recompute one immutable artifact's Spirit ledger without writing a receipt."""
+
+    found = _find_artifact(artifact_id)
+    if found is None:
+        return models.rejected("final_artifact_not_found")
+    artifact_dir, manifest = found
+    xml = _verified_artifact_xml(artifact_dir, manifest)
+    if xml is None:
+        return models.rejected("final_artifact_corrupt")
+    proposal = _compute_spirit_revalidation(engine_factory, manifest, xml)
+    plan_hash = _spirit_revalidation_plan_hash(manifest, proposal)
+    return {
+        "status": "preview_ready",
+        "artifactId": manifest.artifact_id,
+        "expectedSourceHash": manifest.source_hash,
+        "revalidationPlanHash": plan_hash,
+        "proposedResult": proposal,
+        "requiresUserApproval": True,
+        "containsRawPob": False,
+    }
+
+
+def apply_final_artifact_spirit_revalidation(
+    engine_factory: Any,
+    *,
+    artifact_id: str,
+    expected_source_hash: str,
+    revalidation_plan_hash: str,
+    user_approved: bool,
+) -> dict[str, Any]:
+    """Append one preview-bound Spirit revalidation event without rewriting the artifact."""
+
+    if user_approved is not True:
+        return models.rejected("user_approval_required")
+    preview = preview_final_artifact_spirit_revalidation(
+        engine_factory,
+        artifact_id=artifact_id,
+    )
+    if preview.get("status") != "preview_ready":
+        return preview
+    if (
+        preview.get("expectedSourceHash") != expected_source_hash
+        or preview.get("revalidationPlanHash") != revalidation_plan_hash
+    ):
+        return models.rejected("stale_spirit_revalidation_preview")
+    found = _find_artifact(artifact_id)
+    if found is None:
+        return models.rejected("final_artifact_not_found")
+    artifact_dir, manifest = found
+    if manifest.source_hash != expected_source_hash:
+        return models.rejected("stale_spirit_revalidation_preview")
+    log_path = artifact_dir / "spirit-revalidation.json"
+    with interprocess_file_lock(artifact_dir / ".spirit-revalidation.lock"):
+        current = _read_spirit_revalidation_log(log_path, manifest)
+        if current is None:
+            return models.rejected("spirit_revalidation_log_corrupt")
+        existing = next(
+            (
+                event
+                for event in current["events"]
+                if event.get("revalidationPlanHash") == revalidation_plan_hash
+            ),
+            None,
+        )
+        if existing is not None:
+            return {
+                "status": "already_applied",
+                "artifactId": manifest.artifact_id,
+                "revalidation": existing,
+                "containsRawPob": False,
+            }
+        event = {
+            "eventId": f"artifact-spirit-revalidation:{uuid4()}",
+            "artifactId": manifest.artifact_id,
+            "sourceHash": manifest.source_hash,
+            "revalidationPlanHash": revalidation_plan_hash,
+            **dict(preview["proposedResult"]),
+            "appliedAt": datetime.now(timezone.utc).isoformat(),
+            "containsRawPob": False,
+        }
+        current["events"].append(event)
+        if not run_store.write_json_atomic(log_path, current):
+            return models.rejected("spirit_revalidation_write_failed")
+    return {
+        "status": "applied",
+        "artifactId": manifest.artifact_id,
+        "revalidation": event,
         "containsRawPob": False,
     }
 
@@ -324,7 +467,7 @@ def load_final_build_artifact(active_engine: Any, *, artifact_id: str) -> dict[s
         return models.rejected("final_artifact_restore_failed")
     return {
         "status": "loaded",
-        "finalBuildArtifact": _safe_manifest(manifest),
+        "finalBuildArtifact": _safe_manifest(manifest, artifact_dir=artifact_dir),
         "activeBuild": _safe_loaded_summary(loaded),
         "containsRawPob": False,
     }
@@ -350,6 +493,7 @@ def read_final_build_artifact_for_export(
         or manifest.judge_report.hard_failures
         or manifest.judge_report.evaluated_snapshot_id != manifest.snapshot_id
         or manifest.judge_report.evaluated_source_hash != manifest.source_hash
+        or not _spirit_delivery_eligible(artifact_dir, manifest)
     ):
         return None
     return manifest, xml
@@ -388,12 +532,22 @@ def _read_manifest(path: Path) -> FinalBuildArtifactManifest | None:
         manifest = FinalBuildArtifactManifest.model_validate(payload)
     except (UnicodeDecodeError, OSError, json.JSONDecodeError, ValidationError):
         return None
-    if manifest.schema_version != ARTIFACT_SCHEMA_VERSION:
+    if manifest.schema_version not in {1, ARTIFACT_SCHEMA_VERSION}:
+        return None
+    if (
+        manifest.schema_version == ARTIFACT_SCHEMA_VERSION
+        and manifest.hard_legality_audit_version
+        not in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
+    ):
         return None
     return manifest
 
 
-def _safe_manifest(manifest: FinalBuildArtifactManifest) -> dict[str, Any]:
+def _safe_manifest(
+    manifest: FinalBuildArtifactManifest,
+    *,
+    artifact_dir: Path | None = None,
+) -> dict[str, Any]:
     judge = manifest.judge_report
     output = {
         "artifactId": manifest.artifact_id,
@@ -414,6 +568,12 @@ def _safe_manifest(manifest: FinalBuildArtifactManifest) -> dict[str, Any]:
         "judgeFeedbackMode": judge.feedback_mode,
         "judgeSubjectiveFeedbackSuppressed": judge.subjective_feedback_suppressed,
         "versionContext": manifest.version_context.model_dump(mode="json", by_alias=True),
+        "hardLegalityAuditVersion": manifest.hard_legality_audit_version,
+        "deliveryStatus": manifest.delivery_status,
+        "createQualityChecklist": manifest.create_quality_checklist,
+        "pobRoundTrip": manifest.pob_round_trip,
+        "lifecycleVerification": manifest.lifecycle_verification,
+        "spiritValidationStatus": _spirit_validation_status(artifact_dir, manifest),
         "createdAt": manifest.created_at,
         "localOnly": manifest.local_only,
     }
@@ -448,3 +608,271 @@ def _valid_pob_xml(xml: Any) -> bool:
     except ET.ParseError:
         return False
     return root.tag in {"PathOfBuilding", "PathOfBuilding2"}
+
+
+def _validate_pob_round_trip(engine: Any, xml: str) -> dict[str, Any]:
+    """Load/save once in PoB and compare only user-visible build structure."""
+
+    load = getattr(engine, "load_build_xml", None)
+    get_xml = getattr(engine, "get_xml", None)
+    if not callable(load) or not callable(get_xml):
+        return {"status": "unavailable", "errorCode": "round_trip_engine_unavailable"}
+    lock_factory = getattr(engine, "transaction_lock", None)
+    context = lock_factory() if callable(lock_factory) else nullcontext()
+    try:
+        with context:
+            original = get_xml()
+            try:
+                load(xml, name="final-artifact-round-trip")
+                serialized = get_xml()
+            finally:
+                load(original, name="final-artifact-round-trip-restore")
+    except Exception:  # noqa: BLE001 - final delivery fails closed without engine internals.
+        return {"status": "failed", "errorCode": "round_trip_engine_failed"}
+    expected = _pob_structure_summary(xml)
+    actual = _pob_structure_summary(serialized)
+    if expected is None or actual is None:
+        return {"status": "failed", "errorCode": "round_trip_snapshot_invalid"}
+    comparisons = {
+        "skillGroupsAndSupports": expected["skillGroups"] == actual["skillGroups"],
+        "equipmentCount": expected["equipmentSlots"] == actual["equipmentSlots"],
+        "itemSocketsAndRunes": expected["itemSockets"] == actual["itemSockets"],
+        "passiveJewels": expected["passiveJewels"] == actual["passiveJewels"],
+    }
+    return {
+        "status": "passed" if all(comparisons.values()) else "failed",
+        "checks": comparisons,
+        "equipmentCount": len(actual["equipmentSlots"]),
+        "skillGroupCount": len(actual["skillGroups"]),
+        "passiveJewelCount": len(actual["passiveJewels"]),
+        **({"errorCode": "round_trip_structure_changed"} if not all(comparisons.values()) else {}),
+    }
+
+
+def _pob_structure_summary(xml: str) -> dict[str, Any] | None:
+    try:
+        root = ET.fromstring(xml)
+    except (ET.ParseError, TypeError, ValueError):
+        return None
+    skills = root.find("Skills")
+    items = root.find("Items")
+    if skills is None or items is None:
+        return None
+    active_skill_set = str(skills.get("activeSkillSet") or "1")
+    skill_set = next(
+        (node for node in skills.findall("SkillSet") if str(node.get("id")) == active_skill_set),
+        None,
+    )
+    active_item_set = str(items.get("activeItemSet") or "1")
+    item_set = next(
+        (node for node in items.findall("ItemSet") if str(node.get("id")) == active_item_set),
+        None,
+    )
+    if skill_set is None or item_set is None:
+        return None
+    passive_jewels = pob_structure.active_spec_passive_jewels(root)
+    if passive_jewels is None:
+        return None
+    skill_groups = []
+    for group in skill_set.findall("Skill"):
+        if str(group.get("enabled") or "true").casefold() not in {"1", "true"}:
+            continue
+        skill_groups.append(
+            tuple(
+                (
+                    str(gem.get("nameSpec") or gem.get("skillId") or ""),
+                    "support"
+                    if "SupportGem" in str(gem.get("gemId") or "")
+                    or str(gem.get("skillId") or "").startswith("Support")
+                    else "active",
+                )
+                for gem in group.findall("Gem")
+                if str(gem.get("enabled") or "true").casefold() in {"1", "true"}
+            )
+        )
+    by_id = {
+        str(item.get("id")): completeness._parse_item_text(item.text or "")
+        for item in items.findall("Item")
+        if item.get("id")
+    }
+    slots = {
+        str(slot.get("name") or ""): str(slot.get("itemId") or "0")
+        for slot in item_set.findall("Slot")
+        if str(slot.get("itemId") or "0") != "0"
+    }
+    equipment_slots = sorted(slot for slot in slots if not slot.startswith("Jewel "))
+    item_sockets = {
+        slot: {
+            "socketCount": int((by_id.get(item_id) or {}).get("runeSockets") or 0),
+            "runes": tuple((by_id.get(item_id) or {}).get("runes") or []),
+        }
+        for slot, item_id in slots.items()
+        if not slot.startswith("Jewel ")
+    }
+    return {
+        "skillGroups": tuple(skill_groups),
+        "equipmentSlots": tuple(equipment_slots),
+        "itemSockets": item_sockets,
+        "passiveJewels": passive_jewels,
+    }
+
+
+def _verified_artifact_xml(
+    artifact_dir: Path,
+    manifest: FinalBuildArtifactManifest,
+) -> str | None:
+    try:
+        xml = (artifact_dir / "build.xml").read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
+    if not _valid_pob_xml(xml) or evaluator.compute_source_hash(xml) != manifest.source_hash:
+        return None
+    return xml
+
+
+def _compute_spirit_revalidation(
+    engine_factory: Any,
+    manifest: FinalBuildArtifactManifest,
+    xml: str,
+) -> dict[str, Any]:
+    engine = None
+    try:
+        engine = engine_factory()
+        engine.load_build_xml(xml, name=manifest.artifact_id)
+        build = engine.get_build()
+        if not isinstance(build, dict):
+            raise TypeError("invalid build readback")
+        ledger = hard_legality.spirit_budget_check(build)
+        active_weapon_set = build.get("activeWeaponSet")
+    except Exception:  # noqa: BLE001 - a legacy artifact must fail closed without internals.
+        ledger = hard_legality.spirit_budget_check({})
+        active_weapon_set = None
+    finally:
+        close = getattr(engine, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - cleanup cannot change the safe outcome.
+                pass
+    failure = ledger.get("failureCode")
+    if failure == "spirit_budget_exceeded":
+        outcome = "spirit_budget_exceeded"
+    elif failure is not None:
+        outcome = "legacy_spirit_unverified"
+    else:
+        outcome = "passed"
+    return {
+        "outcome": outcome,
+        "deliveryEligible": outcome == "passed",
+        "failureCode": failure if outcome != "legacy_spirit_unverified" else outcome,
+        "ledger": {
+            key: ledger.get(key)
+            for key in (
+                "available",
+                "reservedCapped",
+                "unreserved",
+                "requested",
+                "overBy",
+                "used",
+                "ledgerStatus",
+            )
+        },
+        "activeWeaponSet": active_weapon_set if active_weapon_set in {1, 2} else None,
+    }
+
+
+def _spirit_revalidation_plan_hash(
+    manifest: FinalBuildArtifactManifest,
+    proposal: dict[str, Any],
+) -> str:
+    encoded = json.dumps(
+        {
+            "artifactId": manifest.artifact_id,
+            "sourceHash": manifest.source_hash,
+            "proposal": proposal,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _read_spirit_revalidation_log(
+    path: Path,
+    manifest: FinalBuildArtifactManifest,
+) -> dict[str, Any] | None:
+    if not path.exists():
+        return {
+            "schemaVersion": SPIRIT_REVALIDATION_SCHEMA_VERSION,
+            "artifactId": manifest.artifact_id,
+            "events": [],
+            "containsRawPob": False,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schemaVersion") != SPIRIT_REVALIDATION_SCHEMA_VERSION
+        or payload.get("artifactId") != manifest.artifact_id
+        or payload.get("containsRawPob") is not False
+        or not isinstance(events, list)
+        or any(
+            not isinstance(event, dict)
+            or event.get("artifactId") != manifest.artifact_id
+            or event.get("sourceHash") != manifest.source_hash
+            or event.get("outcome")
+            not in {"passed", "spirit_budget_exceeded", "legacy_spirit_unverified"}
+            or not isinstance(event.get("deliveryEligible"), bool)
+            or event.get("containsRawPob") is not False
+            for event in events
+        )
+    ):
+        return None
+    return payload
+
+
+def _latest_spirit_revalidation(
+    artifact_dir: Path | None,
+    manifest: FinalBuildArtifactManifest,
+) -> dict[str, Any] | None:
+    if artifact_dir is None:
+        return None
+    payload = _read_spirit_revalidation_log(
+        artifact_dir / "spirit-revalidation.json",
+        manifest,
+    )
+    if payload is None or not payload["events"]:
+        return None
+    return payload["events"][-1]
+
+
+def _spirit_delivery_eligible(
+    artifact_dir: Path,
+    manifest: FinalBuildArtifactManifest,
+) -> bool:
+    if (
+        manifest.schema_version == ARTIFACT_SCHEMA_VERSION
+        and manifest.hard_legality_audit_version
+        in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
+    ):
+        return True
+    latest = _latest_spirit_revalidation(artifact_dir, manifest)
+    return bool(latest and latest.get("outcome") == "passed")
+
+
+def _spirit_validation_status(
+    artifact_dir: Path | None,
+    manifest: FinalBuildArtifactManifest,
+) -> str:
+    if (
+        manifest.schema_version == ARTIFACT_SCHEMA_VERSION
+        and manifest.hard_legality_audit_version
+        in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
+    ):
+        return "current"
+    latest = _latest_spirit_revalidation(artifact_dir, manifest)
+    return str(latest.get("outcome")) if latest is not None else "legacy_spirit_unverified"

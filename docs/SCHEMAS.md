@@ -19,6 +19,7 @@
   技能、天赋、装备和 support，但不能换职业；
 - economy mode：`trade`、`ssf`、`league_start`、`unknown`；
 - budget model：`low`、`medium`、`high`、`minmax`、`user_defined`、`unknown`；
+- 普通 Create 的 budget model 只描述用户披露口径，不参与 Family、暗金、黄装、符文或药剂选择；
 - price source status：`fresh`、`stale`、`unavailable`、`unknown`；
 - target scene：`mapping`、`bossing`、`hybrid`、`campaign`、`league_start`、`endgame`、
   `unknown`；
@@ -113,8 +114,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   周期目标、职业壳、跨阶段职业硬锁、主技能/辅助技能意图、机制和伤害缩放轴、防御层、
   Spirit / 保留资源假设、装备角色、词缀方向、天赋锚点或区域意图、转型门槛、未解决注意事项
   和使用过的工具/记忆引用。普通模式还必须带 `ResearchMemoryUse`：记录真实
-  `dedupeQueryRef`、定向查询使用的 stable component keys、命中的 Build Family / 深度记录 /
-  pattern / semantic edge，以及每条研究结论被采用、保留或拒绝后如何影响候选。无匹配可以显式
+  `dedupeQueryRef`、定向查询使用的 stable component keys、命中的 Build Family / 深度记录、
+  `selectedKnowledgeScope + selectedSourceCaseRef`，以及每条研究结论被采用、保留或拒绝后如何影响
+  候选。Query contract v2 只允许同一案例 lane 的 deep record/index/premise/digest 授权 Create；
+  pattern / semantic edge / legacy fragment 只可作为 ToolReference。无匹配可以显式
   记录 `no_matching_memory`，不能用空泛工具调用冒充记忆已参与设计。
   选中 Family 的查询若返回 `familyPremiseCatalog`，还必须使用
   `premiseAuditVersion=1 + premiseDecisions` 覆盖全部关键失败 premise。每项 decision 为
@@ -122,6 +125,14 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `detail_level="record"` 回执实际出现的 DeepResearchRecord；caveated 必须保存具体风险；
   not_applicable 必须说明当前候选为何不受影响。普通单阶段 Create 使用
   同一 receipt 审计器。
+- `GenerationDraft`：首次正式 Judge 前的一次性轻量校验对象，只包含已绑定的
+  `runContext / packetId / agentRefinedBuildPrompt / prototypeBuildCandidate`，不要求 Judge receipt、
+  attempt 或 artifact selection。`start_generation_run` 用 Pydantic alias 返回完整 camelCase
+  skeleton；`validate_generation_draft` 校验 run/prompt/request、字段类型、versionContext、当前 run
+  Research receipt/lane 与 premise audit，但不持久化、不消耗 run。failure-condition premise 的
+  `decisionTemplate` 最少包含 `premiseId / decision / resolutionRefs / application / caveat`。
+  `resolved` 的引用只能来自本轮 deep-read record；网页、外部样本、普通图和 corpus 证据只能进入
+  tool references、rationale 或 caveat，不能成为 `resolutionRefs`。
 - `TransientBuildStateRef`：由 `evaluate_generation_candidate` 从真实活动 PoB 快照生成的临时
   构筑状态引用；对外和持久报告里只能出现不透明本地引用、摘要和安全 hash，不能
   展开 PoB 导入码、原始 XML、第三方成熟 BD 的完整装备表、完整天赋路径或原始技能连接。
@@ -169,6 +180,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `craftReceiptRef`。`equip_item` 与 `FunctionalBuildMutationBatch.equip_item` 可携带该引用；
   引用、物品、槽位或版本不一致时失败关闭。普通黄装不需要 receipt；第三方特殊来源无 receipt
   时只保留未验证诊断，不能授权新的生成 artifact。
+- `optimize_item_sockets` 复用同一个 `CraftLegalityReceipt`，不定义第二套写入合同。它读取已装备
+  物品，只接受显式 1–2 孔，在保留底材、Item Level、隐式和全部显式词缀后选择 PoB
+  `crafting_options.runes` 中的符文/灵魂核心；用现有 `equip_item` 携 receipt 提交。无收益时可以
+  返回 unchanged，不要求机械塞满。
 - `HumanReviewPacket`：供人工验收使用的安全报告。至少包含用户需求摘要、Agent 改写后的提示词
   或 `BuildBrief` 摘要、候选 BD 摘要、使用过的查询和工具引用、Judge 状态、硬阻断、注意事项、
   人工评分字段和是否建议进入下一阶段。`lifecycleEvidenceCoverage` 只根据最终可信 snapshot
@@ -186,6 +201,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   重试，最后一轮必须接受或说明停止原因。Agent 文件在顶层只提交一次完整最终 candidate，每轮可只
   提交 attempt index、`prototypeBuildCandidate: {candidateId}` 和 failure audit；helper 先核对
   candidateId 与对应可信 receipt，再补全 state/Judge。显式提交可信字段时仍必须逐字段匹配 receipt。
+- 装备完整度中的护符容量以最终 PoB `CharmLimit` 为有效值并封顶 3；腰带缺少 `Charm Slots` 为
+  `unknown/missing_property`，不得折算为 0。90 级三槽/三护符是 Create 质量目标，只有已装备护符数
+  超过有效容量才是硬合法性失败。装备优化默认目标为元素 60%、非 CI 混沌 30%，并返回
+  `resistanceTargetMet`；`resistsCapped` 仅保留兼容语义，显式 75 目标仍受支持。
 - `RetryComparisonReport`：P5.2 才需要的有限内部重试对比报告。它记录同一
   `feedbackMode`。`hard_only` 不产生 `scoreDelta/score_improved/regressed-by-score`，人工字段只
   复核硬合法性、重试范围和停止理由；`strict` 才保留分数变化和质量改善复核。它只比较同一用户请求下的安全摘要、
@@ -322,7 +341,8 @@ P5.1 证据可信度边界：
 - legality failure codes：attribute_requirement_unmet、passive_budget_exceeded、
   attack_skill_without_weapon、incompatible_weapon_skill_tags、spirit_budget_exceeded、
   invalid_class_ascendancy_pairing、invalid_socket_setup、support_limit_exceeded、
-  duplicate_support_gem、invalid_support_gem、illegal_equipped_item_affixes；
+  duplicate_support_gem、invalid_support_gem、illegal_equipped_item_affixes、
+  rarity_not_allowed_for_base_domain、endgame_flask_loadout_incomplete；
 - playability failure codes：`severe_elemental_resistance_shortfall`（仅历史 artifact 兼容读取；
   当前新 Judge 不再发出）、
   `below_playability_floor`、`catastrophic_defense_shortboard`；
@@ -693,7 +713,9 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 核心概念：
 
 - `ResearcherOutput`：strict Pydantic schema；旧 `schema_version = 4` 继续兼容，深度提取使用
-  `schema_version = 5`，并增加 `DeepResearchRecord` proposals。
+  `schema_version = 5`（legacy deep record）继续兼容；safe-review v3 新写入使用
+  `ResearcherOutput.schema_version = 6` 与 `DeepResearchRecord.record_schema_version = 2`。
+  Research Memory SQLite schema 独立为 5，不能把这些版本号混为一个字段。
 - `DeepResearchRecord`：同一案例通过 `research_group_id` 聚合成多条聚焦记录。每条只表达一个主要
   知识单元，保存 title、summary、content、record kind、stable component keys、条件、失败条件、
   safe evidence、版本和作用域。中文 `content` 原则上不超过 400 字，英文原则上不超过 250 个单词；
@@ -705,10 +727,15 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   Family 内元数据。技能名以 gem 等价规范化后比较（同一宝石授予的弹药/直击变体视为同一技能，
   见 `server/knowledge/skill_equivalence.py`）。support、暗金、装备、防御和资源方案不参与 Family
   身份。身份相同的档案自动归入既有 Family，不新建 sibling 档案。
+  BuildFamilyKey 保持 scope-independent；Family 的可变元数据和 evidence 使用
+  `(knowledge_scope, build_family_key)` 复合身份，Global 与 Local 不共享统计、合并或 secondary
+  skill 派生状态。
 - `Canonical KnowledgeUnit`：`DeepResearchRecord` 通过 `BuildFamily + record_kind + kind-specific
-  core component roles` 生成 `knowledge_key`。标题和正文只用于召回与选择更完整的代表文本，不能单独
-  授权跨来源合并。`skill_package` 还必须通过 `typed_payload.supportPackages` 保存每个核心技能组的
-  support 归属；同一技能、不同辅助包是同 Family 下不同知识单元。结构证据不足时保留原记录，不进行
+  core component roles + gearSubjects + skill/support/host topology` 生成 scope-independent
+  `knowledge_key`；canonical 存储唯一性为 `(knowledge_scope, knowledge_key)`。标题和正文只用于召回与选择更完整的代表文本，不能单独
+  授权跨来源合并。schema2 的任何记录只要结构化包含 resolved support，就必须通过
+  `typed_payload.supportPackages` 保存根技能及其真实 socketed supports；同一技能、不同辅助包是同
+  Family 下不同知识单元。结构证据不足时保留原记录，不进行
   猜测性归并。
 - `source_specific_random`：Cultivated/mutated 等随机实例依赖写入
   `typed_payload.availability` 和 `sourceSpecificComponentKeys`。它拥有独立知识身份，只用于案例解释；
@@ -716,9 +743,14 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - 无物理图节点的普通资源方式通过 `typed_payload.resourceMechanisms` 保存 lower_snake_case 机制标签，
   例如 `mana_leech`、`mana_flask`。已归入 Family 但不能生成 `knowledge_key` 的记录不得作为 clean
   acceptance 入库，必须补足结构化身份或暂缓。
-- `DeepResearchRecordEvidence`：同一 `knowledge_key` 每个 `source_case_ref` 只保存一份安全证据，
+- `DeepResearchRecordEvidence`：同一 `(knowledge_scope, knowledge_key)` 每个 `source_case_ref` 只保存一份安全证据，
   包括该来源观察到的组件、条件、失败条件和版本。重复研究同一 source 只更新时间；新 source 增加
-  evidence count，不复制 canonical 正文。
+  evidence count，不复制 canonical 正文。只有 `acceptedProjectionHash` 等于当前 canonical projection
+  hash 且 `sourceStateScope` 为 `active_state/state_agnostic` 的 evidence 才能授权 Create；legacy
+  projection/state/scope 无法证明时 fail-close 为 ToolReference/needs_revalidation。
+- `pobReadbackAudit`：`reviewed/unmodelled` 必须绑定当前 lease packet 的精确 `snapshotRef`，
+  `unavailable` 必须匹配该 packet 的真实状态；未绑定的自报 disposition 不能关闭
+  `resourceDefense` coverage，也不能形成 clean。
 - `CleanFragmentProposal`：机制级可复用原则，必须带 title、summary、reusable principle、
   safe evidence refs、source case refs、confidence、copyability risk、lifecycle、modelability、
   verification tasks、patch/tree/PoB version 和 visibility/split/scope。
@@ -735,7 +767,14 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   标记为 `legacy_unattested`，不得按自然语言措辞提升权重。`recurring_observation` / `likely_pattern`
   必须使用 `current_family + family_specific` 或 `multi_family + population_pattern`，且非单案 Pattern
   的 `sample_count` 不能超过 distinct `source_case_refs`；审核 evidence refs 必须属于 Pattern 自身。
-- Safe review contract v2 的 `mechanicAudit.wiki` 保存候选来源 `matchKind` 与 Agent 的
+- Safe review contract v3 要求每个启用技能容器有 `sourceSkillGroupReviews`，并在
+  `supportPackages` 临时绑定 `sourceGroupRef + rootSkillRef`，同时让 `supportKeys` 与
+  `socketedItemRefs` 逐项对应；验收以物理实例 ref 拒绝同一实例的重复归属，但允许不同根技能下的
+  不同实例使用同一个 support stable key。验收后只持久化根技能与其 socketed support topology，
+  source-local refs 不进入 durable record 或知识身份。新 review 的 `deliveryRole` 只允许 `direct`；
+  socketed active payload 的 host/payload 机制由组件角色和机制记录表达，
+  不得用 PoB 计算影响对象改写物理插槽关系。`gearSubjects` 区分正文型装备主题，`sourceStateScope` 区分
+  active/alternate/state-agnostic/unknown。`mechanicAudit.wiki` 保存候选来源 `matchKind` 与 Agent 的
   `relevanceReason`。页面标题、redirect、ID 与搜索排名只证明页面身份/候选来源，`wiki.status` 才是
   Agent 阅读内容后的 supports/contradicts/silent 判断。
 - `ResearchRunRef`：发布产品只暴露 `research-run:<runId>`，服务端确定性映射到
@@ -744,6 +783,13 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - Typed review transport：`initialize_research_review` 返回内存安全对象，
   `validate_research_review` 保存并校验 Agent 提交的 safe review，`accept_research_review` 对调用方提交的
   同一完整 safe review 再执行正式验收；Agent 不直接编辑运行态文件。
+- `ResearchWriteReceipt`：一案一行，绑定 run/sample、attempt/packet/review/contract hash，保存
+  candidate→scope/key/recordId、write action、evidence 与 before/after projection hash。pattern、deep、
+  edge、receipt 和一次 `memory_revision` 在同一 `BEGIN IMMEDIATE` 事务提交；queue/ledger 在提交后
+  幂等收尾。`get_research_write_receipt` 只供审计，不生成 Create DQ。
+- `ResearchQuerySession`：每次 `create_compact` 首查创建唯一 retrievalRef，在固定
+  `memory_revision` 上构建 actual-content manifest。单一 cursor 连续分页，每页最终 UTF-8 JSON
+  ≤65,536 bytes；只有同 session 的 `0..terminal` 完整链且 complete 才授权 Create。
 - Deep-record validate-only 同时返回 `inferredBuildFamilyKeys`、`resolvedTargetFamilyKeys` 和
   `familyResolutionPreview`；兼容 `buildFamilyKeys` 使用只读 `join/expand/new` 后的 target key。
 - `ResearchContextRequirement`：discriminated union，不允许开放 `Dict[str, Any]`。它只复用 Phase 3
@@ -910,13 +956,14 @@ MCP 响应、聊天和人工验收摘要不得携带 XML 或导入码原文。XM
 必要字段：
 
 - artifact id；
-- `artifacts` 固定包含 `pob_xml`、`pob_import_code`、`official_build` 三项；
-- 每项包含 `status`、`outputPath` 或 `errorCode`；
+- `artifacts` 固定包含 `pob_xml`、`pob_import_code`、`official_build`、`poe_ninja_pob` 四项；
+- 本地文件项包含 `status`、`outputPath` 或 `errorCode`；poe.ninja 项包含 `published` + `url`
+  或 `failed` + `errorCode`，并标记 `publicExternalUpload=true`；
 - exported count 和 expected count；
 - overall status：全部成功为 `exported`，部分失败为 `partial`；
 - response 不包含 raw PoB。
 
-Agent 最终答复必须逐项转述这三项，不能因为某项失败或忘记调用而省略。
+Agent 最终答复必须逐项转述这四项，不能因为某项失败或忘记调用而省略；不得回显上传的原始 PoB code。
 
 ## BuildPlannerConverterResult
 
@@ -993,8 +1040,10 @@ Family 身份必须由现有 `BuildFamilyIdentity` 推导。升华、主技能�
 `referenceBlind=true`。默认目标固定为“软核交易、无固定预算、综合强度与可玩性优先”。
 
 packet validator 必须递归拒绝 reference gear、passives、skill groups、mechanic summary、raw source、
-PoB code/XML、完整 URL、reference Judge 和 comparison 内容。Create 结果必须记录
-`learningMemoryUse`：绑定活动 Create claim 的 query receipt、完整召回 ID、每条经验的
+PoB code/XML、完整 URL、reference Judge 和 comparison 内容。Create 结果必须同时记录完整
+claim-bound `researchMemoryUse` 与 `learningMemoryUse`：前者只能引用服务端强制 Global 的完整
+Research 页链（no-match 的 selected lane 为空但 effective scope 仍为 Global）；后者绑定活动 Create
+claim 的 Learning query receipt、完整召回 ID、每条经验的
 `adopted/caveated/rejected`、应用说明和 harmful/incorrect 观察；提交时必须与服务端安全收据
 完全一致。
 
@@ -1042,3 +1091,31 @@ Campaign summary 保存每案例累计指标和阶段耗时。趋势判断只比
 not-weaker 上升、reference-advantage 中位数下降、critical gap 不增加、合法性和 Family 匹配不退化
 时才输出 `initial_progress_signal`，否则输出 `function_complete_learning_unproven`。该结论不是因果
 证明，也不是 Judge reward。
+
+## ResearchMergePlan v1
+
+Deep record 的语义合并由外部模型提出、独立模型复审，服务端只做有界候选、字段处置、召回、
+projection、scope/Family 和 CAS 校验。plan 逐项保存 action、target/source record IDs、完整合并后
+记录、每个 canonical 字段的 preserved/revised/retired_with_evidence 处置，以及 reviewer 结论。
+涉及陌生、版本敏感或冲突的 PoE2 机制时，reviewer 必须查询 GGG、pinned PoB 或固定 revision Wiki，
+只保存安全 evidence ref；权威来源缺失或冲突时 reject/keep-distinct。preview 不写库；apply 必须绑定
+preview 的 Memory revision 与 plan hash，并由用户显式批准。旧 evidence 不自动升级为新 projection
+授权，Pattern/Edge/Fragment 不属于此合同。
+
+## Research PoB Readback v3
+
+Spirit 总账区分 `spiritReservedCapped` 与真实 `spiritRequested`。requested 由 PoB 最终
+`Spirit - SpiritUnreserved` 得到；`spiritUsed` 仅作一个兼容周期的 requested 别名。合法性同时核对
+available/requested/unreserved/overBy/capped 的恒等式，缺失或矛盾为 unverified。readback 还保存当前
+`activeWeaponSet`；技能与 socketed items 的物理关系来自来源导出结构，不由 PoB effect applicability
+重建。本阶段不生成双武器快照，也不以
+逐组开关差值推算 Spirit。
+
+旧版 `FinalBuildArtifact`（schema 1）在新的交付选择中默认是
+`legacy_spirit_unverified`。`preview_final_artifact_spirit_revalidation` 只读加载原 XML、核对
+source hash 并生成绑定计划；用户批准后 `apply_final_artifact_spirit_revalidation` 追加
+`spirit-revalidation.json` 事件。`passed` 才恢复新交付资格；`spirit_budget_exceeded` 和
+`legacy_spirit_unverified` 继续阻断。旧 manifest、XML、Judge receipt 均不改写。
+
+尚未保存 artifact 的 schema-1 evaluation receipt 不做跨版本包装；保存入口返回
+`legacy_evaluation_requires_rejudge`，必须用当前 Judge 重新评估后再保存。

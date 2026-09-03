@@ -5,8 +5,10 @@ session.
 
 ## Non-negotiable operating rules
 
-1. Never invent build numbers. DPS, EHP, life/ES, resistances, crit, accuracy, Spirit and sustain
-   claims must come from PoB/compute readback for the active build.
+1. Never invent build numbers. Numeric DPS, EHP, life/ES, resistances, crit, accuracy, Spirit and
+   sustain claims must come from PoB/compute readback for the active build. When PoB cannot model a
+   real game mechanic, omit or qualify its number and use current mechanic/Research or in-game
+   evidence for the qualitative conclusion.
 2. Before calling a build current-season verified, call `get_freshness_report`. Only
    `verified_current` permits that label; otherwise preserve the returned blockers/caveats.
 3. Verify mechanics from the corpus/graph/mechanics tools. Component resolution proves existence,
@@ -18,6 +20,8 @@ session.
    only when `rolledBack=true`, and read skill-group fingerprints before precise group edits.
 5. Re-check defenses and completeness after gear changes. A legal/Judge-passed build is not
    automatically a strong or smooth build; disclose playability, quality and modelability findings.
+   Modelability is evidence coverage only: never reject, replace, re-socket or downgrade a game-valid
+   archetype solely to make it calculable by PoB.
 6. Never expose or persist third-party raw PoB code/XML, whole-character mirrors, full URLs, account
    details, hidden reasoning or conversation transcripts. Generated final XML is private to the
    artifact/export layer.
@@ -32,9 +36,10 @@ session.
 
 `/poe-bd-create` is Agent-led. Resolve the ascendancy and active-skill `skill:` key, then query exact
 Family Research progressively with `response_profile="create_compact"`. Inspect coverage, index and
-premises; `limit` is only the first page. Continue precise, targeted retrieval without a fixed read
-ceiling until responsibilities, conditions, failures and verification tasks are covered. Record
-each use as adopted/caveated/rejected. Mark every failure premise resolved/caveated/not-applicable;
+premises; follow the returned single `continuation_cursor` to `complete=true` and keep every page
+receipt. Use only one selected scope/sourceCase lane for adopted knowledge; other lanes remain
+ToolReferences. Continue precise, targeted retrieval until responsibilities, conditions, failures
+and verification tasks are covered. Record each use as adopted/caveated/rejected. Mark every failure premise resolved/caveated/not-applicable;
 resolved requires a record-detail receipt.
 
 Assemble a real active loadout: class/ascendancy, level, skills/supports, secondary groups, gear,

@@ -91,7 +91,7 @@ def test_partial_modelability_is_limited_reward():
     result = comparison.compare_evaluations(candidate, reference)
 
     assert result["selectionWinner"] == "candidate"
-    assert result["comparisonStatus"] == "partial_modelability"
+    assert result["comparisonStatus"] == "limited_evidence"
     assert result["rewardEligible"] == "limited"
     assert result["rewardWinner"] == "unknown"
     assert result["rewardStrength"] == "limited"
@@ -148,11 +148,11 @@ def test_core_unmodelled_blocks_reward_winner():
 
     result = comparison.compare_evaluations(candidate, reference)
 
-    assert result["selectionWinner"] == "unknown"
-    assert result["comparisonStatus"] == "incomparable"
+    assert result["selectionWinner"] == "candidate"
+    assert result["comparisonStatus"] == "limited_evidence"
     assert result["rewardWinner"] == "unknown"
-    assert result["rewardEligible"] is False
-    assert result["rewardStrength"] == "none"
+    assert result["rewardEligible"] == "limited"
+    assert result["rewardStrength"] == "limited"
 
 
 def test_same_limited_evidence_score_is_not_biased_by_source_context():

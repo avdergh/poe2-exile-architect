@@ -19,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from server import paths  # noqa: E402
 from server.freshness.pob import (  # noqa: E402
     PobParseError,
     load_compatibility_manifest,
@@ -27,8 +28,14 @@ from server.freshness.pob import (  # noqa: E402
 )
 
 
-DEFAULT_VERSION = "0.1.39.2-local.20260710"
-DEFAULT_APP_VERSION = "0.1.39"
+try:
+    _SOURCE_MANIFEST = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    _SOURCE_MANIFEST = {}
+if not isinstance(_SOURCE_MANIFEST, dict):
+    _SOURCE_MANIFEST = {}
+DEFAULT_APP_VERSION = str(_SOURCE_MANIFEST.get("version") or "0")
+DEFAULT_VERSION = f"{DEFAULT_APP_VERSION}-local"
 
 # Same art/media exclusions as bundle creation. The headless engine does not load these, and
 # copying them would make local runtime installs slow and huge for no calculation benefit.
@@ -104,6 +111,8 @@ def install_local_runtime(
     installed = {
         "version": version,
         "app_version": app_version,
+        "engine_app_version": app_version,
+        "engine_contract": paths.POB_RUNTIME_CONTRACT,
         "pob_commit": compatibility.commit,
         "pob_version": compatibility.pob_version,
         "game_patch": compatibility.game_patch,

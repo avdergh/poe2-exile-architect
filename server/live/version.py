@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from .. import paths
 from ..knowledge import db
 from . import prices
 
@@ -99,7 +100,9 @@ def update_corpus(
     sha = manifest.get("sha256")
     if sha and hashlib.sha256(blob).hexdigest() != sha:
         return {"updated": False, "error": "checksum mismatch"}
-    dest = db.db_path()
+    # `db.db_path()` is the active read selection and may resolve to the immutable bundled seed
+    # when the existing user corpus is stale. Updates always belong in writable user data.
+    dest = paths.user_data_dir() / "corpus.sqlite"
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".tmp") as tf:
         tf.write(blob)

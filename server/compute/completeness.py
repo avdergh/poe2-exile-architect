@@ -6,7 +6,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from server.knowledge import item_legality
+from server.knowledge import item_legality, itemparse
+from server.judge import rules
 
 from .engine import PobEngine
 
@@ -32,6 +33,19 @@ _RUNE_RELEVANT_SLOTS = {
     "Gloves",
     "Boots",
 }
+def spirit_opportunity_review_required(build: dict[str, Any]) -> bool:
+    """Return a factual low-utilization signal without deciding what the build should reserve."""
+
+    available = build.get("spiritAvailable")
+    requested = build.get("spiritRequested")
+    if isinstance(available, bool) or not isinstance(available, int | float) or available <= 0:
+        return False
+    if isinstance(requested, bool) or not isinstance(requested, int | float):
+        return False
+    return (
+        max(0.0, float(requested)) / float(available)
+        <= rules.SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD
+    )
 
 
 def inspect_build_completeness(
@@ -86,7 +100,9 @@ def inspect_build_completeness(
         if isinstance(legality, dict) and legality.get("provenanceStatus") == "unverified":
             unverified_special_source_slots.append(str(slot))
         if slot in _RUNE_RELEVANT_SLOTS:
-            if int(item.get("runeSockets") or 0) > 0:
+            socket_capacity = int(item.get("runeSockets") or 0)
+            filled_sockets = int(item.get("verifiedRuneCount") or 0)
+            if socket_capacity > 0 and filled_sockets >= socket_capacity:
                 rune_socketed_slots.append(str(slot))
             else:
                 rune_decision_slots.append(str(slot))
@@ -98,9 +114,27 @@ def inspect_build_completeness(
     filled_sockets = [entry for entry in allocated_sockets if entry.get("filled")]
 
     belt = gear.get("Belt") if isinstance(gear.get("Belt"), dict) else {}
-    charm_capacity = int((belt or {}).get("charmSlots") or 0)
+    belt_charm_capacity = (belt or {}).get("charmSlots")
+    effective_charm_capacity = build.get("charmLimit")
+    if not isinstance(effective_charm_capacity, (int, float)):
+        effective_charm_capacity = belt_charm_capacity
+    charm_capacity = (
+        max(0, min(3, int(effective_charm_capacity)))
+        if isinstance(effective_charm_capacity, (int, float))
+        else None
+    )
     equipped_charms = [slot for slot in _CHARM_SLOTS if slot in gear]
     equipped_flasks = [slot for slot in _FLASK_SLOTS if slot in gear]
+    flask_details = [
+        {
+            "slot": slot,
+            "rarity": str((gear.get(slot) or {}).get("rarity") or "unknown").lower(),
+            "prefixes": int((gear.get(slot) or {}).get("affixPrefixes") or 0),
+            "suffixes": int((gear.get(slot) or {}).get("affixSuffixes") or 0),
+        }
+        for slot in equipped_flasks
+        if isinstance(gear.get(slot), dict)
+    ]
 
     advisories: list[str] = []
     if scaffold_slots:
@@ -115,20 +149,31 @@ def inspect_build_completeness(
         advisories.append("allocated_passive_jewel_socket_empty")
     if len(equipped_flasks) < len(_FLASK_SLOTS):
         advisories.append("flask_loadout_incomplete")
-    if charm_capacity > len(equipped_charms):
+    if level >= 80 and any(
+        item["rarity"] == "magic" and (item["prefixes"] == 0 or item["suffixes"] == 0)
+        for item in flask_details
+    ):
+        advisories.append("endgame_flask_affix_slot_open")
+    if "Belt" in gear and belt_charm_capacity is None:
+        advisories.append("charm_capacity_missing_property")
+    if charm_capacity is not None and charm_capacity > len(equipped_charms):
         advisories.append("available_charm_slots_unfilled")
-    if "Belt" in gear and charm_capacity <= 0:
-        advisories.append("charm_capacity_not_planned")
-    if equipped_charms and charm_capacity < len(equipped_charms):
-        advisories.append("equipped_charms_exceed_belt_capacity")
+    if level >= 90 and charm_capacity is not None and charm_capacity < 3:
+        advisories.append("endgame_charm_capacity_below_target")
+    if charm_capacity is not None and equipped_charms and charm_capacity < len(equipped_charms):
+        advisories.append("equipped_charms_exceed_effective_capacity")
     if unverified_special_source_slots:
         advisories.append("special_item_source_unverified")
+    if spirit_opportunity_review_required(build):
+        advisories.append("spirit_opportunity_review_required")
 
     hard_failures = ["equipped_item_level_requirement_unmet"] if underlevelled else []
     if active_gem_level_violations:
         hard_failures.append("active_skill_gem_level_requirement_unmet")
     if illegal_affix_slots:
         hard_failures.append("illegal_equipped_item_affixes")
+    if charm_capacity is not None and len(equipped_charms) > charm_capacity:
+        hard_failures.append("equipped_charms_exceed_effective_capacity")
     return {
         "status": "complete" if not hard_failures and not advisories else "needs_attention",
         "hardFailures": hard_failures,
@@ -143,15 +188,31 @@ def inspect_build_completeness(
         "runes": {
             "socketedSlots": rune_socketed_slots,
             "decisionRequiredSlots": rune_decision_slots,
+            "details": [
+                {
+                    "slot": str(slot),
+                    "socketCapacity": int(item.get("runeSockets") or 0),
+                    "declaredRuneCount": len(item.get("runes") or []),
+                    "filledSockets": int(item.get("verifiedRuneCount") or 0),
+                    "runeProvenanceStatus": item.get("runeProvenanceStatus"),
+                }
+                for slot, item in gear.items()
+                if slot in _RUNE_RELEVANT_SLOTS and isinstance(item, dict)
+            ],
         },
         "passiveJewels": {
             "availableSockets": len(sockets),
             "allocatedSockets": len(allocated_sockets),
             "filledSockets": len(filled_sockets),
         },
-        "flasks": {"equippedSlots": equipped_flasks, "expectedSlots": list(_FLASK_SLOTS)},
+        "flasks": {
+            "equippedSlots": equipped_flasks,
+            "expectedSlots": list(_FLASK_SLOTS),
+            "details": flask_details,
+        },
         "charms": {
             "beltCapacity": charm_capacity,
+            "beltPropertyCapacity": belt_charm_capacity,
             "equippedSlots": equipped_charms,
         },
         "note": (
@@ -243,6 +304,9 @@ def artifact_blockers(xml: str) -> list[str]:
         blockers.append("final_artifact_item_level_missing")
     if any(item.get("affixLegality", {}).get("ok") is False for item in gear.values()):
         blockers.append("final_artifact_illegal_affixes")
+    belt = gear.get("Belt")
+    if isinstance(belt, dict) and belt.get("charmSlots") is None:
+        blockers.append("final_artifact_charm_slots_missing")
     return blockers
 
 
@@ -253,14 +317,35 @@ def _parse_item_text(
     require_special_provenance: bool = False,
 ) -> dict[str, Any]:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    rarity = _matched_value(lines, r"^Rarity:\s*(\S+)")
-    name = lines[1] if len(lines) > 1 else ""
-    base = lines[2] if len(lines) > 2 else ""
-    item_level = _matched_int(lines, r"^Item Level:\s*(\d+)")
+    parsed = itemparse.parse_item(raw)
+    rarity = parsed.get("rarity") or _matched_value(lines, r"^Rarity:\s*(\S+)")
+    name = str(parsed.get("name") or "")
+    base = str(parsed.get("base") or "")
+    item_level = parsed.get("itemLevel")
     required_level = _matched_int(lines, r"^LevelReq:\s*(\d+)")
     charm_slots = _matched_int(lines, r"^Charm Slots:\s*(\d+)")
     socket_line = _matched_value(lines, r"^Sockets:\s*(.*)") or ""
     runes = [value for line in lines if (value := _line_value(line, r"^Rune:\s*(.+)"))]
+    legality = item_legality.audit_item(
+        raw,
+        slot=slot,
+        require_special_provenance=require_special_provenance,
+    )
+    verified_rune_count = (
+        min(
+            len(runes),
+            int((legality.get("specialSources") or {}).get("runeCount") or 0),
+        )
+        if legality.get("provenanceStatus") == "verified"
+        else 0
+    )
+    top_tier_affixes = sum(
+        1
+        for affix in parsed.get("affixes") or []
+        if isinstance(affix, dict)
+        and affix.get("tier") == 1
+        and int(affix.get("totalTiers") or 0) >= 4
+    )
     return {
         "name": name,
         "base": base,
@@ -269,13 +354,15 @@ def _parse_item_text(
         "levelRequirement": required_level,
         "runeSockets": sum(1 for token in socket_line.split() if token == "S"),
         "runes": runes,
+        "verifiedRuneCount": verified_rune_count,
+        "runeProvenanceStatus": legality.get("provenanceStatus"),
+        "itemFingerprint": itemparse.semantic_item_structure(raw).get("itemFingerprint"),
         "charmSlots": charm_slots,
         "isScaffold": name.startswith("Scaffold "),
-        "affixLegality": item_legality.audit_item(
-            raw,
-            slot=slot,
-            require_special_provenance=require_special_provenance,
-        ),
+        "affixPrefixes": int(legality.get("prefixes") or 0),
+        "affixSuffixes": int(legality.get("suffixes") or 0),
+        "affixLegality": legality,
+        "topTierAffixes": top_tier_affixes,
     }
 
 

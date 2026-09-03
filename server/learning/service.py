@@ -14,8 +14,9 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from server import paths
-from server.knowledge import research_identity
+from server.knowledge import research_identity, research_memory
 from server.generation import artifacts as generation_artifacts
+from server.generation import progression_provenance
 
 from . import case_store, comparison, memory as learning_memory, models
 from .file_lock import interprocess_file_lock
@@ -412,6 +413,38 @@ def get_blind_create_packet(
     }
 
 
+def validate_blind_research_claim(*, campaign_id: str, claim_id: str) -> dict[str, Any]:
+    """Resolve a Research query binding from server-owned Blind Create state.
+
+    The generic Research query must not trust a caller-supplied scope flag.  A matching campaign
+    and active Create claim are the authority that permits the server to force ``global_seed``.
+    """
+
+    campaign = _read_campaign(campaign_id)
+    if campaign is None or campaign.get("status") != "active":
+        return _rejected("blind_research_campaign_unavailable")
+    matches = [
+        case
+        for case in campaign.get("cases") or []
+        if isinstance(case, dict)
+        and case.get("phase") == "create_running"
+        and isinstance(case.get("activeClaim"), dict)
+        and case["activeClaim"].get("claimId") == claim_id
+        and isinstance(case.get("blindCreatePacket"), dict)
+        and case["blindCreatePacket"].get("referenceBlind") is True
+    ]
+    if len(matches) != 1:
+        return _rejected("blind_research_claim_binding_mismatch")
+    return {
+        "status": "ok",
+        "campaignId": campaign_id,
+        "caseId": str(matches[0].get("caseId") or ""),
+        "claimId": claim_id,
+        "knowledgeScope": "global_seed",
+        "containsRawMaterial": False,
+    }
+
+
 def query_memory_for_create(
     *,
     campaign_id: str,
@@ -478,6 +511,7 @@ def submit_create_result(
     artifact_id: str,
     generated_evidence: dict[str, Any],
     learning_memory_use: dict[str, Any],
+    research_memory_use: dict[str, Any],
 ) -> dict[str, Any]:
     with _locked_campaign_state():
         loaded = _load_for_mutation(campaign_id, expected_revision, operation_id)
@@ -556,11 +590,27 @@ def submit_create_result(
         )
         if memory_refs.get("status") != "ok":
             return memory_refs
+        claim = case.get("activeClaim") or {}
+        research_error, research_summary, research_caveats = (
+            progression_provenance.validate_research_use_receipts(
+                research_memory_use=research_memory_use,
+                receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
+                not_before=str(claim.get("claimedAt") or "") or None,
+                expected_blind_run_ref=campaign_id,
+                expected_blind_claim_ref=claim_id,
+            )
+        )
+        if research_error or research_summary is None:
+            return _rejected(
+                research_error or "progression_research_use_invalid",
+                caveats=research_caveats,
+            )
         case["createConsumed"] = True
         case["artifactId"] = artifact_id
         case["artifactSourceHash"] = artifact_metadata["sourceHash"]
         case["generatedEvidence"] = evidence.model_dump(mode="json", by_alias=True)
         case["learningMemoryUse"] = memory_use.model_dump(mode="json", by_alias=True)
+        case["researchMemoryUse"] = research_summary
         case["metrics"].update(
             {
                 "createAccepted": True,

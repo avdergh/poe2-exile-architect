@@ -42,6 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
+local HEADLESS_RUNTIME_CONTRACT = 4
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -83,6 +84,17 @@ local function asNumber(v)
 		return v and 1 or 0
 	end
 	return 0
+end
+
+local function asOptionalNumber(v)
+	if type(v) == "number" then
+		return v
+	elseif type(v) == "string" then
+		return tonumber(v)
+	elseif type(v) == "boolean" then
+		return v and 1 or 0
+	end
+	return nil
 end
 
 local function outputValue(out, key)
@@ -866,6 +878,112 @@ local function computeJudgeSelectedSkill()
 	return best, supplemental
 end
 
+local function isInternalJudgeSkillForm(skillName)
+	local name = tostring(skillName or "")
+	return name:match("^Load%s+") ~= nil or name:match("^Reload%s+") ~= nil
+end
+
+local function judgeSupplementalSkillSummaries()
+	local list = build.skillsTab.socketGroupList or {}
+	local supplemental = {}
+	for index, sg in ipairs(list) do
+		local origin = judgeSkillGroupOrigin(sg)
+		if sg and sg.enabled ~= false and (origin == "synthetic_on_kill" or origin == "synthetic_reactive") then
+			for activeIndex = 1, #(sg.displaySkillList or {}) do
+				local summary = activeSkillSummary(index, activeIndex)
+				supplemental[#supplemental + 1] = {
+					groupIndex = index,
+					activeIndex = activeIndex,
+					skillName = summary.skillName,
+					groupOrigin = origin,
+					groupSource = summary.groupSource,
+					socketLegalityApplicable = summary.socketLegalityApplicable,
+					scenarioLimitations = summary.scenarioLimitations,
+				}
+			end
+		end
+	end
+	return supplemental
+end
+
+-- Select exactly the player-facing skill requested by the Create/Judge contract.  This runs only
+-- inside the disposable Judge engine: ordinary get_build readback must never scan or mutate skill
+-- groups.  Internal crossbow actions such as "Load ..." and "Reload ..." are deliberately
+-- excluded even when they expose a large PoB metric.
+local function selectJudgeSkillForGroup(groupIndex, expectedSkillName)
+	local list = build.skillsTab.socketGroupList or {}
+	local index = tonumber(groupIndex)
+	local expected = tostring(expectedSkillName or "")
+	if not index or index < 1 or expected == "" or isInternalJudgeSkillForm(expected) then
+		return nil
+	end
+	local sg = list[index]
+	if not sg or sg.enabled == false or not sg.displaySkillList then
+		return nil
+	end
+	for activeIndex = 1, #sg.displaySkillList do
+		selectMainSocketGroup(index, activeIndex)
+		local summary = activeSkillSummary(index, activeIndex)
+		if summary.skillName == expected and not isInternalJudgeSkillForm(summary.skillName) then
+			for otherIndex, other in ipairs(list) do
+				other.includeInFullDPS = (otherIndex == index)
+			end
+			selectMainSocketGroup(index, activeIndex)
+			runCallback("OnFrame")
+			local out = (build.calcsTab and build.calcsTab.mainOutput) or {}
+			local metric = selectedDamageMetric(out, true, summary.isMinion)
+			local rawValue = metric.value or 0
+			local effectiveValue = rawValue
+			local activeMinionLimit = asNumber(outputValue(out, "ActiveMinionLimit"))
+			local isMinionMetric = metric.key == "MinionCombinedDPS" or metric.key == "MinionTotalDPS"
+			local isMinionCandidate = summary.isMinion or isMinionMetric
+			local caveats = {}
+			if isMinionMetric and metric.key ~= "FullDPS" then
+				if summary.activeSkillCountAvailable and summary.activeSkillCount > 0 then
+					effectiveValue = rawValue * summary.activeSkillCount
+					caveats[#caveats + 1] = "minion_count_multiplier_caveat"
+				elseif activeMinionLimit > 0 then
+					effectiveValue = rawValue * activeMinionLimit
+					caveats[#caveats + 1] = "minion_count_multiplier_caveat"
+				end
+			end
+			if asNumber(out.ProjectileCount) > 1 and metric.key ~= "FullDPS" then
+				caveats[#caveats + 1] = "projectile_overlap_unverified_caveat"
+			end
+			local candidate = {
+				groupIndex = index,
+				activeIndex = summary.activeIndex,
+				skillName = summary.skillName,
+				dps = effectiveValue,
+				rawDps = rawValue,
+				effectiveDps = effectiveValue,
+				directDps = metric.directDPS,
+				fullDps = metric.fullDPS,
+				sourceMetric = metric.key,
+				projectileCount = asNumber(out.ProjectileCount),
+				activeSkillCount = summary.activeSkillCount,
+				tags = summary.tags,
+				utilityTags = summary.utilityTags,
+				utilityOnly = summary.utilityOnly,
+				hasDirectDamageTag = summary.isDamageTagged,
+				weaponCheck = summary.weaponCheck,
+				caveats = caveats,
+				groupOrigin = summary.groupOrigin,
+				groupSource = summary.groupSource,
+				socketLegalityApplicable = summary.socketLegalityApplicable,
+				scenarioLimitations = summary.scenarioLimitations,
+			}
+			if isMinionCandidate then
+				candidate.isMinion = true
+				candidate.activeMinionLimit = activeMinionLimit
+				candidate.caveats[#candidate.caveats + 1] = "minion_dps_unverified_caveat"
+			end
+			return candidate
+		end
+	end
+	return nil
+end
+
 local function computeJudgeSkillCandidates()
 	local list = build.skillsTab.socketGroupList or {}
 	local originalGroup = build.mainSocketGroup or 1
@@ -978,6 +1096,13 @@ local function skillGroupState()
 	local groups = {}
 	local list = build.skillsTab.socketGroupList or {}
 	for index, group in ipairs(list) do
+		local activeSkills = {}
+		for activeIndex, _ in ipairs(group.displaySkillList or {}) do
+			activeSkills[#activeSkills + 1] = {
+				index = activeIndex,
+				name = skillNameAt(index, activeIndex),
+			}
+		end
 		groups[#groups + 1] = {
 			index = index,
 			label = group.label or "",
@@ -986,11 +1111,18 @@ local function skillGroupState()
 			includeInFullDPS = group.includeInFullDPS and true or false,
 			groupCount = group.groupCount,
 			source = group.source,
+			sourceKind = group.sourceItem and "item" or group.sourceNode and "tree" or group.source and "other" or nil,
+			rootSkillId = group.gemList and group.gemList[1] and group.gemList[1].skillId or nil,
 			mutable = group.source == nil,
+			noSupports = (
+				group.noSupports
+				or (group.gemList and group.gemList[1] and group.gemList[1].noSupports)
+			) and true or false,
 			isMain = index == (build.mainSocketGroup or 1),
 			mainActiveSkill = group.mainActiveSkill or 1,
 			mainActiveSkillCalcs = group.mainActiveSkillCalcs or group.mainActiveSkill or 1,
 			activeSkill = skillNameAt(index, group.mainActiveSkill or 1),
+			activeSkills = activeSkills,
 			gems = gemSummaryForSocketGroup(index),
 		}
 	end
@@ -999,6 +1131,52 @@ local function skillGroupState()
 		calcsGroupIndex = build.calcsTab and build.calcsTab.input and build.calcsTab.input.skill_number or nil,
 		groups = groups,
 	}
+end
+
+local function sourceSupportCapacity(level)
+	level = asNumber(level)
+	if level >= 20 then return 5 end
+	if level >= 15 then return 4 end
+	if level >= 10 then return 3 end
+	return 2
+end
+
+local function spiritState()
+	local output = (build.calcsTab and build.calcsTab.mainOutput) or {}
+	local available = asOptionalNumber(output.Spirit)
+	local unreserved = asOptionalNumber(output.SpiritUnreserved)
+	return {
+		available = available,
+		reserved = asOptionalNumber(output.SpiritReserved),
+		unreserved = unreserved,
+		requested = available and unreserved and (available - unreserved) or nil,
+		overBy = unreserved and math.max(0, -unreserved) or nil,
+	}
+end
+
+local function supportApplicationForGroup(group)
+	local application = {}
+	for gemIndex = 2, #(group.gemList or {}) do
+		local gem = group.gemList[gemIndex]
+		local gemEffect = gem and ((gem.gemData and gem.gemData.grantedEffect) or gem.grantedEffect)
+		local names = {}
+		for activeIndex, active in ipairs(group.displaySkillList or {}) do
+			local grantedEffect = active and active.activeEffect and active.activeEffect.grantedEffect
+			for _, effect in ipairs((active and active.supportList) or {}) do
+				if grantedEffect and gemEffect and effect.grantedEffect and effect.grantedEffect.id == gemEffect.id then
+					local supported = effect.supportedActiveEffectIds
+						and effect.supportedActiveEffectIds[grantedEffect.id] and true or false
+					if supported then names[#names + 1] = grantedEffect.name end
+					break
+				end
+			end
+		end
+		application[#application + 1] = {
+			name = gem and gem.nameSpec or "",
+			activeSkills = names,
+		}
+	end
+	return application
 end
 
 -- ---------------------------------------------------------------------------
@@ -1242,6 +1420,216 @@ end
 
 function methods.list_skill_groups()
 	return skillGroupState()
+end
+
+function methods.configure_source_skill_supports(p)
+	p = p or {}
+	local index = math.floor(tonumber(p.index) or 0)
+	local list = build.skillsTab.socketGroupList or {}
+	local group = list[index]
+	if not group then
+		return { ok = false, errorCode = "skill_group_not_found", error = "skill group not found" }
+	end
+	local source = type(group.source) == "string" and group.source or ""
+	local isTreeSource = group.sourceNode ~= nil and source:match("^Tree:") ~= nil
+	local isItemSource = group.sourceItem ~= nil and source:match("^Item:") ~= nil
+	if not isTreeSource and not isItemSource then
+		return {
+			ok = false,
+			errorCode = "configurable_source_skill_group_required",
+			error = "only real passive, ascendancy, or item source groups can be configured",
+		}
+	end
+	local root = group.gemList and group.gemList[1]
+	if not root then
+		return { ok = false, errorCode = "source_skill_root_missing", error = "source skill root is missing" }
+	end
+	if group.noSupports or root.noSupports then
+		return { ok = false, errorCode = "source_skill_no_supports", error = "source skill does not accept supports" }
+	end
+
+	local supportIds = p.supportGemIds or {}
+	local capacity = sourceSupportCapacity(root.level)
+	if #supportIds > capacity then
+		return {
+			ok = false,
+			errorCode = "source_support_capacity_exceeded",
+			error = "requested supports exceed the source skill capacity",
+			capacity = capacity,
+		}
+	end
+	local supports = {}
+	local seenIds, seenFamilies = {}, {}
+	for _, supportId in ipairs(supportIds) do
+		local gemData = build.data and build.data.gems and build.data.gems[tostring(supportId)]
+		if not gemData and build.data and build.data.gemsByGameId then
+			local variants = build.data.gemsByGameId[tostring(supportId)]
+			if variants then
+				for _, variant in pairs(variants) do
+					gemData = variant
+					break
+				end
+			end
+		end
+		if not gemData or not gemData.grantedEffect or not gemData.grantedEffect.support then
+			return { ok = false, errorCode = "invalid_support_gem", error = "unknown or non-support gem", supportGemId = supportId }
+		end
+		local family = gemData.gemFamily or gemData.grantedEffect.id or gemData.id
+		if seenIds[gemData.id] or seenFamilies[family] then
+			return { ok = false, errorCode = "duplicate_support_family", error = "duplicate support or support family", supportGemId = supportId }
+		end
+		seenIds[gemData.id] = true
+		seenFamilies[family] = true
+		supports[#supports + 1] = gemData
+	end
+
+	local snapshot = build:SaveDB("code")
+	local beforeSource = group.source
+	local beforeSkillId = root.skillId
+	local beforeLevel = asNumber(root.level)
+	local beforeMainActive = group.mainActiveSkill or 1
+	local beforeMainActiveCalcs = group.mainActiveSkillCalcs or beforeMainActive
+	local beforeEnabled = group.enabled ~= false
+	local beforeLabel = group.label or ""
+	local beforeFullDPS = group.includeInFullDPS and true or false
+	local beforeGroupCount = #list
+	local beforeSourceCount = 0
+	for _, candidate in ipairs(list) do
+		if candidate.source ~= nil then beforeSourceCount = beforeSourceCount + 1 end
+	end
+	local beforeSpirit = spiritState()
+	local function rollback(code, message, extra)
+		loadBuildFromXML(snapshot)
+		runCallback("OnFrame")
+		local result = { ok = false, errorCode = code, error = message }
+		for key, value in pairs(extra or {}) do result[key] = value end
+		return result
+	end
+
+	wipeTable(group.gemList)
+	table.insert(group.gemList, root)
+	for _, gemData in ipairs(supports) do
+		table.insert(group.gemList, {
+			gemId = gemData.id,
+			skillId = gemData.grantedEffectId,
+			nameSpec = gemData.name,
+			level = gemData.naturalMaxLevel or 1,
+			quality = 20,
+			enabled = true,
+			enableGlobal1 = true,
+			count = 1,
+		})
+	end
+	build.skillsTab:ProcessSocketGroup(group)
+	build.buildFlag = true
+	build.modFlag = true
+	runCallback("OnFrame")
+
+	group = (build.skillsTab.socketGroupList or {})[index]
+	root = group and group.gemList and group.gemList[1]
+	if not group or group.source ~= beforeSource or not root or root.skillId ~= beforeSkillId then
+		return rollback("source_skill_identity_changed", "source or root skill changed during support configuration")
+	end
+	if asNumber(root.level) ~= beforeLevel
+		or (isTreeSource and asNumber(build.characterLevel) >= 95 and asNumber(root.level) ~= 20) then
+		return rollback("source_skill_level_changed", "source skill level changed during support configuration", { skillLevel = root.level })
+	end
+	if #build.skillsTab.socketGroupList ~= beforeGroupCount then
+		return rollback("source_group_count_changed", "skill group count changed during support configuration")
+	end
+	local afterSourceCount = 0
+	for _, candidate in ipairs(build.skillsTab.socketGroupList) do
+		if candidate.source ~= nil then afterSourceCount = afterSourceCount + 1 end
+	end
+	if afterSourceCount > beforeSourceCount then
+		return rollback("source_group_count_increased", "source skill group count increased during support configuration")
+	end
+	if (group.mainActiveSkill or 1) ~= beforeMainActive
+		or (group.mainActiveSkillCalcs or group.mainActiveSkill or 1) ~= beforeMainActiveCalcs
+		or (group.enabled ~= false) ~= beforeEnabled
+		or (group.label or "") ~= beforeLabel
+		or (group.includeInFullDPS and true or false) ~= beforeFullDPS then
+		return rollback("source_group_state_changed", "source group state or Command selection changed during support configuration")
+	end
+	if #(group.gemList or {}) ~= #supports + 1 then
+		return rollback("source_supports_not_preserved", "not all requested supports survived source group refresh")
+	end
+	for supportIndex, gemData in ipairs(supports) do
+		local actual = group.gemList[supportIndex + 1]
+		if not actual or actual.gemId ~= gemData.id then
+			return rollback("source_supports_not_preserved", "requested supports did not survive in order", { supportIndex = supportIndex })
+		end
+	end
+
+	local application = supportApplicationForGroup(group)
+	local selectedName = skillNameAt(index, beforeMainActiveCalcs)
+	local selectedSupported = #supports == 0
+	for supportIndex, applied in ipairs(application) do
+		if #applied.activeSkills == 0 then
+			return rollback("source_support_not_applied", "a support does not affect any active effect", { supportIndex = supportIndex, support = applied.name, supportApplication = application })
+		end
+		for _, activeName in ipairs(applied.activeSkills) do
+			if activeName == selectedName then selectedSupported = true end
+		end
+	end
+	if not selectedSupported then
+		return rollback("source_command_unsupported", "no requested support affects the selected Command", { selectedCommand = selectedName })
+	end
+
+	local afterSpirit = spiritState()
+	if afterSpirit.overBy and afterSpirit.overBy > 0 then
+		return rollback("spirit_over_reserved", "support configuration over-reserves Spirit", { spirit = afterSpirit })
+	end
+	build.buildFlag = true
+	build.modFlag = true
+	runCallback("OnFrame")
+	local steadySpirit = spiritState()
+	if asNumber(afterSpirit.requested) ~= asNumber(steadySpirit.requested)
+		or asNumber(afterSpirit.reserved) ~= asNumber(steadySpirit.reserved) then
+		return rollback("spirit_reservation_unstable", "Spirit reservation changed across repeated calculation frames")
+	end
+	group = build.skillsTab.socketGroupList[index]
+	root = group and group.gemList and group.gemList[1]
+	if not group or group.source ~= beforeSource or not root or root.skillId ~= beforeSkillId
+		or asNumber(root.level) ~= beforeLevel or #(group.gemList or {}) ~= #supports + 1
+		or (group.mainActiveSkill or 1) ~= beforeMainActive
+		or (group.mainActiveSkillCalcs or group.mainActiveSkill or 1) ~= beforeMainActiveCalcs
+		or (group.enabled ~= false) ~= beforeEnabled
+		or (group.label or "") ~= beforeLabel
+		or (group.includeInFullDPS and true or false) ~= beforeFullDPS then
+		return rollback("source_group_unstable", "source group identity or Command selection changed on a repeated frame")
+	end
+	for supportIndex, gemData in ipairs(supports) do
+		local actual = group.gemList[supportIndex + 1]
+		if not actual or actual.gemId ~= gemData.id then
+			return rollback("source_supports_unstable", "a requested support changed on a repeated frame", { supportIndex = supportIndex })
+		end
+	end
+	application = supportApplicationForGroup(group)
+	selectedSupported = #supports == 0
+	for supportIndex, applied in ipairs(application) do
+		if #applied.activeSkills == 0 then
+			return rollback("source_support_not_applied", "a support stopped affecting active effects on a repeated frame", { supportIndex = supportIndex, support = applied.name })
+		end
+		for _, activeName in ipairs(applied.activeSkills) do
+			if activeName == selectedName then selectedSupported = true end
+		end
+	end
+	if not selectedSupported then
+		return rollback("source_command_unsupported", "the selected Command lost all requested support effects on a repeated frame", { selectedCommand = selectedName })
+	end
+
+	return {
+		ok = true,
+		state = skillGroupState(),
+		source = beforeSource,
+		skillLevel = beforeLevel,
+		capacity = capacity,
+		selectedCommand = selectedName,
+		supportApplication = application,
+		spiritBefore = beforeSpirit,
+		spiritAfter = steadySpirit,
+	}
 end
 
 -- Replace exactly one user-owned group while preserving its position and group-level state.  The
@@ -1903,7 +2291,25 @@ function methods.get_build()
 		+ asNumber(mainOutput.PassivePointsToWeaponSetPoints)
 	local normalPassiveUsed = used - math.min(weaponSet1Used or 0, weaponSet2Used or 0)
 	local unspent = math.max(0, avail - normalPassiveUsed)
-	local judgeSelectedSkill, judgeSupplementalSkills = computeJudgeSelectedSkill()
+	local spiritAvailable = asOptionalNumber(mainOutput.Spirit)
+	local spiritReservedCapped = asOptionalNumber(mainOutput.SpiritReserved)
+	local spiritUnreserved = asOptionalNumber(mainOutput.SpiritUnreserved)
+	local spiritRequested = spiritAvailable and spiritUnreserved
+		and (spiritAvailable - spiritUnreserved) or nil
+	local spiritOverBy = spiritUnreserved and math.max(0, -spiritUnreserved) or nil
+	local charmLimit = asOptionalNumber(mainOutput.CharmLimit)
+	if charmLimit == nil then
+		local mainEnv = build.calcsTab and build.calcsTab.mainEnv
+		local modDB = mainEnv and mainEnv.modDB
+		if modDB then
+			charmLimit = math.min(
+				modDB:Override(nil, "CharmLimit") or modDB:Sum("BASE", nil, "CharmLimit"),
+				3
+			)
+		end
+	end
+	local activeWeaponSet = build.itemsTab and build.itemsTab.activeItemSet
+		and build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1
 	local r = {
 		class = spec.curClassName,
 		ascendancy = spec.curAscendClassName,
@@ -1912,9 +2318,6 @@ function methods.get_build()
 		latestTreeVersion = latestTreeVersion,
 		mainSkill = mainSkillName(),
 		mainSkillWeaponCheck = activeWeaponCheck(build.mainSocketGroup or 1),
-		judgeSelectedSkill = judgeSelectedSkill,
-		judgeSupplementalSkills = judgeSupplementalSkills,
-		judgeSelectedSkillGroup = judgeSelectedSkill and gemSummaryForSocketGroup(judgeSelectedSkill.groupIndex) or nil,
 		mainSkillGroup = gems,
 		activeSkillGemLevelViolations = activeGemLevelViolations(),
 		notables = notables,
@@ -1933,9 +2336,16 @@ function methods.get_build()
 			intelligence = asNumber(mainOutput.ReqInt),
 		},
 		attributeRequirementSources = attributeRequirementSources(),
-		spiritUsed = asNumber(mainOutput.SpiritReserved),
-		spiritAvailable = asNumber(mainOutput.Spirit),
-		spiritUnreserved = asNumber(mainOutput.SpiritUnreserved),
+		spiritAvailable = spiritAvailable,
+		spiritReservedCapped = spiritReservedCapped,
+		spiritUnreserved = spiritUnreserved,
+		spiritRequested = spiritRequested,
+		spiritOverBy = spiritOverBy,
+		-- Compatibility alias.  SpiritReserved is capped at available Spirit, so it cannot
+		-- represent actual demand when the source is over-reserved.
+		spiritUsed = spiritRequested,
+		activeWeaponSet = activeWeaponSet,
+		charmLimit = charmLimit,
 		pointsUsed = used,
 		normalPassivePointsUsed = normalPassiveUsed,
 		pointsAvailable = avail,
@@ -1976,6 +2386,32 @@ function methods.get_build()
 		r.dpsNote = note
 	end
 	return r
+end
+
+function methods.select_judge_skill(p)
+	p = p or {}
+	local selected = selectJudgeSkillForGroup(
+		p.offenseSkillGroupIndex,
+		p.expectedSkillName
+	)
+	if not selected then
+		return {
+			status = "error",
+			errorCode = "selected_skill_conflict",
+		}
+	end
+	return {
+		status = "selected",
+		selectedSkill = selected,
+		selectedSkillGroup = gemSummaryForSocketGroup(selected.groupIndex),
+		supplementalSkills = judgeSupplementalSkillSummaries(),
+		calculationContext = {
+			groupIndex = selected.groupIndex,
+			activeIndex = selected.activeIndex,
+			skillName = selected.skillName,
+			sourceMetric = selected.sourceMetric,
+		},
+	}
 end
 
 -- Enumerate PoB configuration options usable with set_config (filterable).
@@ -2061,6 +2497,15 @@ end
 -- passive tree
 -- ---------------------------------------------------------------------------
 local function nodeSummary(n)
+	local pathNodeIds = {}
+	local pathSeen = {}
+	for _, pathNode in ipairs(n.path or {}) do
+		if pathNode.id and not pathSeen[pathNode.id] then
+			pathSeen[pathNode.id] = true
+			pathNodeIds[#pathNodeIds + 1] = pathNode.id
+		end
+	end
+	table.sort(pathNodeIds)
 	return {
 		id = n.id,
 		name = n.name,
@@ -2069,6 +2514,7 @@ local function nodeSummary(n)
 		alloc = n.alloc or false,
 		pathDist = n.pathDist,
 		ascendancy = n.ascendancyName,
+		pathNodeIds = pathNodeIds,
 	}
 end
 
@@ -2180,6 +2626,34 @@ function methods.get_passive(p)
 	local s = nodeSummary(n)
 	s.found = true
 	return s
+end
+
+-- Return a bounded set of ordinary allocated leaf nodes that can be removed without tearing down
+-- another allocated branch. Python measures their real stat loss before considering an equal-point
+-- jewel-socket swap; this is intentionally not a global passive-tree optimizer.
+function methods.list_reallocation_candidates(p)
+	p = p or {}
+	local limit = math.max(1, math.min(32, tonumber(p.limit) or 12))
+	local out = {}
+	for _, node in pairs(build.spec.allocNodes or {}) do
+		local nodeType = node.type
+		if
+			node.alloc
+			and not node.ascendancyName
+			and (nodeType == "Normal" or nodeType == "Notable")
+			and #(node.depends or {}) == 1
+		then
+			local summary = nodeSummary(node)
+			summary.pointsFreed = 1
+			out[#out + 1] = summary
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.type ~= b.type then return a.type == "Normal" end
+		return (a.id or 0) < (b.id or 0)
+	end)
+	while #out > limit do table.remove(out) end
+	return { candidates = out, boundedLimit = limit }
 end
 
 function methods.alloc_passive(p)
@@ -2523,7 +2997,12 @@ end
 -- ---------------------------------------------------------------------------
 -- RPC loop
 -- ---------------------------------------------------------------------------
-emit(json.encode({ ready = true, jit = jit and jit.version, treeVersion = latestTreeVersion }))
+emit(json.encode({
+	ready = true,
+	runtimeContract = HEADLESS_RUNTIME_CONTRACT,
+	jit = jit and jit.version,
+	treeVersion = latestTreeVersion,
+}))
 
 for line in io.lines() do
 	line = line:gsub("[\r\n]+$", "")

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -9,6 +13,7 @@ from scripts import research_mature_builds
 from server import paths
 from server.compute import pob_code
 from server.knowledge import research_workflow
+from server.knowledge import research_memory
 
 
 def _sample_code() -> str:
@@ -261,6 +266,202 @@ def test_typed_worker_keeps_review_in_memory_for_validate_and_accept(tmp_path, m
     assert calls[1]["memory_db_path"] == tmp_path / "memory.sqlite"
     assert "reviewHash" not in validated
     assert "reviewHash" not in accepted
+
+
+def test_typed_accept_replay_reaches_recovery_before_claimed_only_guards(
+    tmp_path, monkeypatch
+):
+    runtime = _configure_user_data(monkeypatch, tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text(_sample_code(), encoding="utf-8")
+    queued = research_workflow.start_run(
+        source_files=[str(source)], expected_source_count=1, limit=1
+    )
+    run_dir = runtime / "runs" / queued["runId"]
+    queue_db = run_dir / research_mature_builds.QUEUE_DB_FILENAME
+    claimed = research_workflow.claim_case(run_ref=queued["runRef"])
+    review = research_workflow.initialize_review(
+        run_ref=queued["runRef"], lease_token=claimed["leaseToken"]
+    )["review"]
+    review["deepResearchRecords"] = [
+        {
+            "sampleId": claimed["sampleId"],
+            "caseRef": review["artifactIdentity"]["caseRef"],
+            "safeEvidenceRef": review["artifactIdentity"]["safeEvidenceRef"],
+        }
+    ]
+    saved = research_mature_builds.save_review_payload(
+        output_dir=run_dir,
+        lease_token=claimed["leaseToken"],
+        review_payload=review,
+    )
+    review_path = run_dir / saved["reviewFile"]
+    with sqlite3.connect(queue_db) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM cases WHERE sample_id = ?", (claimed["sampleId"],)
+        ).fetchone()
+        canonical = research_mature_builds._canonical_review_artifact_identity(
+            review_file=review_path,
+            sample_id=claimed["sampleId"],
+            source_hash_ref=str(row["source_hash_ref"]),
+            packet_safe_hash=str(row["packet_safe_hash"]),
+            version_context=research_mature_builds._queue_version_context(queue_db),
+        )
+        research_mature_builds._bind_authoritative_review_scope(
+            canonical,
+            row=row,
+            mismatch_error="fixture scope mismatch",
+        )
+        attempt_key = research_mature_builds.research_runtime.accept_attempt_key(
+            run_id=queued["runId"],
+            sample_id=claimed["sampleId"],
+            packet_safe_hash=str(row["packet_safe_hash"]),
+            canonical_review_hash=research_mature_builds.research_runtime.stable_hash(canonical),
+            contract_version=str(canonical["reviewContractVersion"]),
+            expected_origin_state="claimed",
+        )
+        con.execute(
+            "UPDATE cases SET status='accepting', accept_attempt_key=?, "
+            "accept_origin_state='claimed' WHERE sample_id=?",
+            (attempt_key, claimed["sampleId"]),
+        )
+        con.commit()
+
+    calls: list[dict] = []
+
+    def fake_recovery(**kwargs):
+        calls.append(kwargs)
+        return {"status": "accepted", "idempotentRecovery": True}
+
+    monkeypatch.setattr(research_mature_builds, "accept_case", fake_recovery)
+    replay = research_workflow.accept_review(
+        run_ref=queued["runRef"],
+        lease_token=claimed["leaseToken"],
+        review=review,
+    )
+    assert replay["status"] == "accepted"
+    assert calls[0]["review_file"] == review_path
+
+    changed = deepcopy(review)
+    changed["pobReadbackAudit"] = [{"disposition": "unavailable"}]
+    with pytest.raises(ValueError, match="review hash"):
+        research_workflow.accept_review(
+            run_ref=queued["runRef"],
+            lease_token=claimed["leaseToken"],
+            review=changed,
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("first_attempt_commits", [True, False])
+def test_public_accept_replay_waits_for_inflight_memory_commit_or_rollback(
+    tmp_path, monkeypatch, first_attempt_commits
+):
+    runtime = _configure_user_data(monkeypatch, tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text(_sample_code(), encoding="utf-8")
+    queued = research_workflow.start_run(
+        source_files=[str(source)], expected_source_count=1, limit=1
+    )
+    run_dir = runtime / "runs" / queued["runId"]
+    queue_db = run_dir / research_mature_builds.QUEUE_DB_FILENAME
+    memory_db = tmp_path / "memory.sqlite"
+    claimed = research_workflow.claim_case(run_ref=queued["runRef"])
+    review = research_workflow.initialize_review(
+        run_ref=queued["runRef"], lease_token=claimed["leaseToken"]
+    )["review"]
+    review["deepResearchRecords"] = [
+        {
+            "sampleId": claimed["sampleId"],
+            "caseRef": review["artifactIdentity"]["caseRef"],
+            "safeEvidenceRef": review["artifactIdentity"]["safeEvidenceRef"],
+        }
+    ]
+
+    entered = threading.Event()
+    release = threading.Event()
+    call_count = 0
+
+    def committed_report(acceptance_context: dict) -> dict:
+        unit = research_memory.ResearchMemoryService(
+            db_path=memory_db, initialize_store=False
+        ).accept_research_unit(
+            run_ref=str(acceptance_context["runRef"]),
+            sample_id=str(acceptance_context["sampleId"]),
+            accept_attempt_key=str(acceptance_context["acceptAttemptKey"]),
+            packet_safe_hash=str(acceptance_context["packetSafeHash"]),
+            canonical_review_hash=str(acceptance_context["canonicalReviewHash"]),
+            contract_version=str(acceptance_context["contractVersion"]),
+            expected_origin_state=str(acceptance_context["expectedOriginState"]),
+            pattern_payload={"schema_version": 4},
+            deep_payload={"schema_version": 6, "deep_research_records": []},
+            edge_payload={"schema_version": 4},
+        )
+        return {
+            "status": "accepted",
+            "writeReceiptRef": unit["writeReceiptRef"],
+            "acceptedPatternCount": 0,
+            "acceptedDeepRecordCount": 0,
+            "acceptedSemanticEdgeCount": 0,
+            "deferredCandidateCount": 0,
+        }
+
+    def controlled_acceptance(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            entered.set()
+            assert release.wait(timeout=10)
+            if not first_attempt_commits:
+                raise RuntimeError("injected rollback before Memory commit")
+        return committed_report(kwargs["acceptance_context"])
+
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        controlled_acceptance,
+    )
+
+    def invoke_accept():
+        return research_workflow.accept_review(
+            run_ref=queued["runRef"],
+            lease_token=claimed["leaseToken"],
+            review=review,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(invoke_accept)
+        assert entered.wait(timeout=10)
+        second = executor.submit(invoke_accept)
+        time.sleep(0.1)
+        assert not second.done()
+        with sqlite3.connect(queue_db) as con:
+            assert con.execute(
+                "SELECT status FROM cases WHERE sample_id = ?", (claimed["sampleId"],)
+            ).fetchone()[0] == "accepting"
+        release.set()
+        if first_attempt_commits:
+            assert first.result(timeout=15)["status"] == "accepted"
+            assert second.result(timeout=15)["status"] == "accepted"
+            assert call_count == 1
+        else:
+            with pytest.raises(RuntimeError, match="injected rollback"):
+                first.result(timeout=15)
+            assert second.result(timeout=15)["status"] == "accepted"
+            assert call_count == 2
+
+    con = research_memory.mature_learning.connect(memory_db)
+    try:
+        assert con.execute("SELECT count(*) FROM research_record_write_receipts").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM deep_research_record_evidence").fetchone()[0] == 0
+        assert research_mature_builds.research_runtime.get_memory_revision(con) == 0
+    finally:
+        con.close()
+    with sqlite3.connect(queue_db) as con:
+        assert con.execute(
+            "SELECT status FROM cases WHERE sample_id = ?", (claimed["sampleId"],)
+        ).fetchone()[0] == "accepted"
 
 
 def test_typed_product_rejects_relative_local_source_paths(tmp_path, monkeypatch):

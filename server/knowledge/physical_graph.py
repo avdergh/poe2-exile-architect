@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 import unicodedata
@@ -476,6 +477,50 @@ def ingest_skills(path: str | Path, *, source: GraphSource) -> GraphIngestionRes
             )
         ),
     )
+
+
+_POB_SKILL_BLOCK_RE = re.compile(
+    r'^skills\["(?P<skill_id>[^"]+)"\]\s*=\s*\{\s*$'
+    r'(?P<body>.*?)'
+    r'^\}\s*$',
+    re.MULTILINE | re.DOTALL,
+)
+_POB_MINION_TYPES_RE = re.compile(r"minionSkillTypes\s*=\s*\{(?P<body>.*?)\}", re.DOTALL)
+_POB_SKILL_TYPE_RE = re.compile(r"\[SkillType\.([A-Za-z0-9_]+)\]\s*=\s*true")
+
+
+def ingest_pob_minion_payload_types(
+    paths: list[str | Path] | tuple[str | Path, ...],
+    *,
+    source: GraphSource,
+    known_skill_keys: set[str] | frozenset[str],
+) -> GraphIngestionResult:
+    """Ingest pinned-PoB minion payload types without widening summon/Command types."""
+
+    facts: dict[str, RequirementFact] = {}
+    known = set(known_skill_keys)
+    for raw_path in sorted(Path(value) for value in paths):
+        text = raw_path.read_text(encoding="utf-8")
+        for match in _POB_SKILL_BLOCK_RE.finditer(text):
+            skill_key = f"skill:{match.group('skill_id')}"
+            if skill_key not in known:
+                continue
+            payload_match = _POB_MINION_TYPES_RE.search(match.group("body"))
+            if payload_match is None:
+                continue
+            skill_types = sorted(set(_POB_SKILL_TYPE_RE.findall(payload_match.group("body"))))
+            if not skill_types:
+                continue
+            facts[skill_key] = RequirementFact(
+                component_key=skill_key,
+                level_or_stage="minion_payload_types",
+                requirements={
+                    "endpoint_kind": "minion_payload",
+                    "skill_types": skill_types,
+                },
+                source_refs=(source.source_id,),
+            )
+    return GraphIngestionResult(requirement_facts=tuple(facts.values()))
 
 
 def ingest_base_items(path: str | Path, *, source: GraphSource) -> GraphIngestionResult:
@@ -1488,15 +1533,30 @@ def support_skill_candidate(
     snapshot: GraphSnapshot,
     support_key: str,
     skill_key: str,
+    endpoint_kind: str = "active_skill",
 ) -> ComputedFactResult:
     """Evaluate source-backed support-vs-skill legality without promoting candidate tags."""
 
+    normalized_skill_key = _required_text(skill_key, "skill key")
+    if endpoint_kind not in {"active_skill", "minion_payload"}:
+        raise ValueError("endpoint_kind must be active_skill or minion_payload")
     return _support_skill_candidate_for_types(
         snapshot=snapshot,
         support_key=support_key,
-        skill_key=skill_key,
-        skill_types=_skill_types_for(snapshot, _required_text(skill_key, "skill key")),
+        skill_key=normalized_skill_key,
+        skill_types=(
+            _minion_payload_types_for(snapshot, normalized_skill_key)
+            if endpoint_kind == "minion_payload"
+            else _skill_types_for(snapshot, normalized_skill_key)
+        ),
+        endpoint_kind=endpoint_kind,
     )
+
+
+def minion_payload_skill_types(snapshot: GraphSnapshot, skill_key: str) -> tuple[str, ...]:
+    """Return pinned-PoB payload types without treating them as summon/Command types."""
+
+    return tuple(sorted(_minion_payload_types_for(snapshot, _required_text(skill_key, "skill key"))))
 
 
 def support_skill_group_candidates(
@@ -1504,6 +1564,7 @@ def support_skill_group_candidates(
     snapshot: GraphSnapshot,
     support_keys: tuple[str, ...] | list[str],
     skill_key: str,
+    endpoint_kind: str = "active_skill",
 ) -> tuple[ComputedFactResult, ...]:
     """Evaluate one active skill's support group after the PoB skill-type fixed point."""
 
@@ -1511,8 +1572,14 @@ def support_skill_group_candidates(
     normalized_support_keys = tuple(_required_text(value, "support key") for value in support_keys)
     if len(set(normalized_support_keys)) != len(normalized_support_keys):
         raise ValueError("support group must not contain duplicate support keys")
+    if endpoint_kind not in {"active_skill", "minion_payload"}:
+        raise ValueError("endpoint_kind must be active_skill or minion_payload")
 
-    skill_types = _skill_types_for(snapshot, normalized_skill_key)
+    skill_types = (
+        _minion_payload_types_for(snapshot, normalized_skill_key)
+        if endpoint_kind == "minion_payload"
+        else _skill_types_for(snapshot, normalized_skill_key)
+    )
     rejected: list[str] = []
     for normalized_support_key in normalized_support_keys:
         result = _support_skill_candidate_for_types(
@@ -1520,6 +1587,7 @@ def support_skill_group_candidates(
             support_key=normalized_support_key,
             skill_key=normalized_skill_key,
             skill_types=skill_types,
+            endpoint_kind=endpoint_kind,
         )
         if result.status == "known":
             skill_types.update(_added_skill_types_for_support(snapshot, normalized_support_key))
@@ -1535,6 +1603,7 @@ def support_skill_group_candidates(
                 support_key=normalized_support_key,
                 skill_key=normalized_skill_key,
                 skill_types=skill_types,
+                endpoint_kind=endpoint_kind,
             )
             if result.status == "known":
                 skill_types.update(_added_skill_types_for_support(snapshot, normalized_support_key))
@@ -1551,6 +1620,7 @@ def support_skill_group_candidates(
             support_key=normalized_support_key,
             skill_key=normalized_skill_key,
             skill_types=skill_types,
+            endpoint_kind=endpoint_kind,
         )
         for normalized_support_key in normalized_support_keys
     )
@@ -1562,6 +1632,7 @@ def _support_skill_candidate_for_types(
     support_key: str,
     skill_key: str,
     skill_types: set[str],
+    endpoint_kind: str = "active_skill",
 ) -> ComputedFactResult:
     """Evaluate a support against an already accumulated set of active-skill types."""
 
@@ -1601,6 +1672,7 @@ def _support_skill_candidate_for_types(
             excluded_types_expr=_string_tuple(
                 contract_requirements.requirements.get("excluded_types_expr")
             ),
+            endpoint_kind=endpoint_kind,
         )
 
     allowed_expr = _string_tuple(contract_requirements.requirements.get("allowed_types_expr"))
@@ -1627,6 +1699,7 @@ def _support_skill_candidate_for_types(
             ),
             required_types_expr=allowed_expr,
             excluded_types_expr=excluded_expr,
+            endpoint_kind=endpoint_kind,
         )
 
     required_match = not allowed_expr or _type_expression_matches(allowed_expr, skill_types)
@@ -1644,6 +1717,7 @@ def _support_skill_candidate_for_types(
             ),
             required_types_expr=allowed_expr,
             excluded_types_expr=excluded_expr,
+            endpoint_kind=endpoint_kind,
         )
 
     recommended = any(
@@ -1662,6 +1736,7 @@ def _support_skill_candidate_for_types(
         excluded_reason=None,
         matched_skill_types=matched_skill_types,
         shared_tags=_shared_component_tags(snapshot, normalized_support_key, normalized_skill_key),
+        endpoint_kind=endpoint_kind,
     )
 
 
@@ -4514,6 +4589,7 @@ def _support_candidate_result(
     shared_tags: list[str] | tuple[str, ...],
     required_types_expr: list[str] | tuple[str, ...] | None = None,
     excluded_types_expr: list[str] | tuple[str, ...] | None = None,
+    endpoint_kind: str = "active_skill",
 ) -> ComputedFactResult:
     facts: dict[str, Any] = {
         "support_key": support_key,
@@ -4521,6 +4597,7 @@ def _support_candidate_result(
         "candidate_status": candidate_status,
         "matched_skill_types": list(matched_skill_types),
         "shared_tags": list(shared_tags),
+        "endpoint_kind": endpoint_kind,
     }
     if excluded_reason is not None:
         facts["excluded_reason"] = excluded_reason
@@ -4531,7 +4608,11 @@ def _support_candidate_result(
     return ComputedFactResult(
         request=ComputedFactRequest(
             fact_type="support_skill_candidate",
-            inputs={"support_key": support_key, "skill_key": skill_key},
+            inputs={
+                "support_key": support_key,
+                "skill_key": skill_key,
+                "endpoint_kind": endpoint_kind,
+            },
         ),
         status=status,
         facts=facts,
@@ -4748,6 +4829,21 @@ def _skill_types_for(snapshot: GraphSnapshot, skill_key: str) -> set[str]:
     return {
         node_key.rsplit(":", 1)[-1]
         for node_key in _target_keys(snapshot.edges, source_key=skill_key, edge_type="has_type")
+    }
+
+
+def _minion_payload_types_for(snapshot: GraphSnapshot, skill_key: str) -> set[str]:
+    fact = _requirement_fact_for(
+        snapshot,
+        component_key=skill_key,
+        level_or_stage="minion_payload_types",
+    )
+    if fact is None or fact.status != "known":
+        return set()
+    return {
+        str(value).casefold()
+        for value in fact.requirements.get("skill_types") or []
+        if isinstance(value, str) and value.strip()
     }
 
 

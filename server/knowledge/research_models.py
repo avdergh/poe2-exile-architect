@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from . import research_contracts
+
 from . import graph_tools
 
 
@@ -544,7 +546,7 @@ class DeepResearchRecordProposal(StrictModel):
     class_key: StableKey | None = None
     ascendancy_key: StableKey | None = None
     extraction_method_version: str = Field(min_length=1)
-    record_schema_version: Literal[1]
+    record_schema_version: Literal[1, 2]
     game_patch: str
     passive_tree_version: str
     pob_version_or_commit: str
@@ -553,6 +555,12 @@ class DeepResearchRecordProposal(StrictModel):
     knowledge_scope: Literal["global_seed", "local_user", "eval_ephemeral"]
     status: Literal["valid", "needs_revalidation", "stale", "deprecated", "quarantined"] = "valid"
     copy_safety_state: Literal["passed", "needs_review", "rejected"] = "passed"
+    source_state_scope: Literal[
+        "active_state",
+        "alternate_weapon_state",
+        "state_agnostic",
+        "unknown",
+    ] = "unknown"
 
     @model_validator(mode="before")
     @classmethod
@@ -630,9 +638,13 @@ class DeepResearchRecordProposal(StrictModel):
             if mention.component_key and mention.component_key.startswith("support:")
         }
         packages = self.typed_payload.get("supportPackages")
-        if self.record_kind == "skill_package" and physical_supports and packages is None:
+        if (
+            physical_supports
+            and packages is None
+            and (self.record_schema_version >= 2 or self.record_kind == "skill_package")
+        ):
             raise ValueError(
-                "skill_package records with resolved support gems require "
+                "records with resolved support gems require "
                 "typed_payload.supportPackages"
             )
         if packages is not None:
@@ -645,12 +657,20 @@ class DeepResearchRecordProposal(StrictModel):
                 for mention in self.component_mentions
                 if mention.component_key and mention.component_key.startswith("skill:")
             }
-            normalized_packages: set[tuple[str, tuple[str, ...]]] = set()
+            normalized_packages: set[tuple[str, tuple[str, ...], str, str]] = set()
             packaged_supports: set[str] = set()
             for package in packages:
-                if not isinstance(package, dict) or set(package) != {"skillKey", "supportKeys"}:
+                allowed_package_keys = {"skillKey", "supportKeys"}
+                if self.record_schema_version >= 2:
+                    allowed_package_keys.update({"deliveryRole", "hostSkillKey"})
+                if (
+                    not isinstance(package, dict)
+                    or not {"skillKey", "supportKeys"}.issubset(package)
+                    or not set(package).issubset(allowed_package_keys)
+                ):
                     raise ValueError(
-                        "each typed_payload.supportPackages entry must contain only skillKey and supportKeys"
+                        "each typed_payload.supportPackages entry must contain skillKey/supportKeys "
+                        "and only the versioned socket-package fields"
                     )
                 skill_key = package.get("skillKey")
                 support_keys = package.get("supportKeys")
@@ -687,14 +707,41 @@ class DeepResearchRecordProposal(StrictModel):
                         + ", ".join(sorted(physical_supports))
                         + ")"
                     )
-                identity = (skill_key, tuple(sorted(support_keys)))
+                delivery_role = str(package.get("deliveryRole") or "direct")
+                host_skill_key = str(package.get("hostSkillKey") or "")
+                if self.record_schema_version >= 2:
+                    if delivery_role not in research_contracts.SUPPORT_DELIVERY_ROLES:
+                        raise ValueError(
+                            "typed_payload.supportPackages deliveryRole is not canonical"
+                        )
+                    if delivery_role in {"triggered_payload", "proxy_payload"}:
+                        if not host_skill_key or host_skill_key not in mentioned_skills:
+                            raise ValueError(
+                                "payload supportPackages require hostSkillKey to reference a "
+                                "resolved skill in the same record"
+                            )
+                    elif host_skill_key:
+                        raise ValueError("only payload supportPackages may declare hostSkillKey")
+                elif set(package) != {"skillKey", "supportKeys"}:
+                    raise ValueError(
+                        "record schema 1 supportPackages contain only skillKey/supportKeys"
+                    )
+                identity = (
+                    skill_key,
+                    tuple(sorted(support_keys)),
+                    delivery_role,
+                    host_skill_key,
+                )
                 if identity in normalized_packages:
                     raise ValueError("typed_payload.supportPackages must not contain duplicates")
                 normalized_packages.add(identity)
                 packaged_supports.update(support_keys)
-            if self.record_kind == "skill_package" and packaged_supports != physical_supports:
+            if (
+                (self.record_schema_version >= 2 or self.record_kind == "skill_package")
+                and packaged_supports != physical_supports
+            ):
                 raise ValueError(
-                    "skill_package supportPackages must assign every resolved support gem in the record"
+                    "supportPackages must assign every resolved support gem in the record"
                 )
         support_exceptions = self.typed_payload.get("supportCoverageExceptions")
         if support_exceptions is not None:
@@ -835,6 +882,30 @@ class DeepResearchRecordProposal(StrictModel):
                 )
             if gear_responsibilities:
                 self._validate_gear_responsibilities(gear_responsibilities)
+        gear_subjects = self.typed_payload.get("gearSubjects")
+        if gear_subjects is not None:
+            if self.record_kind != "gear_synergy":
+                raise ValueError("typed_payload.gearSubjects is only valid on gear_synergy records")
+            if (
+                not isinstance(gear_subjects, list)
+                or not gear_subjects
+                or len(gear_subjects) > 12
+                or any(value not in research_contracts.GEAR_SUBJECTS for value in gear_subjects)
+                or len(set(gear_subjects)) != len(gear_subjects)
+            ):
+                raise ValueError(
+                    "typed_payload.gearSubjects must be a non-empty unique list of canonical "
+                    "gear subjects"
+                )
+        if (
+            self.record_schema_version >= 2
+            and self.record_kind == "gear_synergy"
+            and gear_responsibilities == []
+            and not gear_subjects
+        ):
+            raise ValueError(
+                "record schema 2 content-based gear_synergy records require gearSubjects"
+            )
         return self
 
     def _validate_gear_responsibilities(self, gear_responsibilities: list[dict[str, Any]]) -> None:
@@ -892,7 +963,7 @@ class DeepResearchRecordProposal(StrictModel):
 
 
 class ResearcherOutput(StrictModel):
-    schema_version: Literal[4, 5]
+    schema_version: Literal[4, 5, 6]
     fragments: list[CleanFragmentProposal] = Field(default_factory=list)
     semantic_edges: list[SemanticEdgeProposal] = Field(default_factory=list)
     build_design_observations: list[BuildDesignObservation] = Field(default_factory=list)
@@ -900,9 +971,18 @@ class ResearcherOutput(StrictModel):
     deep_research_records: list[DeepResearchRecordProposal] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _deep_records_require_v5(self) -> "ResearcherOutput":
-        if self.deep_research_records and self.schema_version != 5:
-            raise ValueError("deep_research_records require schema_version=5")
+    def _deep_records_require_versioned_contract(self) -> "ResearcherOutput":
+        if not self.deep_research_records:
+            return self
+        record_versions = {record.record_schema_version for record in self.deep_research_records}
+        if self.schema_version == 5 and record_versions == {1}:
+            return self
+        if self.schema_version == 6 and record_versions == {2}:
+            return self
+        raise ValueError(
+            "deep_research_records require schema_version=5/record_schema_version=1 for "
+            "legacy input or schema_version=6/record_schema_version=2 for safe-review v3"
+        )
         return self
 
 
@@ -1010,6 +1090,7 @@ def _validation_issue(error: dict[str, Any]) -> dict[str, Any]:
     path = ".".join(str(part) for part in location) or "input"
     issue: dict[str, Any] = {
         "path": path,
+        "loc": list(location),
         "message": str(error.get("msg") or "invalid value")[:320],
         "errorType": str(error.get("type") or "validation_error"),
     }

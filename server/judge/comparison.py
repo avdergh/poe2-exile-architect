@@ -6,6 +6,18 @@ from typing import Any
 
 
 def compare_evaluations(candidate: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
+    candidate_error = bool(candidate.get("errorKind"))
+    reference_error = bool(reference.get("errorKind"))
+    if candidate_error or reference_error:
+        status = (
+            "both_evidence_unavailable"
+            if candidate_error and reference_error
+            else "candidate_evidence_unavailable"
+            if candidate_error
+            else "reference_evidence_unavailable"
+        )
+        return _result("unknown", "unknown", status, False, "none")
+
     candidate_ok = bool(candidate.get("pass"))
     reference_ok = bool(reference.get("pass"))
 
@@ -16,8 +28,8 @@ def compare_evaluations(candidate: dict[str, Any], reference: dict[str, Any]) ->
     if not candidate_ok and not reference_ok:
         return _result("unknown", "unknown", "both_invalid", False, "none")
 
-    if _core_blocked(candidate) or _core_blocked(reference):
-        return _result("unknown", "unknown", "incomparable", False, "none")
+    if _score_unavailable(candidate) or _score_unavailable(reference):
+        return _result("unknown", "unknown", "numeric_evidence_unavailable", False, "none")
 
     candidate_band = candidate.get("levelBand")
     reference_band = reference.get("levelBand")
@@ -25,10 +37,10 @@ def compare_evaluations(candidate: dict[str, Any], reference: dict[str, Any]) ->
         return _result("unknown", "unknown", "level_band_mismatch", False, "none")
 
     selection = _higher_score(candidate, reference)
+    if _not_rewardable(candidate) or _not_rewardable(reference):
+        return _result(selection, "unknown", "non_rewardable", False, "none")
     if _limited_evidence(candidate) or _limited_evidence(reference):
         return _result(selection, "unknown", "limited_evidence", "limited", "limited")
-    if _partial(candidate) or _partial(reference):
-        return _result(selection, "unknown", "partial_modelability", "limited", "limited")
     return _result(selection, selection, "comparable", True, "strong")
 
 
@@ -42,21 +54,14 @@ def _higher_score(candidate: dict[str, Any], reference: dict[str, Any]) -> str:
     return "tie"
 
 
-def _core_blocked(evaluation: dict[str, Any]) -> bool:
-    modelability = evaluation.get("modelability") or {}
-    return bool(modelability.get("coreBlocked")) or modelability.get("status") == "not_modelable"
-
-
-def _partial(evaluation: dict[str, Any]) -> bool:
-    return (evaluation.get("modelability") or {}).get("status") == "partial"
-
-
 def _limited_evidence(evaluation: dict[str, Any]) -> bool:
     if evaluation.get("rewardLimitReasons"):
         return True
     if evaluation.get("rewardEligible") == "limited":
         return True
     if evaluation.get("rewardStrength") == "limited":
+        return True
+    if (evaluation.get("modelability") or {}).get("status") in {"partial", "not_modelable"}:
         return True
     limited_caveats = {
         "lower_bound_dps_caveat",
@@ -69,6 +74,14 @@ def _limited_evidence(evaluation: dict[str, Any]) -> bool:
         "dual_weapon_state_limited_caveat",
     }
     return bool(limited_caveats & set(evaluation.get("caveats") or []))
+
+
+def _score_unavailable(evaluation: dict[str, Any]) -> bool:
+    return (evaluation.get("scoreApplicability") or {}).get("status") == "unavailable"
+
+
+def _not_rewardable(evaluation: dict[str, Any]) -> bool:
+    return evaluation.get("rewardEligible") is False or evaluation.get("rewardStrength") == "none"
 
 
 def _result(

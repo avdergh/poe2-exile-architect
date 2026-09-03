@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from server.compute.state import build_state_hash
-from server.generation import evaluation, evaluation_snapshots, run_store
+from server.generation import artifacts, evaluation, evaluation_snapshots, run_store
 from server.knowledge import research_memory
 
 
@@ -27,6 +28,7 @@ BUILD_XML = """<?xml version="1.0" encoding="UTF-8"?>
       </Skill>
     </SkillSet>
   </Skills>
+  <Tree activeSpec="1"><Spec><Sockets /></Spec></Tree>
   <Items activeItemSet="1">
     <ItemSet id="1"><Slot name="Weapon 1" itemId="1" /></ItemSet>
   </Items>
@@ -92,7 +94,21 @@ class _ActiveEngine:
     ) -> None:
         self.xml = xml
         self.get_xml_calls = 0
-        self.build = build or {"class": "Ranger", "level": 68, "gear": {}}
+        default_build: dict[str, object] = {
+            "class": "Ranger",
+            "level": 68,
+            "gear": {},
+            "unspentPoints": 0,
+            "spiritAvailable": 100,
+            "spiritReservedCapped": 81,
+            "spiritUnreserved": 19,
+            "spiritRequested": 81,
+            "spiritOverBy": 0,
+            "spiritUsed": 81,
+            "activeWeaponSet": 1,
+        }
+        default_build.update(build or {})
+        self.build = default_build
         self.resistances = resistances or {
             "fire": 75,
             "cold": 75,
@@ -114,6 +130,14 @@ class _ActiveEngine:
         return {"resistances": self.resistances}
 
 
+class _CheckpointActiveEngine(_ActiveEngine):
+    def transaction_lock(self):
+        return nullcontext()
+
+    def get_stats(self, _keys=None):
+        return {"stats": {"ManaCost": 0, "Life": 1000, "Speed": 1}}
+
+
 class _JudgeEngine:
     def __init__(self) -> None:
         self.loaded = ""
@@ -129,8 +153,14 @@ class _JudgeEngine:
             "mainSkill": "Lightning Arrow",
             "pointsUsed": 72,
             "pointsAvailable": 76,
-            "spiritUsed": 30,
+            "unspentPoints": 0,
+            "spiritUsed": 81,
             "spiritAvailable": 100,
+            "spiritReservedCapped": 81,
+            "spiritUnreserved": 19,
+            "spiritRequested": 81,
+            "spiritOverBy": 0,
+            "activeWeaponSet": 1,
             "judgeSelectedSkill": {
                 "skillName": "Lightning Arrow",
                 "groupIndex": 1,
@@ -230,6 +260,17 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert result["trustedEvaluationScope"] == "snapshot_and_judge_only"
     assert result["versionContextTrusted"] is False
     assert result["transientBuildState"]["semanticStateHash"] == build_state_hash(BUILD_XML)
+    assert result["deliveryStatus"] == "candidate"
+    assert set(result["createQualityChecklist"]) == {
+        "skillSupportAudit",
+        "mechanismDependencies",
+        "bootstrapItems",
+        "gearAttainability",
+        "charmLoadout",
+        "jewelDecision",
+        "itemSockets",
+        "sustain",
+    }
     assert result["transientBuildState"]["safeSummary"]["passivePointsUsed"] == "72"
     assert result["transientBuildState"]["testedSkillGroups"][0] == {
         "groupIndex": 1,
@@ -308,6 +349,310 @@ def test_evaluate_generation_candidate_writes_trusted_raw_free_receipt(tmp_path,
     assert remembered is not None
     assert remembered.xml == BUILD_XML
     assert not list(run_dir.rglob("*.xml"))
+
+
+def test_selected_skill_conflict_does_not_consume_attempt(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:selection-conflict",
+        version_context=_version_context(),
+        offense_skill_group_index=2,
+        expected_skill_name="Lightning Arrow",
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "selected_skill_conflict"
+    assert result["attemptConsumed"] is False
+    assert not (run_dir / "trusted-evaluations").exists()
+
+
+def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        evaluation.validation_checkpoint,
+        "inspect_generation_checkpoint",
+        lambda *_args, **_kwargs: {
+            "status": "ready",
+            "preflight": {"readyForJudge": True},
+            "createQualityChecklist": {
+                "skillSupportAudit": {
+                    "status": "failed",
+                    "reasons": ["support_audit_stale:1"],
+                },
+                "jewelDecision": {"status": "passed", "reasons": []},
+                "itemSockets": {"status": "passed", "reasons": []},
+                "sustain": {"status": "passed", "reasons": []},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        evaluation.runner,
+        "safe_evaluate_active_build",
+        lambda *_args, **_kwargs: pytest.fail("Judge must not run"),
+    )
+
+    result = evaluation.evaluate_generation_candidate(
+        _CheckpointActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:stale-final-audit",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "generation_final_checks_incomplete"
+    assert result["attemptConsumed"] is False
+    assert result["finalCheckBlockers"] == [
+        "skillSupportAudit:support_audit_stale:1"
+    ]
+    assert not (run_dir / "trusted-evaluations").exists()
+
+
+def test_current_inconclusive_support_audit_is_not_treated_as_missing():
+    assert evaluation._final_check_blockers(
+        {
+            "skillSupportAudit": {
+                "status": "failed",
+                "reasons": ["support_audit_inconclusive:2"],
+            },
+            "jewelDecision": {"status": "passed", "reasons": []},
+            "itemSockets": {"status": "passed", "reasons": []},
+            "sustain": {"status": "passed", "reasons": []},
+        }
+    ) == []
+
+
+def test_missing_final_checklist_fails_closed():
+    assert evaluation._final_check_blockers({}) == [
+        "itemSockets:missing_result",
+        "jewelDecision:missing_result",
+        "skillSupportAudit:missing_result",
+        "sustain:missing_result",
+    ]
+
+
+def test_memory_assisted_judge_requires_bound_draft_validation(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    manifest_path = run_dir / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["experimentContext"] = {
+        "memoryMode": "memory_assisted",
+        "mechanismBlueprintRequired": True,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:draft-required",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "generation_family_discovery_required"
+    assert result["attemptConsumed"] is False
+    assert not (run_dir / "trusted-evaluations").exists()
+
+
+def test_memory_assisted_judge_rejects_mechanism_drift_before_attempt(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    manifest_path = run_dir / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["experimentContext"] = {
+        "memoryMode": "memory_assisted",
+        "mechanismBlueprintRequired": True,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    family = {
+        "schemaVersion": 1,
+        "status": "selected",
+        "familyDiscoveryRef": "dq-family-0123456",
+        "selectedFamilyKey": "bf-0123456789abcdef",
+        "noRawMaterial": True,
+    }
+    (run_dir / "family-discovery.json").write_text(json.dumps(family), encoding="utf-8")
+    blueprint = {
+        "schemaVersion": 1,
+        "blueprintRef": "gbp-0123456789abcdef",
+        "blueprintHash": "blueprint-hash",
+        "researchExecutionStructureHash": "structure-hash",
+    }
+    (run_dir / "mechanism-blueprint-validation.json").write_text(
+        json.dumps(blueprint), encoding="utf-8"
+    )
+    signature = {
+        "offenseSkillGroupIndex": 1,
+        "activeSkillName": "Lightning Arrow",
+        "supportNames": ["Martial Tempo"],
+        "resourceCostDomains": ["mana"],
+        "hitDamageTypes": ["lightning"],
+        "hitDamageTypesModelled": True,
+    }
+    marker = {
+        "schemaVersion": 2,
+        "candidateId": "candidate:test:drift",
+        "researchMemoryRef": _version_context()["research_memory_ref"],
+        "researchPremiseAuditReady": True,
+        "familyDiscoveryRef": family["familyDiscoveryRef"],
+        "selectedFamilyKey": family["selectedFamilyKey"],
+        "mechanismBlueprintRef": blueprint["blueprintRef"],
+        "mechanismBlueprintHash": blueprint["blueprintHash"],
+        "researchExecutionStructureHash": blueprint["researchExecutionStructureHash"],
+        "mechanismSignatureHash": "original-signature-hash",
+        "mechanismSignature": signature,
+        "calculationContext": {
+            "groupIndex": 1,
+            "activeIndex": 1,
+            "skillName": "Lightning Arrow",
+        },
+        "buildStateHash": build_state_hash(BUILD_XML),
+        "noRawMaterial": True,
+    }
+    (run_dir / "draft-validation.json").write_text(json.dumps(marker), encoding="utf-8")
+    monkeypatch.setattr(
+        evaluation.mechanism_signature,
+        "observe",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "signature": {**signature, "resourceCostDomains": ["life"]},
+            "signatureHash": "changed-signature-hash",
+        },
+    )
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:drift",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "generation_mechanism_drift"
+    assert result["attemptConsumed"] is False
+    conflict = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:drift",
+        version_context=_version_context(),
+        offense_skill_group_index=2,
+        expected_skill_name="Herald of Thunder",
+        engine_factory=_JudgeEngine,
+    )
+    assert conflict["errorCode"] == "selected_skill_conflict"
+    assert conflict["attemptConsumed"] is False
+
+
+def test_historical_attempt_cannot_be_saved_under_revised_blueprint(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    monkeypatch.setenv("POE_BD_FINAL_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    manifest_path = run_dir / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["experimentContext"] = {
+        "memoryMode": "memory_assisted",
+        "mechanismBlueprintRequired": True,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    family = {
+        "schemaVersion": 1,
+        "status": "selected",
+        "familyDiscoveryRef": "dq-family-0123456",
+        "selectedFamilyKey": "bf-0123456789abcdef",
+        "noRawMaterial": True,
+    }
+    (run_dir / "family-discovery.json").write_text(json.dumps(family), encoding="utf-8")
+    blueprint = {
+        "schemaVersion": 1,
+        "blueprintRef": "gbp-0123456789abcdef",
+        "blueprintHash": "blueprint-hash-v1",
+        "researchExecutionContractRef": "contract-v1",
+        "researchExecutionStructureHash": "structure-v1",
+    }
+    (run_dir / "mechanism-blueprint-validation.json").write_text(
+        json.dumps(blueprint), encoding="utf-8"
+    )
+    signature = {
+        "offenseSkillGroupIndex": 1,
+        "activeSkillName": "Lightning Arrow",
+        "supportNames": ["Martial Tempo"],
+        "resourceCostDomains": ["mana"],
+        "hitDamageTypes": ["lightning"],
+        "hitDamageTypesModelled": True,
+    }
+    marker = {
+        "schemaVersion": 2,
+        "candidateId": "candidate:test:bound-attempt",
+        "researchMemoryRef": _version_context()["research_memory_ref"],
+        "researchPremiseAuditReady": True,
+        "researchExecutionContractRef": "contract-v2",
+        "familyDiscoveryRef": family["familyDiscoveryRef"],
+        "selectedFamilyKey": family["selectedFamilyKey"],
+        "mechanismBlueprintRef": blueprint["blueprintRef"],
+        "mechanismBlueprintHash": blueprint["blueprintHash"],
+        "researchExecutionStructureHash": "structure-v2",
+        "mechanismSignatureHash": "signature-hash-v1",
+        "mechanismSignature": signature,
+        "calculationContext": {
+            "groupIndex": 1,
+            "activeIndex": 1,
+            "skillName": "Lightning Arrow",
+        },
+        "buildStateHash": build_state_hash(BUILD_XML),
+        "noRawMaterial": True,
+    }
+    (run_dir / "draft-validation.json").write_text(json.dumps(marker), encoding="utf-8")
+    monkeypatch.setattr(
+        evaluation.mechanism_signature,
+        "observe",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "signature": signature,
+            "signatureHash": "signature-hash-v1",
+        },
+    )
+
+    def fake_safe(factory, *, snapshot_id, timeout_seconds, source_context):
+        del timeout_seconds, source_context
+        factory()
+        return _judge_result(snapshot_id)
+
+    monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    evaluated = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:bound-attempt",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+    assert evaluated["status"] == "evaluated"
+    receipt = json.loads((run_dir / "trusted-evaluation.json").read_text(encoding="utf-8"))
+    assert receipt["mechanismBinding"]["mechanismBlueprintHash"] == "blueprint-hash-v1"
+    assert receipt["mechanismBinding"]["researchExecutionContractRef"] == "contract-v2"
+    assert receipt["mechanismBinding"]["researchExecutionStructureHash"] == "structure-v2"
+
+    blueprint["blueprintHash"] = "blueprint-hash-v2"
+    marker["mechanismBlueprintHash"] = "blueprint-hash-v2"
+    (run_dir / "mechanism-blueprint-validation.json").write_text(
+        json.dumps(blueprint), encoding="utf-8"
+    )
+    (run_dir / "draft-validation.json").write_text(json.dumps(marker), encoding="utf-8")
+
+    saved = artifacts.save_final_build_artifact(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:bound-attempt",
+        attempt_index=int(evaluated["attemptIndex"]),
+    )
+
+    assert saved["errorCode"] == "trusted_evaluation_mechanism_binding_mismatch"
 
 
 def test_evaluate_generation_candidate_defaults_to_hard_only_feedback(tmp_path, monkeypatch):
@@ -567,7 +912,17 @@ def test_endgame_resistance_shortfall_is_blocked_without_consuming_a_judge_attem
             "class": "Ranger",
             "ascendancy": "Deadeye",
             "level": 85,
-            "gear": {},
+            "gear": {
+                "Flask 1": {"name": "Fixture Unique Life Flask", "rarity": "unique"},
+                "Flask 2": {
+                    "name": "Fixture Magic Mana Flask",
+                    "rarity": "magic",
+                    "itemLevel": 82,
+                    "affixPrefixes": 1,
+                    "affixSuffixes": 1,
+                    "affixLegality": {"ok": True, "issues": []},
+                },
+            },
         },
         resistances={"fire": 60, "cold": 59, "lightning": 60, "chaos": 29},
     )

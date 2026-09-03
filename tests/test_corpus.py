@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from server.knowledge import db, mechanics
@@ -43,6 +45,23 @@ def test_unique_parse_skips_source_line_for_base():
     assert clean_mod_line(lines[1]) == "Furtive Wraps"  # the base, not the Source: line
     assert UNIQUE_META_RE.match("Source: anything")  # the filter that prevents the regression
     assert not UNIQUE_META_RE.match("Furtive Wraps")  # a real base must pass through
+
+
+def test_generated_unique_blocks_are_included_in_corpus_input():
+    from pipeline.build_corpus import DB_PATH, parse_uniques
+
+    by_name = {item["name"]: item for item in parse_uniques()}
+    assert by_name["Against the Darkness"]["item_type"] == "jewel"
+    assert by_name["Heart of the Well"]["item_type"] == "jewel"
+    with sqlite3.connect(DB_PATH) as con:
+        stored = {
+            row[0]
+            for row in con.execute(
+                "SELECT name FROM uniques WHERE name IN (?, ?)",
+                ("Against the Darkness", "Heart of the Well"),
+            )
+        }
+    assert stored == {"Against the Darkness", "Heart of the Well"}
 
 
 def test_get_gem_fireball():

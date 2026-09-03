@@ -81,6 +81,9 @@ Phase 2/3 先建立符号图与 typed access；Phase 4 再把成熟 BD 研究产
 绑定不可变快照。
 相同 Family 的 Research 与组件搜索不设固定条数上限；working checkpoint 只阻止相同
 query/receipt 在压缩后原样重放，不能截断新证据与候选。
+Create 只从一条 `(knowledgeScope, sourceCaseRef)` 案例通道采用成熟知识；每次查询在固定
+`memory_revision` 上用单一 cursor 分页，完整 `0..terminal` receipt 链才具备授权。Research
+跨案例比较继续使用 full 响应，不受 Create lane 限制。
 精确 Family 查询用 coverage、未展开索引和稳定 premise catalog 显示知识全貌；Boss、资源、
 轮转等失败条件必须被明确解决、采用替代方案、判定不适用或保留 caveat，解决记录必须实际深读。
 lifecycle 调参使用 state-hash checkpoint，正式 attempt 边界才执行 compact gate。
@@ -106,6 +109,8 @@ lifecycle 调参使用 state-hash checkpoint，正式 attempt 边界才执行 co
   Learning Memory seed、可移植 physical graph seed、PoB 子集和 Python 依赖一起进入插件包并以
   相同种子提交到 Git。首次启动只在用户库不存在时安装种子；升级不覆盖本地 Research、Learning
   Memory 或运行状态。
+  Research seed 严格只含 provenance 已证明的 `global_seed` 闭包；`local_user`、audit receipt、
+  quarantine、旧 schema/backfill marker 和 orphan evidence 都会让发布校验失败。
 
 已有底座不等于产品能力已经验证；能力必须通过 benchmark 证明。
 
@@ -187,7 +192,7 @@ PoE2 BD 通常不是单一技能、单一面板和单一战斗场景。清图、
 - 普通 Create：不扩写全知评分器。未指定唯一目标流派时，先从精确版本 Research 数据中召回
   全部合格的 2–10 个成熟 Family，做轻量机制/证据比较并保留第一名与备用；选中后由普通
   Create 独立生成并保存 immutable artifact。Judge 只作 advisory，typed
-  Research receipt、设计覆盖和机制 gate 防止 Family/知识漂移。全局 optimizer/全局树重排禁用，
+  Research receipt、单案例 lane、设计覆盖和机制 gate 防止 Family/知识漂移。全局 optimizer/全局树重排禁用，
   重复检查按 build-state hash 合并。价格只作获取风险说明。
 
 这是一项跨阶段待优化能力，不因 Phase 1 基线状态为“已完成”而视为已经解决。后续优先由
@@ -205,7 +210,7 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 | Phase 3 | 已完成：read-only typed graph facade、NetworkX bounded topology、MCP `graph_tool_query`、deterministic benchmark 与人工验收通过 | Phase 2 | 通过 typed tools 暴露 source-backed graph 查询，禁止 agent 写原生图查询语句。 | `docs/phases/03_graph_tools.md` |
 | Phase 4 | 已完成：Researcher 语义记忆、Phase 4.5 source/pattern 补课和真实逐案例 Researcher 批量提取入口 `/poe-bd-research` 已收口 | Phase 1、2、3 | 让外部 Researcher Agent 抽取 non-copyable 语义知识，写入 semantic graph / memory / build patterns，并为 Phase 5 提供 copy-safe、resolver-backed、advisory 组合模式上下文。 | `docs/phases/04_research_memory.md` |
 | Phase 5 | 已完成：Agent 主导生成、活动 PoB 搭建、可信 Judge、有限内部重试、无记忆对照和真实会话人工验收均已收口 | Phase 1、3、4 | 外部 Architect Agent 主导用户意图理解、按需查询、候选 BD 设计、活动 PoB 搭建和失败解释；仓库捕获不可变快照、运行 Judge，并提供安全且与本次运行绑定的人工验收材料。 | `docs/phases/05_generation.md` |
-| Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
+| Phase 6 | 已完成：最终 PoB 保存、桌面 PoB 文件导出、poe.ninja 公共分享、可插拔 converter、单阶段 `.build` 导出、自动校验和真实人工验收均已收口 | Phase 2、5 | 只保存 Phase 5 最终通过且被 Agent 接受的完整 PoB artifact，导出桌面 PoB 可查看的 XML/导入码、发布公开 poe.ninja PoB 链接，并忠实转换为官方单阶段 `.build` JSON；处理恢复、provider 隔离、官方 ID、导出校验和人工验收，不重新设计生命周期或补完整 BD。后续导出发现的构筑内容问题按根因回到 Phase 1-5 修正。 | `docs/phases/06_build_export.md` |
 | Phase 7 | 功能实现完成、首轮实跑暂停于 6/10、学习效果未评估 | Phase 1、4、5，按需依赖 Phase 6 | 建立成熟原 BD Profile、同 Family/同等级盲测 Create、独立逐维比较和面向后续案例的 Research/轻量 Learning Memory 回流；首轮计划 10 个串行案例，恢复后再执行固定趋势验收。 | `docs/phases/07_critic_loop.md` |
 | Phase 9 | 未开始 | Phase 1-7 达到进入条件 | 在核心闭环被 benchmark 证明后，再做规模化、自动重验证、前端和完整产品叙事。 | `docs/phases/09_scale_productization.md` |
 

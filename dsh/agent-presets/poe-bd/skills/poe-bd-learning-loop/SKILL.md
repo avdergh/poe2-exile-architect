@@ -111,7 +111,7 @@ Profile 成功后创建独立 Create 任务、claim `create`，然后发送：
 mcp__poe_learning__query_learning_memory；Family、等级和 versionContext 由服务端绑定，提交时使用返回的新 revision。
 默认目标是软核交易、无固定预算、综合强度与可玩性优先。只运行一次 Create，
 允许 skill 自身既有的有限内部修正。完成并保存最终 artifact 后，重新解析最终 Family 和等级，调用
-mcp__poe_learning__submit_learning_create_result，提交安全 generated evidence 与完整 learningMemoryUse 审计。
+mcp__poe_learning__submit_learning_create_result，提交安全 generated evidence 与完整 researchMemoryUse / learningMemoryUse 审计。
 ```
 
 Create 必须记录每条 Memory 的 `adopted/caveated/rejected`、应用方式和

@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from . import equipment, skillgroups
 from .state import build_state_hash
 
 
@@ -689,6 +690,37 @@ def _scope_postconditions(
             None,
         )
     if batch_kind in {"required_gear", "ordinary_gear"}:
+        build = engine.get_build()
+        gear = build.get("gear") if isinstance(build, dict) else {}
+        capacity = build.get("charmLimit") if isinstance(build, dict) else None
+        if not isinstance(capacity, (int, float)) and isinstance(gear, dict):
+            belt = gear.get("Belt")
+            capacity = belt.get("charmSlots") if isinstance(belt, dict) else None
+        equipped_charms = [
+            slot
+            for slot in ("Charm 1", "Charm 2", "Charm 3")
+            if isinstance(gear, dict) and slot in gear
+        ]
+        if equipped_charms and not isinstance(capacity, (int, float)):
+            return (
+                {
+                    "status": "failed",
+                    "check": "charm_capacity",
+                    "effectiveCharmCapacity": None,
+                    "equippedCharmCount": len(equipped_charms),
+                },
+                "mutation_batch_charm_capacity_unknown",
+            )
+        if isinstance(capacity, (int, float)) and len(equipped_charms) > min(3, int(capacity)):
+            return (
+                {
+                    "status": "failed",
+                    "check": "charm_capacity",
+                    "effectiveCharmCapacity": min(3, int(capacity)),
+                    "equippedCharmCount": len(equipped_charms),
+                },
+                "mutation_batch_charm_capacity_exceeded",
+            )
         return (
             {
                 "status": "passed",
@@ -721,10 +753,11 @@ def _apply_operation(engine: Any, operation: BuildMutationOperation) -> dict[str
     if operation.operation == "set_level":
         return engine.set_level(operation.level)
     if operation.operation == "set_main_skill":
-        return engine.paste_skill(operation.skill)
+        return skillgroups.set_main_skill(engine, operation.skill or "")
     if operation.operation == "add_skill_group":
-        return engine.add_skill_group(
-            operation.skill,
+        return skillgroups.add_skill_group(
+            engine,
+            operation.skill or "",
             include_in_full_dps=operation.in_full_dps,
         )
     if operation.operation == "set_config":
@@ -733,7 +766,12 @@ def _apply_operation(engine: Any, operation: BuildMutationOperation) -> dict[str
             custom_mods=operation.custom_mods,
         )
     if operation.operation == "equip_item":
-        return engine.add_item(operation.raw, slot=operation.slot)
+        return equipment.equip_item_verified(
+            engine,
+            raw=operation.raw,
+            slot=operation.slot,
+            craft_receipt_ref=operation.craft_receipt_ref,
+        )
     if operation.operation == "unequip_item":
         return engine.unequip_item(operation.slot)
     if operation.operation == "equip_jewel":

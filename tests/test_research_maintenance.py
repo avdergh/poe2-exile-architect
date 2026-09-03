@@ -9,6 +9,7 @@ from server.knowledge import graph_tools
 from server.knowledge import physical_graph
 from server.knowledge import research_maintenance
 from server.knowledge import research_memory
+from server.knowledge import research_runtime
 
 
 def _fragment_payload(*, summary: str, components: list[str]) -> dict[str, object]:
@@ -178,6 +179,11 @@ def test_legacy_cleanup_is_dry_run_backed_up_and_idempotent(tmp_path: Path):
     assert planned["fragmentSupersessionCount"] == 1
     assert planned["quarantinedDeepRecordCount"] == 1
     assert not backup_path.exists()
+    con = mature_learning.connect(db_path)
+    try:
+        revision_before_apply = research_runtime.get_memory_revision(con)
+    finally:
+        con.close()
 
     applied = research_maintenance.cleanup_legacy_research_memory(
         db_path=db_path,
@@ -203,6 +209,7 @@ def test_legacy_cleanup_is_dry_run_backed_up_and_idempotent(tmp_path: Path):
             (research_maintenance.LEGACY_CLEANUP_MARKER,),
         ).fetchone()
         assert json.loads(marker[0])["quarantinedDeepRecordCount"] == 1
+        assert research_runtime.get_memory_revision(con) == revision_before_apply + 1
     finally:
         con.close()
 
@@ -343,11 +350,13 @@ def test_research_contract_calibration_is_backed_up_and_idempotent(tmp_path: Pat
     try:
         skill_row = con.execute(
             """
-            SELECT typed_payload FROM deep_research_records
-            WHERE record_kind = 'skill_package' AND status = 'valid'
+            SELECT typed_payload, status FROM deep_research_records
+            WHERE record_kind = 'skill_package'
+              AND status IN ('valid', 'needs_revalidation')
             """
         ).fetchone()
         packages = json.loads(skill_row["typed_payload"])["supportPackages"]
+        assert skill_row["status"] == "needs_revalidation"
         assert any(
             "support:Metadata/Items/Gems/SupportGemAccelerationTwo" in package["supportKeys"]
             for package in packages
@@ -396,7 +405,6 @@ def test_remove_exclusive_research_sources_is_dry_run_backed_up_and_conservative
     second_record.update(
         {
             "research_group_id": "research:remove-two",
-            "title": "Second exclusive source",
             "source_case_refs": ["source-hash:remove-two"],
         }
     )
@@ -425,6 +433,11 @@ def test_remove_exclusive_research_sources_is_dry_run_backed_up_and_conservative
     assert planned["deleteCounts"]["deep_research_records"] == 1
     assert planned["deleteCounts"]["research_fragments"] == 1
     assert planned["deleteCountsByEvidenceTable"]["research_fragment_evidence"] == 1
+    con = mature_learning.connect(db_path)
+    try:
+        revision_before_apply = research_runtime.get_memory_revision(con)
+    finally:
+        con.close()
     applied = research_maintenance.remove_exclusive_research_sources(
         ["source-hash:remove-one", "source-hash:remove-two"],
         db_path=db_path,
@@ -439,6 +452,7 @@ def test_remove_exclusive_research_sources_is_dry_run_backed_up_and_conservative
         assert con.execute("SELECT count(*) FROM research_fragments").fetchone()[0] == 0
         assert con.execute("SELECT count(*) FROM research_fragment_evidence").fetchone()[0] == 0
         assert con.execute("SELECT count(*) FROM research_build_families").fetchone()[0] == 0
+        assert research_runtime.get_memory_revision(con) == revision_before_apply + 1
     finally:
         con.close()
 
@@ -525,6 +539,39 @@ def _keyed_deep_payload() -> dict[str, object]:
     return payload
 
 
+def test_schema1_support_package_is_downgraded_on_existing_v5_initialization(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "mature.sqlite"
+    service = research_memory.ResearchMemoryService(
+        db_path=db_path,
+        graph_service=_graph_service(),
+    )
+    record_id = service.propose_deep_research_records(_keyed_deep_payload())["recordIds"][0]
+    con = mature_learning.connect(db_path)
+    try:
+        before = research_runtime.get_memory_revision(con)
+        row = con.execute(
+            "SELECT record_schema_version, status FROM deep_research_records WHERE record_id = ?",
+            (record_id,),
+        ).fetchone()
+        assert tuple(row) == (1, "valid")
+    finally:
+        con.close()
+
+    mature_learning.initialize_store(db_path)
+
+    con = mature_learning.connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT status FROM deep_research_records WHERE record_id = ?", (record_id,)
+        ).fetchone()
+        assert row["status"] == "needs_revalidation"
+        assert research_runtime.get_memory_revision(con) == before + 1
+    finally:
+        con.close()
+
+
 def test_reconcile_deep_record_ids_plan_apply_and_idempotent(tmp_path: Path):
     db_path = tmp_path / "mature.sqlite"
     backup_path = tmp_path / "mature.reconcile.backup.sqlite"
@@ -550,6 +597,11 @@ def test_reconcile_deep_record_ids_plan_apply_and_idempotent(tmp_path: Path):
     assert plan["relocationCount"] == 1
     assert plan["relocations"][0]["recordId"] == record_id
     assert plan["conflictCount"] == 0
+    con = mature_learning.connect(db_path)
+    try:
+        revision_before_apply = research_runtime.get_memory_revision(con)
+    finally:
+        con.close()
 
     applied = research_maintenance.reconcile_deep_record_ids(
         db_path=db_path, apply=True, backup_path=backup_path
@@ -577,6 +629,7 @@ def test_reconcile_deep_record_ids_plan_apply_and_idempotent(tmp_path: Path):
         assert tombstone is not None
         assert tombstone["status"] == "deprecated"
         assert tombstone["superseded_by_id"] == target_id
+        assert research_runtime.get_memory_revision(con) == revision_before_apply + 1
     finally:
         con.close()
 
@@ -644,7 +697,7 @@ def test_reconcile_deep_record_ids_replaces_husk_at_anchor(tmp_path: Path):
             "SELECT status FROM deep_research_records WHERE record_id = ?", (target_id,)
         ).fetchone()
         assert husk_gone is not None
-        assert husk_gone["status"] == "valid"
+        assert husk_gone["status"] == "needs_revalidation"
         tombstone = con.execute(
             "SELECT status, superseded_by_id FROM deep_research_records WHERE record_id = ?",
             (record_id,),

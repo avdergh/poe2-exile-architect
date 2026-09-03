@@ -30,6 +30,7 @@ def _manifest(version: str, corpus_blob: bytes, engine_blob: bytes, app: str = "
     return {
         "version": version,
         "app_version": app,
+        "engine_contract": paths.POB_RUNTIME_CONTRACT,
         "pob_commit": "abc123",
         "game_patch": "0.5.3",
         "passive_tree": "0_5",
@@ -89,6 +90,8 @@ def test_apply_updates_persists_certified_freshness_claims(tmp_path, monkeypatch
     assert installed["pob_commit"] == "abc123"
     assert installed["game_patch"] == "0.5.3"
     assert installed["passive_tree"] == "0_5"
+    assert installed["engine_app_version"] == "0.1.20"
+    assert installed["engine_contract"] == paths.POB_RUNTIME_CONTRACT
 
 
 def test_failed_engine_validation_keeps_previous_corpus_and_metadata(tmp_path, monkeypatch):
@@ -124,6 +127,7 @@ def test_failed_engine_validation_keeps_previous_corpus_and_metadata(tmp_path, m
 def test_data_only_refresh_preserves_certified_compatibility_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
     monkeypatch.setattr(update, "_bundle_version", lambda: "0.1.20")
+    monkeypatch.setattr(update, "_bundle_app_version", lambda: "0.1.20")
     engine = _engine_zip()
     corpus = b"new-corpus"
     previous = {
@@ -134,6 +138,8 @@ def test_data_only_refresh_preserves_certified_compatibility_fields(tmp_path, mo
         "game_patch": "0.5.4",
         "passive_tree": "0_5",
         "engine_sha256": hashlib.sha256(engine).hexdigest(),
+        "engine_app_version": "0.1.20",
+        "engine_contract": paths.POB_RUNTIME_CONTRACT,
     }
     (tmp_path / "installed.json").write_text(json.dumps(previous), encoding="utf-8")
     manifest = _manifest("0.1.20.1", corpus, engine)
@@ -149,6 +155,26 @@ def test_data_only_refresh_preserves_certified_compatibility_fields(tmp_path, mo
     assert installed["game_patch"] == "0.5.4"
     assert installed["passive_tree"] == "0_5"
     assert installed["pob_version"] == "0.22.0"
+    assert installed["engine_app_version"] == "0.1.20"
+    assert installed["engine_contract"] == paths.POB_RUNTIME_CONTRACT
+
+
+def test_engine_update_rejects_missing_runtime_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(update, "_bundle_version", lambda: "0")
+    engine = _engine_zip()
+    corpus = b"corpus"
+    manifest = _manifest("0.1.20", corpus, engine)
+    manifest.pop("engine_contract")
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: manifest)
+
+    result = update.apply_updates()
+
+    assert result == {
+        "updated": False,
+        "error": "engine runtime contract missing or incompatible",
+    }
+    assert not (tmp_path / "pob").exists()
 
 
 def test_install_failure_rolls_back_every_replacement(tmp_path, monkeypatch):
@@ -255,6 +281,7 @@ def test_staged_engine_validation_failure_does_not_enter_install_context(tmp_pat
 def test_check_for_updates_decouples_data_from_mcpb(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
     monkeypatch.setattr(update, "_bundle_version", lambda: "0.1.20")
+    monkeypatch.setattr(update, "_bundle_app_version", lambda: "0.1.20")
     (tmp_path / "installed.json").write_text(
         json.dumps({"version": "0.1.20.5", "app_version": "0.1.20"})
     )

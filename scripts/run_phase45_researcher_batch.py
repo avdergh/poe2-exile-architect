@@ -758,7 +758,11 @@ def _prepare_case_packet(
             "passiveTreeVersion": passive_tree_version,
             "visibility": "creator_visible",
             "split": "train_context",
-            "knowledgeScope": "global_seed",
+            "knowledgeScope": (
+                "global_seed"
+                if str(case.get("sourceType") or "").casefold() == "poe_ninja_import_code"
+                else "local_user"
+            ),
             "evidenceType": case["sourceType"],
             "freshnessStatus": "current_metadata_only"
             if case["sourceType"] == "poe_ninja_import_code"

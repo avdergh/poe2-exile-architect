@@ -38,6 +38,37 @@ class PobEngineError(RuntimeError):
     """Raised when the engine fails to start or returns an error for a call."""
 
 
+def _resolve_runtime_paths(
+    *,
+    src_dir: str | os.PathLike[str] | None,
+    script: str | os.PathLike[str] | None,
+) -> tuple[Path, Path]:
+    """Resolve a source tree and bridge from one runtime root.
+
+    Explicit callers may provide both paths.  If they provide only one, infer its sibling from the
+    packaged PoB layout rather than combining it with an independently selected default.
+    """
+
+    if src_dir is None and script is None:
+        pair = paths.pob_runtime_pair()
+        return pair.src_dir, pair.headless_script
+    if script is not None:
+        resolved_script = Path(script)
+        resolved_src = (
+            Path(src_dir)
+            if src_dir is not None
+            else resolved_script.parent / "PathOfBuilding-PoE2" / "src"
+        )
+    else:
+        resolved_src = Path(src_dir)  # type: ignore[arg-type]
+        resolved_script = resolved_src.parents[1] / "pob_headless.lua"
+
+    expected_src = resolved_script.parent / "PathOfBuilding-PoE2" / "src"
+    if resolved_src.resolve() != expected_src.resolve():
+        raise ValueError("PoB src directory and headless bridge must belong to the same runtime")
+    return resolved_src, resolved_script
+
+
 def available_engine_slots() -> int:
     with _ENGINE_CAPACITY_LOCK:
         return max(0, _MAX_ENGINE_PROCESSES - _ACTIVE_ENGINE_PROCESSES)
@@ -124,8 +155,7 @@ class PobEngine:
         show_engine_logs: bool,
     ) -> None:
         self.luajit = luajit or _find_luajit()
-        self.src_dir = Path(src_dir) if src_dir else paths.pob_src_dir()
-        self.script = Path(script) if script else paths.pob_headless_script()
+        self.src_dir, self.script = _resolve_runtime_paths(src_dir=src_dir, script=script)
         if not self.src_dir.is_dir():
             raise FileNotFoundError(f"PoB src dir not found: {self.src_dir}")
         if not self.script.is_file():
@@ -149,6 +179,8 @@ class PobEngine:
         ready = self._read_frame()
         if not ready.get("ready"):
             raise PobEngineError(f"engine failed to initialise: {ready}")
+        if ready.get("runtimeContract") != paths.POB_RUNTIME_CONTRACT:
+            raise PobEngineError("headless engine runtime contract is incompatible with this server")
         self.info: dict[str, Any] = ready
 
     # -- low-level I/O -------------------------------------------------------
@@ -352,6 +384,9 @@ class PobEngine:
     def dealloc_passive(self, node: str | int) -> dict[str, Any]:
         return self.call("dealloc_passive", node=node)
 
+    def list_reallocation_candidates(self, limit: int = 12) -> dict[str, Any]:
+        return self.call("list_reallocation_candidates", limit=limit)
+
     def optimize_passives(
         self,
         metric: str = "TotalDPS",
@@ -378,6 +413,18 @@ class PobEngine:
 
     def get_build(self) -> dict[str, Any]:
         return self.call("get_build")
+
+    def select_judge_skill(
+        self,
+        *,
+        offense_skill_group_index: int,
+        expected_skill_name: str,
+    ) -> dict[str, Any]:
+        return self.call(
+            "select_judge_skill",
+            offenseSkillGroupIndex=offense_skill_group_index,
+            expectedSkillName=expected_skill_name,
+        )
 
     def get_defenses(self) -> dict[str, Any]:
         return self.call("get_defenses")

@@ -16,14 +16,27 @@ def evaluate_active_build(
     *,
     source_context: str = "generated_candidate",
 ) -> dict[str, Any]:
-    build = engine.get_build()
+    # Generation Judge prepares an explicit player-facing offense skill on its disposable engine
+    # and stores the corresponding readback here.  Generic callers keep using the ordinary,
+    # side-effect-free get_build path.
+    prepared_build = getattr(engine, "_judge_build_override", None)
+    build = dict(prepared_build) if isinstance(prepared_build, dict) else engine.get_build()
     try:
-        equipped_items = completeness.equipped_item_metadata(engine.get_xml())
+        snapshot_xml = engine.get_xml()
+        equipped_items = completeness.equipped_item_metadata(snapshot_xml)
+        completion = completeness.inspect_build_completeness(
+            engine,
+            snapshot_xml=snapshot_xml,
+        )
     except Exception:  # noqa: BLE001 - item metadata augments, but must not break, Judge readback.
         equipped_items = {}
+        completion = {}
     if equipped_items:
         build = dict(build)
         build["gear"] = equipped_items
+    if source_context == "generated_candidate":
+        build = dict(build)
+        build["passiveJewels"] = completion.get("passiveJewels")
     stats_response = engine.get_stats(keys=models.JUDGE_METRIC_KEYS)
     stats = stats_response.get("stats") if isinstance(stats_response, dict) else {}
     if not isinstance(stats, dict):
@@ -44,6 +57,7 @@ def evaluate_active_build(
         defenses,
         snapshot_id=snapshot_id,
         source_context=source_context,
+        require_create_completion=source_context == "generated_candidate",
     )
 
 
@@ -55,12 +69,17 @@ def evaluate_readback(
     snapshot_id: str,
     source_hash: str | None = None,
     source_context: str = "generated_candidate",
+    require_create_completion: bool = False,
 ) -> dict[str, Any]:
     defenses = defenses or {}
     metrics = _metrics_with_judge_selection(metrics, build)
     hard_failures: list[str] = []
     caveats: list[str] = []
-    legality = hard_legality.audit_build(build, source_context=source_context)
+    legality = hard_legality.audit_build(
+        build,
+        source_context=source_context,
+        require_create_completion=require_create_completion,
+    )
     hard_failures.extend(legality["hardFailures"])
     caveats.extend(legality["caveats"])
     legality_checks = legality["checks"]
@@ -109,7 +128,6 @@ def evaluate_readback(
         _build_with_evaluation_skill_group(build, evaluation_skill_group),
         warnings=engine_warnings,
     )
-    hard_failures.extend(modelability_result.get("failureCodes") or [])
     caveats.extend(modelability_result.get("caveats") or [])
 
     resistance_gate = rules.check_endgame_resistance_gate(
@@ -122,8 +140,6 @@ def evaluate_readback(
 
     physical_invalid = rules.physical_invalid_failures(hard_failures)
     blocked_dimensions = rules.blocked_score_dimensions(physical_invalid)
-    if modelability_result.get("coreBlocked"):
-        blocked_dimensions.add("offense")
     score = scoring.score_metrics(
         metrics,
         level=int(_num(build.get("level")) or 0),
@@ -134,6 +150,18 @@ def evaluate_readback(
     )
     playability_failures = list(score.get("playabilityFailures") or score.get("failures") or [])
     quality_warnings = list(score.get("qualityWarnings") or [])
+    if modelability_result.get("status") == "not_modelable":
+        # A deliberately unmodelled trigger/payload can look like a weak self-cast in PoB. Keep
+        # defense/resource findings, but do not convert that known engine blind spot into an
+        # offense/playability verdict that pressures the Agent to replace the archetype.
+        playability_failures = [
+            value for value in playability_failures if value != "below_playability_floor"
+        ]
+        quality_warnings = [
+            value
+            for value in quality_warnings
+            if value not in {"offense_quality_target_missed", "offense_delivery_not_established"}
+        ]
     caveats.extend(score["caveats"])
     physical_invalid = rules.physical_invalid_failures(hard_failures)
 
@@ -147,15 +175,16 @@ def evaluate_readback(
         passed
         and not physical_invalid
         and not playability_failures
-        and not modelability_result.get("coreBlocked")
     )
     reward_limit_reasons: list[str] = []
     if _has_limited_reward_caveat(caveats) and reward_eligible:
         reward_eligible = "limited"
         reward_limit_reasons.append("limited_evidence")
-    if modelability_result.get("status") == "partial" and reward_eligible:
+    if modelability_result.get("status") != "full" and reward_eligible:
+        # Modelability never vetoes the build or its delivery status, but an incomplete PoB view
+        # cannot produce a strong numeric-learning reward.
         reward_eligible = "limited"
-        reward_limit_reasons.append("partial_modelability")
+        reward_limit_reasons.append("modelability_numeric_evidence")
     offense_evidence = (score.get("scoreBreakdown") or {}).get("offense") or {}
     if offense_evidence.get("deliveryEvidenceStatus") != "established" and reward_eligible:
         reward_eligible = "limited"
@@ -176,7 +205,9 @@ def evaluate_readback(
     selected = build.get("judgeSelectedSkill") or {}
     if selected.get("skillName") and selected.get("skillName") != build.get("mainSkill"):
         summary["judgeSelectedSkill"] = selected.get("skillName")
-    score_applicable = not bool(modelability_result.get("coreBlocked"))
+    # The score remains a PoB-computed view of the portions PoB can see. Modelability changes the
+    # claim scope, never build legality, reward eligibility, or archetype selection.
+    score_applicable = modelability_result.get("status") != "not_modelable"
     result = {
         "snapshotId": snapshot_id,
         "sourceHash": source_hash,
@@ -204,6 +235,7 @@ def evaluate_readback(
             "attributes": legality_checks["attributes"],
             "weaponCompatibility": weapon_check,
             "spiritBudget": legality_checks["spiritBudget"],
+            "createCompletion": legality_checks["createCompletion"],
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
             "itemRequirements": item_requirements,
@@ -217,7 +249,7 @@ def evaluate_readback(
         "judgmentPolicy": score.get("judgmentPolicy"),
         "scoreScale": score.get("scoreScale"),
         "scenarioFit": score.get("scenarioFit"),
-        "qualityBand": score.get("qualityBand") if score_applicable else "unmodelled",
+        "qualityBand": score.get("qualityBand") if score_applicable else "evidence_limited",
         "aggregateScore": score["aggregateScore"],
         "levelBand": score["levelBand"],
         "metricProvenance": score["metricProvenance"],

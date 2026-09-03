@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from server import paths
+from server.compute import craftopt, equipment
 from server.knowledge import item_legality, itemparse
 from server.runtime import craft_receipts
 
@@ -19,6 +20,123 @@ Implicits: 2
 25% increased maximum Life
 +100 to maximum Life
 Corrupted"""
+
+
+def test_equipment_write_requires_explicit_special_source_receipt():
+    result = equipment.equip_item_verified(
+        object(),
+        raw=ITEM,
+        slot="Body Armour",
+        craft_receipt_ref=None,
+    )
+
+    assert result["errorCode"] == "special_source_provenance_required"
+
+
+def test_incremental_socket_text_preserves_existing_affixes():
+    raw = """Rarity: Rare
+Existing Bow
+Obliterator Bow
+Item Level: 82
+--------
+Adds 10 to 229 Lightning Damage
++33 to Dexterity"""
+
+    augmented = craftopt._augment_item_with_runes(
+        raw,
+        [("Test Rune", ["5% increased Attack Speed"])],
+    )
+
+    assert "Adds 10 to 229 Lightning Damage" in augmented
+    assert "+33 to Dexterity" in augmented
+    assert "Sockets: S" in augmented
+    assert "Rune: Test Rune" in augmented
+    assert "{rune}5% increased Attack Speed" in augmented
+
+
+def test_incremental_socket_text_preserves_capacity_when_only_one_rune_is_beneficial():
+    raw = """Rarity: Rare
+Existing Bow
+Obliterator Bow
+Item Level: 82
+Sockets: S S
+--------
+Adds 10 to 229 Lightning Damage"""
+
+    augmented = craftopt._augment_item_with_runes(
+        raw,
+        [("Test Rune", ["5% increased Attack Speed"])],
+        socket_capacity=2,
+    )
+
+    assert "Sockets: S S" in augmented
+    assert augmented.count("Rune: Test Rune") == 1
+    assert augmented.count("{rune}5% increased Attack Speed") == 1
+
+
+def test_incremental_socket_optimizer_propagates_crafting_options_failure(monkeypatch):
+    raw = """Rarity: Rare
+Socket Target
+Sacramental Robe
+Item Level: 82
+--------
++50 to maximum Life"""
+
+    class UnavailableEngine:
+        info = {}
+
+        def __init__(self):
+            self.restored = False
+
+        def get_build(self):
+            return {
+                "level": 90,
+                "gear": {"Body Armour": {"base": "Sacramental Robe"}},
+            }
+
+        def get_xml(self):
+            return "<PathOfBuilding2 />"
+
+        def add_item(self, _raw, slot=None):
+            return {"ok": True, "slot": slot}
+
+        def crafting_options(self, _slot):
+            return {
+                "ok": False,
+                "errorCode": "crafting_options_unavailable",
+                "error": "fixture provider unavailable",
+            }
+
+        def load_build_xml(self, _xml):
+            self.restored = True
+
+    engine = UnavailableEngine()
+    monkeypatch.setattr(
+        craftopt.completeness,
+        "equipped_item_text",
+        lambda _xml, _slot: raw,
+    )
+    monkeypatch.setattr(
+        craftopt.hard_legality,
+        "augment_build_with_snapshot_gear",
+        lambda build, _xml: build,
+    )
+    monkeypatch.setattr(
+        craftopt.hard_legality,
+        "audit_build",
+        lambda _build: {"hardLegalityReady": True, "hardFailures": []},
+    )
+
+    result = craftopt.optimize_item_sockets(
+        engine,
+        slot="Body Armour",
+        goals={"TotalEHP": 1.0},
+        socket_count=1,
+    )
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "crafting_options_unavailable"
+    assert engine.restored is True
 
 
 def _prepared() -> dict[str, object]:
@@ -108,6 +226,38 @@ def test_special_sources_without_receipt_fail_generated_audit():
 
     assert legality["ok"] is False
     assert "special_source_provenance_required" in legality["issues"]
+
+
+def test_hollow_rune_declaration_requires_provenance_and_is_not_counted_as_filled():
+    hollow = """Rarity: Rare
+Hollow Rune Item
+Sacramental Robe
+Item Level: 82
+Sockets: S S
+Rune: Iron Rune
+--------
++100 to maximum Life"""
+
+    legality = item_legality.audit_item(
+        hollow,
+        slot="Body Armour",
+        require_special_provenance=True,
+    )
+    metadata = craftopt.completeness._parse_item_text(hollow, slot="Body Armour")
+
+    assert legality["ok"] is False
+    assert "special_source_provenance_required" in legality["issues"]
+    assert legality["provenanceStatus"] == "unverified"
+    assert metadata["runeSockets"] == 2
+    assert metadata["verifiedRuneCount"] == 0
+
+    unique_legality = item_legality.audit_item(
+        hollow.replace("Rarity: Rare", "Rarity: Unique"),
+        slot="Body Armour",
+        require_special_provenance=True,
+    )
+    assert unique_legality["ok"] is False
+    assert "special_source_provenance_required" in unique_legality["issues"]
 
 
 def test_receipt_persists_raw_free_and_resolves_after_store_reopen(

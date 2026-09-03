@@ -165,9 +165,7 @@ def test_release_queued_case_requires_exact_owner_and_preserves_accepted(tmp_pat
         source_hash="source-b",
         sample_id="case:b",
     )
-    research_intake_ledger.mark_accepted(
-        ledger, league="league-x", character_ref=accepted_ref
-    )
+    research_intake_ledger.mark_accepted(ledger, league="league-x", character_ref=accepted_ref)
 
     assert (
         research_intake_ledger.release_queued_case(

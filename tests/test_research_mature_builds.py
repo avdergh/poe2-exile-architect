@@ -883,11 +883,13 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
     assert prompt_payload["deprecatedRawPrompt"] is True
     assert prompt_payload["recommendedReadOrder"] == [
         "skills",
+        "skill-groups",
         "gear",
         "jewels",
         "passives",
         "config",
         "build",
+        "pob-readback",
     ]
     _assert_safe_payload(prompt_payload, tmp_path.parent)
 
@@ -1180,10 +1182,18 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     assert "explicitly set gearResponsibilities=[]" in gear_rule
     assert "missing or null field is not this declaration" in gear_rule
     assert "supportCoverageExceptions" in contract["allowedValues"]["typedIdentityFields"]
+    assert contract["allowedValues"]["supportDeliveryRole"] == ["direct"]
     assert (
-        "skillName/supportNames"
-        in contract["allowedValues"]["typedIdentityFields"]["supportPackages"]
+        "stable skillKey/supportKeys"
+        in (contract["allowedValues"]["typedIdentityFields"]["supportPackages"])
     )
+    assert (
+        "source-local refs are validation-only"
+        in (contract["allowedValues"]["typedIdentityFields"]["supportPackages"])
+    )
+    support_schema = contract["typedPayloadSchema"]["supportPackages"]
+    assert "socketedItemRefs" in support_schema["entry"]
+    assert "distinct instances may share a support stable key" in support_schema["rule"]
     assert "applicabilityRequirements" in contract["candidateTemplate"]
     assert "exclusionConditions" in contract["candidateTemplate"]
     assert "不得自造 role" in contract["rules"][0]
@@ -1232,7 +1242,8 @@ def test_init_review_creates_pretty_utf8_skeleton_and_never_overwrites(tmp_path)
     assert text.endswith("\n")
     assert '\n  "caseCoverage": {' in text
     assert payload["reportId"] == "poe_bd_research_review"
-    assert payload["reviewContractVersion"] == "phase4-safe-review-v2"
+    assert payload["reviewContractVersion"] == "phase4-safe-review-v3"
+    assert payload["sourceSkillGroupReviews"] == []
     assert payload["safeArtifactOnly"] is True
     assert payload["artifactIdentity"] == {
         "sampleId": claimed["sampleId"],
@@ -1607,7 +1618,7 @@ def test_validation_only_redacts_copyable_diagnostics_and_returns_safe_paths():
     assert result["copySafetyBlockingIssueCount"] == 3
     diagnostics = result["copySafetyDiagnostics"]
     by_loc = {tuple(item["loc"]): item for item in diagnostics}
-    assert by_loc[("caveats", 0)]["blockingFlags"] == []
+    assert ("caveats", 0) not in by_loc
     assert by_loc[("caveats", 1)]["blockingFlags"] == ["long_guide_prose_like"]
     assert by_loc[("mechanicAudit", "entries", 0, "claim")]["blockingFlags"] == [
         "long_guide_prose_like"
@@ -1619,7 +1630,7 @@ def test_validation_only_redacts_copyable_diagnostics_and_returns_safe_paths():
         issue["loc"] == ["caveats", 1] and issue["type"] == "copy_safety"
         for issue in result["validationIssues"]
     )
-    assert support_caveat not in str(result)
+    assert support_caveat in str(result)
     assert long_caveat not in str(result)
     assert raw_account_url not in str(result)
     assert unsafe_dynamic_key not in str(result)
@@ -2561,8 +2572,13 @@ def test_accept_identity_allows_plural_safe_evidence_refs(tmp_path, monkeypatch)
     review_file = output_dir / claimed["reviewFile"]
     review_file.parent.mkdir(parents=True)
     payload = {
-        "reviewContractVersion": "phase4-safe-review-v2",
+        "reviewContractVersion": "phase4-safe-review-v3",
         "safeArtifactOnly": True,
+        "knowledgeScope": (
+            "global_seed" if claimed.get("sourceType") == "poe_ninja_import_code" else "local_user"
+        ),
+        "sourceSkillGroupReviews": [],
+        "pobReadbackAudit": [{"disposition": "unavailable"}],
         "deepResearchRecords": [
             {
                 "sampleId": claimed["sampleId"],
@@ -2637,7 +2653,7 @@ def test_v1_contract_upgrade_keeps_claimed_lease_and_reuses_ordinary_accept(tmp_
     assert "ordinary accept" in upgrade["nextAction"]
     assert research_mature_builds.queue_status(output_dir=output_dir)["claimedCount"] == 1
 
-    legacy["reviewContractVersion"] = "phase4-safe-review-v2"
+    legacy["reviewContractVersion"] = "phase4-safe-review-v3"
     review_file.write_text(json.dumps(legacy), encoding="utf-8")
     monkeypatch.setattr(
         "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
@@ -2727,6 +2743,80 @@ def test_retry_accept_rejected_case_without_lease(tmp_path, monkeypatch):
     status = research_mature_builds.queue_status(output_dir=output_dir)
     assert status["acceptedCount"] == 1
     assert status["rejectedCount"] == 0
+
+
+def test_retry_accept_rebuilds_expired_source_packet_before_v3_validation(
+    tmp_path, monkeypatch
+):
+    from scripts import research_mature_builds
+    from server.knowledge import research_packet
+
+    monkeypatch.setenv("POE2_RESEARCH_POB_READBACK", "0")
+    monkeypatch.setattr(research_mature_builds.tempfile, "gettempdir", lambda: str(tmp_path))
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "research-retry-packet"
+    temp_root = tmp_path / "packets"
+    memory_path = tmp_path / "memory-retry-packet.sqlite"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=temp_root,
+    )
+    claimed = research_mature_builds.claim_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_seconds=1800,
+    )
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True)
+    _write_claim_review(review_file, claimed)
+    calls: list[dict] = []
+
+    def reject_then_accept(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "rejected" if len(calls) == 1 else "accepted",
+            "acceptedPatternCount": 0,
+            "acceptedDeepRecordCount": 1 if len(calls) == 2 else 0,
+            "acceptedSemanticEdgeCount": 0,
+            "deferredCandidateCount": 0,
+            "patternWrite": {"status": "accepted"},
+            "deepRecordWrite": {"status": "accepted"},
+            "semanticEdgeWrite": {"status": "accepted"},
+        }
+
+    monkeypatch.setattr(
+        research_mature_builds.acceptance,
+        "accept_deep_review_candidates",
+        reject_then_accept,
+    )
+    rejected = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=memory_path,
+    )
+    assert rejected["status"] == "acceptance_rejected"
+    assert research_packet.cleanup_packets_by_safe_hashes(
+        {claimed["packetSafeHash"]}, temp_root=temp_root
+    )["removed"] == 1
+
+    retried = research_mature_builds.retry_accept_case(
+        output_dir=output_dir,
+        temp_root=temp_root,
+        sample_id=claimed["sampleId"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=memory_path,
+    )
+
+    assert retried["status"] == "accepted"
+    assert len(calls) == 2
+    assert calls[1]["source_skill_manifest"]["activeSkillGroups"]
 
 
 def test_retry_accept_exception_restores_rejected_state(tmp_path, monkeypatch):
@@ -3164,13 +3254,19 @@ def _expire_case_lease(db_path: Path, sample_id: str) -> None:
 
 def _write_claim_review(path: Path, claimed: dict, *, case_ref: str | None = None) -> None:
     payload = {
-        "reviewContractVersion": "phase4-safe-review-v2",
+        "reviewContractVersion": "phase4-safe-review-v3",
         "safeArtifactOnly": True,
+        "knowledgeScope": (
+            "global_seed" if claimed.get("sourceType") == "poe_ninja_import_code" else "local_user"
+        ),
+        "sourceSkillGroupReviews": [],
+        "pobReadbackAudit": [{"disposition": "unavailable"}],
         "deepResearchRecords": [
             {
                 "sampleId": claimed["sampleId"],
                 "caseRef": case_ref or claimed["sourceHashRef"],
                 "safeEvidenceRef": f"evidence:{claimed['packetSafeHash'][:16]}",
+                "sourceStateScope": "state_agnostic",
             }
         ],
         "candidateReviews": [],
@@ -3259,16 +3355,66 @@ def test_research_packet_builds_safe_active_skill_evidence_manifest():
         {
             "name": "Controlled Destruction",
             "gemId": "SupportGemControlledDestruction",
+            "gemIndex": 2,
+            "socketedItemRef": "skill-set:1:group:1:socketed:2",
+            "socketedUnderSkillRef": "skill-set:1:group:1:root:1",
             "nameSource": "gem_name",
             "enableGlobal1": True,
             "enableGlobal2": False,
         }
     ]
+    assert manifest["activeSkillGroups"][0]["rootSkill"]["name"] == "Plasma Blast"
+    assert manifest["activeSkillGroups"][0]["rootSkillRef"] == "skill-set:1:group:1:root:1"
+    assert manifest["socketHierarchyPolicyVersion"] == 1
     assert manifest["activeSkillGroups"][0]["weaponSetScope"] == "global"
     assert manifest["noRawMatureBuildMaterial"] is True
     serialized = json.dumps(manifest, ensure_ascii=False)
     assert "<Skills" not in serialized
     assert "rawXml" not in serialized
+
+
+def test_research_packet_preserves_root_skill_and_socketed_items():
+    from server.knowledge import research_packet
+
+    xml = """<PathOfBuilding2><Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Cast on Critical" skillId="MetaCastOnCritPlayer" enabled="true" />
+      <Gem nameSpec="Comet" skillId="CometPlayer" enabled="true" />
+      <Gem nameSpec="Arcane Tempo" skillId="SupportArcaneTempo" gemId="SupportGemArcaneTempo" enabled="true" />
+    </Skill>
+    </SkillSet></Skills></PathOfBuilding2>"""
+
+    manifest = research_packet.build_skill_evidence_manifest({"rawContext": {"rawXml": xml}})
+    group = manifest["activeSkillGroups"][0]
+    support = manifest["activeSkillGroups"][0]["supports"][0]
+
+    assert group["rootSkill"]["name"] == "Cast on Critical"
+    assert group["rootSkillRef"] == "skill-set:1:group:1:root:1"
+    assert [item["itemKind"] for item in group["socketedItems"]] == ["skill", "support"]
+    assert group["activeSkills"][1]["physicalRole"] == "socketed_skill"
+    assert group["activeSkills"][1]["socketedUnderSkillRef"] == group["rootSkillRef"]
+    assert support["socketedUnderSkillRef"] == group["rootSkillRef"]
+    assert "ownerEvidence" not in support
+
+
+def test_research_packet_does_not_promote_enabled_payload_when_root_is_disabled():
+    from server.knowledge import research_packet
+
+    xml = """<PathOfBuilding2><Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true">
+      <Gem nameSpec="Cast on Critical" skillId="MetaCastOnCritPlayer" enabled="false" />
+      <Gem nameSpec="Comet" skillId="CometPlayer" enabled="true" />
+      <Gem nameSpec="Arcane Tempo" skillId="SupportArcaneTempo" gemId="SupportGemArcaneTempo" enabled="true" />
+    </Skill>
+    </SkillSet></Skills></PathOfBuilding2>"""
+
+    manifest = research_packet.build_skill_evidence_manifest({"rawContext": {"rawXml": xml}})
+    group = manifest["activeSkillGroups"][0]
+
+    assert group["rootSkill"]["name"] == "Cast on Critical"
+    assert group["rootSkill"]["enabled"] is False
+    assert [skill["name"] for skill in group["activeSkills"]] == ["Comet"]
+    assert group["activeSkills"][0]["physicalRole"] == "socketed_skill"
 
 
 def test_compact_accept_report_only_for_clean_results():
@@ -3922,6 +4068,7 @@ def test_accept_removes_transient_packet_after_success(tmp_path, monkeypatch):
     accepted = research_mature_builds.accept_case(
         output_dir=output_dir,
         temp_root=temp_root,
+        memory_db_path=tmp_path / "memory.sqlite",
         lease_token=claim["leaseToken"],
         review_file=review_file,
     )
@@ -4045,7 +4192,7 @@ def test_claim_rebuilds_missing_packet_from_quarantine(tmp_path):
     assert packet["safeHash"] == claimed["packetSafeHash"]
 
 
-def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path, monkeypatch):
+def test_claim_rebuilds_existing_packet_for_lease_without_duplicates(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 
     from scripts import research_mature_builds
@@ -4096,7 +4243,7 @@ def test_claim_rewrites_existing_packet_expiry_to_lease_ttl(tmp_path, monkeypatc
     packet = json.loads(packets[0].read_text(encoding="utf-8"))
     assert packet["safeHash"] == queued["safeHash"]
     assert packet["safeHash"] == claimed["packetSafeHash"]
-    assert replace_observations[0]["safeHash"] == queued["safeHash"]
+    assert replace_observations == []
 
     expires = datetime.fromisoformat(packet["expiresAt"])
     now = datetime.now(timezone.utc)
@@ -4268,6 +4415,18 @@ def test_identity_resolvability_hint_resolves_renamed_ascendancy(tmp_path):
     assert hint["ascendancyCanonicalKey"] == "ascendancy:witch:abyssal_lich"
     assert hint["ascendancyResolvable"] is True
 
+    exact = rmb._identity_resolvability_hint(
+        ascendancy="",
+        main_skill="Ember Fusillade",
+        source_skill_id="EmberFusilladePlayer",
+    )
+    assert exact["primarySkillResolutionHint"]["queryKind"] == "source_skill_id"
+    assert exact["primarySkillResolutionHint"]["sourceSkillId"] == "EmberFusilladePlayer"
+    assert exact["primarySkillResolutionHint"]["resolvedSkillKey"] == (
+        "skill:EmberFusilladePlayer"
+    )
+    assert exact["primarySkillResolvable"] is True
+
     unknown = rmb._identity_resolvability_hint(ascendancy="No Such Ascendancy 42", main_skill="")
     assert unknown["ascendancyResolvable"] is False
     assert unknown["ascendancyCanonicalKey"] is None
@@ -4276,6 +4435,10 @@ def test_identity_resolvability_hint_resolves_renamed_ascendancy(tmp_path):
 
 def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
     from scripts import research_mature_builds
+
+    monkeypatch.setattr(
+        research_mature_builds.tempfile, "gettempdir", lambda: str(tmp_path.parent)
+    )
 
     source_file = tmp_path / "sample.txt"
     source_file.write_text(
@@ -4312,6 +4475,22 @@ def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
         },
         {"affectedRecords": ["Other record"], "affectedCandidates": []},
     ]
+    review["sourceSkillGroupReviews"] = [
+        {
+            "groupRef": "skill-set:1:group:1",
+            "researchDisposition": "represented",
+            "supportDisposition": "packaged",
+            "affectedRecords": ["Selected record", "Other record"],
+            "reason": "The same source group informs both records.",
+        },
+        {
+            "groupRef": "skill-set:1:group:2",
+            "researchDisposition": "represented",
+            "supportDisposition": "packaged",
+            "affectedRecords": ["Other record"],
+            "reason": "This source group only informs the other record.",
+        },
+    ]
     review_file.write_text(json.dumps(review), encoding="utf-8")
     calls: list[dict] = []
 
@@ -4337,6 +4516,16 @@ def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
         "scripts.research_mature_builds.acceptance.accept_deep_review_candidates",
         fake_accept,
     )
+    monkeypatch.setattr(
+        research_mature_builds,
+        "_optional_acceptance_skill_manifest",
+        lambda **_kwargs: {
+            "activeSkillGroups": [
+                {"groupRef": "skill-set:1:group:1", "activeSkills": [], "supports": []},
+                {"groupRef": "skill-set:1:group:2", "activeSkills": [], "supports": []},
+            ]
+        },
+    )
 
     result = research_mature_builds.accept_case(
         output_dir=output_dir,
@@ -4355,6 +4544,18 @@ def test_accept_only_record_slices_validation_payload(tmp_path, monkeypatch):
     assert payload["semanticEdges"] == []
     assert payload["mechanicAudit"] == [
         {"affectedRecords": ["Selected record"], "affectedCandidates": []}
+    ]
+    assert payload["sourceSkillGroupReviews"] == [
+        {
+            "groupRef": "skill-set:1:group:1",
+            "researchDisposition": "represented",
+            "supportDisposition": "packaged",
+            "affectedRecords": ["Selected record"],
+            "reason": "The same source group informs both records.",
+        }
+    ]
+    assert calls[0]["source_skill_manifest"]["activeSkillGroups"] == [
+        {"groupRef": "skill-set:1:group:1", "activeSkills": [], "supports": []}
     ]
     assert result["sliceContext"] == {
         "recordIndex": 0,
@@ -4483,10 +4684,103 @@ def test_read_packet_section_skill_groups_from_rich_xml():
 
     assert groups["status"] == "ok"
     assert groups["section"] == "skill-groups"
-    active_names = {
-        str(item["activeSkills"][0]["name"]) for item in groups["items"] if item["activeSkills"]
+    root_names = {str(item["rootSkill"]["name"]) for item in groups["items"]}
+    assert {"Plasma Blast", "Bonestorm", "Blasphemy"} <= root_names
+    assert all("activeSkills" not in item and "supports" not in item for item in groups["items"])
+    assert groups["items"][0]["rootSkill"]["itemKind"] == "skill"
+    assert groups["items"][0]["socketedItems"][0]["itemKind"] == "support"
+
+
+def test_inspect_packet_lists_skill_groups_after_skills_with_accurate_count():
+    from server.knowledge import research_packet
+
+    manifest = research_packet.inspect_packet({"rawContext": {"rawXml": _rich_sample_xml()}})
+
+    assert list(manifest["sections"]) == [
+        "skills",
+        "skill-groups",
+        "gear",
+        "jewels",
+        "passives",
+        "config",
+        "build",
+        "pob-readback",
+    ]
+    assert manifest["sections"]["skill-groups"] == {"itemCount": 3, "available": True}
+    assert manifest["recommendedReadOrder"] == list(manifest["sections"])
+
+
+def test_read_packet_section_skill_groups_keeps_disabled_root_without_duplicate_views():
+    from server.knowledge import research_packet
+
+    xml = """<PathOfBuilding2><Skills activeSkillSet="1"><SkillSet id="1">
+    <Skill enabled="true" slot="Helmet">
+      <Gem nameSpec="Cast on Critical" skillId="MetaCastOnCritPlayer" enabled="false" />
+      <Gem nameSpec="Comet" skillId="CometPlayer" enabled="true" />
+      <Gem nameSpec="Arcane Tempo" skillId="SupportArcaneTempo" gemId="SupportGemArcaneTempo" enabled="true" />
+    </Skill>
+    </SkillSet></Skills></PathOfBuilding2>"""
+
+    result = research_packet.read_packet_section(
+        {"rawContext": {"rawXml": xml}}, section="skill-groups"
+    )
+
+    assert result["totalCount"] == 1
+    group = result["items"][0]
+    assert set(group) == {
+        "groupRef",
+        "rootSkillRef",
+        "rootSkill",
+        "socketedItems",
+        "slot",
+        "weaponSetScope",
     }
-    assert {"Plasma Blast", "Bonestorm", "Blasphemy"} <= active_names
+    assert group["rootSkill"]["name"] == "Cast on Critical"
+    assert group["rootSkill"]["enabled"] is False
+    assert group["rootSkill"]["itemKind"] == "skill"
+    assert [item["name"] for item in group["socketedItems"]] == ["Comet", "Arcane Tempo"]
+    assert [item["itemKind"] for item in group["socketedItems"]] == ["skill", "support"]
+    assert "activeSkills" not in group
+    assert "supports" not in group
+
+
+def test_read_packet_section_skill_groups_pages_many_groups_without_gaps():
+    from server.knowledge import research_packet
+
+    skill_groups = "".join(
+        f"""<Skill enabled="true" slot="Skill {index}">
+        <Gem nameSpec="Root {index}" skillId="Root{index}Player" enabled="true" />
+        <Gem nameSpec="Support {index}" skillId="Support{index}" gemId="SupportGem{index}" enabled="true" />
+        </Skill>"""
+        for index in range(1, 32)
+    )
+    xml = (
+        '<PathOfBuilding2><Skills activeSkillSet="1"><SkillSet id="1">'
+        + skill_groups
+        + "</SkillSet></Skills></PathOfBuilding2>"
+    )
+    packet = {"rawContext": {"rawXml": xml}}
+
+    seen_refs: list[str] = []
+    cursor = 0
+    while True:
+        page = research_packet.read_packet_section(
+            packet,
+            section="skill-groups",
+            cursor=cursor,
+            limit=9,
+        )
+        assert page["cursor"] == cursor
+        assert len(json.dumps(page, ensure_ascii=False)) <= research_packet.MAX_RESPONSE_CHARS
+        assert all("activeSkills" not in item and "supports" not in item for item in page["items"])
+        seen_refs.extend(str(item["groupRef"]) for item in page["items"])
+        if page["nextCursor"] is None:
+            assert page["complete"] is True
+            break
+        assert page["nextCursor"] == cursor + page["returnedCount"]
+        cursor = page["nextCursor"]
+
+    assert seen_refs == [f"skill-set:1:group:{index}" for index in range(1, 32)]
 
 
 def test_read_packet_section_continuity_warning_and_gap_free_chaining():

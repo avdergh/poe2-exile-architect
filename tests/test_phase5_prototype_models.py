@@ -20,6 +20,61 @@ def version_context() -> dict[str, str]:
     }
 
 
+def mechanism_blueprint() -> dict[str, object]:
+    claims = [
+        {
+            "claimId": f"mbc-{index:016x}",
+            "title": title,
+            "status": "grounded",
+            "explanation": (
+                f"{title} is tied to the selected Family evidence, its required conditions, "
+                "failure state, and a concrete verification task for the final candidate."
+            ),
+            "sourceRefs": ["freshness:phase5:test"],
+            "componentKeys": ["skill:LightningArrowPlayer"],
+            "conditions": ["The selected projectile skill remains active."],
+            "failureConditions": ["The declared responsibility is absent."],
+            "verificationTasks": ["Verify the responsibility in the active PoB."],
+        }
+        for index, title in enumerate(
+            ["Damage delivery", "Clear and boss duty", "Defense and recovery", "Resources"],
+            start=1,
+        )
+    ]
+    document = (
+        "The selected projectile build delivers weapon damage through one active clear package "
+        "while retaining a separately verified single-target responsibility. Its defensive "
+        "layers, resource payments, Spirit reservations, player rotation, failure windows, and "
+        "transition conditions remain tied to current evidence and explicit PoB checks. "
+    ) * 5
+    axes = {
+        "damage_delivery": 0,
+        "clear": 1,
+        "boss": 1,
+        "defense": 2,
+        "life_recovery": 2,
+        "mana_recovery": 3,
+        "spirit": 3,
+        "rotation": 3,
+    }
+    return {
+        "document": document,
+        "claims": claims,
+        "coverage": [
+            {
+                "axis": axis,
+                "status": "covered",
+                "explanation": (
+                    f"The {axis} duty is covered by a selected evidence-backed mechanism claim."
+                ),
+                "claimRefs": [claims[index]["claimId"]],
+            }
+            for axis, index in axes.items()
+        ],
+        "unresolvedQuestions": [],
+    }
+
+
 def agent_submission_payload() -> dict[str, object]:
     return {
         "packet_id": "human-review:prototype:1",
@@ -83,6 +138,16 @@ def agent_submission_payload() -> dict[str, object]:
                     "query_ref": "dq-0123456789abcdef",
                     "summary": "Found starter projectile advisory patterns.",
                 },
+                {
+                    "tool_name": "construct_research_execution_contract",
+                    "query_ref": "rec-1234567890abcdef",
+                    "summary": "The selected Family packages were compiled for execution.",
+                },
+                {
+                    "tool_name": "validate_generation_blueprint",
+                    "query_ref": "gbp-1234567890abcdef",
+                    "summary": "The evidence-backed mechanism blueprint was validated.",
+                },
             ],
             "memory_references": [
                 "dq-0123456789abcdef",
@@ -115,6 +180,34 @@ def agent_submission_payload() -> dict[str, object]:
                 ],
                 "no_match_reason": None,
             },
+            "research_execution_plan": {
+                "contractRef": "rec-1234567890abcdef",
+                "selectedDesignCaseRef": "case:fixture",
+                "selectedVariantRationale": (
+                    "The fixture source case matches the requested projectile shell, stage, and "
+                    "resource responsibilities better than unrelated alternatives."
+                ),
+                "coherenceSummary": (
+                    "The selected package keeps its projectile, weapon, resource, and defensive "
+                    "responsibilities coherent in one candidate."
+                ),
+                "packageDecisions": [
+                    {
+                        "packageId": "rep-1234567890abcdef",
+                        "decision": "adopted",
+                        "mechanismRationale": (
+                            "The package owns the primary projectile responsibility used here."
+                        ),
+                        "buildApplication": (
+                            "Apply the complete package and verify it in the active candidate."
+                        ),
+                        "verificationEvidenceRefs": ["freshness:phase5:test"],
+                    }
+                ],
+                "crossCaseMechanismPlans": [],
+            },
+            "mechanism_blueprint_ref": "gbp-1234567890abcdef",
+            "mechanism_blueprint": mechanism_blueprint(),
             "rationale_summary": ("职业先服务后期上限，开荒阶段只保留低成本、低复杂度的机制。"),
             "version_context": version_context(),
             "no_raw_material": True,
@@ -175,6 +268,9 @@ def test_candidate_requires_agent_query_or_memory_evidence():
     payload["prototypeBuildCandidate"]["tool_references"] = []
     payload["prototypeBuildCandidate"]["memory_references"] = []
     payload["prototypeBuildCandidate"]["research_memory_use"] = None
+    payload["prototypeBuildCandidate"]["research_execution_plan"] = None
+    payload["prototypeBuildCandidate"]["mechanism_blueprint_ref"] = None
+    payload["prototypeBuildCandidate"]["mechanism_blueprint"] = None
 
     result = prototype.validate_and_build_human_review_packet(payload)
 
@@ -194,6 +290,41 @@ def test_candidate_rejects_untraceable_research_memory_decision():
     assert result["errorCode"] == "invalid_schema"
 
 
+def test_family_unique_component_decisions_use_existing_research_enum_per_component():
+    payload = agent_submission_payload()
+    usage = payload["prototypeBuildCandidate"]["research_memory_use"]
+    usage["insight_decisions"] = [
+        {
+            "source_refs": ["drr-1234567890abcdef"],
+            "decision": "adopted",
+            "summary": "unique:pob:required_fixture remains the non-optional Family component.",
+            "application": "Keep the required component before planning ordinary rare gear.",
+        },
+        {
+            "source_refs": ["drr-1234567890abcdef"],
+            "decision": "rejected",
+            "summary": "unique:pob:optional_fixture is an evaluated optional upgrade.",
+            "application": "Do not adopt it because its mechanism is not needed; price is irrelevant.",
+        },
+    ]
+
+    accepted = prototype.validate_and_build_human_review_packet(payload)
+
+    assert accepted["status"] == "accepted"
+    decisions = accepted["humanReviewPacket"]["prototypeBuildCandidate"]["researchMemoryUse"][
+        "insightDecisions"
+    ]
+    assert [decision["decision"] for decision in decisions] == ["adopted", "rejected"]
+    assert "required_fixture" in decisions[0]["summary"]
+    assert "optional_fixture" in decisions[1]["summary"]
+
+    usage["insight_decisions"][1]["decision"] = "unavailable"
+    rejected = prototype.validate_and_build_human_review_packet(payload)
+
+    assert rejected["status"] == "rejected"
+    assert rejected["errorCode"] == "invalid_schema"
+
+
 def test_candidate_derives_denormalized_memory_references_from_typed_usage():
     payload = agent_submission_payload()
     payload["prototypeBuildCandidate"]["memory_references"] = []
@@ -206,6 +337,7 @@ def test_candidate_derives_denormalized_memory_references_from_typed_usage():
         "bf-1234567890abcdef",
         "drr-1234567890abcdef",
         "bdp-1234567890abcdef",
+        "rec-1234567890abcdef",
     ]
 
 

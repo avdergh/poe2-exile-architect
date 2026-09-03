@@ -72,7 +72,7 @@ source probe
   -> Judge 前共享硬合法性审计；保护每个 passing baseline
   -> FamilyTarget + 身份 stable key 集合 + immutable artifact/hash
   -> artifact-bound lifecycle 回执
-  -> 交付包（PoB XML / 导入码 / `.build`）
+  -> 交付包（PoB XML / 导入码 / `.build` / 公开 poe.ninja PoB 链接）
 ```
 
 ## 核心 Runtime 模块
@@ -118,12 +118,13 @@ source probe
 - Comparator Agent 对逐维 tradeoff 和总结果负责；Judge 数值只作为 `advisoryOnly` 附件。
 - Phase 7 状态服务负责 CAS、幂等、暂停、恢复和安全 checkpoint，不创建任务或调用模型。
 - Research schema 对具体 build knowledge 负责；Learning Memory 只接收跨维 Create 行为经验及其 correction。
-- Git 与插件携带净化后的 Research（含维护者 `global_seed/local_user`）和 Learning Memory 发布种子；
+- Git 与插件只携带 provenance 已证明、creator-safe 的 `global_seed` Research 与 Learning Memory 发布种子；
   首次运行复制到用户数据目录，运行态继续分库追加且不回写捆绑种子。
 - 普通 Create 保持单阶段语义：先从 Research receipt 获取当前精确版本最多 10 个成熟
   Family，并比较实际返回的全部 2–10 个候选；用户锁定唯一 Family 时跳过该步骤。候选阶段不跑
   完整 Judge/全局优化器。Judge 只作 advisory，Family 与实际采用
-  知识由 typed query receipt 校验。
+  知识限定在一条 `(knowledgeScope, sourceCaseRef)` lane，并由完整 bounded retrieval-session
+  receipt 链校验。
 - 社区攻略是候选证据，不能直接进入 Research/Learning Memory；
   技能与机制前提仍由当前 graph/corpus/mechanic 复核。
 - Phase benchmark reports 对进度声明负责。

@@ -521,7 +521,7 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
     has_ranges = any(row[1] == "ranges" for row in con.execute("PRAGMA table_info(mods)"))
     cols = ", m.ranges" if has_ranges else ""
     rows = con.execute(
-        "SELECT m.text, m.type, m.required_level, m.groups, m.tags" + cols + " "
+        "SELECT m.text, m.type, m.required_level, m.groups, m.tags, m.domain" + cols + " "
         "FROM mods_fts f JOIN mods m ON m.id = f.mod_id WHERE mods_fts MATCH ? LIMIT ?",
         (_match_cols(query, ("text",)), limit),
     )
@@ -532,25 +532,42 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
             "required_level": r["required_level"],
             "groups": json.loads(r["groups"] or "[]"),
             "tags": json.loads(r["tags"] or "[]"),
+            "domain": r["domain"],
             "ranges": json.loads(r["ranges"] or "[]") if has_ranges else [],
         }
         for r in rows
     ]
 
 
-def mod_tags_match_base(base_name: str, mod_tags: list[str] | set[str]) -> bool:
+def mod_tags_match_base(
+    base_name: str,
+    mod_tags: list[str] | set[str],
+    *,
+    mod_domain: str | None = None,
+) -> bool:
     """Whether a craftable mod's spawn tags permit it on ``base_name``.
 
     Family-specific tags take precedence so an overlapping roll from another weapon family cannot
     leak in through a shared ``weapon`` tag.  A mod whose *only* applicability tag is a broad weapon
     shape (for example local critical chance tagged simply ``weapon``) may still match that shape.
-    ``default`` alone remains too broad to authorize an affix, and empty tags remain unknown.
+    For ordinary item/misc domains, ``default`` alone remains too broad and empty tags stay
+    unknown. Inside the Flask domain, empty/default-only tags are the corpus-wide Flask marker;
+    life/mana subtype tags must still match the base exactly.
     """
     base = get_item(base_name)
     if not base:
         return False
+    base_domain = str(base.get("domain") or "")
+    if mod_domain is not None and str(mod_domain) not in _mod_domains_for_base(base_domain):
+        return False
     base_tags = set(base.get("tags") or [])
     candidate_tags = set(mod_tags)
+    if base_domain == "flask":
+        # RePoE uses empty/default-only tags for flask-wide affixes and life_flask/mana_flask
+        # for subtype-specific ones.  ``default`` is too broad for ordinary item-domain mods,
+        # but it is the explicit all-flask marker inside the flask domain.
+        specific_flask_tags = candidate_tags - {"default"}
+        return not specific_flask_tags or bool(specific_flask_tags & base_tags)
     specific_tags = candidate_tags - _GENERIC_TAGS
     if specific_tags:
         return bool(specific_tags & base_tags)
@@ -665,6 +682,24 @@ def get_unique(name: str) -> dict | None:
 _GENERIC_TAGS = {"default", "onehand", "twohand", "weapon", "ranged"}
 
 
+def _mod_domains_for_base(base_domain: str) -> tuple[str, ...]:
+    """Return the craftable mod domains that belong to one base-item domain."""
+
+    return ("flask",) if base_domain == "flask" else ("item", "misc")
+
+
+def craft_profile(base_name: str) -> dict[str, Any] | None:
+    """Return the deterministic rarity/affix contract for one craftable base domain."""
+
+    base = get_item(base_name)
+    if not isinstance(base, dict):
+        return None
+    domain = str(base.get("domain") or "")
+    if domain == "flask":
+        return {"domain": domain, "rarity": "Magic", "prefixLimit": 1, "suffixLimit": 1}
+    return {"domain": domain, "rarity": "Rare", "prefixLimit": 3, "suffixLimit": 3}
+
+
 def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]]:
     """Craftable prefixes/suffixes for a base — the best available tier per mod group at `ilvl`.
 
@@ -680,23 +715,24 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
     base = get_item(base_name)
     if not base:
         return {"prefixes": [], "suffixes": []}
-    base_tags = set(base.get("tags") or []) - _GENERIC_TAGS
-    if not base_tags:
-        return {"prefixes": [], "suffixes": []}
+    base_domain = str(base.get("domain") or "")
+    domains = _mod_domains_for_base(base_domain)
     con = _conn()
     # 'item' = normal gear mods; 'misc' = craftable jewel mods (the only misc mods ingested). Tag
     # matching below keeps jewel mods off gear and gear mods off jewels.
+    placeholders = ",".join("?" for _ in domains)
     rows = con.execute(
-        "SELECT text, type, groups, ranges, tags, required_level FROM mods "
-        "WHERE domain IN ('item', 'misc') AND type IN ('prefix','suffix') "
+        "SELECT text, type, groups, ranges, tags, required_level, domain FROM mods "
+        f"WHERE domain IN ({placeholders}) AND type IN ('prefix','suffix') "
         "AND (required_level IS NULL OR required_level <= ?)",
-        (ilvl,),
+        (*domains, ilvl),
     ).fetchall()
     best: dict[tuple[str, str, str], dict[str, Any]] = {}
     tier_count: dict[tuple[str, str, str], int] = {}
+    tier_options: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for r in rows:
         mtags = set(json.loads(r["tags"] or "[]"))
-        if not (mtags & base_tags):
+        if not mod_tags_match_base(base_name, mtags, mod_domain=str(r["domain"] or "")):
             continue
         # keep both range mods ("+(80-90) to Life") and fixed mods ("+5 to Level of all ... Skills");
         # the latter are already a concrete roll. Skip flag/socket lines with no number at all.
@@ -711,11 +747,17 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
         key = (r["type"], group, norm)
         tier_count[key] = tier_count.get(key, 0) + 1  # how many ilvl tiers can roll here
         rl = r["required_level"] or 0
+        tier_options.setdefault(key, []).append({"text": r["text"], "required_level": rl})
         cur = best.get(key)
         if cur is None or rl > cur["required_level"]:
             best[key] = {"group": group, "type": r["type"], "text": r["text"], "required_level": rl}
     for key, m in best.items():
         m["tiers"] = tier_count.get(key, 1)
+        m["tier_options"] = sorted(
+            tier_options.get(key) or [],
+            key=lambda value: int(value.get("required_level") or 0),
+            reverse=True,
+        )
     pre = sorted((m for m in best.values() if m["type"] == "prefix"), key=lambda m: m["group"])
     suf = sorted((m for m in best.values() if m["type"] == "suffix"), key=lambda m: m["group"])
     return {"prefixes": pre, "suffixes": suf}
@@ -742,27 +784,25 @@ def illegal_affixes(base_name: str, affix_lines: list[str]) -> list[dict[str, An
     base = get_item(base_name)
     if not base:
         return []
-    base_tags = set(base.get("tags") or [])
-    if not base_tags:
-        return []
     con = _conn()
     rows = con.execute(
-        "SELECT text, tags FROM mods WHERE domain = 'item' AND type IN ('prefix','suffix')"
+        "SELECT text, tags, domain FROM mods "
+        "WHERE domain IN ('item','misc','flask') AND type IN ('prefix','suffix')"
     ).fetchall()
-    index: dict[str, list[set[str]]] = {}
+    index: dict[str, list[tuple[str, set[str]]]] = {}
     for r in rows:
         tags = set(json.loads(r["tags"] or "[]"))
-        if not tags:
-            continue  # empty-tag mods (essence/unique-implicit artifacts) don't establish a restriction
         for ln in (r["text"] or "").split("\n"):
             n = _norm_mod_line(ln)
             if n:
-                index.setdefault(n, []).append(tags)
+                index.setdefault(n, []).append((str(r["domain"] or ""), tags))
     out: list[dict[str, Any]] = []
     for line in affix_lines:
         n = _norm_mod_line(line)
         variants = index.get(n)
-        if variants and not any(t & base_tags for t in variants):
+        if variants and not any(
+            mod_tags_match_base(base_name, tags, mod_domain=domain) for domain, tags in variants
+        ):
             out.append(
                 {"affix": line.strip(), "reason": f"this affix does not roll on a {base_name}"}
             )

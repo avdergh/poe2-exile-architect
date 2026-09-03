@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from server import main
 from server.learning import comparison, memory, models, service
 
 
@@ -92,6 +93,21 @@ def _query_create_memory(
     )
     assert result["status"] == "ok"
     return result
+
+
+def _blind_research_use(campaign_id: str, claim_id: str) -> dict[str, object]:
+    page = main.query_research_memory(
+        query="Blind exact Family memory",
+        response_profile="create_compact",
+        run_ref=campaign_id,
+        claim_ref=claim_id,
+        blind_global_only=False,
+    )
+    return {
+        "retrievalOutcome": "no_matching_memory",
+        "dedupeQueryRefs": [page["dedupeQueryRef"]],
+        "noMatchReason": "No matching Global Research lane for this Blind target.",
+    }
 
 
 def _report(case_id: str, *, verdict: str = "generated_stronger") -> dict[str, object]:
@@ -268,6 +284,24 @@ def test_blind_create_packet_has_no_reference_build_details(isolated_data: Path)
     with pytest.raises(ValidationError):
         models.BlindCreatePacket.model_validate({**packet, "referenceGear": ["secret"]})
 
+    binding = service.validate_blind_research_claim(
+        campaign_id=campaign_id,
+        claim_id=str(claim["claimId"]),
+    )
+    assert binding == {
+        "status": "ok",
+        "campaignId": campaign_id,
+        "caseId": case_id,
+        "claimId": claim["claimId"],
+        "knowledgeScope": "global_seed",
+        "containsRawMaterial": False,
+    }
+    stale = service.validate_blind_research_claim(
+        campaign_id=campaign_id,
+        claim_id="claim:stale",
+    )
+    assert stale["errorCode"] == "blind_research_claim_binding_mismatch"
+
 
 @pytest.mark.parametrize("source_mode", ["direct", "automatic"])
 def test_intake_modes_keep_raw_material_out_of_durable_campaign(
@@ -398,6 +432,7 @@ def test_create_task_is_independent_and_result_family_level_are_exact(isolated_d
         artifact_id="final-build:generated-test",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=mismatched_use,
+        research_memory_use=_blind_research_use(campaign_id, str(claim["claimId"])),
     )
     assert mismatch["errorCode"] == "learning_memory_use_receipt_mismatch"
     result = service.submit_create_result(
@@ -412,6 +447,7 @@ def test_create_task_is_independent_and_result_family_level_are_exact(isolated_d
         artifact_id="final-build:generated-test",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=_memory_use(queried),
+        research_memory_use=_blind_research_use(campaign_id, str(claim["claimId"])),
     )
     assert result["status"] == "create_accepted"
     assert result["familyMatch"] and result["levelMatch"]
@@ -442,6 +478,7 @@ def test_consumed_create_mismatch_is_terminal_and_releases_serial_slot(isolated_
         artifact_id="final-build:mismatched-test",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=_memory_use(queried),
+        research_memory_use=_blind_research_use(campaign_id, str(claim["claimId"])),
     )
     assert failed["terminalFailure"] is True
     assert failed["retryAllowed"] is False
@@ -482,6 +519,7 @@ def test_duplicate_reference_source_is_rejected_before_quarantine_write(isolated
         artifact_id="final-build:duplicate-terminal",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=_memory_use(queried),
+        research_memory_use=_blind_research_use(campaign_id, str(claim["claimId"])),
     )
     quarantine = isolated_data / "comparative-learning" / "quarantine"
     before = sorted(path.name for path in quarantine.iterdir())
@@ -573,6 +611,7 @@ def test_explicit_and_automatic_source_complete_one_case_e2e(isolated_data: Path
         artifact_id=f"final-build:{source_mode}-e2e",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=_memory_use(queried),
+        research_memory_use=_blind_research_use(campaign_id, str(create_claim["claimId"])),
     )
     compare_claim = service.claim_phase(
         campaign_id=campaign_id,
@@ -768,6 +807,7 @@ def test_mutation_requires_conditional_rereview_in_same_comparator_task(isolated
         artifact_id="final-build:rereview-test",
         generated_evidence=_evidence("generated", case_id),
         learning_memory_use=_memory_use(queried),
+        research_memory_use=_blind_research_use(campaign_id, str(create_claim["claimId"])),
     )
     compare_claim = service.claim_phase(
         campaign_id=campaign_id,

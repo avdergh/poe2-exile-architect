@@ -713,7 +713,13 @@ class GraphQueryService:
             limit=typed_input.limit,
         )
         candidate_keys = list(discovery.get("candidate_keys") or [])
-        candidates = [self._candidate_summary(key) for key in candidate_keys]
+        candidates = [
+            {
+                **self._candidate_summary(key),
+                "resolverPayload": {"componentKey": key},
+            }
+            for key in candidate_keys
+        ]
         source_refs = sorted(
             {
                 source_ref

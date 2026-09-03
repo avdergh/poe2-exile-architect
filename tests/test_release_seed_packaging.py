@@ -11,6 +11,7 @@ from scripts.package_physical_graph_seed import package_graph_seed
 from server import paths
 from server.knowledge import graph_seed
 from server.knowledge import mature_learning
+from server.knowledge import research_runtime
 from server.knowledge import physical_graph as pg
 
 
@@ -21,9 +22,9 @@ def _insert_safe_family_record(database: Path) -> None:
         con.execute(
             """
             INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
                 evidence_count, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES ('global_seed', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 family_key,
@@ -73,7 +74,7 @@ def _insert_safe_family_record(database: Path) -> None:
                 "class:monk",
                 "ascendancy:martial_artist",
                 "test-v1",
-                5,
+                2,
                 "0.5.4",
                 "0_5",
                 "0.5.4",
@@ -88,6 +89,44 @@ def _insert_safe_family_record(database: Path) -> None:
                 now,
                 None,
             ),
+        )
+        con.execute(
+            "INSERT INTO research_source_provenance VALUES (?, 'global_seed', 'test', ?, ?)",
+            ("case:public-safe", now, now),
+        )
+        con.execute(
+            "INSERT INTO research_build_family_evidence VALUES (?, ?, ?, ?, ?)",
+            ("global_seed", family_key, "case:public-safe", now, now),
+        )
+        con.execute(
+            """
+            INSERT INTO deep_research_record_evidence(
+                knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
+                observed_component_keys, observed_component_mentions, conditions,
+                failure_conditions, game_patch, passive_tree_version, pob_version_or_commit,
+                accepted_projection_hash, source_state_scope, first_seen_at, last_seen_at
+            ) VALUES ('global_seed', 'knowledge:release-fixture', 'case:public-safe',
+                      '["evidence:public-safe"]', '["skill:flicker","skill:bell"]', '[]',
+                      '[]', '[]', '0.5.4', '0_5', '0.5.4', NULL, 'unknown', ?, ?)
+            """,
+            (now, now),
+        )
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = 'record:release-fixture'"
+        ).fetchone()
+        projection = research_runtime.projection_hash(
+            {**dict(row), "source_state_scope": "state_agnostic"}
+        )
+        con.execute(
+            "UPDATE deep_research_records SET source_state_scope = 'state_agnostic', "
+            "projection_hash = ? WHERE record_id = 'record:release-fixture'",
+            (projection,),
+        )
+        con.execute(
+            "UPDATE deep_research_record_evidence SET source_state_scope = 'state_agnostic', "
+            "accepted_projection_hash = ? WHERE knowledge_key = 'knowledge:release-fixture'",
+            (projection,),
         )
         con.execute(
             "INSERT INTO meta(key, value) VALUES (?, ?)",

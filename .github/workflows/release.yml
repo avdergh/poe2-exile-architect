@@ -70,8 +70,9 @@ jobs:
         run: uv run ruff format --check server scripts pipeline tests
       - run: npx --yes @anthropic-ai/mcpb validate manifest.json
       - run: uv run python -m pipeline.build_corpus
-      - name: Golden tests (release gate)
-        run: uv run pytest
+      - name: Full non-compute release gate
+        shell: pwsh
+        run: ./scripts/verify.ps1 -Profile full
 
       - name: Build bundle
         run: uv run python scripts/build_bundle.py --version ${{ github.ref_name }} --platform ${{ matrix.plat }}
@@ -120,6 +121,7 @@ jobs:
           )
           python - "$POB_COMMIT" "$BASE" "$SRC_SHA" <<'PY'
           import hashlib, json, sys
+          from server import paths
           commit, base, src_sha = sys.argv[1], sys.argv[2], sys.argv[3]
           def sha(p): return hashlib.sha256(open(p,"rb").read()).hexdigest()
           compat = json.load(open("data/compatibility/pob.json", encoding="utf-8"))
@@ -131,6 +133,7 @@ jobs:
           manifest = {
               "version": tag,                       # data version (apply_updates compares this)
               "app_version": tag.lstrip("v"),       # .mcpb/code version (decoupled .mcpb nag)
+              "engine_contract": paths.POB_RUNTIME_CONTRACT,
               "pob_commit": commit,
               "pob_version": certified["pob_version"],
               "game_patch": certified["game_patch"],

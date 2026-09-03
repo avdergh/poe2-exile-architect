@@ -39,7 +39,20 @@ class _Engine:
     ) -> None:
         self.xml = xml
         self.xml_reads = 0
-        self.build = build or {"class": "Monk", "level": 70, "gear": {}}
+        self.build = {
+            "class": "Monk",
+            "level": 70,
+            "gear": {},
+            "spiritAvailable": 100,
+            "spiritReservedCapped": 81,
+            "spiritUnreserved": 19,
+            "spiritRequested": 81,
+            "spiritOverBy": 0,
+            "spiritUsed": 81,
+            "activeWeaponSet": 1,
+            "unspentPoints": 0,
+            **(build or {}),
+        }
         self.resistances = resistances or {
             "fire": 75,
             "cold": 75,
@@ -125,10 +138,49 @@ def test_preflight_blocks_active_gem_above_character_requirement():
     assert "active_skill_gem_level_requirement_unmet" in result["blockingIssues"]
 
 
+def test_preflight_enforces_final_create_completion_gates():
+    engine = _Engine(
+        _xml(_group()),
+        build={
+            "spiritAvailable": 100,
+            "spiritReservedCapped": 80,
+            "spiritUnreserved": 20,
+            "spiritRequested": 80,
+            "spiritUsed": 80,
+            "unspentPoints": 1,
+        },
+    )
+    engine.list_jewel_sockets = lambda: {
+        "sockets": [{"socket": 1, "allocated": True, "filled": False}]
+    }
+
+    result = preflight.inspect_generation_preflight(engine)
+
+    assert result["readyForJudge"] is False
+    assert "spirit_utilization_not_above_80_percent" not in result["blockingIssues"]
+    assert "unspent_passive_points_remaining" in result["blockingIssues"]
+    assert "allocated_passive_jewel_socket_empty" in result["blockingIssues"]
+
+
 def test_preflight_blocks_endgame_resistance_gate_without_consuming_judge():
     engine = _Engine(
         _xml(_group()),
-        build={"class": "Monk", "ascendancy": "Martial Artist", "level": 85, "gear": {}},
+        build={
+            "class": "Monk",
+            "ascendancy": "Martial Artist",
+            "level": 85,
+            "gear": {
+                "Flask 1": {"name": "Fixture Unique Life Flask", "rarity": "unique"},
+                "Flask 2": {
+                    "name": "Fixture Magic Mana Flask",
+                    "rarity": "magic",
+                    "itemLevel": 82,
+                    "affixPrefixes": 1,
+                    "affixSuffixes": 1,
+                    "affixLegality": {"ok": True, "issues": []},
+                },
+            },
+        },
         resistances={"fire": 60, "cold": 59, "lightning": 60, "chaos": 29},
     )
 

@@ -42,6 +42,15 @@
 
 ## 当前边界
 
+当前 Create 另有一组务实质量门禁：`get_build()` 是无副作用 readback；Judge 由调用方指定技能组与
+技能名；checkpoint 始终返回八项 `createQualityChecklist` 和单一 `deliveryStatus`。辅助、续航、
+现实装备、Charm/Flask、珠宝边际决策与 Rune 批量决策未完成时只允许 `candidate`。系统最多给出两轮
+定向返工；Judge hard-pass 不再被解释为成品质量通过。
+
+Memory-assisted Create 还会把最终 Family discovery receipt 与 selected Family 写入 run。用户本地化
+名称解析失败或首次 Family 为 `no_family` 时，Agent 只查询一次官方英文名称并重试；不建设本地
+多语言别名库。draft 和 Judge 均要求该 run 绑定存在。
+
 Phase 5 仍遵守项目硬边界：
 
 - 不持久化模型隐藏思维链（hidden chain-of-thought，模型私有逐步推理）、完整对话记录
@@ -97,7 +106,7 @@ Agent 负责：
 - 判断候选是否“像不像别人”。Phase 5 只关心是否安全、可解释、可验证和有设计价值。
 
 普通单阶段 Create 保存 artifact 后，由 `export_final_build_package` 统一导出 PoB 文件、
-导入码和官方 `.build`。
+导入码、官方 `.build`，并把已验证 code 发布成公开 poe.ninja PoB 分享链接。
 
 ## 原型阶段拆分
 
@@ -117,7 +126,8 @@ Agent 负责：
 
 1. 用户输入自然语言需求。
 2. Agent 直接把需求整理为结构化摘要；如果信息不足，简短追问目标阶段、职业/升华/技能、重视
-   清图/Boss/生存/造价/上限等约束，然后生成更具体的设计提示词或最小 `BuildBrief`。不需要
+   清图/Boss/生存/操作/上限等约束；预算和价格只进入最终造价及获取难度披露。然后生成更具体的
+   设计提示词或最小 `BuildBrief`。不需要
    开荒过程确认；本工具只产出目标等级单阶段终局 BD。
 3. Agent 调用插件 MCP 的 `start_generation_run` 建立本次运行凭据；run 状态保存在受管用户数据
    目录。发布插件不要求仓库 checkout、当前工作目录或 Agent 手工编辑 `agent-output.json`。
@@ -127,6 +137,10 @@ Agent 负责：
    职责建立处理表。存在未解决失败 premise 时，继续按 Family、组件、record kind、record ID
    或失败文本定向查询，直到采用原方案、采用替代方案、判定不适用或明确保留 caveat；不设固定
    查询或深读额度。
+   Graph 搜索结果提供可原样回传 resolver 的 `resolverPayload.componentKey`；Family 身份继续使用
+   `skill:` key，等级验证在边界处统一解析显示名、`gem:` 和 `skill:`。Meta aggregate unavailable
+   时不阻塞 Create：先查 PoB/corpus/Graph/Research，再查官方补丁/数据/Wiki，最后用当前赛季
+   poe.ninja/pobb.in 样本并 `import_build` 复核。网络证据不能写入 premise `resolutionRefs`。
 5. Agent 使用 `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout /
    passive_delta / required_gear / ordinary_gear / config` 提交已经决定的小型职能事务，再用局部
    查询/优化工具补足明确缺口。不得把整个 BD 混进一个批次；批次不接受搜索或 optimizer。
@@ -138,7 +152,18 @@ Agent 负责：
    资源状态。程序不替 Agent 自动补全这些内容。`craft_item` 返回 Perfect Essence、符文或
    腐化效果时，Agent 必须在后续直接或批量 `equip_item` 中原样传入 `craftReceiptRef`；该
    raw-free receipt 同时绑定 PoB 写回后的语义指纹，不能用于证明被改写的物品。
-6. Agent 先调用 `inspect_generation_checkpoint` v2。该工具按语义 build-state hash 合并
+   Family `gear_synergy` 中非 `optional_upgrade` / `budget_substitute` 的 `unique_enabler` 暗金先于
+   普通黄装实装并逐组件记录 `adopted/caveated/rejected`；当前版本不可用写为 `rejected`，并在
+   summary/application 记录 unavailable 原因。价格只在方案锁定后披露，不参与采用。
+   普通暗金候选放在基础黄装之后。90 级默认以三槽腰带和三护符为
+   质量目标，有效容量读取最终 PoB `CharmLimit`；缺属性为 unknown，只有超容量是硬失败。
+   所有可镶嵌装备都要评估 `optimize_item_sockets`，但无机制收益或机制不适用可以明确不用；价格
+   不是拒绝理由。默认装备优化
+   终局额外珠宝孔最多评估两轮：`evaluate_next_jewel_socket` 返回正收益 `decisionRef` 后只能用
+   `apply_next_jewel_socket_decision` 原子应用；第二轮必须串联第一轮的输出 state hash，不能手工
+   拆点/装珠宝后沿用旧回执。
+   在元素 60%、非 CI 混沌 30% 后停止继续购买普通抗性，用户明确要求时可覆盖为 75%。
+6. Agent 先调用 `inspect_generation_checkpoint` v3。该工具按语义 build-state hash 合并
    completeness、preflight、有界 stats 和 defenses，并分别返回
    `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
    `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/
@@ -147,6 +172,12 @@ Agent 负责：
    同一物品审计，普通前后缀、Perfect Essence、符文和腐化不会再由两套检查器分别判断。同一状态
    不重复执行，状态修改后自动形成新检查。主动宝石
    检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
+   Research 深读和最终候选摘要完成，且装备、天赋、珠宝、Rune、辅助与 config 冻结后，Agent 先
+   完成 state-bound Support/Jewel/Socket 检查与 checkpoint，再调用
+   `validate_generation_draft(..., offense_skill_group_index, expected_skill_name)`。服务端从该最终 PoB
+   观察辅助集合、主导命中类型和 Mana/Life 支付域，并与 state hash、Research/Blueprint 绑定。
+   相同机制修订只调用一次；核心技能、辅助、主伤轴或支付域改变后重验 Draft，不新增 finalization
+   状态机。memory-assisted/no-memory run 缺少 marker 时 Judge 失败且不消耗 attempt。
 7. `evaluate_generation_candidate` 在写可信 Judge receipt 前对同一快照再次运行共享审计。
    确定性非法或机制结构未闭环时返回 blocker、`attemptConsumed=false` 和当前 attempt count，
    不启动独立 Judge，也不消耗初始一次加两次 retry。Agent 修正状态后重新 checkpoint。
@@ -241,7 +272,7 @@ P5.1 最小产物：
 人工验收记录：
 
 - 运行编号：`da15d003-6d9a-4315-a3ec-2f4b1b5dd404`；
-- 模糊请求“开荒比较顺畅的 BD”被 Agent 转换为低预算、操作简单、剧情至初入异界目标；
+- 模糊请求“开荒比较顺畅的 BD”被 Agent 转换为操作简单、剧情至初入异界目标；造价只作披露；
 - Agent 在 `blocked_stale` 且仅本地 PoB 过期时继续生成，没有错误停机；
 - 活动构筑包含 Sorceress / Stormweaver、Spark、Orb of Storms、Elemental Storm、10 个装备槽和
   73/73 天赋点；
@@ -421,10 +452,11 @@ P5.3 不做：
   主技能命中。Family 摘要返回 `recordKindCounts`；Agent 可用 `build_family_keys` 和
   `record_kinds` 按支持包、轮转、装备、升华、资源或防御缺口渐进深读，避免固定六条摘要静默
   遗漏新结构。已完成
-- Create 查询使用 `response_profile="create_compact"`：保留全部命中结果，只删除每项中的重复
-  检索字段并提升 `criticalPremiseDigest`；不得按固定数量截断 fragment、record、pattern 或 edge。
-  durable typed receipt 不变，Research 维护流程默认 full 响应不变。这样减少重复字段，同时避免
-  条件、失败场景和验证任务在正向组件列表中失去显著性。已完成
+- Create 查询使用 `response_profile="create_compact"`：在一个固定 revision 上选择单一
+  `(knowledgeScope, sourceCaseRef)` lane，只把 eligible deep record/index/premise/digest 作为授权
+  内容。每次首查创建唯一 retrieval session，以单 cursor 连续分页，每页 ≤64 KiB；完整
+  `0..terminal` receipt 链才可写入 `ResearchMemoryUse`。pattern/edge/fragment 与其他 lane 只能作
+  ToolReference；Research 维护使用 full 响应。已完成
 - Create 将 `supportPackages`、`gearResponsibilities`、`ascendancyResponsibilities` 和
   `resourceMechanisms` 分别转成待验证的辅助候选、装备职责、升华取舍与资源/失效状态，不由程序
   自动拼装 BD。涉及暗金、天赋、触发、转换或资源交互的记忆结论在采用前仍需核对当前静态事实；
@@ -438,9 +470,9 @@ P5.3 不做：
 - Phase 5 分发链补齐固定 PoB、兼容清单、CI/Release 固定提交、MCP 注册和生成工具声明；安装器
   缺少 `uv` 时明确停止，运行时更新只接受本仓库发布源。已完成
 - 评估互斥锁支持在超过 Judge 超时预算后恢复陈旧锁，避免异常退出让同一运行永久不可用。已完成
-- 修正防御工具对混沌抗的阶段错配：`plan_gear` 按剧情、进图、终局使用 0%、30%、60% 的非 CI
-  混沌抗默认目标，达到目标后不再让混沌抗词缀抢占后缀；剧情 Judge 在混沌抗非负后仍保留
-  Chaos Max Hit 诊断，但不再让它主导防御短板分。元素抗 75% 和混沌抗非负的硬底线不变。已完成
+- 修正防御工具对抗性的阶段错配：`plan_gear` 按剧情、进图、终局使用 0%、30%、30% 的非 CI
+  混沌抗默认目标与 30%、50%、60% 的元素目标；达到目标后不再让普通抗性词缀抢占后缀。
+  显式 75% 目标仍受支持，Judge 的新生成终局硬门槛继续是元素 60%、非 CI 混沌 30%。已完成
 
 因此 P5.3 不再新增新的大工具层。后续优先进入 Phase 6 导出；多技能轮转、触发与兑现组合、
 分场景评分和更强版本证据绑定由真实样例继续驱动，不在 Phase 5 内手写全知规则。
@@ -488,7 +520,7 @@ unknown 阻断。部署环境可选配置 `GH_TOKEN` 或 `GITHUB_TOKEN` 提高 G
 - 当前输出阶段；
 - 完整生命周期目标；
 - 跨阶段硬锁：只能是职业；
-- 预算/经济环境假设；
+- 预算/经济环境披露假设（只用于最终造价和获取难度说明，不参与构筑选择）；
 - 用户明确指定或排除的职业、升华、技能、机制、物品；
 - Agent 默认假设；
 - 需要追问的问题；
@@ -608,13 +640,25 @@ Agent 不能用解释覆盖硬阻断；只能给出复核证据、修正候选�
 - `scaffold_gear` 仍可用于中途计算，但所有 `Scaffold ...` 物品，以及 rare/magic 装备缺少
   `Item Level`，现在由共享 `HardLegalityAudit` 在 Judge 前阻断并返回
   `attemptConsumed=false`；它们不再只是保存前 advisory。已完成
-- 药剂、护符、珠宝和符文由 Agent 根据阶段、预算和构筑机制选择；程序只诊断遗漏，不机械塞入
-  固定方案。已完成
+- 药剂、护符、珠宝和符文由 Agent 根据阶段、Research 职责和构筑机制选择；价格只作披露。80 级
+  以上新生成候选必须装备暗金或至少一条合法词缀的 Magic 生命/魔力药剂；普通药剂使用
+  `optimize_flask`，程序不替 Agent 选择 Family 暗金。已完成
+- 生成腰带写入真实 `Charm Slots`；缺少属性为 unknown，最终容量读取 PoB `CharmLimit` 并封顶 3。
+  90 级三槽/三护符属于质量目标，只有装备数量超过容量才硬失败。已完成
+- 新增 `optimize_item_sockets`，在保留现有物品全部普通内容的前提下增量选择 1–2 个符文/灵魂核心，
+  复用现有 craft receipt 与 `equip_item` 写回。所有可镶嵌槽都应评估，但允许明确不用。已完成
 - `optimize_item` 和 `rank_upgrades` 返回候选前复用同一个全角色 `HardLegalityAudit`；换装造成
   属性不足、其他装备失效或已装备槽位从 10 个退化为 9 个时，该候选不进入推荐排行，并保留
   结构化拒绝原因。黄装自身词缀审计仍先执行。已完成
-- 资源续航使用 `ManaCost × Speed` 与回复、偷取、击回比较。存在确定缺口且装备魔力瓶时标为
-  `flask_assisted_required`，同时给出每秒缺口、满蓝维持时间和长 Boss 断蓝风险。已完成
+- 资源续航同时检查 Mana/Life 的每次固定、每次百分比、每秒固定和每秒百分比成本；固定与百分比
+  单次成本必须合并后检查可支付性。`*LeechGainRate` 已包含 On-Hit，不能与 `*OnHitRate` 双计。
+  存在 PoB 未建模 Mana 恢复时输出
+  “需验证未建模恢复覆盖”，先用 PoB/corpus/Graph/Research、必要时联网复核，再通过辅助、天赋、
+  技能、装备、护符、镶嵌、药剂或轮转补救；不能直接下“会断蓝”结论。确认只依赖普通魔力瓶且
+  无其他覆盖时仍失败。同一 run 最多两次核心机制级重建；两次后硬合法但未证明只能称待验证候选，
+  真实失败且无法补救则停止交付。已完成
+- 所有装备优化路径共享元素 60%、非 CI 混沌 30% 的默认饱和目标，保留显式 75 覆盖和
+  `resistsCapped` 兼容字段，并用 `resistanceTargetMet` 表达新目标。已完成
 
 这些检查不把 BD 创造转回程序化补全。它们只保证 Agent 最终接受的是可玩的阶段构筑，而不是为
 Judge 临时堆出的计算骨架。

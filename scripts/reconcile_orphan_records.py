@@ -42,7 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from server.knowledge import mature_learning, research_identity  # noqa: E402
+from server.knowledge import mature_learning, research_identity, research_runtime  # noqa: E402
 from server.knowledge.research_memory import ResearchMemoryService  # noqa: E402
 
 
@@ -64,7 +64,8 @@ def orphan_rows(con):
         WHERE r.build_family_key IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM research_build_families f
-              WHERE f.build_family_key = r.build_family_key
+              WHERE f.knowledge_scope = r.knowledge_scope
+                AND f.build_family_key = r.build_family_key
           )
         ORDER BY r.research_group_id, r.record_id
         """
@@ -97,15 +98,18 @@ def main() -> int:
     con = mature_learning.connect(db_path)
     try:
         rows = orphan_rows(con)
-        groups: dict[str, list] = {}
+        groups: dict[tuple[str, str], list] = {}
         for row in rows:
-            groups.setdefault(str(row["research_group_id"]), []).append(row)
+            groups.setdefault(
+                (str(row["knowledge_scope"]), str(row["research_group_id"])), []
+            ).append(row)
 
         dispositions: list[dict] = []
-        for group_id, group_rows in sorted(groups.items()):
+        for (knowledge_scope, group_id), group_rows in sorted(groups.items()):
             identity = research_identity.infer_build_family(group_rows)
             entry = {
                 "group_id": group_id,
+                "knowledge_scope": knowledge_scope,
                 "record_count": len(group_rows),
                 "record_ids": [str(r["record_id"]) for r in group_rows],
                 "titles": [str(r["title"])[:60] for r in group_rows][:3],
@@ -121,7 +125,11 @@ def main() -> int:
             }
             # resolve target like accept does
             service = ResearchMemoryService(db_path=db_path, initialize_store=False)
-            target, relation, src_key = service._resolve_family_target(con, family=identity)
+            target, relation, src_key = service._resolve_family_target(
+                con,
+                family=identity,
+                knowledge_scope=knowledge_scope,
+            )
             entry["relation"] = relation
             entry["disposition"] = "expand" if relation == "expand" else relation
             entry["target_family_key"] = target.key if relation != "new" else None
@@ -160,11 +168,17 @@ def main() -> int:
         skipped = 0
         for entry in dispositions:
             group_id = entry["group_id"]
+            knowledge_scope = entry["knowledge_scope"]
             if group_id in args.skip_group:
                 entry["skipped_reason"] = "human review required (identity suspicious)"
                 skipped += 1
                 continue
-            group_rows = [r for r in orphan_rows(con) if str(r["research_group_id"]) == group_id]
+            group_rows = [
+                r
+                for r in orphan_rows(con)
+                if str(r["research_group_id"]) == group_id
+                and str(r["knowledge_scope"]) == knowledge_scope
+            ]
             if entry["disposition"] == "unclassifiable":
                 for row in group_rows:
                     con.execute(
@@ -197,6 +211,7 @@ def main() -> int:
                 service._upsert_build_family(
                     con,
                     family=identity,
+                    knowledge_scope=knowledge_scope,
                     source_case_refs=sorted(
                         {ref for row in group_rows for ref in _loads(row["source_case_refs"], [])}
                     ),
@@ -214,6 +229,8 @@ def main() -> int:
                 "expand requires merging an existing family; run the family merge "
                 "script for this group instead"
             )
+        if applied["join"] or applied["new"] or applied["unclassifiable"]:
+            research_runtime.bump_memory_revision(con)
         con.commit()
         report["applied"] = applied
         report["skippedGroups"] = [e for e in dispositions if e.get("skipped_reason")]

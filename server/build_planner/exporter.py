@@ -15,6 +15,13 @@ from server.generation import artifacts
 from . import converter
 
 
+_GUIDANCE_DISCLOSURE = (
+    "Guidance only: Rare/Magic gear details, equipment sockets, Rune/Soul Core choices, and "
+    "passive-tree jewels must be verified in the accompanying PoB XML/import code, which is the "
+    "authoritative build."
+)
+
+
 def exports_dir() -> Path:
     override = os.environ.get("POE_BD_BUILD_EXPORTS_DIR")
     return (
@@ -37,12 +44,17 @@ def export_final_build_artifact(
     if loaded is None:
         return {"status": "rejected", "errorCode": "final_artifact_not_found_or_corrupt"}
     manifest, xml = loaded
+    disclosed_description = (
+        f"{description.strip()}\n\n{_GUIDANCE_DISCLOSURE}"
+        if isinstance(description, str) and description.strip()
+        else _GUIDANCE_DISCLOSURE
+    )
     metadata = {
         key: value.strip()
         for key, value in {
             "name": name,
             "author": author,
-            "description": description,
+            "description": disclosed_description,
             "link": link,
         }.items()
         if isinstance(value, str) and value.strip()
@@ -92,6 +104,7 @@ def export_final_build_artifact(
         "status": "exported",
         "artifactId": manifest.artifact_id,
         "sourceHash": manifest.source_hash,
+        "deliveryStatus": manifest.delivery_status,
         "outputPath": str(output),
         "format": "GGG Build Planner v1 experimental",
         "singleStage": True,
@@ -101,6 +114,16 @@ def export_final_build_artifact(
         "schemaValidation": validation,
         "exportedAt": datetime.now(timezone.utc).isoformat(),
         "containsRawPob": False,
+        "guidanceOnly": {
+            "authoritativeFormat": "pob_xml_or_import_code",
+            "limitedFields": [
+                "rare_magic_gear_details",
+                "equipment_sockets",
+                "runes_and_soul_cores",
+                "passive_tree_jewels",
+            ],
+            "descriptionDisclosureWritten": True,
+        },
     }
 
 

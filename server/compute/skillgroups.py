@@ -8,11 +8,40 @@ bridge snapshots and rolls back any mutation that fails validation.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
+from ..knowledge import db
+from ..knowledge.skill_equivalence import SkillEquivalenceIndex
 from .engine import PobEngine
-from .skilltext import normalize_skill_text
+from .skilltext import normalize_skill_text, requested_gem_names
 from .state import build_state_hash, canonical_payload_hash
+
+
+def set_main_skill(engine: PobEngine, skill: str) -> dict[str, Any]:
+    """Set one main group and fail atomically if PoB drops any requested gem."""
+
+    if not callable(getattr(engine, "call", None)):
+        return engine.paste_skill(skill)
+    return _apply_complete_group(engine, operation="set_main_skill", skill=skill)
+
+
+def add_skill_group(
+    engine: PobEngine,
+    skill: str,
+    *,
+    include_in_full_dps: bool = False,
+) -> dict[str, Any]:
+    """Add one group and fail atomically if PoB drops any requested gem."""
+
+    if not callable(getattr(engine, "call", None)):
+        return engine.add_skill_group(skill, include_in_full_dps=include_in_full_dps)
+    return _apply_complete_group(
+        engine,
+        operation="add_skill_group",
+        skill=skill,
+        include_in_full_dps=include_in_full_dps,
+    )
 
 
 def list_skill_groups(engine: PobEngine) -> dict[str, Any]:
@@ -20,6 +49,81 @@ def list_skill_groups(engine: PobEngine) -> dict[str, Any]:
         xml = engine.get_xml()
         raw = engine.call("list_skill_groups")
         return _decorate(raw, state_hash=build_state_hash(xml))
+
+
+def _apply_complete_group(
+    engine: PobEngine,
+    *,
+    operation: str,
+    skill: str,
+    include_in_full_dps: bool = False,
+) -> dict[str, Any]:
+    requested, unresolved = _canonical_requested_gems(skill)
+    if unresolved:
+        return {
+            **_error("unknown_skill_gem", "one or more requested gems are unknown"),
+            "unresolvedGemNames": unresolved,
+        }
+    if not requested:
+        return _error("skill_text_required", "skill text must contain at least one gem")
+
+    normalized = normalize_skill_text(skill, default_level=None)
+    with engine.transaction_lock():
+        before_xml = engine.get_xml()
+        before_hash = build_state_hash(before_xml)
+        before = _decorate(engine.call("list_skill_groups"), state_hash=before_hash)
+        if operation == "set_main_skill":
+            result = engine.paste_skill(normalized)
+        else:
+            result = engine.add_skill_group(
+                normalized,
+                include_in_full_dps=include_in_full_dps,
+            )
+        if not isinstance(result, dict) or result.get("ok") is False:
+            if build_state_hash(engine.get_xml()) != before_hash:
+                engine.load_build_xml(before_xml, name="skill-group-failure-rollback")
+            if isinstance(result, dict):
+                result.setdefault("stateHash", before_hash)
+                return result
+            return {
+                **_error(
+                    "invalid_skill_group_mutation_result",
+                    "PoB returned an invalid result",
+                ),
+                "stateHash": before_hash,
+            }
+
+        after = _decorate(
+            engine.call("list_skill_groups"),
+            state_hash=build_state_hash(engine.get_xml()),
+        )
+        if operation == "set_main_skill":
+            target_index = after.get("mainGroupIndex")
+        else:
+            previous_indices = {
+                group.get("index") for group in before.get("groups", []) if isinstance(group, dict)
+            }
+            new_groups = [
+                group
+                for group in after.get("groups", [])
+                if isinstance(group, dict) and group.get("index") not in previous_indices
+            ]
+            target_index = new_groups[-1].get("index") if new_groups else None
+        target = _group_at(after, int(target_index or 0))
+        actual = _canonical_actual_gems(target)
+        if Counter(actual) != Counter(requested):
+            engine.load_build_xml(before_xml, name="skill-group-completeness-rollback")
+            return {
+                **_error(
+                    "skill_group_incomplete",
+                    "PoB did not persist every requested gem; build restored",
+                ),
+                "requestedGems": requested,
+                "appliedGems": actual,
+                "droppedGemNames": list((Counter(requested) - Counter(actual)).elements()),
+                "stateHash": before_hash,
+            }
+        return result
 
 
 def replace_skill_group(
@@ -30,12 +134,19 @@ def replace_skill_group(
     skill: str,
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
+    requested, unresolved = _canonical_requested_gems(skill)
+    if unresolved:
+        return {
+            **_error("unknown_skill_gem", "one or more requested gems are unknown"),
+            "unresolvedGemNames": unresolved,
+        }
     return _mutate(
         engine,
         method="replace_skill_group",
         group_index=group_index,
         expected_fingerprint=expected_fingerprint,
         expected_state_hash=expected_state_hash,
+        expected_gems=requested,
         text=normalize_skill_text(skill, default_level=None),
     )
 
@@ -92,6 +203,173 @@ def set_skill_group_state(
     )
 
 
+def configure_source_skill_supports(
+    engine: PobEngine,
+    *,
+    source_group_index: int,
+    supports: list[str],
+    expected_fingerprint: str,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Atomically replace supports on one real Tree or Item source group."""
+
+    if source_group_index < 1:
+        return _error("invalid_group_index", "source_group_index must be at least 1")
+    if not expected_fingerprint:
+        return _error(
+            "expected_fingerprint_required",
+            "read list_skill_groups and pass the selected group's fingerprint",
+        )
+    if len(supports) > 5:
+        return _error("source_support_capacity_exceeded", "a source skill can have at most 5 supports")
+
+    resolved: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    equivalence = SkillEquivalenceIndex.shared()
+    for requested in supports:
+        name = str(requested or "").strip()
+        matching_ids = equivalence.gem_ids(name) if name else ()
+        if len(matching_ids) > 1:
+            return {
+                **_error("ambiguous_support_gem", "a support name resolves to multiple gems"),
+                "support": name,
+                "candidateGemIds": list(matching_ids),
+            }
+        gem = db.get_gem(matching_ids[0]) if len(matching_ids) == 1 else db.get_gem(name)
+        if gem is None:
+            return {
+                **_error("unknown_support_gem", "one or more requested supports are unknown"),
+                "support": name,
+            }
+        if str(gem.get("gem_type") or "").lower() != "support":
+            return {
+                **_error("active_skill_not_support", "source supports must all be support gems"),
+                "support": str(gem.get("name") or name),
+            }
+        gem_id = str(gem["id"])
+        if gem_id in seen_ids:
+            return {
+                **_error("duplicate_support", "the same support cannot be requested twice"),
+                "support": str(gem["name"]),
+            }
+        seen_ids.add(gem_id)
+        resolved.append(gem)
+
+    with engine.transaction_lock():
+        before_xml = engine.get_xml()
+        before_hash = build_state_hash(before_xml)
+        if expected_state_hash is not None and expected_state_hash != before_hash:
+            return _conflict(expected_state_hash, before_hash)
+        before = _decorate(engine.call("list_skill_groups"), state_hash=before_hash)
+        group = _group_at(before, source_group_index)
+        if group is None:
+            return _error("skill_group_not_found", "source skill group does not exist")
+        if group["fingerprint"] != expected_fingerprint:
+            return {
+                **_error("skill_group_conflict", "the selected source group changed; refresh and retry"),
+                "groupIndex": source_group_index,
+                "expectedFingerprint": expected_fingerprint,
+                "actualFingerprint": group["fingerprint"],
+                "stateHash": before_hash,
+            }
+        source = str(group.get("source") or "").strip()
+        source_kind = str(group.get("sourceKind") or "").strip().casefold()
+        real_source = (source.startswith("Tree:") and source_kind == "tree") or (
+            source.startswith("Item:") and source_kind == "item"
+        )
+        if not real_source:
+            return {
+                **_error(
+                    "source_skill_supports_not_modelable",
+                    "the selected group is not backed by a current passive, Ascendancy, or item source",
+                ),
+                "modelabilityBlocker": bool(source),
+                "source": source or None,
+                "stateHash": before_hash,
+            }
+        if group.get("noSupports"):
+            return {
+                **_error("source_skill_no_supports", "source skill does not accept supports"),
+                "source": source or None,
+                "stateHash": before_hash,
+            }
+        try:
+            result = engine.call(
+                "configure_source_skill_supports",
+                index=source_group_index,
+                supportGemIds=[str(gem["id"]) for gem in resolved],
+            )
+        except Exception:
+            try:
+                engine.load_build_xml(before_xml, name="source-support-exception-rollback")
+            except Exception:
+                pass
+            raise
+        if not isinstance(result, dict):
+            engine.load_build_xml(before_xml, name="source-support-invalid-result-rollback")
+            return _error("invalid_source_support_result", "PoB returned an invalid result")
+        if result.get("ok") is False:
+            if build_state_hash(engine.get_xml()) != before_hash:
+                engine.load_build_xml(before_xml, name="source-support-failure-rollback")
+            result.setdefault("stateHash", before_hash)
+            return result
+
+        after_xml = engine.get_xml()
+        after_hash = build_state_hash(after_xml)
+        after = _decorate(engine.call("list_skill_groups"), state_hash=after_hash)
+        actual_group = _group_at(after, source_group_index)
+        expected_supports = [str(gem["name"]) for gem in resolved]
+        actual_gems = (actual_group or {}).get("gems") or []
+        actual_supports = [
+            str(gem.get("name"))
+            for gem in actual_gems[1:]
+            if isinstance(gem, dict) and gem.get("isSupport")
+        ]
+        if actual_supports != expected_supports:
+            engine.load_build_xml(before_xml, name="source-support-completeness-rollback")
+            return {
+                **_error(
+                    "source_supports_incomplete",
+                    "PoB did not preserve every requested source support; build restored",
+                ),
+                "requestedSupports": expected_supports,
+                "appliedSupports": actual_supports,
+                "stateHash": before_hash,
+            }
+
+        from .supportopt import carry_support_audit_to_configured_state
+
+        carried_audit = carry_support_audit_to_configured_state(
+            engine=engine,
+            before_state_hash=before_hash,
+            after_state_hash=after_hash,
+            group_index=source_group_index,
+            applied_supports=actual_supports,
+        )
+
+        return {
+            "ok": True,
+            "operation": "configure_source_skill_supports",
+            "sourceGroupIndex": source_group_index,
+            "source": source,
+            "sourceKind": "item" if source.startswith("Item:") else "tree",
+            "beforeStateHash": before_hash,
+            "afterStateHash": after_hash,
+            "stateHash": after_hash,
+            "changed": before_hash != after_hash,
+            "fingerprint": actual_group.get("fingerprint") if actual_group else None,
+            "skillLevel": result.get("skillLevel"),
+            "supportCapacity": result.get("capacity"),
+            "selectedCommand": result.get("selectedCommand"),
+            "requestedSupports": expected_supports,
+            "supportApplication": result.get("supportApplication", []),
+            "spiritBefore": result.get("spiritBefore"),
+            "spiritAfter": result.get("spiritAfter"),
+            "supportAudit": carried_audit,
+            "group": actual_group,
+        }
+
+
 def _mutate(
     engine: PobEngine,
     *,
@@ -99,6 +377,7 @@ def _mutate(
     group_index: int,
     expected_fingerprint: str,
     expected_state_hash: str | None,
+    expected_gems: list[str] | None = None,
     **params: Any,
 ) -> dict[str, Any]:
     if group_index < 1:
@@ -156,6 +435,20 @@ def _mutate(
         after_xml = engine.get_xml()
         after_hash = build_state_hash(after_xml)
         after = _decorate(engine.call("list_skill_groups"), state_hash=after_hash)
+        if expected_gems is not None:
+            actual = _canonical_actual_gems(_group_at(after, group_index))
+            if Counter(actual) != Counter(expected_gems):
+                engine.load_build_xml(before_xml, name="skill-group-completeness-rollback")
+                return {
+                    **_error(
+                        "skill_group_incomplete",
+                        "PoB did not persist every requested gem; build restored",
+                    ),
+                    "requestedGems": expected_gems,
+                    "appliedGems": actual,
+                    "droppedGemNames": list((Counter(expected_gems) - Counter(actual)).elements()),
+                    "stateHash": before_hash,
+                }
         return {
             "ok": True,
             "operation": method,
@@ -194,6 +487,28 @@ def _group_at(payload: dict[str, Any], index: int) -> dict[str, Any] | None:
         if isinstance(group, dict) and group.get("index") == index:
             return group
     return None
+
+
+def _canonical_requested_gems(skill: str) -> tuple[list[str], list[str]]:
+    canonical: list[str] = []
+    unresolved: list[str] = []
+    for name in requested_gem_names(skill):
+        gem = db.get_gem(name)
+        if gem is None:
+            unresolved.append(name)
+        else:
+            canonical.append(str(gem["name"]))
+    return canonical, unresolved
+
+
+def _canonical_actual_gems(group: dict[str, Any] | None) -> list[str]:
+    if not isinstance(group, dict):
+        return []
+    return [
+        str(gem.get("name"))
+        for gem in group.get("gems", [])
+        if isinstance(gem, dict) and gem.get("name")
+    ]
 
 
 def _conflict(expected: str, actual: str) -> dict[str, Any]:

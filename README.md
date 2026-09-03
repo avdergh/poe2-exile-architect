@@ -18,8 +18,9 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 `.tools/uv`，其次使用 `PATH` 中的 `uv`。两者都不存在时会明确停止，不会写入一个无法启动的
 MCP 配置。拆分让单阶段 Create 只发现 knowledge + build 两个 server，避免无关工具和重复
 指令注入挤占上下文。
-Research Skill 会复用安装器管理的仓库根和 `uv` 命令，并以绝对脚本路径运行；从其他项目调用时
-不会把当前工作目录误当成本仓库。
+Research Skill 通过 `poe_research_mcp` 的 opaque `runRef` 和 typed queue/lease/review/accept 工具
+运行；不会搜索当前项目、直接编辑 queue/SQLite，或把当前工作目录误当成本仓库。Research Memory
+schema 5 按 scope/sourceCase 隔离，Create 使用 bounded 单 cursor receipt 链采用一条一致案例 lane。
 
 官方 `.build` 转换和 MCPB manifest 校验需要 Node.js。项目优先使用
 `POE_BD_NODE_EXECUTABLE` 显式配置或系统 `PATH`，也会自动发现 Codex Desktop 随附的 Node

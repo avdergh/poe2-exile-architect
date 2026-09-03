@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from server import paths
-from server.knowledge import mature_learning
+from server.knowledge import mature_learning, research_runtime
 
 
 def _tables(con: sqlite3.Connection) -> set[str]:
@@ -961,3 +962,111 @@ def test_extract_technique_candidates_preserves_manual_promotion_status(tmp_path
         ).fetchone()["promotion_status"]
         == "rejected"
     )
+
+
+def test_existing_v4_release_store_migrates_atomically_to_v5(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-v4.sqlite"
+    mature_learning.initialize_store(db_path)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("DROP TABLE deep_research_record_evidence")
+        con.execute(
+            """
+            CREATE TABLE deep_research_record_evidence (
+                knowledge_key TEXT NOT NULL,
+                source_case_ref TEXT NOT NULL,
+                safe_evidence_refs TEXT NOT NULL,
+                observed_component_keys TEXT NOT NULL,
+                observed_component_mentions TEXT NOT NULL,
+                conditions TEXT NOT NULL,
+                failure_conditions TEXT NOT NULL,
+                game_patch TEXT NOT NULL,
+                passive_tree_version TEXT NOT NULL,
+                pob_version_or_commit TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (knowledge_key, source_case_ref)
+            )
+            """
+        )
+        for table in (
+            "research_query_sessions",
+            "research_record_write_receipts",
+            "research_source_provenance",
+        ):
+            con.execute(f"DROP TABLE {table}")
+        con.execute("DROP INDEX IF EXISTS idx_deep_research_records_scope_knowledge")
+        con.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
+        con.execute("DELETE FROM meta WHERE key = 'research_memory_revision'")
+        con.commit()
+        assert mature_learning.schema_version(con) == 4
+    finally:
+        con.close()
+    repair_calls: list[bool] = []
+    real_repair = mature_learning._apply_known_research_repairs_v5
+
+    def observed_repair(con):
+        repair_calls.append(True)
+        return real_repair(con)
+
+    monkeypatch.setattr(mature_learning, "_apply_known_research_repairs_v5", observed_repair)
+    mature_learning.initialize_store(db_path)
+    con = mature_learning.connect(db_path)
+    try:
+        assert mature_learning.schema_version(con) == 5
+        assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        columns = {
+            row[1] for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")
+        }
+        assert {"knowledge_scope", "accepted_projection_hash", "source_state_scope"} <= columns
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='research_record_write_receipts'"
+        ).fetchone()
+        assert repair_calls == [True]
+    finally:
+        con.close()
+    assert db_path.with_name(db_path.name + ".pre-schema-4.sqlite").is_file()
+
+
+def test_concurrent_initializers_converge_on_one_v5_store(tmp_path):
+    db_path = tmp_path / "concurrent.sqlite"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        paths = list(pool.map(lambda _index: mature_learning.initialize_store(db_path), range(4)))
+    assert paths == [db_path] * 4
+    con = mature_learning.connect(db_path)
+    try:
+        assert mature_learning.schema_version(con) == 5
+        assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert con.execute("SELECT count(*) FROM research_record_write_receipts").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_partial_v5_store_repairs_missing_structure_without_semantic_repair(tmp_path, monkeypatch):
+    db_path = tmp_path / "partial-v5.sqlite"
+    mature_learning.initialize_store(db_path)
+    con = mature_learning.connect(db_path)
+    try:
+        con.execute("DROP TABLE research_source_provenance")
+        con.commit()
+        assert mature_learning.schema_version(con) == 5
+    finally:
+        con.close()
+
+    monkeypatch.setattr(
+        mature_learning,
+        "_apply_known_research_repairs_v5",
+        lambda _con: (_ for _ in ()).throw(AssertionError("semantic repair must not run")),
+    )
+    mature_learning.initialize_store(db_path)
+
+    con = mature_learning.connect(db_path)
+    try:
+        assert mature_learning._v5_structure_complete(con) is True
+        assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert con.execute("SELECT count(*) FROM research_source_provenance").fetchone()[0] == 0
+        assert research_runtime.get_memory_revision(con) == 0
+    finally:
+        con.close()
+    assert db_path.with_name(db_path.name + ".pre-schema-5.sqlite").is_file()

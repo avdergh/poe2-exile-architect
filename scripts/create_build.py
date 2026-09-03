@@ -19,13 +19,15 @@ if str(ROOT) not in sys.path:
 from server import paths  # noqa: E402
 from server.generation import (  # noqa: E402
     canonicalize,
+    mechanism_signature,
     models,
     progression_provenance,
     prototype,
     retry,
     run_store,
 )
-from server.knowledge import research_memory  # noqa: E402
+from server.knowledge import db as knowledge_db  # noqa: E402
+from server.knowledge import research_execution, research_memory  # noqa: E402
 
 
 RUN_TTL = timedelta(hours=2)
@@ -43,6 +45,155 @@ def start_generation_run(memory_mode: str = "memory_assisted") -> dict[str, Any]
     return payload
 
 
+def validate_generation_blueprint(
+    run_id: str,
+    run_token: str,
+    blueprint_draft: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and bind one knowledge-grounded free-form mechanism blueprint.
+
+    This runs after Research synthesis and before Create mutates the active PoB.  It stores a safe
+    blueprint receipt in managed run data; it does not select gear or change the build.
+    """
+
+    try:
+        bound_run = run_store.load_bound_run(run_id, run_token)
+    except run_store.RunStoreError as exc:
+        return models.rejected(exc.code)
+    if not isinstance(blueprint_draft, dict):
+        return models.rejected("invalid_input")
+    raw_safety = models.validate_no_raw_or_hidden_reasoning(blueprint_draft)
+    if raw_safety.get("status") != "accepted":
+        return raw_safety
+    try:
+        draft = models.GenerationMechanismBlueprintDraft.model_validate(blueprint_draft)
+    except models.ValidationError as exc:
+        return models.schema_error(exc, max_errors=20)
+    research_use = draft.research_memory_use
+    family_binding = _read_family_discovery_binding(bound_run.run_dir)
+    memory_mode = str(
+        (bound_run.manifest.get("experimentContext") or {}).get("memoryMode") or ""
+    )
+    if memory_mode == "memory_assisted":
+        if family_binding is None:
+            return models.rejected("generation_family_discovery_required")
+        binding_error = _family_binding_research_error(family_binding, research_use)
+        if binding_error is not None:
+            return models.rejected(binding_error)
+
+    execution_contract: dict[str, Any] | None = None
+    execution_summary: dict[str, Any] | None = None
+    tool_references = [
+        item.model_dump(mode="json", by_alias=True) for item in draft.tool_references
+    ]
+    if research_use is not None:
+        research_payload = research_use.model_dump(mode="json", by_alias=True)
+        premise_error, _summary, caveats = progression_provenance.validate_research_use_receipts(
+            research_memory_use=research_payload,
+            receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
+            not_before=str(bound_run.manifest.get("startedAt") or ""),
+        )
+        if premise_error:
+            return models.rejected(premise_error, caveats=caveats)
+        if research_use.retrieval_outcome == "matched":
+            execution_contract = research_execution.construct_from_research_use(
+                research_payload,
+                game_patch=draft.version_context.game_patch,
+                passive_tree_version=draft.version_context.passive_tree_version,
+            )
+            if execution_contract.get("status") != "ready":
+                return models.rejected(
+                    str(
+                        execution_contract.get("errorCode")
+                        or "research_execution_contract_unavailable"
+                    ),
+                    caveats=list(execution_contract.get("caveats") or []),
+                )
+            if draft.research_execution_plan is None:
+                return models.rejected("research_execution_plan_required")
+            execution_error, execution_caveats, execution_summary = (
+                research_execution.validate_research_execution_plan(
+                    draft.research_execution_plan.model_dump(mode="json", by_alias=True),
+                    execution_contract,
+                    allowed_evidence_refs=_execution_evidence_refs(
+                        tool_references=tool_references,
+                        research_use=research_payload,
+                        contract=execution_contract,
+                    ),
+                    external_evidence_refs=_execution_external_evidence_refs(tool_references),
+                )
+            )
+            if execution_error:
+                return models.rejected(execution_error, caveats=execution_caveats)
+
+    if execution_contract is not None and research_use is not None:
+        allowed_evidence_refs = _execution_evidence_refs(
+            tool_references=tool_references,
+            research_use=research_use.model_dump(mode="json", by_alias=True),
+            contract=execution_contract,
+        )
+    else:
+        allowed_evidence_refs = {
+            str(item.get("queryRef") or "") for item in tool_references if item.get("queryRef")
+        }
+    claimed_evidence_refs = {
+        ref
+        for claim in draft.mechanism_blueprint.claims
+        for ref in claim.source_refs
+    }
+    unknown_evidence_refs = sorted(claimed_evidence_refs - allowed_evidence_refs)
+    if unknown_evidence_refs:
+        return models.rejected(
+            "mechanism_blueprint_evidence_unresolved",
+            caveats=unknown_evidence_refs[:20],
+        )
+
+    blueprint_hash = models.mechanism_blueprint_hash(draft.mechanism_blueprint)
+    blueprint_ref = f"gbp-{blueprint_hash[:16]}"
+    validated_at = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "schemaVersion": 1,
+        "blueprintRef": blueprint_ref,
+        "blueprintHash": blueprint_hash,
+        "candidateId": draft.candidate_id,
+        "researchMemoryRef": draft.version_context.research_memory_ref,
+        "researchExecutionContractRef": (
+            execution_contract.get("contractRef") if execution_contract else None
+        ),
+        "researchExecutionStructureHash": (
+            (execution_summary or {}).get("structureHash") if execution_summary else None
+        ),
+        "mechanismBlueprint": draft.mechanism_blueprint.model_dump(
+            mode="json", by_alias=True
+        ),
+        "validatedAt": validated_at,
+        "noRawMaterial": True,
+    }
+    marker = {key: value for key, value in payload.items() if key != "mechanismBlueprint"}
+    if not _write_json_atomic(bound_run.run_dir / "mechanism-blueprint.json", payload):
+        return models.rejected("run_state_write_failed")
+    if not _write_json_atomic(
+        bound_run.run_dir / "mechanism-blueprint-validation.json", marker
+    ):
+        return models.rejected("run_state_write_failed")
+    return {
+        "status": "accepted",
+        "validationOnly": True,
+        "candidateId": draft.candidate_id,
+        "blueprintRef": blueprint_ref,
+        "blueprintHash": blueprint_hash,
+        "coverage": {
+            item.axis: item.status for item in draft.mechanism_blueprint.coverage
+        },
+        "unresolvedQuestionCount": len(
+            draft.mechanism_blueprint.unresolved_questions
+        ),
+        "researchExecutionContractRef": marker["researchExecutionContractRef"],
+        "noRawMaterial": True,
+        "noHiddenChainOfThought": True,
+    }
+
+
 def validate_generation_output(
     run_id: str,
     run_token: str,
@@ -56,6 +207,329 @@ def validate_generation_output(
         agent_output=agent_output,
         consume=False,
     )
+
+
+def validate_generation_draft(
+    run_id: str,
+    run_token: str,
+    agent_output_draft: dict[str, Any],
+    *,
+    active_engine: Any | None = None,
+    offense_skill_group_index: int | None = None,
+    expected_skill_name: str | None = None,
+) -> dict[str, Any]:
+    """Validate prompt, candidate and Research use before the first formal Judge attempt."""
+
+    canonical = _canonical_run_id(run_id)
+    if canonical is None:
+        return models.rejected("invalid_run_manifest")
+    run_dir = _runs_dir() / canonical
+    output_path = run_dir / "agent-output.json"
+    manifest = _read_run_manifest(run_dir / "run-manifest.json", canonical, output_path)
+    if manifest is None:
+        return models.rejected("invalid_run_manifest")
+    if manifest["runContext"]["runToken"] != run_token:
+        return models.rejected("run_binding_mismatch")
+    if _run_expired(manifest["startedAt"]):
+        return models.rejected("run_expired")
+    if not isinstance(agent_output_draft, dict):
+        return models.rejected("invalid_input")
+    raw_safety = models.validate_no_raw_or_hidden_reasoning(agent_output_draft)
+    if raw_safety.get("status") != "accepted":
+        return raw_safety
+    binding_error = _run_binding_error(agent_output_draft, manifest)
+    if binding_error is not None:
+        return binding_error
+    try:
+        draft = models.GenerationDraft.model_validate(
+            {
+                "agentRefinedBuildPrompt": agent_output_draft.get("agentRefinedBuildPrompt"),
+                "prototypeBuildCandidate": agent_output_draft.get("prototypeBuildCandidate"),
+            }
+        )
+    except models.ValidationError as exc:
+        return models.schema_error(exc, max_errors=20)
+
+    research_use = draft.prototype_build_candidate.research_memory_use
+    family_binding = _read_family_discovery_binding(run_dir)
+    memory_mode = str((manifest.get("experimentContext") or {}).get("memoryMode") or "")
+    if memory_mode == "memory_assisted":
+        if family_binding is None:
+            return models.rejected("generation_family_discovery_required")
+        binding_error = _family_binding_research_error(family_binding, research_use)
+        if binding_error is not None:
+            return models.rejected(binding_error)
+    if research_use is not None:
+        premise_error, _summary, caveats = progression_provenance.validate_research_use_receipts(
+            research_memory_use=research_use.model_dump(mode="json", by_alias=True),
+            receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
+            not_before=manifest["startedAt"],
+        )
+        if premise_error:
+            return models.rejected(premise_error, caveats=caveats)
+        if research_use.retrieval_outcome == "matched":
+            execution_contract = research_execution.construct_from_research_use(
+                research_use.model_dump(mode="json", by_alias=True),
+                game_patch=draft.prototype_build_candidate.version_context.game_patch,
+                passive_tree_version=(
+                    draft.prototype_build_candidate.version_context.passive_tree_version
+                ),
+            )
+            if execution_contract.get("status") != "ready":
+                return models.rejected(
+                    str(
+                        execution_contract.get("errorCode")
+                        or "research_execution_contract_unavailable"
+                    ),
+                    caveats=list(execution_contract.get("caveats") or []),
+                )
+            execution_plan = draft.prototype_build_candidate.research_execution_plan
+            if execution_plan is None:
+                return models.rejected("research_execution_plan_required")
+            execution_error, execution_caveats, execution_summary = (
+                research_execution.validate_research_execution_plan(
+                    execution_plan.model_dump(mode="json", by_alias=True),
+                    execution_contract,
+                    allowed_evidence_refs=_execution_evidence_refs(
+                        tool_references=[
+                            item.model_dump(mode="json", by_alias=True)
+                            for item in draft.prototype_build_candidate.tool_references
+                        ],
+                        research_use=research_use.model_dump(mode="json", by_alias=True),
+                        contract=execution_contract,
+                    ),
+                    external_evidence_refs=_execution_external_evidence_refs(
+                        [
+                            item.model_dump(mode="json", by_alias=True)
+                            for item in draft.prototype_build_candidate.tool_references
+                        ]
+                    ),
+                )
+            )
+            if execution_error:
+                return models.rejected(execution_error, caveats=execution_caveats)
+        else:
+            execution_contract = None
+            execution_summary = None
+    else:
+        execution_contract = None
+        execution_summary = None
+    blueprint_error, blueprint_marker = _validate_candidate_blueprint_use(
+        draft.prototype_build_candidate,
+        run_dir=run_dir,
+        manifest=manifest,
+        require_draft_binding=False,
+    )
+    if blueprint_error:
+        return models.rejected(blueprint_error)
+    signature_required = bool(
+        (manifest.get("experimentContext") or {}).get("mechanismBlueprintRequired")
+    )
+    if (offense_skill_group_index is None) != (expected_skill_name is None):
+        return models.rejected("generation_mechanism_signature_target_incomplete")
+    if offense_skill_group_index is None:
+        if signature_required:
+            return models.rejected("generation_mechanism_signature_target_required")
+        observed_signature: dict[str, Any] = {
+            "signatureHash": None,
+            "signature": None,
+            "calculationContext": None,
+            "stateHash": None,
+        }
+    else:
+        if active_engine is None:
+            return models.rejected("generation_mechanism_signature_engine_required")
+        observed_signature = mechanism_signature.observe(
+            active_engine,
+            {
+                "offenseSkillGroupIndex": int(offense_skill_group_index),
+                "activeSkillName": str(expected_skill_name or ""),
+            },
+        )
+        if not observed_signature.get("ok"):
+            return models.rejected(
+                str(
+                    observed_signature.get("errorCode")
+                    or "generation_mechanism_signature_inspection_failed"
+                )
+            )
+        adoption_error = _adopted_primary_skill_package_error(
+            execution_contract=execution_contract,
+            execution_plan=draft.prototype_build_candidate.research_execution_plan,
+            observed_signature=dict(observed_signature.get("signature") or {}),
+        )
+        if adoption_error:
+            return models.rejected(adoption_error)
+    marker = {
+        "schemaVersion": 2,
+        "candidateId": draft.prototype_build_candidate.candidate_id,
+        "researchMemoryRef": draft.prototype_build_candidate.version_context.research_memory_ref,
+        "validatedAt": datetime.now(timezone.utc).isoformat(),
+        "researchPremiseAuditReady": research_use is not None,
+        "researchExecutionContractRef": (
+            execution_contract.get("contractRef") if execution_contract else None
+        ),
+        "researchExecutionPlanHash": (
+            (execution_summary or {}).get("planHash") if execution_summary else None
+        ),
+        "researchExecutionStructureHash": (
+            (execution_summary or {}).get("structureHash") if execution_summary else None
+        ),
+        "mechanismBlueprintRef": (
+            blueprint_marker.get("blueprintRef") if blueprint_marker else None
+        ),
+        "mechanismBlueprintHash": (
+            blueprint_marker.get("blueprintHash") if blueprint_marker else None
+        ),
+        "mechanismSignatureHash": observed_signature["signatureHash"],
+        "mechanismSignature": observed_signature["signature"],
+        "calculationContext": observed_signature["calculationContext"],
+        "buildStateHash": observed_signature["stateHash"],
+        "familyDiscoveryRef": (
+            family_binding.get("familyDiscoveryRef") if family_binding else None
+        ),
+        "selectedFamilyKey": family_binding.get("selectedFamilyKey") if family_binding else None,
+        "noRawMaterial": True,
+    }
+    existing_marker = _read_json(run_dir / "draft-validation.json")
+    if isinstance(existing_marker, dict) and all(
+        existing_marker.get(key) == marker.get(key)
+        for key in (
+            "candidateId",
+            "mechanismBlueprintHash",
+            "mechanismSignatureHash",
+            "buildStateHash",
+        )
+    ):
+        return models.rejected("generation_draft_unchanged")
+    if not _write_json_atomic(run_dir / "draft-validation.json", marker):
+        return models.rejected("run_state_write_failed")
+    return {
+        "status": "accepted",
+        "validationOnly": True,
+        "candidateId": draft.prototype_build_candidate.candidate_id,
+        "promptId": draft.agent_refined_build_prompt.prompt_id,
+        "researchPremiseAuditReady": research_use is not None,
+        "researchExecutionContractRef": marker["researchExecutionContractRef"],
+        "researchExecutionPlanHash": marker["researchExecutionPlanHash"],
+        "researchExecutionStructureHash": marker["researchExecutionStructureHash"],
+        "mechanismBlueprintRef": marker["mechanismBlueprintRef"],
+        "mechanismBlueprintHash": marker["mechanismBlueprintHash"],
+        "mechanismSignatureHash": marker["mechanismSignatureHash"],
+        "calculationContext": marker["calculationContext"],
+        "buildStateHash": marker["buildStateHash"],
+        "noRawMaterial": True,
+        "noHiddenChainOfThought": True,
+    }
+
+
+def record_generation_family_discovery(
+    run_id: str,
+    run_token: str,
+    family_discovery_ref: str,
+    selected_family_key: str = "",
+) -> dict[str, Any]:
+    """Bind one run-fresh Family discovery result before candidate validation/Judge."""
+
+    try:
+        bound_run = run_store.load_bound_run(run_id, run_token)
+    except run_store.RunStoreError as exc:
+        return models.rejected(exc.code)
+    if not family_discovery_ref.startswith("dq-"):
+        return models.rejected("invalid_family_discovery_ref")
+    receipt = research_memory.ResearchMemoryService().read_query_receipt(family_discovery_ref)
+    if receipt is None:
+        return models.rejected("family_discovery_receipt_missing")
+    if not progression_provenance.receipt_was_seen_at_or_after(
+        receipt,
+        str(bound_run.manifest.get("startedAt") or ""),
+    ):
+        return models.rejected("family_discovery_receipt_not_current_run")
+    request = receipt.get("request") if isinstance(receipt.get("request"), dict) else {}
+    result = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
+    if request.get("detailLevel") != "family":
+        return models.rejected("family_discovery_receipt_wrong_detail")
+    if receipt.get("retrievalComplete") is not True:
+        return models.rejected("family_discovery_receipt_incomplete")
+    families = [row for row in result.get("buildFamilies") or [] if isinstance(row, dict)]
+    selected = str(selected_family_key or "").strip()
+    selected_row = next(
+        (row for row in families if str(row.get("buildFamilyKey") or "") == selected),
+        None,
+    )
+    outcome = str((result.get("familyDiscovery") or {}).get("outcome") or "")
+    if selected:
+        if selected_row is None:
+            return models.rejected("selected_family_not_in_discovery")
+        eligibility = dict(selected_row.get("createEligibility") or {})
+        eligibility_status = str(eligibility.get("status") or "needs_revalidation")
+        if eligibility_status not in {"authorized", "needs_revalidation"}:
+            return models.rejected("invalid_family_create_eligibility")
+        binding_status = "selected"
+    else:
+        if families or outcome != "no_family":
+            return models.rejected("selected_family_key_required")
+        eligibility = {}
+        eligibility_status = "no_family"
+        binding_status = "no_family"
+    marker = {
+        "schemaVersion": 1,
+        "familyDiscoveryRef": family_discovery_ref,
+        "selectedFamilyKey": selected or None,
+        "status": binding_status,
+        "createEligibilityStatus": eligibility_status,
+        "createEligibilityBlockers": list(eligibility.get("blockers") or []),
+        "classKey": request.get("classKey"),
+        "ascendancyKey": request.get("ascendancyKey"),
+        "relatedSkillKey": request.get("relatedSkillKey"),
+        "recordedAt": datetime.now(timezone.utc).isoformat(),
+        "noRawMaterial": True,
+    }
+    if not _write_json_atomic(bound_run.run_dir / "family-discovery.json", marker):
+        return models.rejected("run_state_write_failed")
+    return {**marker, "bindingStatus": marker["status"], "status": "recorded"}
+
+
+def _read_family_discovery_binding(run_dir: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads((run_dir / "family-discovery.json").read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != 1
+        or value.get("status") not in {"selected", "no_family"}
+        or not isinstance(value.get("familyDiscoveryRef"), str)
+        or value.get("noRawMaterial") is not True
+    ):
+        return None
+    return value
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _family_binding_research_error(
+    binding: dict[str, Any],
+    research_use: models.ResearchMemoryUse | None,
+) -> str | None:
+    eligibility = str(binding.get("createEligibilityStatus") or "")
+    selected = str(binding.get("selectedFamilyKey") or "")
+    if research_use is None:
+        return "generation_research_use_required"
+    if eligibility == "authorized":
+        if research_use.retrieval_outcome != "matched":
+            return "authorized_family_cannot_be_no_matching_memory"
+        if selected not in research_use.build_family_keys:
+            return "selected_family_not_in_research_use"
+    elif research_use.retrieval_outcome != "no_matching_memory":
+        return "non_authorized_family_cannot_authorize_create"
+    return None
 
 
 def complete_generation_review(
@@ -143,20 +617,12 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
             "globalOptimizerAllowed": False,
             "passiveTreeOptimizationMode": "manual_targeted",
             "mutationBatchPreferred": True,
+            "mechanismBlueprintRequired": args.memory_mode != "standard",
         },
     }
     manifest_path = run_dir / "run-manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    output_template = {
-        "schemaVersion": 2,
-        "runContext": run_context,
-        "packetId": manifest["packetId"],
-        "agentRefinedBuildPrompt": {
-            "promptId": manifest["promptId"],
-            "requestRef": manifest["requestRef"],
-        },
-        "generationAttempts": [],
-    }
+    output_template = _generation_draft_template(manifest)
     output_path = Path(manifest["agentOutputFile"])
     output_path.write_text(
         json.dumps(output_template, ensure_ascii=False, indent=2),
@@ -170,8 +636,83 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
         "packetId": manifest["packetId"],
         "agentOutputFile": manifest["agentOutputFile"],
         "agentOutputTemplateInitialized": True,
+        "agentOutputContractVersion": "generation-agent-output-v3",
+        "agentOutputDraftTemplate": output_template,
         "reviewResultFile": str(run_dir / "review-result.json"),
         "experimentContext": manifest["experimentContext"],
+    }
+
+
+def _generation_draft_template(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return a complete alias-generated camelCase skeleton without inventing content."""
+
+    version_context = models.VersionContext.model_construct(
+        league="",
+        ruleset="",
+        game_patch="",
+        passive_tree_version="",
+        pob_version_or_commit="",
+        graph_snapshot_id="",
+        research_memory_ref="",
+    )
+    prompt = models.AgentRefinedBuildPrompt.model_construct(
+        prompt_id=manifest["promptId"],
+        request_ref=manifest["requestRef"],
+        user_request_summary="",
+        refined_prompt_summary="",
+        current_output_stages=[],
+        target_lifecycle_stages=[],
+        cross_stage_locked_dimensions=["class"],
+        field_sources={
+            "user_request_summary": "unknown",
+            "refined_prompt_summary": "unknown",
+            "current_output_stages": "unknown",
+            "target_lifecycle_stages": "unknown",
+            "cross_stage_locked_dimensions": "unknown",
+        },
+        default_assumptions=[],
+        clarification_questions=[],
+        unresolved_items=[],
+        version_context=version_context,
+        no_raw_material=True,
+    )
+    candidate = models.PrototypeBuildCandidate.model_construct(
+        candidate_id="",
+        prompt_ref=manifest["promptId"],
+        current_output_stages=[],
+        target_lifecycle_stages=[],
+        cross_stage_locked_dimensions=["class"],
+        class_shell="",
+        primary_skill_intent="",
+        secondary_skill_intents=[],
+        mechanic_axes=[],
+        defense_layers=[],
+        spirit_assumptions=[],
+        gear_roles=[],
+        passive_anchor_intents=[],
+        transition_gates=[],
+        unresolved_caveats=[],
+        completeness_advisory_decisions=[],
+        tool_references=[],
+        memory_references=[],
+        research_memory_use=None,
+        research_execution_plan=None,
+        mechanism_blueprint_ref=None,
+        mechanism_blueprint=None,
+        rationale_summary="",
+        version_context=version_context.model_copy(deep=True),
+        no_raw_material=True,
+    )
+    draft = models.GenerationDraft.model_construct(
+        agent_refined_build_prompt=prompt,
+        prototype_build_candidate=candidate,
+    ).model_dump(mode="json", by_alias=True)
+    return {
+        "schemaVersion": 2,
+        "runContext": manifest["runContext"],
+        "packetId": manifest["packetId"],
+        **draft,
+        "generationAttempts": [],
     }
 
 
@@ -238,6 +779,7 @@ def _run_review_packet(
         canonical_payload,
         receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
         not_before=manifest["startedAt"],
+        run_dir=run_dir,
     )
     if premise_error:
         detail_hints = {
@@ -261,6 +803,14 @@ def _run_review_packet(
         if premise_error in detail_hints:
             caveats.append(detail_hints[premise_error])
         return models.rejected(premise_error, caveats=caveats)
+    blueprint_error, _blueprint_marker = _validate_candidate_blueprint_use(
+        canonical_payload.get("prototypeBuildCandidate") or {},
+        run_dir=run_dir,
+        manifest=manifest,
+        require_draft_binding=True,
+    )
+    if blueprint_error:
+        return models.rejected(blueprint_error)
     result = prototype.validate_and_build_human_review_packet(
         canonical_payload,
         trusted_evaluation=True,
@@ -276,6 +826,13 @@ def _run_review_packet(
             return retry_result
         result["experimentContext"] = retry_result["experimentContext"]
         result["retryComparisonReport"] = retry_result["retryComparisonReport"]
+        mechanism_error = _selected_attempt_mechanism_binding_error(
+            bound_run,
+            trusted_receipts,
+            retry_result.get("retryComparisonReport"),
+        )
+        if mechanism_error is not None:
+            return models.rejected(mechanism_error)
         if not consume:
             return _compact_review_result(result, run_dir=run_dir, consumed=False)
         try:
@@ -300,6 +857,30 @@ def _run_review_packet(
     if compact and result.get("status") == "accepted":
         return _compact_review_result(result, run_dir=run_dir, consumed=True)
     return result
+
+
+def _selected_attempt_mechanism_binding_error(
+    bound_run: run_store.BoundRun,
+    trusted_receipts: list[dict[str, Any]],
+    retry_report: dict[str, Any] | None,
+) -> str | None:
+    required = bool(
+        ((bound_run.manifest or {}).get("experimentContext") or {}).get(
+            "mechanismBlueprintRequired"
+        )
+    )
+    if not required:
+        return None
+    current = run_store.current_mechanism_binding(bound_run)
+    if current is None:
+        return "generation_draft_validation_required"
+    selected = (retry_report or {}).get("selectedAttemptIndex")
+    selected_index = selected if isinstance(selected, int) and not isinstance(selected, bool) else len(trusted_receipts) - 1
+    if selected_index < 0 or selected_index >= len(trusted_receipts):
+        return "trusted_evaluation_mismatch"
+    if trusted_receipts[selected_index].get("mechanismBinding") != current:
+        return "generation_attempt_mechanism_binding_mismatch"
+    return None
 
 
 def _submit_generation_output(
@@ -342,6 +923,7 @@ def _validate_candidate_research_use(
     *,
     receipt_reader: Any,
     not_before: str | None = None,
+    run_dir: Path | None = None,
 ) -> tuple[str | None, list[str]]:
     """Apply the shared receipt/premise audit to ordinary single-stage Create.
 
@@ -363,7 +945,261 @@ def _validate_candidate_research_use(
             not_before=not_before,
         )
     )
-    return premise_error, premise_caveats
+    if premise_error:
+        return premise_error, premise_caveats
+    retrieval_outcome = str(
+        research_use.get("retrievalOutcome")
+        or research_use.get("retrieval_outcome")
+        or ""
+    )
+    if retrieval_outcome != "matched":
+        return None, []
+    version = candidate.get("versionContext") or candidate.get("version_context") or {}
+    contract = research_execution.construct_from_research_use(
+        research_use,
+        game_patch=str(version.get("gamePatch") or version.get("game_patch") or ""),
+        passive_tree_version=str(
+            version.get("passiveTreeVersion")
+            or version.get("passive_tree_version")
+            or ""
+        ),
+    )
+    if contract.get("status") != "ready":
+        return (
+            str(contract.get("errorCode") or "research_execution_contract_unavailable"),
+            list(contract.get("caveats") or []),
+        )
+    execution_plan = candidate.get("researchExecutionPlan")
+    if not isinstance(execution_plan, dict):
+        execution_plan = candidate.get("research_execution_plan")
+    if not isinstance(execution_plan, dict):
+        return "research_execution_plan_required", []
+    error, caveats, summary = research_execution.validate_research_execution_plan(
+        execution_plan,
+        contract,
+        allowed_evidence_refs=_execution_evidence_refs(
+            tool_references=list(
+                candidate.get("toolReferences")
+                or candidate.get("tool_references")
+                or []
+            ),
+            research_use=research_use,
+            contract=contract,
+        ),
+        external_evidence_refs=_execution_external_evidence_refs(
+            list(
+                candidate.get("toolReferences")
+                or candidate.get("tool_references")
+                or []
+            )
+        ),
+    )
+    if error:
+        return error, caveats
+    if run_dir is not None:
+        try:
+            marker = json.loads((run_dir / "draft-validation.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return "generation_draft_validation_required", []
+        structure_hash_matches = (
+            marker.get("researchExecutionStructureHash")
+            == (summary or {}).get("structureHash")
+            if "researchExecutionStructureHash" in marker
+            else marker.get("researchExecutionPlanHash") == (summary or {}).get("planHash")
+        )
+        if (
+            marker.get("researchExecutionContractRef") != contract.get("contractRef")
+            or not structure_hash_matches
+        ):
+            return "research_execution_plan_changed_after_draft", []
+    return None, []
+
+
+def _validate_candidate_blueprint_use(
+    candidate: models.PrototypeBuildCandidate | dict[str, Any],
+    *,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    require_draft_binding: bool,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Bind the candidate's free-form blueprint to its pre-build validation receipt."""
+
+    required = bool(
+        (manifest.get("experimentContext") or {}).get("mechanismBlueprintRequired")
+    )
+    if isinstance(candidate, models.PrototypeBuildCandidate):
+        candidate_id = candidate.candidate_id
+        blueprint_ref = candidate.mechanism_blueprint_ref
+        blueprint = candidate.mechanism_blueprint
+        research_memory_ref = candidate.version_context.research_memory_ref
+    else:
+        candidate_id = str(candidate.get("candidateId") or candidate.get("candidate_id") or "")
+        blueprint_ref = candidate.get("mechanismBlueprintRef")
+        if blueprint_ref is None:
+            blueprint_ref = candidate.get("mechanism_blueprint_ref")
+        blueprint = candidate.get("mechanismBlueprint")
+        if blueprint is None:
+            blueprint = candidate.get("mechanism_blueprint")
+        version = candidate.get("versionContext") or candidate.get("version_context") or {}
+        research_memory_ref = str(
+            version.get("researchMemoryRef") or version.get("research_memory_ref") or ""
+        )
+    if blueprint_ref is None and blueprint is None:
+        return (
+            ("generation_mechanism_blueprint_required" if required else None),
+            None,
+        )
+    if not isinstance(blueprint_ref, str) or blueprint is None:
+        return "generation_mechanism_blueprint_incomplete", None
+    try:
+        blueprint_model = (
+            blueprint
+            if isinstance(blueprint, models.MechanismBlueprint)
+            else models.MechanismBlueprint.model_validate(blueprint)
+        )
+    except models.ValidationError:
+        return "generation_mechanism_blueprint_invalid", None
+    try:
+        marker = json.loads(
+            (run_dir / "mechanism-blueprint-validation.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "generation_blueprint_validation_required", None
+    if not isinstance(marker, dict) or marker.get("schemaVersion") != 1:
+        return "generation_blueprint_validation_required", None
+    blueprint_hash = models.mechanism_blueprint_hash(blueprint_model)
+    if (
+        marker.get("blueprintRef") != blueprint_ref
+        or marker.get("blueprintHash") != blueprint_hash
+        or marker.get("candidateId") != candidate_id
+        or marker.get("researchMemoryRef") != research_memory_ref
+    ):
+        return "generation_mechanism_blueprint_binding_mismatch", None
+    if require_draft_binding:
+        try:
+            draft_marker = json.loads(
+                (run_dir / "draft-validation.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return "generation_draft_validation_required", None
+        if (
+            draft_marker.get("mechanismBlueprintRef") != blueprint_ref
+            or draft_marker.get("mechanismBlueprintHash") != blueprint_hash
+        ):
+            return "generation_mechanism_blueprint_changed_after_draft", None
+    return None, marker
+
+
+def _execution_evidence_refs(
+    *,
+    tool_references: list[dict[str, Any]],
+    research_use: dict[str, Any],
+    contract: dict[str, Any],
+) -> set[str]:
+    refs = {
+        str(item.get("queryRef") or item.get("query_ref") or "")
+        for item in tool_references
+        if isinstance(item, dict)
+    }
+    refs.update(
+        str(value)
+        for key in (
+            "dedupeQueryRefs",
+            "dedupe_query_refs",
+            "comparisonDedupeQueryRefs",
+            "comparison_dedupe_query_refs",
+        )
+        for value in research_use.get(key) or []
+    )
+    refs.add(str(contract.get("contractRef") or ""))
+    for package in contract.get("packages") or []:
+        if not isinstance(package, dict):
+            continue
+        refs.add(str(package.get("packageId") or ""))
+        refs.add(str(package.get("recordId") or ""))
+    return {value for value in refs if value}
+
+
+def _adopted_primary_skill_package_error(
+    *,
+    execution_contract: dict[str, Any] | None,
+    execution_plan: models.ResearchExecutionPlan | None,
+    observed_signature: dict[str, Any],
+) -> str | None:
+    """Reject full adoption claims when the observed primary socket package is only partial."""
+
+    if not execution_contract or execution_plan is None:
+        return None
+    active_name = str(observed_signature.get("activeSkillName") or "")
+    active_gem = knowledge_db.get_gem(active_name)
+    if not isinstance(active_gem, dict):
+        return "research_execution_adopted_skill_unresolved"
+    active_keys = {
+        "skill:" + str(value)
+        for value in active_gem.get("grants") or []
+        if value
+    }
+    decisions = {item.package_id: item for item in execution_plan.package_decisions}
+    for package in execution_contract.get("packages") or []:
+        if not isinstance(package, dict) or package.get("recordKind") != "skill_package":
+            continue
+        decision = decisions.get(str(package.get("packageId") or ""))
+        if decision is None or decision.decision != "adopted":
+            continue
+        primary_keys = {
+            str(item.get("componentKey") or "")
+            for item in package.get("componentResponsibilities") or []
+            if isinstance(item, dict)
+            and item.get("role") in {"primary_damage", "clear_skill", "boss_skill"}
+        }
+        if not active_keys.intersection(primary_keys):
+            continue
+        support_packages = (
+            (package.get("typedResponsibilities") or {}).get("supportPackages") or []
+        )
+        matching = [
+            item
+            for item in support_packages
+            if isinstance(item, dict) and str(item.get("skillKey") or "") in active_keys
+        ]
+        if not matching:
+            continue
+        actual_support_keys: set[str] = set()
+        for name in observed_signature.get("supportNames") or []:
+            gem = knowledge_db.get_gem(str(name))
+            gem_id = str((gem or {}).get("id") or "") if isinstance(gem, dict) else ""
+            if not gem_id:
+                return "research_execution_adopted_support_unresolved"
+            actual_support_keys.add("support:" + gem_id.rsplit("/", 1)[-1])
+        expected_sets = [
+            {str(value) for value in item.get("supportKeys") or [] if value}
+            for item in matching
+        ]
+        if actual_support_keys not in expected_sets:
+            return "research_execution_adoption_mismatch"
+    return None
+
+
+def _execution_external_evidence_refs(
+    tool_references: list[dict[str, Any]],
+) -> set[str]:
+    excluded_suffixes = {
+        "query_research_memory",
+        "construct_research_execution_contract",
+        "query_public_learning_memory",
+        "get_freshness_report",
+        "get_prices",
+    }
+    return {
+        str(item.get("queryRef") or item.get("query_ref") or "")
+        for item in tool_references
+        if isinstance(item, dict)
+        and str(item.get("toolName") or item.get("tool_name") or "")
+        .casefold()
+        .split("__")[-1]
+        not in excluded_suffixes
+        and str(item.get("queryRef") or item.get("query_ref") or "")
+    }
 
 
 def _compact_review_result(

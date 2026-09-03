@@ -144,7 +144,11 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
         base_matches = [
             c
             for c in matches
-            if c.get("tags") and db.mod_tags_match_base(base_name, c.get("tags") or [])
+            if db.mod_tags_match_base(
+                base_name,
+                c.get("tags") or [],
+                mod_domain=str(c.get("domain") or "") or None,
+            )
         ]
         # Unknown/legacy bases retain the conservative generic classifier. For a recognized base,
         # use only its real spawn-tag candidates so overlapping weapon-family tiers cannot leak in.
@@ -167,11 +171,12 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
             matched_ranges = m["ranges"]
             matched = _roll_in(matched_ranges, nums)
             display_ranges = _display_ranges(m["text"])
-            if (
-                not matched
-                and len(display_ranges) == len(matched_ranges)
-                and _roll_in(display_ranges, nums)
-            ):
+            # Some corpus mods contain hidden/internal values that do not appear in the rendered
+            # item text (for example an instant-recovery flag plus one visible recovery penalty).
+            # Once the normalized display template is an exact match, its visible ranges are the
+            # authoritative comparison for clipboard/PoB text even when the internal range count
+            # differs.
+            if not matched and display_ranges and _roll_in(display_ranges, nums):
                 matched_ranges = display_ranges
                 matched = True
             if matched:
@@ -219,15 +224,12 @@ def _header(lines: list[str]) -> dict[str, Any]:
     if rarity_idx is not None:
         after = []
         for ln in lines[rarity_idx + 1 :]:
-            if set(ln) == {"-"} or not ln:
+            if set(ln) == {"-"} or not ln or ":" in ln:
                 break
             after.append(ln)
         if after:
             info["name"] = after[0]
-            if len(after) > 1:
-                info["base"] = after[1]
-            else:
-                info["base"] = after[0]
+            info["base"] = after[1] if len(after) > 1 else after[0]
     return info
 
 
@@ -444,8 +446,13 @@ def audit_item_legality(
     if not parsed.get("ok"):
         return {"ok": False, "issues": ["item_parse_failed"]}
     rarity = str(parsed.get("rarity") or "").lower()
-    if rarity not in {"rare", "magic"}:
-        return {"ok": True, "issues": []}
+
+    craft_profile = db.craft_profile(str(parsed.get("base") or ""))
+    domain_rarity_issue = bool(
+        craft_profile
+        and str(craft_profile.get("domain") or "") == "flask"
+        and rarity != str(craft_profile.get("rarity") or "").casefold()
+    )
 
     structure = semantic_item_structure(text)
     provenance = trusted_provenance if isinstance(trusted_provenance, dict) else None
@@ -523,7 +530,9 @@ def audit_item_legality(
     elif provenance is not None and structure.get("corrupted"):
         source_issues.append("craft_receipt_corruption_missing")
 
-    has_structural_special = bool(rune_hashes or structure.get("corrupted"))
+    has_structural_special = bool(
+        rune_hashes or actual_rune_names or structure.get("corrupted")
+    )
     if provenance is None and require_special_provenance and has_structural_special:
         source_issues.append("special_source_provenance_required")
 
@@ -538,6 +547,36 @@ def audit_item_legality(
     all_source_hashes = essence_hashes | special_non_affix_hashes
 
     issues: list[str] = list(source_issues)
+    if domain_rarity_issue:
+        issues.append("rarity_not_allowed_for_base_domain")
+    if rarity not in {"rare", "magic"}:
+        issues = list(dict.fromkeys(issues))
+        result = {
+            "ok": not issues,
+            "issues": issues,
+            "prefixes": 0,
+            "suffixes": 0,
+            "duplicateGroups": [],
+            "overItemLevelAffixes": [],
+            "outOfRangeGroups": [],
+            "baseIllegalAffixCount": 0,
+            "unrecognizedAffixCount": 0,
+        }
+        if provenance is not None:
+            result["craftReceiptRef"] = provenance.get("receiptRef")
+            result["provenanceStatus"] = "verified" if not source_issues else "rejected"
+            result["specialSources"] = {
+                "perfectEssenceCount": len(essence_entries),
+                "runeCount": len(receipt_runes),
+                "corruptionVerified": isinstance(corruption, dict),
+            }
+        elif has_structural_special:
+            result["provenanceStatus"] = "unverified"
+            result["unverifiedSpecialSources"] = [
+                *([] if not (rune_hashes or actual_rune_names) else ["rune"]),
+                *([] if not structure.get("corrupted") else ["corruption"]),
+            ]
+        return result
     limits = _AFFIX_LIMITS[rarity]
     parsed_affixes = [
         affix
@@ -627,7 +666,7 @@ def audit_item_legality(
     elif has_structural_special:
         result["provenanceStatus"] = "unverified"
         result["unverifiedSpecialSources"] = [
-            *([] if not rune_hashes else ["rune"]),
+            *([] if not (rune_hashes or actual_rune_names) else ["rune"]),
             *([] if not structure.get("corrupted") else ["corruption"]),
         ]
     return result

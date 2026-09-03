@@ -12,6 +12,7 @@ from . import mature_learning
 from . import research_identity
 from . import research_memory
 from . import research_models
+from . import research_runtime
 
 
 LEGACY_CLEANUP_MARKER = "phase4_legacy_memory_cleanup_v1"
@@ -183,18 +184,19 @@ def remove_exclusive_research_sources(
                     owned_rows[table].append(str(row[id_column]))
         shared_family_evidence = [
             {
+                "knowledgeScope": str(row["knowledge_scope"]),
                 "buildFamilyKey": str(row["build_family_key"]),
                 "retainedEvidenceCount": int(row["retained_count"]),
             }
             for row in con.execute(
                 f"""
-                SELECT build_family_key,
+                SELECT knowledge_scope, build_family_key,
                        sum(CASE WHEN source_case_ref NOT IN ({",".join("?" for _ in wanted)})
                                 THEN 1 ELSE 0 END) AS retained_count,
                        sum(CASE WHEN source_case_ref IN ({",".join("?" for _ in wanted)})
                                 THEN 1 ELSE 0 END) AS matched_count
                 FROM research_build_family_evidence
-                GROUP BY build_family_key
+                GROUP BY knowledge_scope, build_family_key
                 HAVING matched_count > 0 AND retained_count > 0
                 """,
                 (*wanted, *wanted),
@@ -247,12 +249,16 @@ def remove_exclusive_research_sources(
         )
         try:
             con.execute("BEGIN IMMEDIATE")
+            visible_change_count = 0
             fragment_ids = owned_rows["research_fragments"]
             if fragment_ids:
-                con.execute(
+                visible_change_count += max(
+                    0,
+                    con.execute(
                     "DELETE FROM research_fragment_evidence "
                     f"WHERE fragment_id IN ({','.join('?' for _ in fragment_ids)})",
                     fragment_ids,
+                    ).rowcount,
                 )
             for table, id_column in (
                 ("research_build_patterns", "pattern_id"),
@@ -263,24 +269,38 @@ def remove_exclusive_research_sources(
             ):
                 ids = owned_rows[table]
                 if ids:
-                    con.execute(
-                        f"DELETE FROM {table} WHERE {id_column} IN ({','.join('?' for _ in ids)})",
-                        ids,
+                    visible_change_count += max(
+                        0,
+                        con.execute(
+                            f"DELETE FROM {table} WHERE {id_column} IN ({','.join('?' for _ in ids)})",
+                            ids,
+                        ).rowcount,
                     )
-            con.execute(
-                f"DELETE FROM deep_research_record_evidence WHERE source_case_ref IN ({','.join('?' for _ in wanted)})",
-                wanted,
+            visible_change_count += max(
+                0,
+                con.execute(
+                    f"DELETE FROM deep_research_record_evidence WHERE source_case_ref IN ({','.join('?' for _ in wanted)})",
+                    wanted,
+                ).rowcount,
             )
-            con.execute(
-                f"DELETE FROM research_build_family_evidence WHERE source_case_ref IN ({','.join('?' for _ in wanted)})",
-                wanted,
+            visible_change_count += max(
+                0,
+                con.execute(
+                    f"DELETE FROM research_build_family_evidence WHERE source_case_ref IN ({','.join('?' for _ in wanted)})",
+                    wanted,
+                ).rowcount,
             )
-            con.execute(
-                "DELETE FROM research_build_families WHERE NOT EXISTS "
-                "(SELECT 1 FROM research_build_family_evidence e "
-                "WHERE e.build_family_key = research_build_families.build_family_key) "
-                "AND NOT EXISTS (SELECT 1 FROM deep_research_records r "
-                "WHERE r.build_family_key = research_build_families.build_family_key)"
+            visible_change_count += max(
+                0,
+                con.execute(
+                    "DELETE FROM research_build_families WHERE NOT EXISTS "
+                    "(SELECT 1 FROM research_build_family_evidence e "
+                    "WHERE e.knowledge_scope = research_build_families.knowledge_scope "
+                    "AND e.build_family_key = research_build_families.build_family_key) "
+                    "AND NOT EXISTS (SELECT 1 FROM deep_research_records r "
+                    "WHERE r.knowledge_scope = research_build_families.knowledge_scope "
+                    "AND r.build_family_key = research_build_families.build_family_key)"
+                ).rowcount,
             )
             con.execute(
                 "INSERT INTO meta(key, value) VALUES ('phase4_build_family_backfill_version', '0') "
@@ -290,6 +310,8 @@ def remove_exclusive_research_sources(
             foreign_keys = list(con.execute("PRAGMA foreign_key_check").fetchall())
             if integrity != "ok" or foreign_keys:
                 raise RuntimeError("research source removal failed database integrity checks")
+            if visible_change_count:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         except Exception:
             con.rollback()
@@ -394,6 +416,8 @@ def cleanup_legacy_research_memory(
                 "INSERT INTO meta(key, value) VALUES (?, ?)",
                 (LEGACY_CLEANUP_MARKER, _json(marker_details)),
             )
+            if fragment_supersessions or familyless_ids:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         except Exception:
             con.rollback()
@@ -529,6 +553,8 @@ def calibrate_research_contract_v1(
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """
             )
+            if skill_rows or mutated_rows or pattern_exists:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         except Exception:
             con.rollback()
@@ -793,6 +819,8 @@ def reconcile_deep_record_ids(
                 "INSERT INTO meta(key, value) VALUES (?, ?)",
                 (RECONCILE_RECORD_IDS_MARKER, _json(marker_details)),
             )
+            if relocations or husk_replacements or superseded_duplicates:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         except Exception:
             con.rollback()
@@ -958,7 +986,7 @@ def _apply_support_calibration(
     if new_knowledge_key is None:
         raise ValueError(f"cannot infer calibrated knowledge key for {source_ref}")
     old_knowledge_key = str(row["knowledge_key"] or "")
-    record_id = "drr-" + _stable_hash({"knowledge_key": new_knowledge_key})[:16]
+    record_id = research_runtime.canonical_record_id(proposal.knowledge_scope, new_knowledge_key)
     values = research_memory.ResearchMemoryService(initialize_store=False)._deep_record_values(
         proposal,
         record_id=record_id,
@@ -986,18 +1014,20 @@ def _apply_support_calibration(
     )
     first_seen_at = evidence["first_seen_at"] if evidence else row["created_at"]
     con.execute(
-        "DELETE FROM deep_research_record_evidence WHERE source_case_ref = ? AND knowledge_key = ?",
-        (source_ref, old_knowledge_key),
+        "DELETE FROM deep_research_record_evidence WHERE knowledge_scope = ? "
+        "AND source_case_ref = ? AND knowledge_key = ?",
+        (proposal.knowledge_scope, source_ref, old_knowledge_key),
     )
     con.execute(
         """
         INSERT INTO deep_research_record_evidence(
-            knowledge_key, source_case_ref, safe_evidence_refs,
+            knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
             observed_component_keys, observed_component_mentions, conditions,
             failure_conditions, game_patch, passive_tree_version,
-            pob_version_or_commit, first_seen_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(knowledge_key, source_case_ref) DO UPDATE SET
+            pob_version_or_commit, accepted_projection_hash, source_state_scope,
+            first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'unknown', ?, ?)
+        ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref) DO UPDATE SET
             safe_evidence_refs = excluded.safe_evidence_refs,
             observed_component_keys = excluded.observed_component_keys,
             observed_component_mentions = excluded.observed_component_mentions,
@@ -1006,6 +1036,7 @@ def _apply_support_calibration(
             last_seen_at = excluded.last_seen_at
         """,
         (
+            proposal.knowledge_scope,
             new_knowledge_key,
             source_ref,
             _json(safe_evidence_refs),

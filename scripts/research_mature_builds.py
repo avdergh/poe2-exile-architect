@@ -37,12 +37,18 @@ from server.knowledge import (  # noqa: E402
     copy_safety,
     graph_seed,
     graph_tools,
+    mature_learning,
+    pob_xml_meta,
     research_identity,
     research_intake_ledger,
+    research_contracts,
+    research_memory,
     research_models,
     research_packet,
+    research_readback,
+    research_runtime,
 )
-from server.learning.file_lock import interprocess_file_lock  # noqa: E402
+from server.runtime.file_lock import interprocess_file_lock  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / ".poe-bd-research"
 RUNS_DIRNAME = "runs"
@@ -71,7 +77,7 @@ RESEARCH_MANDATORY_CHECKS = (
     "或归一化显示名。",
     "lookup_mechanic silent/unavailable 时保留有样本证据或引擎读回支持的结论；不因 wiki 缺页强制新增 "
     "caveat 或 verification task。",
-    "非 Family 核心技能组也必须被观察；结论依赖其归属时保存 support 所有权，否则明确保留为 "
+    "非 Family 核心技能组也必须被观察；结论依赖其插槽结构时保存根技能与 socketed supports，否则明确保留为 "
     "content、caveat 或 verification task。",
     "每个 resource_engine/mechanic_chain 写入前核对生成与消费方向，并与既有同组件 Family 记录对照。",
     "出现 unresolved 计数时必须逐个执行 search_graph_components，再定性为 source gap。",
@@ -576,7 +582,13 @@ def claim_case(
             output_root=Path(output_dir),
             temp_root=temp_root,
             lease_seconds=lease_seconds,
+            queue_db_path=db_path,
         )
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            claimed = conn.execute(
+                "SELECT * FROM cases WHERE id = ?", (int(claimed["id"]),)
+            ).fetchone()
     except Exception:
         with sqlite3.connect(db_path) as conn:
             cur = conn.execute(
@@ -616,6 +628,7 @@ def claim_case(
         dict(claimed),
         lease_token=lease_token,
         output_root=Path(output_dir),
+        temp_root=temp_root,
     )
     _assert_safe_payload(result)
     return result
@@ -799,7 +812,7 @@ def render_review_contract(
     artifact_identity = _lease_artifact_identity(row)
     result = {
         "status": "ok",
-        "contractVersion": "phase4-safe-review-v2",
+        "contractVersion": research_contracts.SAFE_REVIEW_CONTRACT_VERSION,
         "sampleId": sample_id,
         "reviewFile": review_file,
         "artifactIdentity": {
@@ -815,9 +828,10 @@ def render_review_contract(
         },
         "topLevelTemplate": {
             "reportId": "poe_bd_research_review",
-            "reviewContractVersion": "phase4-safe-review-v2",
+            "reviewContractVersion": research_contracts.SAFE_REVIEW_CONTRACT_VERSION,
             "safeArtifactOnly": True,
             "artifactIdentity": artifact_identity,
+            "knowledgeScope": _authoritative_knowledge_scope(row),
             "caseCoverage": {
                 "supports": "evidence_missing",
                 "rotation": "evidence_missing",
@@ -827,6 +841,8 @@ def render_review_contract(
             },
             "mechanicAudit": [],
             "memoryUse": {"queries": []},
+            "sourceSkillGroupReviews": [],
+            "pobReadbackAudit": [],
             "deepResearchRecords": [],
             "candidateReviews": [],
             "semanticEdges": [],
@@ -856,15 +872,22 @@ def render_review_contract(
             "mechanicAuditDecision": sorted(acceptance.MECHANIC_AUDIT_DECISIONS),
             "mechanicAuditCorroboration": sorted(acceptance.MECHANIC_AUDIT_CORROBORATION),
             "gearResponsibilityType": sorted(research_models.GEAR_RESPONSIBILITY_TYPES),
+            "gearSubject": sorted(research_contracts.GEAR_SUBJECTS),
+            "sourceStateScope": sorted(research_contracts.SOURCE_STATE_SCOPES),
+            "supportDeliveryRole": ["direct"],
+            "sourceGroupResearchDisposition": sorted(acceptance.SOURCE_GROUP_RESEARCH_DISPOSITIONS),
+            "sourceGroupSupportDisposition": sorted(acceptance.SOURCE_GROUP_SUPPORT_DISPOSITIONS),
+            "pobReadbackDisposition": ["reviewed", "unavailable", "unmodelled"],
             "typedIdentityFields": {
                 "familyCoreSkillKeys": "resolved skill keys explicitly retained as Family-core secondary metadata when their role is not already inferred from clear/boss/triggered_payload; these keys do not change the Family identity key",
                 "resourceMechanisms": "lower_snake_case resource methods without graph nodes",
-                "supportPackages": "skillKey/supportKeys, or exact skillName/supportNames when resolver is unavailable",
+                "supportPackages": "v3 uses stable skillKey/supportKeys plus exact sourceGroupRef/rootSkillRef and one source-local socketedItemRef per support instance; source-local refs are validation-only and are not durable identity",
                 "supportCoverageExceptions": "skillKey, or exact skillName when resolver is unavailable, plus source_coverage_gap/not_applicable detail",
                 "availability": "standard or source_specific_random",
                 "sourceSpecificComponentKeys": "random-instance components excluded from planner advice",
                 "ascendancyResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus concrete responsibility",
                 "gearResponsibilities": "componentKey, or exact componentName when resolver is unavailable, plus canonical responsibilityType and concise responsibility; use an explicit [] only for content-based rare/magic gear evidence",
+                "gearSubjects": "canonical equipment/jewel subjects for content-based gear records",
                 "jewelSocketStates": "typed node/spec/item state for active empty, active-unallocated, and other-spec tree jewel assignments",
             },
         },
@@ -889,8 +912,8 @@ def render_review_contract(
             },
             "supportPackages": {
                 "type": "list[object]",
-                "entry": 'exactly {"skillKey": str, "supportKeys": [str, ...]}',
-                "rule": "skillKey must be a resolved skill mentioned in the same record; supportKeys non-empty unique, all support: prefix, all resolved in the same record; <=12 entries; a skill_package record must assign EVERY resolved support gem in the record; meta-host skills (e.g. Hand of Chayula) must NOT own the supports of their socketed skill - package the socketed skill instead",
+                "entry": '{"skillKey": str, "supportKeys": [str, ...], "socketedItemRefs": [str, ...], "deliveryRole": "direct", "sourceGroupRef": str, "rootSkillRef": str}',
+                "rule": "copy the physical socket package from the lease skill-group manifest: skillKey is the resolved root skill; supportKeys and socketedItemRefs are parallel lists identifying the support type and exact physical instance under that root; sourceGroupRef/rootSkillRef must match exactly; <=12 entries; the same socketedItemRef cannot appear in two packages, while distinct instances may share a support stable key; source-local refs are stripped before durable storage; record socketed active payloads and host/payload mechanics through components/mechanic records rather than deliveryRole",
             },
             "supportCoverageExceptions": {
                 "type": "list[object]",
@@ -912,11 +935,29 @@ def render_review_contract(
                 "entry": 'exactly {"componentKey": str, "responsibilityType": str, "responsibility": str}',
                 "rule": "only on gear_synergy records; componentKey resolved and mentioned in the same record with role unique_enabler/gear_base/weapon_base; responsibilityType in allowedValues.gearResponsibilityType; responsibility <=240 chars; <=12 entries; componentKey unique; for rare/magic items without a graph node, explicitly set gearResponsibilities=[] and describe slot + target mods + roll pursuit in content; a missing or null field is not this declaration",
             },
+            "gearSubjects": {
+                "type": "list[str]",
+                "rule": "required and non-empty when gearResponsibilities=[]; use allowedValues.gearSubject",
+            },
             "jewelSocketStates": {
                 "type": "list[object]",
                 "entry": "nodeId/specId/state plus itemId unless state=empty",
                 "rule": "only on passive_package/open_question/modelability_caveat; states are filled/empty/socketed_unallocated/other_spec and must match the packet-derived jewel socket view",
             },
+        },
+        "sourceSkillGroupReviewTemplate": {
+            "groupRef": "read_research_case(section=skill-groups) 返回的精确 groupRef",
+            "researchDisposition": "represented | not_relevant | needs_followup",
+            "supportDisposition": (
+                "packaged | source_has_no_supports | not_applicable | source_coverage_gap"
+            ),
+            "affectedRecords": ["与 deepResearchRecords.title 完全一致的标题"],
+            "reason": "一句话说明该启用组如何处理；gap 会使验收保持 partial",
+        },
+        "pobReadbackAuditTemplate": {
+            "disposition": "reviewed | unavailable | unmodelled",
+            "readbackRef": "reviewed/unmodelled 必须原样填写 pob-readback 分区的 snapshotRef；unavailable 不填写",
+            "reason": "说明数值读回可用性或未建模边界",
         },
         "mechanicAuditTemplate": {
             "claim": "需要外部机制复核的具体事实结论",
@@ -951,6 +992,7 @@ def render_review_contract(
             "conditions": [],
             "failureConditions": [],
             "typedPayload": {"knowledgeShape": "state_causal_chain"},
+            "sourceStateScope": "unknown",
             "classKey": None,
             "ascendancyKey": None,
             "extractionMethodVersion": "deep_research_mvp_v1",
@@ -1101,9 +1143,10 @@ def init_review(
     review_path.parent.mkdir(parents=True, exist_ok=True)
     skeleton = {
         "reportId": "poe_bd_research_review",
-        "reviewContractVersion": "phase4-safe-review-v2",
+        "reviewContractVersion": research_contracts.SAFE_REVIEW_CONTRACT_VERSION,
         "safeArtifactOnly": True,
         "artifactIdentity": _lease_artifact_identity(row),
+        "knowledgeScope": _authoritative_knowledge_scope(row),
         "caseCoverage": {
             "supports": "evidence_missing",
             "rotation": "evidence_missing",
@@ -1113,6 +1156,8 @@ def init_review(
         },
         "mechanicAudit": [],
         "memoryUse": {"queries": []},
+        "sourceSkillGroupReviews": [],
+        "pobReadbackAudit": [],
         "deepResearchRecords": [],
         "candidateReviews": [],
         "semanticEdges": [],
@@ -1180,12 +1225,17 @@ def save_review_payload(
     review_payload: dict[str, Any],
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     queue_db_path: str | Path | None = None,
+    _allow_accept_recovery: bool = False,
 ) -> dict[str, Any]:
     """Atomically persist a safe in-memory review owned by the active lease."""
 
     output_root = Path(output_dir)
     db_path = _queue_db_path(output_root, queue_db_path)
-    row = _case_for_valid_lease(db_path, lease_token)
+    row = (
+        _case_for_review_save(db_path, lease_token)
+        if _allow_accept_recovery
+        else _case_for_valid_lease(db_path, lease_token)
+    )
     review_file = _suggested_review_file(
         output_dir=output_root,
         sample_id=str(row["sample_id"]),
@@ -1202,16 +1252,25 @@ def save_review_payload(
         version_context=_queue_version_context(db_path),
     )
     acceptance._assert_safe(canonical)
-    serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
-    try:
-        staging.write_text(serialized, encoding="utf-8", newline="\n")
-        os.replace(staging, review_path)
-    finally:
-        staging.unlink(missing_ok=True)
+    if str(row["status"]) in {"accepting", "accepted"}:
+        _assert_matching_inflight_review(
+            db_path=db_path,
+            row=row,
+            review_payload=canonical,
+            expected_origin_state=str(row["accept_origin_state"] or "claimed"),
+        )
+    else:
+        serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            staging.write_text(serialized, encoding="utf-8", newline="\n")
+            os.replace(staging, review_path)
+        finally:
+            staging.unlink(missing_ok=True)
     result = {
         "status": "saved",
         "sampleId": str(row["sample_id"]),
+        "reviewFile": review_path.relative_to(output_root.resolve()).as_posix(),
         "noRawMatureBuildMaterial": True,
     }
     _assert_safe_payload(result)
@@ -1263,6 +1322,27 @@ def _slice_review_for_record(
         narrowed["affectedRecords"] = [title]
         narrowed["affectedCandidates"] = []
         kept_audits.append(narrowed)
+    group_reviews = review.get("sourceSkillGroupReviews") or []
+    kept_group_reviews: list[dict[str, Any]] = []
+    for group_review in group_reviews:
+        if not isinstance(group_review, dict):
+            kept_group_reviews.append(group_review)
+            continue
+        affected_records = [
+            str(value).strip()
+            for value in group_review.get("affectedRecords") or []
+            if str(value).strip()
+        ]
+        if not affected_records:
+            kept_group_reviews.append(copy.deepcopy(group_review))
+            continue
+        if title not in affected_records:
+            out_of_slice_references.extend(affected_records)
+            continue
+        narrowed = copy.deepcopy(group_review)
+        out_of_slice_references.extend(value for value in affected_records if value != title)
+        narrowed["affectedRecords"] = [title]
+        kept_group_reviews.append(narrowed)
     candidates = review.get("candidateReviews") or []
     edges = review.get("semanticEdges") or []
     sliced = {
@@ -1271,6 +1351,7 @@ def _slice_review_for_record(
         "candidateReviews": [],
         "semanticEdges": [],
         "mechanicAudit": kept_audits,
+        "sourceSkillGroupReviews": kept_group_reviews,
     }
     context = {
         "recordIndex": record_index,
@@ -1302,6 +1383,25 @@ def accept_case(
     """Validate or accept a safe Researcher proposal for the current lease."""
     output_root = Path(output_dir)
     db_path = _queue_db_path(output_root, queue_db_path)
+    if not validation_only:
+        research_memory.ResearchMemoryService(
+            db_path=Path(memory_db_path), initialize_store=True
+        )
+        with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
+            recovered = _recover_accepting_case(
+                db_path=db_path,
+                lease_token=lease_token,
+                review_file=Path(review_file),
+                output_root=output_root,
+                memory_db_path=Path(memory_db_path),
+                intake_ledger_path=(
+                    Path(intake_ledger_path)
+                    if intake_ledger_path is not None
+                    else DEFAULT_INTAKE_LEDGER_PATH
+                ),
+            )
+        if recovered is not None:
+            return recovered
     row = _case_for_valid_lease(db_path, lease_token)
     version_context = _queue_version_context(db_path)
     sample_id = str(row["sample_id"])
@@ -1315,7 +1415,12 @@ def accept_case(
         packet_safe_hash=str(row["packet_safe_hash"]),
         version_context=version_context,
     )
-    if review_payload.get("reviewContractVersion") != "phase4-safe-review-v2":
+    authoritative_scope = _authoritative_knowledge_scope(row)
+    review_contract_version = str(review_payload.get("reviewContractVersion") or "")
+    if review_contract_version not in {
+        research_contracts.LEGACY_SAFE_REVIEW_CONTRACT_VERSION,
+        research_contracts.SAFE_REVIEW_CONTRACT_VERSION,
+    }:
         result = {
             # This check runs before the accepting CAS. The row is still claimed and the same
             # lease remains authoritative, so do not pretend retry-accept is now available.
@@ -1333,7 +1438,7 @@ def accept_case(
             "validationIssues": [
                 {
                     "loc": ["reviewContractVersion"],
-                    "msg": "upgrade the safe review to phase4-safe-review-v2 and complete the new Agent review fields",
+                    "msg": "upgrade the safe review to phase4-safe-review-v3 and complete the new Agent review fields",
                     "type": "value_error",
                 }
             ],
@@ -1341,7 +1446,62 @@ def accept_case(
         }
         _assert_safe_payload(result)
         return result
+    if (
+        review_contract_version == research_contracts.LEGACY_SAFE_REVIEW_CONTRACT_VERSION
+        and not validation_only
+    ):
+        result = {
+            "status": "validation_failed",
+            "errorCode": "review_contract_upgrade_required",
+            "sampleId": sample_id,
+            "validationOnly": False,
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "queueStateChanged": False,
+            "nextAction": "Upgrade the review in place to phase4-safe-review-v3.",
+            "validationIssues": [
+                {
+                    "loc": ["reviewContractVersion"],
+                    "msg": "new durable Research writes require phase4-safe-review-v3",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
+    submitted_scope = str(review_payload.get("knowledgeScope") or authoritative_scope)
+    if submitted_scope != authoritative_scope:
+        result = {
+            "status": "validation_failed",
+            "errorCode": "knowledge_scope_mismatch",
+            "sampleId": sample_id,
+            "validationOnly": validation_only,
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "queueStateChanged": False,
+            "validationIssues": [
+                {
+                    "loc": ["knowledgeScope"],
+                    "msg": "knowledgeScope is server-owned and must match source provenance",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
+    _bind_authoritative_review_scope(
+        review_payload,
+        row=row,
+        mismatch_error="knowledgeScope is server-owned and must match source provenance",
+    )
     source_skill_manifest = _optional_acceptance_skill_manifest(
+        row=row,
+        output_root=output_root,
+        temp_root=temp_root,
+    )
+    pob_readback = _optional_pob_readback(
         row=row,
         output_root=output_root,
         temp_root=temp_root,
@@ -1367,13 +1527,30 @@ def accept_case(
                 only_record,
             )
             single_record = only_record
+        source_skill_manifest_for_run = source_skill_manifest
+        if single_record is not None and isinstance(source_skill_manifest, dict):
+            retained_group_refs = {
+                str(item.get("groupRef") or "")
+                for item in review_payload_for_run.get("sourceSkillGroupReviews") or []
+                if isinstance(item, dict) and str(item.get("groupRef") or "")
+            }
+            source_skill_manifest_for_run = {
+                **source_skill_manifest,
+                "activeSkillGroups": [
+                    group
+                    for group in source_skill_manifest.get("activeSkillGroups") or []
+                    if isinstance(group, dict)
+                    and str(group.get("groupRef") or "") in retained_group_refs
+                ],
+            }
         report = acceptance.accept_deep_review_candidates(
             db_path=Path(memory_db_path),
             json_output=output_root / "unused-validation-report.json",
             md_output=output_root / "unused-validation-report.md",
             review_file=safe_review_file,
             version_context=version_context,
-            source_skill_manifest=source_skill_manifest,
+            source_skill_manifest=source_skill_manifest_for_run,
+            pob_readback=pob_readback,
             jewel_counts=jewel_counts,
             review_payload=review_payload_for_run,
             require_deep_records=True,
@@ -1410,8 +1587,23 @@ def accept_case(
     # Same lease reference normalization as _suggested_review_file so the acceptance artifact
     # basename and the review basename derive from the identical slug.
     slug = f"{_slug(sample_id)}-{_slug(lease_token)[:12]}"
+    run_id = str(_read_metadata(db_path).get("runId") or output_root.name)
+    canonical_review_hash = research_runtime.stable_hash(review_payload)
+    accept_attempt_key = research_runtime.accept_attempt_key(
+        run_id=run_id,
+        sample_id=sample_id,
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        canonical_review_hash=canonical_review_hash,
+        contract_version=review_contract_version,
+        expected_origin_state="claimed",
+    )
     with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
-        _begin_accepting(db_path, row=row, lease_token=lease_token)
+        _begin_accepting(
+            db_path,
+            row=row,
+            lease_token=lease_token,
+            accept_attempt_key=accept_attempt_key,
+        )
         try:
             report = acceptance.accept_deep_review_candidates(
                 db_path=Path(memory_db_path),
@@ -1420,29 +1612,69 @@ def accept_case(
                 review_file=safe_review_file,
                 version_context=version_context,
                 source_skill_manifest=source_skill_manifest,
+                pob_readback=pob_readback,
                 jewel_counts=jewel_counts,
                 review_payload=review_payload,
                 require_deep_records=True,
+                acceptance_context={
+                    "runRef": f"research-run:{run_id}",
+                    "sampleId": sample_id,
+                    "acceptAttemptKey": accept_attempt_key,
+                    "packetSafeHash": str(row["packet_safe_hash"]),
+                    "canonicalReviewHash": canonical_review_hash,
+                    "contractVersion": review_contract_version,
+                    "expectedOriginState": "claimed",
+                    "supplement": bool(row["supplement"]),
+                },
             )
         except Exception:
-            _finish_accepting_after_exception(db_path, row=row, lease_token=lease_token)
+            receipt_ref = research_runtime.write_receipt_ref(f"research-run:{run_id}", sample_id)
+            receipt = research_memory.ResearchMemoryService(
+                db_path=Path(memory_db_path), initialize_store=False
+            ).get_research_write_receipt(receipt_ref)
+            if receipt is None or str(receipt.get("acceptAttemptKey") or "") != accept_attempt_key:
+                _finish_accepting_after_exception(db_path, row=row, lease_token=lease_token)
             raise
         accepted = str(report.get("status") or "") == "accepted"
-        supplement_no_gain = False
-        if (
-            accepted
-            and int(row["supplement"] or 0)
-            and (
-                int(report.get("createdDeepRecordCount") or 0)
-                + int(report.get("updatedDeepRecordCount") or 0)
-            )
-            == 0
-        ):
-            # A supplement round that produced no durable record delta adds no knowledge; do
-            # not consume the lease as a successful acceptance.
-            supplement_no_gain = True
+        supplement_no_gain = str(report.get("errorCode") or "") == "supplement_no_gain"
+        if supplement_no_gain:
             accepted = False
         status = "accepted" if accepted else "acceptance_rejected"
+        ledger_finalization = "not_required"
+        if accepted and str(row["character_ref"] or "").startswith("character-hash:"):
+            effective_ledger = (
+                Path(intake_ledger_path)
+                if intake_ledger_path is not None
+                else DEFAULT_INTAKE_LEDGER_PATH
+            )
+            ledger_finalization = research_intake_ledger.finalize_accepted(
+                effective_ledger,
+                league=str(row["league"] or ""),
+                character_ref=str(row["character_ref"] or ""),
+                source_hash=str(row["source_hash"] or ""),
+                sample_id=sample_id,
+            )
+            if ledger_finalization == "conflict":
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        "UPDATE cases SET finalization_status = 'ledger_conflict', updated_at = ? "
+                        "WHERE sample_id = ? AND status = 'accepting' "
+                        "AND accept_attempt_key = ?",
+                        (_now_iso(), sample_id, accept_attempt_key),
+                    )
+                    conn.commit()
+                result = {
+                    "status": "finalization_pending",
+                    "sampleId": sample_id,
+                    "acceptAttemptKey": accept_attempt_key,
+                    "writeReceiptRef": report.get("writeReceiptRef"),
+                    "ledgerFinalization": ledger_finalization,
+                    "memoryCommitted": True,
+                    "retryable": True,
+                    "noRawMatureBuildMaterial": True,
+                }
+                _assert_safe_payload(result)
+                return result
         with sqlite3.connect(db_path) as conn:
             cur = conn.execute(
                 """
@@ -1450,7 +1682,7 @@ def accept_case(
                    SET status = ?,
                        accepted_at = ?,
                        updated_at = ?,
-                       lease_token = NULL,
+                       lease_token = CASE WHEN ? THEN lease_token ELSE NULL END,
                        lease_owner = NULL,
                        lease_expires_at = NULL,
                        acceptance_status = ?,
@@ -1460,6 +1692,9 @@ def accept_case(
                        unresolved_deep_record_component_count = ?,
                        research_quality_summary = ?,
                        deferred_candidate_count = ?
+                       ,accept_attempt_key = ?
+                       ,write_receipt_ref = ?
+                       ,finalization_status = ?
                  WHERE sample_id = ?
                    AND status = 'accepting'
                    AND lease_token = ?
@@ -1469,7 +1704,12 @@ def accept_case(
                     status,
                     _now_iso() if accepted else "",
                     _now_iso(),
-                    str(report.get("status") or ""),
+                    int(accepted),
+                    str(
+                        report.get("status")
+                        if accepted
+                        else report.get("errorCode") or report.get("status") or ""
+                    ),
                     int(report.get("acceptedPatternCount") or 0),
                     int(report.get("acceptedDeepRecordCount") or 0),
                     int(report.get("acceptedSemanticEdgeCount") or 0),
@@ -1478,6 +1718,9 @@ def accept_case(
                         _research_quality_summary(report), ensure_ascii=False, sort_keys=True
                     ),
                     int(report.get("deferredCandidateCount") or 0),
+                    accept_attempt_key,
+                    str(report.get("writeReceiptRef") or "") or None,
+                    "complete" if accepted else "rejected",
                     sample_id,
                     lease_token,
                     str(row["packet_safe_hash"]),
@@ -1497,27 +1740,20 @@ def accept_case(
                 )
             except (OSError, ValueError):
                 pass
-            # Promote the character's intake-ledger record so future queues skip it.
-            if str(row["character_ref"] or "").startswith("character-hash:"):
-                effective_ledger = (
-                    Path(intake_ledger_path)
-                    if intake_ledger_path is not None
-                    else DEFAULT_INTAKE_LEDGER_PATH
-                )
-                research_intake_ledger.mark_accepted(
-                    effective_ledger,
-                    league=str(row["league"] or ""),
-                    character_ref=str(row["character_ref"] or ""),
-                )
     result = {
         "status": status,
+        "errorCode": report.get("errorCode") if not accepted else None,
         "sampleId": sample_id,
         "packetSafeHash": str(row["packet_safe_hash"]),
+        "acceptAttemptKey": accept_attempt_key,
+        "writeReceiptRef": report.get("writeReceiptRef"),
+        "ledgerFinalization": ledger_finalization,
         "acceptedPatternCount": int(report.get("acceptedPatternCount") or 0),
         "acceptedDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
         "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
+        "unchangedDeepRecordCount": int(report.get("unchangedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
         "acceptedBuildFamilyKeys": report.get("acceptedBuildFamilyKeys") or [],
         "unresolvedDeepRecordComponentCount": int(
@@ -1546,6 +1782,276 @@ def accept_case(
     result["copySafetyDiagnostics"] = transport_diagnostics
     _assert_safe_payload(result)
     return result
+
+
+def _recover_accepting_case(
+    *,
+    db_path: Path,
+    lease_token: str,
+    review_file: Path,
+    output_root: Path,
+    memory_db_path: Path,
+    intake_ledger_path: Path,
+) -> dict[str, Any] | None:
+    _init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM cases WHERE status IN ('accepting', 'accepted') "
+            "AND lease_token = ? LIMIT 1",
+            (lease_token,),
+        ).fetchone()
+    if row is None:
+        return None
+    run_id = str(_read_metadata(db_path).get("runId") or db_path.parent.name)
+    safe_review_file = _resolve_review_file(review_file, output_root=output_root)
+    review_payload = _assert_review_file_for_lease(
+        review_file=safe_review_file,
+        output_root=output_root,
+        sample_id=str(row["sample_id"]),
+        lease_token=lease_token,
+        source_hash_ref=str(row["source_hash_ref"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=_queue_version_context(db_path),
+    )
+    _bind_authoritative_review_scope(
+        review_payload,
+        row=row,
+        mismatch_error="accepting case review knowledgeScope changed during recovery",
+    )
+    expected_attempt_key = research_runtime.accept_attempt_key(
+        run_id=run_id,
+        sample_id=str(row["sample_id"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        canonical_review_hash=research_runtime.stable_hash(review_payload),
+        contract_version=str(review_payload.get("reviewContractVersion") or ""),
+        expected_origin_state=str(row["accept_origin_state"] or "claimed"),
+    )
+    if expected_attempt_key != str(row["accept_attempt_key"] or ""):
+        raise ValueError("accepting case review hash does not match acceptAttemptKey")
+    receipt_ref = research_runtime.write_receipt_ref(
+        f"research-run:{run_id}", str(row["sample_id"])
+    )
+    receipt = research_memory.ResearchMemoryService(
+        db_path=memory_db_path,
+        initialize_store=False,
+    ).get_research_write_receipt(receipt_ref)
+    if receipt is None:
+        if str(row["status"]) == "accepted":
+            raise ValueError("accepted queue case is missing its final write receipt")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE cases SET status = COALESCE(NULLIF(accept_origin_state, ''), 'claimed'), "
+                "finalization_status = 'memory_not_committed', updated_at = ? "
+                "WHERE sample_id = ? AND status = 'accepting' AND lease_token = ?",
+                (_now_iso(), str(row["sample_id"]), lease_token),
+            )
+            conn.commit()
+        return None
+    if str(receipt.get("acceptAttemptKey") or "") != str(row["accept_attempt_key"] or ""):
+        raise ValueError("accepting case receipt does not match acceptAttemptKey")
+    if str(row["status"]) == "accepted":
+        return {
+            "status": "accepted",
+            "sampleId": str(row["sample_id"]),
+            "acceptAttemptKey": str(row["accept_attempt_key"]),
+            "writeReceiptRef": receipt_ref,
+            "ledgerFinalization": "already_finalized",
+            "idempotentRecovery": True,
+            "responseReplay": True,
+            "memoryCommitted": True,
+            "noRawMatureBuildMaterial": True,
+        }
+    ledger_finalization = "not_required"
+    if str(row["character_ref"] or "").startswith("character-hash:"):
+        ledger_finalization = research_intake_ledger.finalize_accepted(
+            intake_ledger_path,
+            league=str(row["league"] or ""),
+            character_ref=str(row["character_ref"] or ""),
+            source_hash=str(row["source_hash"] or ""),
+            sample_id=str(row["sample_id"]),
+        )
+        if ledger_finalization == "conflict":
+            return {
+                "status": "finalization_pending",
+                "sampleId": str(row["sample_id"]),
+                "acceptAttemptKey": str(row["accept_attempt_key"]),
+                "writeReceiptRef": receipt_ref,
+                "ledgerFinalization": ledger_finalization,
+                "memoryCommitted": True,
+                "retryable": True,
+                "noRawMatureBuildMaterial": True,
+            }
+    summary = receipt.get("acceptanceSummary") or {}
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE cases
+               SET status = 'accepted', accepted_at = ?, updated_at = ?,
+                   lease_owner = NULL, lease_expires_at = NULL,
+                   acceptance_status = 'accepted',
+                   accepted_pattern_count = ?, accepted_deep_record_count = ?,
+                   accepted_semantic_edge_count = ?, write_receipt_ref = ?,
+                   finalization_status = 'complete'
+             WHERE sample_id = ? AND status = 'accepting' AND accept_attempt_key = ?
+            """,
+            (
+                _now_iso(),
+                _now_iso(),
+                int(summary.get("acceptedPatternCount") or 0),
+                int(summary.get("acceptedDeepRecordCount") or 0),
+                int(summary.get("acceptedSemanticEdgeCount") or 0),
+                receipt_ref,
+                str(row["sample_id"]),
+                str(row["accept_attempt_key"]),
+            ),
+        )
+        conn.commit()
+    if cur.rowcount != 1:
+        raise ValueError("accepting case changed before receipt recovery completed")
+    return {
+        "status": "accepted",
+        "sampleId": str(row["sample_id"]),
+        "acceptAttemptKey": str(row["accept_attempt_key"]),
+        "writeReceiptRef": receipt_ref,
+        "ledgerFinalization": ledger_finalization,
+        "idempotentRecovery": True,
+        "memoryCommitted": True,
+        "noRawMatureBuildMaterial": True,
+    }
+
+
+def _recover_retry_accepting_case(
+    *,
+    db_path: Path,
+    sample_id: str,
+    review_file: Path,
+    output_root: Path,
+    memory_db_path: Path,
+    intake_ledger_path: Path,
+) -> dict[str, Any] | None:
+    """Finish or replay a retry attempt from its committed Memory receipt."""
+
+    _init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM cases WHERE sample_id = ? "
+            "AND status IN ('accepting', 'accepted') "
+            "AND accept_origin_state = 'acceptance_rejected' LIMIT 1",
+            (sample_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    run_id = str(_read_metadata(db_path).get("runId") or db_path.parent.name)
+    safe_review_file = _resolve_review_file(review_file, output_root=output_root)
+    review_payload = _canonical_review_artifact_identity(
+        review_file=safe_review_file,
+        sample_id=str(row["sample_id"]),
+        source_hash_ref=str(row["source_hash_ref"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        version_context=_queue_version_context(db_path),
+    )
+    _bind_authoritative_review_scope(
+        review_payload,
+        row=row,
+        mismatch_error="retry review knowledgeScope changed during recovery",
+    )
+    expected_attempt_key = research_runtime.accept_attempt_key(
+        run_id=run_id,
+        sample_id=str(row["sample_id"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        canonical_review_hash=research_runtime.stable_hash(review_payload),
+        contract_version=str(review_payload.get("reviewContractVersion") or ""),
+        expected_origin_state="acceptance_rejected",
+    )
+    if expected_attempt_key != str(row["accept_attempt_key"] or ""):
+        raise ValueError("retry review hash does not match acceptAttemptKey")
+    receipt_ref = research_runtime.write_receipt_ref(
+        f"research-run:{run_id}", str(row["sample_id"])
+    )
+    receipt = research_memory.ResearchMemoryService(
+        db_path=memory_db_path,
+        initialize_store=False,
+    ).get_research_write_receipt(receipt_ref)
+    if receipt is None:
+        if str(row["status"]) == "accepted":
+            raise ValueError("accepted retry case is missing its final write receipt")
+        _finish_retry_accepting_after_exception(db_path, row=row)
+        return None
+    if str(receipt.get("acceptAttemptKey") or "") != expected_attempt_key:
+        raise ValueError("retry receipt does not match acceptAttemptKey")
+
+    ledger_finalization = "not_required"
+    if str(row["character_ref"] or "").startswith("character-hash:"):
+        ledger_finalization = research_intake_ledger.finalize_accepted(
+            intake_ledger_path,
+            league=str(row["league"] or ""),
+            character_ref=str(row["character_ref"] or ""),
+            source_hash=str(row["source_hash"] or ""),
+            sample_id=str(row["sample_id"]),
+        )
+        if ledger_finalization == "conflict":
+            return {
+                "status": "finalization_pending",
+                "sampleId": str(row["sample_id"]),
+                "acceptAttemptKey": expected_attempt_key,
+                "writeReceiptRef": receipt_ref,
+                "ledgerFinalization": ledger_finalization,
+                "memoryCommitted": True,
+                "retryable": True,
+                "noRawMatureBuildMaterial": True,
+            }
+    if str(row["status"]) == "accepted":
+        return {
+            "status": "accepted",
+            "sampleId": str(row["sample_id"]),
+            "acceptAttemptKey": expected_attempt_key,
+            "writeReceiptRef": receipt_ref,
+            "ledgerFinalization": ledger_finalization,
+            "idempotentRecovery": True,
+            "responseReplay": True,
+            "memoryCommitted": True,
+            "noRawMatureBuildMaterial": True,
+        }
+
+    summary = receipt.get("acceptanceSummary") or {}
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE cases
+               SET status = 'accepted', accepted_at = ?, updated_at = ?,
+                   lease_token = NULL, lease_owner = NULL, lease_expires_at = NULL,
+                   acceptance_status = 'accepted',
+                   accepted_pattern_count = ?, accepted_deep_record_count = ?,
+                   accepted_semantic_edge_count = ?, write_receipt_ref = ?,
+                   finalization_status = 'complete'
+             WHERE sample_id = ? AND status = 'accepting' AND accept_attempt_key = ?
+            """,
+            (
+                _now_iso(),
+                _now_iso(),
+                int(summary.get("acceptedPatternCount") or 0),
+                int(summary.get("acceptedDeepRecordCount") or 0),
+                int(summary.get("acceptedSemanticEdgeCount") or 0),
+                receipt_ref,
+                str(row["sample_id"]),
+                expected_attempt_key,
+            ),
+        )
+        conn.commit()
+    if cur.rowcount != 1:
+        raise ValueError("retry accepting case changed before receipt recovery completed")
+    return {
+        "status": "accepted",
+        "sampleId": str(row["sample_id"]),
+        "acceptAttemptKey": expected_attempt_key,
+        "writeReceiptRef": receipt_ref,
+        "ledgerFinalization": ledger_finalization,
+        "idempotentRecovery": True,
+        "memoryCommitted": True,
+        "noRawMatureBuildMaterial": True,
+    }
 
 
 def review_budget(*, review_file: str | Path) -> dict[str, Any]:
@@ -1623,7 +2129,7 @@ def save_rejected_review_payload(
 
     output_root = Path(output_dir)
     db_path = _queue_db_path(output_root, queue_db_path)
-    row = _case_for_rejected_sample(db_path, sample_id)
+    row = _case_for_retry_review_save(db_path, sample_id)
     review_root = (output_root / "reviews").resolve()
     matches = sorted(review_root.glob(f"{_slug(sample_id)}-*-safe-review.json"))
     if len(matches) != 1:
@@ -1638,13 +2144,21 @@ def save_rejected_review_payload(
         version_context=_queue_version_context(db_path),
     )
     acceptance._assert_safe(canonical)
-    serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
-    try:
-        staging.write_text(serialized, encoding="utf-8", newline="\n")
-        os.replace(staging, review_path)
-    finally:
-        staging.unlink(missing_ok=True)
+    if str(row["status"]) in {"accepting", "accepted"}:
+        _assert_matching_inflight_review(
+            db_path=db_path,
+            row=row,
+            review_payload=canonical,
+            expected_origin_state="acceptance_rejected",
+        )
+    else:
+        serialized = json.dumps(canonical, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        staging = review_path.with_name(f".{review_path.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            staging.write_text(serialized, encoding="utf-8", newline="\n")
+            os.replace(staging, review_path)
+        finally:
+            staging.unlink(missing_ok=True)
     result = {
         "status": "saved",
         "sampleId": str(row["sample_id"]),
@@ -1669,9 +2183,70 @@ def retry_accept_case(
     """Retry acceptance for a previously rejected safe review artifact."""
     output_root = Path(output_dir)
     db_path = _queue_db_path(output_root, queue_db_path)
+    research_memory.ResearchMemoryService(db_path=Path(memory_db_path), initialize_store=True)
+    with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
+        recovered = _recover_retry_accepting_case(
+            db_path=db_path,
+            sample_id=sample_id,
+            review_file=Path(review_file),
+            output_root=output_root,
+            memory_db_path=Path(memory_db_path),
+            intake_ledger_path=(
+                Path(intake_ledger_path)
+                if intake_ledger_path is not None
+                else DEFAULT_INTAKE_LEDGER_PATH
+            ),
+        )
+    if recovered is not None:
+        return recovered
     row = _case_for_rejected_sample(db_path, sample_id)
     version_context = _queue_version_context(db_path)
     source_skill_manifest = _optional_acceptance_skill_manifest(
+        row=row,
+        output_root=output_root,
+        temp_root=temp_root,
+    )
+    if source_skill_manifest is None:
+        try:
+            _rebuild_packet_for_claim(
+                row=row,
+                output_root=output_root,
+                temp_root=temp_root,
+                lease_seconds=research_packet.MAX_TTL_SECONDS,
+                queue_db_path=db_path,
+            )
+        except (OSError, ValueError):
+            pass
+        row = _case_for_rejected_sample(db_path, sample_id)
+        source_skill_manifest = _optional_acceptance_skill_manifest(
+            row=row,
+            output_root=output_root,
+            temp_root=temp_root,
+        )
+    if source_skill_manifest is None:
+        result = {
+            "status": "acceptance_rejected",
+            "errorCode": "retry_packet_unavailable",
+            "sampleId": str(row["sample_id"]),
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "queueStateChanged": False,
+            "nextAction": (
+                "The source evidence packet could not be restored from the retained Research "
+                "run. Requeue the source before retrying acceptance."
+            ),
+            "validationIssues": [
+                {
+                    "loc": ["artifactIdentity", "packetSafeHash"],
+                    "msg": "retry requires the exact source evidence packet",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
+    pob_readback = _optional_pob_readback(
         row=row,
         output_root=output_root,
         temp_root=temp_root,
@@ -1693,7 +2268,11 @@ def retry_accept_case(
         packet_safe_hash=str(row["packet_safe_hash"]),
         version_context=version_context,
     )
-    if review_payload.get("reviewContractVersion") != "phase4-safe-review-v2":
+    review_contract_version = str(review_payload.get("reviewContractVersion") or "")
+    if review_contract_version not in {
+        research_contracts.LEGACY_SAFE_REVIEW_CONTRACT_VERSION,
+        research_contracts.SAFE_REVIEW_CONTRACT_VERSION,
+    }:
         result = {
             "status": "acceptance_rejected",
             "errorCode": "review_contract_upgrade_required",
@@ -1704,7 +2283,7 @@ def retry_accept_case(
             "validationIssues": [
                 {
                     "loc": ["reviewContractVersion"],
-                    "msg": "upgrade the safe review to phase4-safe-review-v2 and complete the new Agent review fields",
+                    "msg": "upgrade the safe review to phase4-safe-review-v3 and complete the new Agent review fields",
                     "type": "value_error",
                 }
             ],
@@ -1712,9 +2291,47 @@ def retry_accept_case(
         }
         _assert_safe_payload(result)
         return result
+    if review_contract_version == research_contracts.LEGACY_SAFE_REVIEW_CONTRACT_VERSION:
+        result = {
+            "status": "acceptance_rejected",
+            "errorCode": "review_contract_upgrade_required",
+            "sampleId": str(row["sample_id"]),
+            "validationOnly": False,
+            "readyForAccept": False,
+            "fullyResolvedForAccept": False,
+            "validationIssues": [
+                {
+                    "loc": ["reviewContractVersion"],
+                    "msg": "new durable Research writes require phase4-safe-review-v3",
+                    "type": "value_error",
+                }
+            ],
+            "noRawMatureBuildMaterial": True,
+        }
+        _assert_safe_payload(result)
+        return result
+    authoritative_scope = _authoritative_knowledge_scope(row)
+    submitted_scope = str(review_payload.get("knowledgeScope") or authoritative_scope)
+    if submitted_scope != authoritative_scope:
+        raise ValueError("knowledgeScope is server-owned and does not match source provenance")
+    _bind_authoritative_review_scope(
+        review_payload,
+        row=row,
+        mismatch_error="knowledgeScope is server-owned and does not match source provenance",
+    )
     slug = f"{_slug(str(row['sample_id']))}-{_slug(safe_review_file.stem)[-24:]}"
+    run_id = str(_read_metadata(db_path).get("runId") or output_root.name)
+    canonical_review_hash = research_runtime.stable_hash(review_payload)
+    accept_attempt_key = research_runtime.accept_attempt_key(
+        run_id=run_id,
+        sample_id=str(row["sample_id"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        canonical_review_hash=canonical_review_hash,
+        contract_version=review_contract_version,
+        expected_origin_state="acceptance_rejected",
+    )
     with _ACCEPT_LOCK, interprocess_file_lock(_accept_lock_path(memory_db_path)):
-        _begin_retry_accepting(db_path, row=row)
+        _begin_retry_accepting(db_path, row=row, accept_attempt_key=accept_attempt_key)
         try:
             report = acceptance.accept_deep_review_candidates(
                 db_path=Path(memory_db_path),
@@ -1723,29 +2340,71 @@ def retry_accept_case(
                 review_file=safe_review_file,
                 version_context=version_context,
                 source_skill_manifest=source_skill_manifest,
+                pob_readback=pob_readback,
                 jewel_counts=jewel_counts,
                 review_payload=review_payload,
                 require_deep_records=True,
+                acceptance_context={
+                    "runRef": f"research-run:{run_id}",
+                    "sampleId": str(row["sample_id"]),
+                    "acceptAttemptKey": accept_attempt_key,
+                    "packetSafeHash": str(row["packet_safe_hash"]),
+                    "canonicalReviewHash": canonical_review_hash,
+                    "contractVersion": review_contract_version,
+                    "expectedOriginState": "acceptance_rejected",
+                    "supplement": bool(row["supplement"]),
+                },
             )
         except Exception:
-            _finish_retry_accepting_after_exception(db_path, row=row)
+            receipt_ref = research_runtime.write_receipt_ref(
+                f"research-run:{run_id}", str(row["sample_id"])
+            )
+            receipt = research_memory.ResearchMemoryService(
+                db_path=Path(memory_db_path), initialize_store=False
+            ).get_research_write_receipt(receipt_ref)
+            if receipt is None or str(receipt.get("acceptAttemptKey") or "") != accept_attempt_key:
+                _finish_retry_accepting_after_exception(db_path, row=row)
             raise
         accepted = str(report.get("status") or "") == "accepted"
-        supplement_no_gain = False
-        if (
-            accepted
-            and int(row["supplement"] or 0)
-            and (
-                int(report.get("createdDeepRecordCount") or 0)
-                + int(report.get("updatedDeepRecordCount") or 0)
-            )
-            == 0
-        ):
-            # A supplement round that produced no durable record delta adds no knowledge; do
-            # not consume the retry as a successful acceptance.
-            supplement_no_gain = True
+        supplement_no_gain = str(report.get("errorCode") or "") == "supplement_no_gain"
+        if supplement_no_gain:
             accepted = False
         status = "accepted" if accepted else "acceptance_rejected"
+        ledger_finalization = "not_required"
+        if accepted and str(row["character_ref"] or "").startswith("character-hash:"):
+            effective_ledger = (
+                Path(intake_ledger_path)
+                if intake_ledger_path is not None
+                else DEFAULT_INTAKE_LEDGER_PATH
+            )
+            ledger_finalization = research_intake_ledger.finalize_accepted(
+                effective_ledger,
+                league=str(row["league"] or ""),
+                character_ref=str(row["character_ref"] or ""),
+                source_hash=str(row["source_hash"] or ""),
+                sample_id=str(row["sample_id"]),
+            )
+            if ledger_finalization == "conflict":
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        "UPDATE cases SET finalization_status = 'ledger_conflict', updated_at = ? "
+                        "WHERE sample_id = ? AND status = 'accepting' "
+                        "AND accept_attempt_key = ?",
+                        (_now_iso(), str(row["sample_id"]), accept_attempt_key),
+                    )
+                    conn.commit()
+                result = {
+                    "status": "finalization_pending",
+                    "sampleId": str(row["sample_id"]),
+                    "acceptAttemptKey": accept_attempt_key,
+                    "writeReceiptRef": report.get("writeReceiptRef"),
+                    "ledgerFinalization": ledger_finalization,
+                    "memoryCommitted": True,
+                    "retryable": True,
+                    "noRawMatureBuildMaterial": True,
+                }
+                _assert_safe_payload(result)
+                return result
         with sqlite3.connect(db_path) as conn:
             cur = conn.execute(
                 """
@@ -1763,6 +2422,9 @@ def retry_accept_case(
                        unresolved_deep_record_component_count = ?,
                        research_quality_summary = ?,
                        deferred_candidate_count = ?
+                       ,accept_attempt_key = ?
+                       ,write_receipt_ref = ?
+                       ,finalization_status = ?
                  WHERE sample_id = ?
                    AND status = 'accepting'
                    AND packet_safe_hash = ?
@@ -1771,7 +2433,11 @@ def retry_accept_case(
                     status,
                     _now_iso() if accepted else "",
                     _now_iso(),
-                    str(report.get("status") or ""),
+                    str(
+                        report.get("status")
+                        if accepted
+                        else report.get("errorCode") or report.get("status") or ""
+                    ),
                     int(report.get("acceptedPatternCount") or 0),
                     int(report.get("acceptedDeepRecordCount") or 0),
                     int(report.get("acceptedSemanticEdgeCount") or 0),
@@ -1780,6 +2446,9 @@ def retry_accept_case(
                         _research_quality_summary(report), ensure_ascii=False, sort_keys=True
                     ),
                     int(report.get("deferredCandidateCount") or 0),
+                    accept_attempt_key,
+                    str(report.get("writeReceiptRef") or "") or None,
+                    "complete" if accepted else "rejected",
                     str(row["sample_id"]),
                     str(row["packet_safe_hash"]),
                 ),
@@ -1798,27 +2467,20 @@ def retry_accept_case(
                 )
             except (OSError, ValueError):
                 pass
-            # Promote the character's intake-ledger record so future queues skip it.
-            if str(row["character_ref"] or "").startswith("character-hash:"):
-                effective_ledger = (
-                    Path(intake_ledger_path)
-                    if intake_ledger_path is not None
-                    else DEFAULT_INTAKE_LEDGER_PATH
-                )
-                research_intake_ledger.mark_accepted(
-                    effective_ledger,
-                    league=str(row["league"] or ""),
-                    character_ref=str(row["character_ref"] or ""),
-                )
     result = {
         "status": status,
+        "errorCode": report.get("errorCode") if not accepted else None,
         "sampleId": str(row["sample_id"]),
         "packetSafeHash": str(row["packet_safe_hash"]),
+        "acceptAttemptKey": accept_attempt_key,
+        "writeReceiptRef": report.get("writeReceiptRef"),
+        "ledgerFinalization": ledger_finalization,
         "acceptedPatternCount": int(report.get("acceptedPatternCount") or 0),
         "acceptedDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
         "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
+        "unchangedDeepRecordCount": int(report.get("unchangedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
         "acceptedBuildFamilyKeys": report.get("acceptedBuildFamilyKeys") or [],
         "unresolvedDeepRecordComponentCount": int(
@@ -1849,13 +2511,23 @@ def retry_accept_case(
     return result
 
 
-def _begin_accepting(db_path: Path, *, row: sqlite3.Row, lease_token: str) -> None:
+def _begin_accepting(
+    db_path: Path,
+    *,
+    row: sqlite3.Row,
+    lease_token: str,
+    accept_attempt_key: str,
+    origin_state: str = "claimed",
+) -> None:
     now = _now_iso()
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
             """
             UPDATE cases
                SET status = 'accepting',
+                   accept_attempt_key = ?,
+                   accept_origin_state = ?,
+                   finalization_status = '',
                    updated_at = ?
              WHERE sample_id = ?
                AND status = 'claimed'
@@ -1864,6 +2536,8 @@ def _begin_accepting(db_path: Path, *, row: sqlite3.Row, lease_token: str) -> No
                AND packet_safe_hash = ?
             """,
             (
+                accept_attempt_key,
+                origin_state,
                 now,
                 str(row["sample_id"]),
                 lease_token,
@@ -1894,19 +2568,55 @@ def _case_for_rejected_sample(db_path: Path, sample_id: str) -> sqlite3.Row:
     return row
 
 
-def _begin_retry_accepting(db_path: Path, *, row: sqlite3.Row) -> None:
+def _case_for_retry_review_save(db_path: Path, sample_id: str) -> sqlite3.Row:
+    """Return the normal retry row or the exact in-flight retry row for replay."""
+
+    _init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT *
+              FROM cases
+             WHERE sample_id = ?
+               AND (
+                    status = 'acceptance_rejected'
+                    OR (
+                        status IN ('accepting', 'accepted')
+                        AND accept_origin_state = 'acceptance_rejected'
+                    )
+               )
+             LIMIT 1
+            """,
+            (sample_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("sample is not in acceptance_rejected or matching retry state")
+    return row
+
+
+def _begin_retry_accepting(
+    db_path: Path,
+    *,
+    row: sqlite3.Row,
+    accept_attempt_key: str,
+) -> None:
     now = _now_iso()
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
             """
             UPDATE cases
                SET status = 'accepting',
+                   accept_attempt_key = ?,
+                   accept_origin_state = 'acceptance_rejected',
+                   finalization_status = '',
                    updated_at = ?
              WHERE sample_id = ?
                AND status = 'acceptance_rejected'
                AND packet_safe_hash = ?
             """,
             (
+                accept_attempt_key,
                 now,
                 str(row["sample_id"]),
                 str(row["packet_safe_hash"]),
@@ -2300,6 +3010,7 @@ def cleanup_completed_run(
     output_dir: str | Path | None = None,
     allow_rejected: bool = False,
     abandon_incomplete: bool = False,
+    memory_db_path: str | Path = DEFAULT_MEMORY_DB_PATH,
 ) -> dict[str, Any]:
     """Delete one Research run while preserving its durable Research Memory.
 
@@ -2388,6 +3099,14 @@ def cleanup_completed_run(
         ledger_release = _release_abandoned_intake_rows(rows=rows, metadata=metadata)
         if ledger_release.get("status") != "ok":
             return ledger_release
+    preserved_receipts = _preserve_legacy_write_receipts(
+        output_root=output_root,
+        run_id=run_id,
+        rows=rows,
+        memory_db_path=Path(memory_db_path),
+    )
+    if preserved_receipts.get("status") != "ok":
+        return preserved_receipts
     packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
     evidence = {
         "caseCount": len(rows),
@@ -2397,6 +3116,7 @@ def cleanup_completed_run(
         ),
         "packetSafeHashes": sorted(packet_hashes),
         "validatedAt": _now_iso(),
+        "preservedWriteReceiptRefs": preserved_receipts.get("writeReceiptRefs") or [],
     }
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
     packet_cleanup = research_packet.cleanup_packets_by_safe_hashes(
@@ -2452,7 +3172,112 @@ def cleanup_completed_run(
         ),
         "missingIntakeLedgerCount": int(ledger_release["missingIntakeLedgerCount"]),
         "delayedRetry": retried,
+        "preservedWriteReceiptRefs": preserved_receipts.get("writeReceiptRefs") or [],
     }
+
+
+def _preserve_legacy_write_receipts(
+    *,
+    output_root: Path,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    memory_db_path: Path,
+) -> dict[str, Any]:
+    """Import a minimal audit receipt before a legacy run directory is removed."""
+
+    research_memory.ResearchMemoryService(db_path=memory_db_path)
+    con = mature_learning.connect(memory_db_path)
+    refs: list[str] = []
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        for row in rows:
+            if str(row.get("status") or "") != "accepted":
+                continue
+            sample_id = str(row.get("sampleId") or row.get("sample_id") or "")
+            if not sample_id:
+                # Legacy unit fixtures and pre-product queue rows without a stable sample
+                # identity cannot produce an auditable receipt; real product rows always carry it.
+                continue
+            receipt_ref = research_runtime.write_receipt_ref(f"research-run:{run_id}", sample_id)
+            if con.execute(
+                "SELECT 1 FROM research_record_write_receipts WHERE receipt_ref = ?",
+                (receipt_ref,),
+            ).fetchone():
+                refs.append(receipt_ref)
+                continue
+            report: dict[str, Any] | None = None
+            for candidate in reversed(
+                sorted((output_root / "acceptance").glob(f"{_slug(sample_id)}-*-acceptance.json"))
+            ):
+                try:
+                    loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(loaded, dict) and loaded.get("safeArtifactOnly") is True:
+                    report = loaded
+                    break
+            record_writes = list(
+                (((report or {}).get("deepRecordWrite") or {}).get("recordWrites") or [])
+            )
+            accepted_count = int(
+                row.get("accepted_deep_record_count") or row.get("acceptedDeepRecordCount") or 0
+            )
+            if accepted_count and not record_writes:
+                con.rollback()
+                return {
+                    "status": "rejected",
+                    "errorCode": "legacy_research_write_receipt_unavailable",
+                    "sampleId": sample_id,
+                    "noRawMatureBuildMaterial": True,
+                }
+            summary = {
+                "acceptedPatternCount": int((report or {}).get("acceptedPatternCount") or 0),
+                "acceptedDeepRecordCount": int(
+                    (report or {}).get("acceptedDeepRecordCount") or accepted_count
+                ),
+                "acceptedSemanticEdgeCount": int(
+                    (report or {}).get("acceptedSemanticEdgeCount") or 0
+                ),
+            }
+            attempt_key = str(row.get("acceptAttemptKey") or row.get("accept_attempt_key") or "")
+            if not attempt_key:
+                attempt_key = (
+                    "legacy-"
+                    + research_runtime.stable_hash({"runId": run_id, "sampleId": sample_id})[:20]
+                )
+            con.execute(
+                """
+                INSERT INTO research_record_write_receipts(
+                    receipt_ref, run_ref, sample_id, accept_attempt_key, packet_safe_hash,
+                    canonical_review_hash, contract_version, expected_origin_state,
+                    acceptance_summary, record_writes_json, pattern_ids, semantic_edge_ids,
+                    provenance, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'legacy', 'claimed', ?, ?, ?, ?, 'legacy_report', ?)
+                """,
+                (
+                    receipt_ref,
+                    f"research-run:{run_id}",
+                    sample_id,
+                    attempt_key,
+                    str(row.get("packetSafeHash") or row.get("packet_safe_hash") or ""),
+                    research_runtime.stable_hash(report or summary),
+                    json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                    json.dumps(record_writes, ensure_ascii=False, sort_keys=True),
+                    json.dumps(((report or {}).get("patternWrite") or {}).get("patternIds") or []),
+                    json.dumps(
+                        ((report or {}).get("semanticEdgeWrite") or {}).get("edgeIds") or []
+                    ),
+                    _now_iso(),
+                ),
+            )
+            refs.append(receipt_ref)
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    return {"status": "ok", "writeReceiptRefs": refs}
 
 
 def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
@@ -2538,6 +3363,10 @@ def _init_db(db_path: Path) -> None:
                 unresolved_deep_record_component_count INTEGER NOT NULL DEFAULT 0,
                 research_quality_summary TEXT NOT NULL DEFAULT '{}',
                 deferred_candidate_count INTEGER NOT NULL DEFAULT 0
+                ,accept_attempt_key TEXT
+                ,accept_origin_state TEXT
+                ,write_receipt_ref TEXT
+                ,finalization_status TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_cases_status_lease
                 ON cases(status, lease_expires_at, id);
@@ -2568,6 +3397,16 @@ def _init_db(db_path: Path) -> None:
             conn.execute("ALTER TABLE cases ADD COLUMN supplement INTEGER NOT NULL DEFAULT 0")
         if "supplement_context" not in columns:
             conn.execute("ALTER TABLE cases ADD COLUMN supplement_context TEXT NOT NULL DEFAULT ''")
+        if "accept_attempt_key" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN accept_attempt_key TEXT")
+        if "accept_origin_state" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN accept_origin_state TEXT")
+        if "write_receipt_ref" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN write_receipt_ref TEXT")
+        if "finalization_status" not in columns:
+            conn.execute(
+                "ALTER TABLE cases ADD COLUMN finalization_status TEXT NOT NULL DEFAULT ''"
+            )
         conn.commit()
 
 
@@ -2696,6 +3535,31 @@ def _case_for_valid_lease(db_path: Path, lease_token: str) -> sqlite3.Row:
     return row
 
 
+def _case_for_review_save(db_path: Path, lease_token: str) -> sqlite3.Row:
+    """Return the valid claimed row or the exact in-flight row for accept replay."""
+
+    _init_db(db_path)
+    now = _now_iso()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT *
+              FROM cases
+             WHERE lease_token = ?
+               AND (
+                    (status = 'claimed' AND lease_expires_at > ?)
+                    OR status IN ('accepting', 'accepted')
+               )
+             LIMIT 1
+            """,
+            (lease_token, now),
+        ).fetchone()
+    if row is None:
+        raise ValueError("lease is invalid or has no matching accept attempt")
+    return row
+
+
 def _refresh_packet_expiry(
     *,
     temp_root: Path,
@@ -2737,6 +3601,7 @@ def _rebuild_packet_for_claim(
     output_root: Path,
     temp_root: str | Path | None,
     lease_seconds: int,
+    queue_db_path: Path | None = None,
 ) -> None:
     """Ensure the claimed case's packet lives exactly as long as the lease.
 
@@ -2747,14 +3612,7 @@ def _rebuild_packet_for_claim(
     hash stays stable (version context comes from the durable queue metadata).
     """
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
-    packet_safe_hash = str(row["packet_safe_hash"])
-    if packet_safe_hash and _refresh_packet_expiry(
-        temp_root=effective_temp_root,
-        packet_safe_hash=packet_safe_hash,
-        ttl_seconds=lease_seconds,
-    ):
-        return
-    db_path = _queue_db_path(output_root, None)
+    db_path = _queue_db_path(output_root, queue_db_path)
     quarantine = _quarantine_dir(output_root)
     quarantine_path = quarantine / f"{str(row['source_hash'])}.json"
     if not quarantine_path.exists():
@@ -2775,6 +3633,10 @@ def _rebuild_packet_for_claim(
         league=str(row["league"]),
         row={},
     )
+    if str(row["packet_safe_hash"] or ""):
+        research_packet.cleanup_packets_by_safe_hashes(
+            {str(row["packet_safe_hash"])}, temp_root=effective_temp_root
+        )
     packet = _prepare_packet(
         case,
         temp_root=effective_temp_root,
@@ -2782,6 +3644,7 @@ def _rebuild_packet_for_claim(
         current_patch=version_context["gamePatch"],
         passive_tree_version=version_context["passiveTreeVersion"],
         pob_version_or_commit=version_context["pobVersionOrCommit"],
+        include_pob_readback=True,
     )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -2851,6 +3714,7 @@ def _prepare_packet(
     current_patch: str,
     passive_tree_version: str,
     pob_version_or_commit: str,
+    include_pob_readback: bool = False,
 ) -> dict[str, str]:
     packet_case = {
         "safeMetadata": {
@@ -2869,7 +3733,11 @@ def _prepare_packet(
             "pobVersionOrCommit": pob_version_or_commit,
             "visibility": "creator_visible",
             "split": "train_context",
-            "knowledgeScope": "global_seed",
+            "knowledgeScope": (
+                "global_seed"
+                if str(case.get("sourceType") or "").casefold() == "poe_ninja_import_code"
+                else "local_user"
+            ),
             "evidenceType": case["sourceType"],
             "freshnessStatus": "current_metadata_only"
             if case["sourceType"] == "poe_ninja_import_code"
@@ -2894,6 +3762,16 @@ def _prepare_packet(
             },
         },
     }
+    if include_pob_readback and os.environ.get("POE2_RESEARCH_POB_READBACK", "1") != "0":
+        packet_case["pobReadback"] = research_readback.build_safe_readback(
+            str(case.get("_rawXml") or ""),
+            source_hash_ref=str(case.get("sourceHashRef") or ""),
+            version_context={
+                "gamePatch": current_patch,
+                "passiveTreeVersion": passive_tree_version,
+                "pobVersionOrCommit": pob_version_or_commit,
+            },
+        )
     result = research_packet.build_research_packet(
         packet_case,
         persist_for_transport=True,
@@ -3069,6 +3947,24 @@ def _optional_acceptance_skill_manifest(
     except FileNotFoundError:
         return None
     return research_packet.build_skill_evidence_manifest(packet)
+
+
+def _optional_pob_readback(
+    *,
+    row: sqlite3.Row,
+    output_root: Path,
+    temp_root: str | Path | None,
+) -> dict[str, Any] | None:
+    try:
+        packet = _packet_for_valid_lease(
+            row=row,
+            output_dir=output_root,
+            temp_root=temp_root,
+        )
+    except FileNotFoundError:
+        return None
+    readback = packet.get("pobReadback")
+    return dict(readback) if isinstance(readback, dict) and readback else None
 
 
 def _optional_jewel_counts(
@@ -3431,7 +4327,9 @@ def _studied_source_hashes() -> set[str]:
         con = mature_learning.connect(db)
         try:
             rows = con.execute(
-                "SELECT DISTINCT source_case_refs FROM deep_research_records"
+                "SELECT DISTINCT source_case_refs FROM deep_research_records "
+                "WHERE knowledge_scope = 'global_seed' AND status = 'valid' "
+                "AND superseded_by_id IS NULL"
             ).fetchall()
         finally:
             con.close()
@@ -3546,6 +4444,7 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
         "acceptedSemanticEdgeCount": int(case.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(case.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(case.get("updatedDeepRecordCount") or 0),
+        "unchangedDeepRecordCount": int(case.get("unchangedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(case.get("addedDeepRecordEvidenceCount") or 0),
         "createdBuildFamilyCount": int(case.get("createdBuildFamilyCount") or 0),
         "addedBuildFamilyEvidenceCount": int(case.get("addedBuildFamilyEvidenceCount") or 0),
@@ -3582,6 +4481,7 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
         "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
+        "unchangedDeepRecordCount": int(report.get("unchangedDeepRecordCount") or 0),
         "addedDeepRecordEvidenceCount": int(report.get("addedDeepRecordEvidenceCount") or 0),
         "createdBuildFamilyCount": int(report.get("createdBuildFamilyCount") or 0),
         "addedBuildFamilyEvidenceCount": int(report.get("addedBuildFamilyEvidenceCount") or 0),
@@ -3731,6 +4631,17 @@ def _safe_validation_transport_report(
     """Redact unsafe validation prose while preserving safe paths and repair categories."""
 
     diagnostics: list[dict[str, Any]] = []
+    typed_key_fields = {
+        "componentKey",
+        "componentKeys",
+        "skillKey",
+        "supportKeys",
+        "hostSkillKey",
+        "resolverQuery",
+        "recordRef",
+        "sourceGroupRef",
+        "rootSkillRef",
+    }
 
     def visit(value: Any, *, path: list[str | int]) -> Any:
         if isinstance(value, dict):
@@ -3743,6 +4654,10 @@ def _safe_validation_transport_report(
             return [visit(child, path=[*path, index]) for index, child in enumerate(value)]
         if isinstance(value, str):
             flags = copy_safety.copyability_flags(value)
+            if path and str(path[-1]) in typed_key_fields:
+                blocking_flags = copy_safety.durable_knowledge_flags(value)
+                if not blocking_flags:
+                    return value
             if (
                 path
                 and path[-1] == "reportId"
@@ -3752,6 +4667,8 @@ def _safe_validation_transport_report(
                 return value
             if flags:
                 blocking_flags = copy_safety.durable_knowledge_flags(value)
+                if not blocking_flags:
+                    return value
                 diagnostics.append(
                     {
                         "loc": path,
@@ -3898,7 +4815,12 @@ def _compact_accept_result(result: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _identity_resolvability_hint(*, ascendancy: str, main_skill: str) -> dict[str, Any]:
+def _identity_resolvability_hint(
+    *,
+    ascendancy: str,
+    main_skill: str,
+    source_skill_id: str | None = None,
+) -> dict[str, Any]:
     """Best-effort identity resolvability pre-check for a claimed case.
 
     Advisory only: a failed graph load or unresolved display name never blocks the
@@ -3906,10 +4828,24 @@ def _identity_resolvability_hint(*, ascendancy: str, main_skill: str) -> dict[st
     (e.g. Witch "Lich" -> "Abyssal Lich") resolve through graph aliases, so the
     canonical key hint prevents researcher-side mislabelling.
     """
+    normalized_source_skill_id = str(source_skill_id or "").strip()
+    has_primary = bool(normalized_source_skill_id or str(main_skill or "").strip())
     hint: dict[str, Any] = {
         "ascendancyCanonicalKey": None,
         "ascendancyResolvable": False,
         "primarySkillResolvable": False,
+        "primarySkillResolutionHint": {
+            "authority": "programmatic_snapshot_non_authoritative",
+            "subject": "pob_selected_calculation_skill",
+            "status": "graph_unavailable" if has_primary else "not_provided",
+            "queryKind": "source_skill_id" if normalized_source_skill_id else "display_name",
+            "displayName": str(main_skill or "").strip(),
+            "sourceSkillId": normalized_source_skill_id or None,
+            "resolvedSkillKey": None,
+            "candidateSkillKeys": [],
+            "snapshotId": None,
+            "authorizesFamilyIdentity": False,
+        },
     }
     ascendancy_name = str(ascendancy or "").strip()
     main_skill_name = str(main_skill or "").strip()
@@ -3918,6 +4854,9 @@ def _identity_resolvability_hint(*, ascendancy: str, main_skill: str) -> dict[st
         service = graph_tools.service_from_snapshot_index(str(index_path))
     except Exception:
         return hint
+    hint["primarySkillResolutionHint"]["snapshotId"] = (
+        str(getattr(service.snapshot, "snapshot_id", "") or "") or None
+    )
     try:
         if ascendancy_name:
             result = service.run_tool(
@@ -3931,14 +4870,47 @@ def _identity_resolvability_hint(*, ascendancy: str, main_skill: str) -> dict[st
     except Exception:
         pass
     try:
-        if main_skill_name:
+        if normalized_source_skill_id or main_skill_name:
+            exact_skill_key = (
+                normalized_source_skill_id
+                if normalized_source_skill_id.startswith("skill:")
+                else f"skill:{normalized_source_skill_id}"
+                if normalized_source_skill_id
+                else ""
+            )
             result = service.run_tool(
                 "resolve_graph_component",
-                {"query": main_skill_name},
+                {
+                    "query": exact_skill_key or main_skill_name,
+                    "expected_node_types": ["active_skill"],
+                    "scope": "player",
+                },
             )
-            hint["primarySkillResolvable"] = result.get("status") == "resolved"
+            status = str(result.get("status") or "missing")
+            public_status = status if status in {"resolved", "ambiguous", "missing"} else "missing"
+            candidates: list[str] = []
+            resolved_subject = result.get("resolvedSubject") or {}
+            resolved_key = str(resolved_subject.get("stableKey") or "")
+            if exact_skill_key and public_status == "resolved" and resolved_key != exact_skill_key:
+                public_status = "ambiguous"
+            for item in result.get("candidates") or result.get("candidateSubjects") or []:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("stableKey") or item.get("componentKey") or "")
+                if key.startswith("skill:"):
+                    candidates.append(key)
+            if resolved_key.startswith("skill:"):
+                candidates.append(resolved_key)
+            hint["primarySkillResolutionHint"].update(
+                {
+                    "status": public_status,
+                    "resolvedSkillKey": resolved_key or None,
+                    "candidateSkillKeys": sorted(set(candidates))[:12],
+                }
+            )
+            hint["primarySkillResolvable"] = public_status == "resolved"
     except Exception:
-        pass
+        hint["primarySkillResolutionHint"]["status"] = "graph_unavailable"
     return hint
 
 
@@ -3947,6 +4919,7 @@ def _claim_payload(
     *,
     lease_token: str,
     output_root: Path,
+    temp_root: str | Path | None,
 ) -> dict[str, Any]:
     sample_id = str(row["sample_id"])
     review_file = _suggested_review_file(
@@ -3959,9 +4932,23 @@ def _claim_payload(
         lease_token=lease_token,
         review_file=review_file,
     )
+    source_skill_id = ""
+    try:
+        packet = _packet_for_valid_lease(
+            row=row,
+            output_dir=output_root,
+            temp_root=temp_root,
+        )
+        raw_context = packet.get("rawContext")
+        raw_xml = str(raw_context.get("rawXml") or "") if isinstance(raw_context, dict) else ""
+        selected_identity = pob_xml_meta.main_skill_identity_from_pob_xml(raw_xml)
+        source_skill_id = str((selected_identity or {}).get("skillId") or "")
+    except (FileNotFoundError, ValueError):
+        source_skill_id = ""
     identity_hint = _identity_resolvability_hint(
         ascendancy=str(row["ascendancy"]),
         main_skill=str(row["main_skill"]),
+        source_skill_id=source_skill_id,
     )
     return {
         "status": "claimed",
@@ -4166,6 +5153,61 @@ def _lease_artifact_identity(row: sqlite3.Row) -> dict[str, str]:
     }
 
 
+def _authoritative_knowledge_scope(row: sqlite3.Row | dict[str, Any]) -> str:
+    """Derive durable scope from server-owned source provenance."""
+
+    source_type = str(row["source_type"] or "").strip().casefold()
+    if source_type in {"poe_ninja_import_code", "poe_ninja", "public_poe_ninja"}:
+        return "global_seed"
+    return "local_user"
+
+
+def _bind_authoritative_review_scope(
+    review_payload: dict[str, Any],
+    *,
+    row: sqlite3.Row | dict[str, Any],
+    mismatch_error: str,
+) -> dict[str, Any]:
+    """Apply the same server-owned scope projection before every accept-attempt hash."""
+
+    authoritative_scope = _authoritative_knowledge_scope(row)
+    submitted_scope = str(review_payload.get("knowledgeScope") or authoritative_scope)
+    if submitted_scope != authoritative_scope:
+        raise ValueError(mismatch_error)
+    review_payload["knowledgeScope"] = authoritative_scope
+    for edge in review_payload.get("semanticEdges") or []:
+        if isinstance(edge, dict):
+            edge["knowledge_scope"] = authoritative_scope
+    return review_payload
+
+
+def _assert_matching_inflight_review(
+    *,
+    db_path: Path,
+    row: sqlite3.Row,
+    review_payload: dict[str, Any],
+    expected_origin_state: str,
+) -> None:
+    """Permit replay only when the submitted canonical review owns the in-flight attempt."""
+
+    _bind_authoritative_review_scope(
+        review_payload,
+        row=row,
+        mismatch_error="in-flight review knowledgeScope does not match source provenance",
+    )
+    run_id = str(_read_metadata(db_path).get("runId") or db_path.parent.name)
+    expected_attempt_key = research_runtime.accept_attempt_key(
+        run_id=run_id,
+        sample_id=str(row["sample_id"]),
+        packet_safe_hash=str(row["packet_safe_hash"]),
+        canonical_review_hash=research_runtime.stable_hash(review_payload),
+        contract_version=str(review_payload.get("reviewContractVersion") or ""),
+        expected_origin_state=expected_origin_state,
+    )
+    if expected_attempt_key != str(row["accept_attempt_key"] or ""):
+        raise ValueError("in-flight review hash does not match acceptAttemptKey")
+
+
 def _review_evidence_refs(item: dict[str, Any]) -> list[str]:
     plural = item.get("safeEvidenceRefs") or []
     if not isinstance(plural, list):
@@ -4253,12 +5295,12 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 ## Research Quality First
 研究质量优先于速度与上下文预算：必须完整读取全部要求的分区，并盘点每个启用技能组。Family
 主技能、核心副技能以及研究结论实际依赖的高影响组应使用 supportPackages 或
-supportCoverageExceptions 保存精确归属；低影响、内部 id、multi-active 或无法唯一解析的组可以保留
+supportCoverageExceptions 保存根技能与 socketed items；低影响、内部 id 或无法唯一解析的组可以保留
 为明确 caveat / verification task，不得静默丢弃，也不因其自身缺口机械否定整个案例。
 批量 resolve 与精简视图用于降低上下文成本；优先把精力用于构筑身份、因果链和失败条件。
 
 ## Evidence First
-先运行 inspect，再按 skills、gear、jewels、passives、config、build 顺序把每个分区分页读完；
+先运行 inspect，再严格按 recommendedReadOrder（包括 skill-groups 与 pob-readback）把每个分区分页读完；
 complete=false 时用上一页响应的 nextCursor 续页（不要用 cursor+limit 自算：字符预算截断时实返
 数量会少于请求 limit，自算会跳过中间条目；响应出现 continuityWarning 时尤其如此）。
 jewels 分区只含天赋树珠宝（gear 分区仍包含它们，供逐槽对照）；search 只能定位
@@ -4757,7 +5799,7 @@ def main(argv: list[str] | None = None) -> int:
         "--section",
         required=True,
         choices=list(research_packet.RESEARCH_SECTIONS) + ["skill-groups"],
-        help="structured section; skill-groups returns every enabled skill group with its supports",
+        help="structured section; skill-groups returns each root skill and its socketed items",
     )
     read_parser.add_argument(
         "--cursor",

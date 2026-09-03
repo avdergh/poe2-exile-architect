@@ -48,11 +48,24 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "buildFamilies" in skill
     assert "deepResearchRecords" in skill
     assert "buildPatterns" in skill
-    assert "semanticEdges" in skill
+    assert "selectedKnowledgeScope" in skill
+    assert "selectedSourceCaseRef" in skill
+    assert "continuation_cursor" in skill
     assert "case_observation" in skill
     assert "researchMemoryUse" in skill
     assert 'retrievalOutcome="no_matching_memory"' in skill
     assert "insightDecisions" in skill
+    assert "role=unique_enabler" in skill
+    assert "optional_upgrade" in skill
+    assert "budget_substitute" in skill
+    assert "按 stable key 为每个" in skill
+    assert "价格不能成为拒绝理由" in skill
+    assert "价格不能成为拒绝理由" in skill
+    assert "apply_next_jewel_socket_decision" in skill
+    assert "offense_skill_group_index=<最终Judge目标组>" in skill
+    assert "当前版本不可用时写 `rejected`" in skill
+    assert "adopted / rejected / unavailable" not in skill
+    assert "操作简单、造价低" not in skill
     assert "graph_tool_query" in skill
     assert "find_skills" in skill
     assert "find_supports_for" in skill
@@ -65,6 +78,8 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "set_skill" in skill
     assert "optimize_supports" in skill
     assert "plan_gear" in skill
+    assert "optimize_flask" in skill
+    assert "endgame_flask_loadout_incomplete" in skill
     assert "evaluate_build" in skill
     assert "apply_build_mutation_batch" in skill
     assert "mechanism_shell" in skill
@@ -96,10 +111,11 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "提交给运行工具的内部对象" in skill
     assert "不能换职业" in skill
     assert "complete_generation_review" in skill
+    assert "poe_ninja_pob" in skill
+    assert "publicExternalUpload=true" in skill
     assert "validate_generation_output" in skill
     assert "lifecycleEvidenceCoverage" in skill
     assert "HumanReviewPacket" in skill
-    assert "无参数" in skill
     assert "referenceBlind=true" in skill
     assert "不要搜索仓库" in skill
     assert "隐藏思维链" in skill
@@ -187,6 +203,10 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert 'response_profile="create_compact"' in guide
     assert "researchMemoryUse" in guide
     assert "physical graph, and corpus override patch-sensitive prose" in guide
+    assert "use `optimize_flask` to create a legal Magic target" in guide
+    assert "because it is expensive or because the user supplied a budget" in guide
+    assert "价格只在方案锁定后披露，不参与采用" in phase5
+    assert "清图/Boss/生存/造价/上限" not in phase5
     assert "/poe-bd-create" in readme
     assert "poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md" in readme
     for internal_contract in (

@@ -11,6 +11,9 @@ from server.compute import completeness
 from server.judge import hard_legality, rules
 
 
+_OBJECTIVE_COMPLETENESS_ADVISORIES = frozenset({"spirit_opportunity_review_required"})
+
+
 def inspect_generation_preflight(
     engine: Any,
     *,
@@ -34,15 +37,22 @@ def project_feedback(result: dict[str, Any], *, strict_mode: bool) -> dict[str, 
     projected["subjectiveFeedbackSuppressed"] = not strict_mode
     if strict_mode:
         return projected
-    projected["qualityAdvisories"] = []
-    projected["advisories"] = []
+    retained_advisories = [
+        str(value)
+        for value in projected.get("advisories") or []
+        if str(value) in _OBJECTIVE_COMPLETENESS_ADVISORIES
+    ]
+    projected["qualityAdvisories"] = retained_advisories
+    projected["advisories"] = retained_advisories
     if projected.get("readyForJudge"):
-        projected["status"] = "ready"
+        projected["status"] = "needs_attention" if retained_advisories else "ready"
     completeness_result = projected.get("completeness")
     if isinstance(completeness_result, dict):
-        completeness_result["advisories"] = []
+        completeness_result["advisories"] = retained_advisories
         completeness_result["status"] = (
-            "complete" if not completeness_result.get("hardFailures") else "needs_attention"
+            "complete"
+            if not completeness_result.get("hardFailures") and not retained_advisories
+            else "needs_attention"
         )
     return projected
 
@@ -57,6 +67,7 @@ def inspect_generation_snapshot(
     parsed = _parse_skill_groups(xml)
     if parsed.get("errorCode"):
         return _error(str(parsed["errorCode"]))
+    _decorate_runtime_active_names(engine, parsed)
 
     blocking: list[str] = []
     group_diagnostics: list[dict[str, Any]] = []
@@ -65,7 +76,7 @@ def inspect_generation_snapshot(
         issues: list[str] = []
         active_ids = list(group["activeIds"])
         support_ids = list(group["supportIds"])
-        if len(active_ids) != 1:
+        if not _socket_composition_valid(group):
             issues.append("invalid_socket_setup")
             blocking.append("invalid_socket_setup")
         if len(support_ids) != len(set(support_ids)):
@@ -78,6 +89,9 @@ def inspect_generation_snapshot(
                 "role": group["role"],
                 "activeSkills": group["activeNames"],
                 "supports": group["supportNames"],
+                "source": group.get("source"),
+                "sourceKind": group.get("sourceKind"),
+                "noSupports": bool(group.get("noSupports")),
                 "issues": issues,
             }
         )
@@ -99,7 +113,11 @@ def inspect_generation_snapshot(
     completeness_failures = [str(value) for value in complete.get("hardFailures") or []]
     try:
         build = hard_legality.augment_build_with_snapshot_gear(engine.get_build(), xml)
-        legality = hard_legality.audit_build(build)
+        build["passiveJewels"] = dict(complete.get("passiveJewels") or {})
+        legality = hard_legality.audit_build(
+            build,
+            require_create_completion=True,
+        )
         get_defenses = getattr(engine, "get_defenses", None)
         defenses = get_defenses() if callable(get_defenses) else {}
     except Exception:  # noqa: BLE001 - preflight fails closed without exposing engine details.
@@ -143,7 +161,7 @@ def inspect_generation_snapshot(
 
 
 def inspect_main_skill_socketed(xml: str) -> dict[str, Any]:
-    """Return bounded evidence that the active PoB main group has one enabled active gem.
+    """Return bounded evidence that the main group has a legal enabled active composition.
 
     Lifecycle verification calls this against the exact XML snapshot whose hash it reports.
     Keeping the check here ensures the Phase 5 preflight and lifecycle gate interpret socket
@@ -162,7 +180,7 @@ def inspect_main_skill_socketed(xml: str) -> dict[str, Any]:
         None,
     )
     active_count = len(main_group["activeIds"]) if main_group else 0
-    socketed = active_count == 1
+    socketed = bool(main_group and _socket_composition_valid(main_group))
     return {
         "status": "passed" if socketed else "failed",
         "socketed": socketed,
@@ -398,9 +416,20 @@ def _parse_skill_groups(xml: str) -> dict[str, Any]:
                 "groupIndex": index,
                 "role": "pob_main_group" if str(index) == main_group else "additional_skill_group",
                 "activeIds": [_gem_identity(gem) for gem in active],
+                "rootSkillId": str(
+                    active[0].get("skillId")
+                    or active[0].get("gemId")
+                    or active[0].get("nameSpec")
+                    or ""
+                ),
                 "activeNames": [_gem_name(gem) for gem in active],
+                # Runtime display effects may expose multiple calculation choices for one socketed
+                # gem (for example Ruzhan + Command). Preserve raw XML names for structure checks;
+                # activeNames may be decorated later for display/selection only.
+                "socketedActiveNames": [_gem_name(gem) for gem in active],
                 "supportIds": [_gem_identity(gem) for gem in supports],
                 "supportNames": [_gem_name(gem) for gem in supports],
+                "source": str(group.get("source") or "") or None,
             }
         )
     if not groups or not any(group["role"] == "pob_main_group" for group in groups):
@@ -409,6 +438,52 @@ def _parse_skill_groups(xml: str) -> dict[str, Any]:
         "groups": groups,
         "ascendancy": str(build.get("ascendClassName") or "None"),
     }
+
+
+def _socket_composition_valid(group: dict[str, Any]) -> bool:
+    active_ids = list(group.get("activeIds") or [])
+    if len(active_ids) == 1:
+        return True
+    names = group.get("socketedActiveNames") or group.get("activeNames") or []
+    return rules.is_valid_active_skill_group(names)
+
+
+def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
+    """Use runtime active effects for display/selection without changing XML identity checks."""
+
+    try:
+        runtime = engine.call("list_skill_groups")
+    except Exception:  # noqa: BLE001 - preflight keeps XML evidence when runtime readback fails.
+        return
+    runtime_groups = {
+        int(group.get("index") or 0): group
+        for group in (runtime.get("groups") or [])
+        if isinstance(group, dict)
+    }
+    for group in parsed.get("groups") or []:
+        runtime_group = runtime_groups.get(int(group.get("groupIndex") or 0)) or {}
+        parsed_source = str(group.get("source") or "")
+        runtime_source = str(runtime_group.get("source") or "")
+        parsed_root_id = str(group.get("rootSkillId") or "").strip()
+        runtime_root_id = str(runtime_group.get("rootSkillId") or "").strip()
+        if (
+            parsed_source != runtime_source
+            or not parsed_root_id
+            or not runtime_root_id
+            or parsed_root_id != runtime_root_id
+        ):
+            continue
+        names = [
+            str(active.get("name") or "").strip()
+            for active in (runtime_group.get("activeSkills") or [])
+            if isinstance(active, dict) and str(active.get("name") or "").strip()
+        ]
+        if names:
+            group["activeNames"] = list(dict.fromkeys(names))
+        if "noSupports" in runtime_group:
+            group["noSupports"] = bool(runtime_group.get("noSupports"))
+        if runtime_group.get("sourceKind"):
+            group["sourceKind"] = str(runtime_group["sourceKind"])
 
 
 def _gem_identity(gem: ET.Element) -> str:

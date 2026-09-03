@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from server.knowledge import mature_learning, research_memory  # noqa: E402
+from server.knowledge import mature_learning, research_memory, research_runtime  # noqa: E402
 from server.knowledge import physical_graph as pg  # noqa: E402
 from server.knowledge import graph_tools as gt  # noqa: E402
 
@@ -113,10 +113,10 @@ def _insert_family_and_record(
     try:
         con.execute(
             """
-            INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
-                secondary_skill_keys, evidence_count, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, '[]', 1, ?, ?)
+                INSERT INTO research_build_families(
+                    knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                    secondary_skill_keys, evidence_count, created_at, last_seen_at
+                ) VALUES ('global_seed', ?, ?, ?, ?, '[]', 1, ?, ?)
             """,
             (
                 family_key,
@@ -183,8 +183,8 @@ def _insert_family_and_record(
         con.execute(
             """
             INSERT INTO research_build_family_evidence(
-                build_family_key, source_case_ref, first_seen_at, last_seen_at
-            ) VALUES (?, ?, ?, ?)
+                knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
+            ) VALUES ('global_seed', ?, ?, ?, ?)
             """,
             (
                 family_key,
@@ -250,6 +250,11 @@ def test_merge_script_dry_run_reports_plan(tmp_path):
 def test_merge_script_apply_converges_to_single_family(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     _seed_store(db_path)
+    con = mature_learning.connect(db_path)
+    try:
+        revision_before_apply = research_runtime.get_memory_revision(con)
+    finally:
+        con.close()
     report = _run_script(db_path, "--apply", "--backup-dir", str(tmp_path))
     assert report["status"] == "applied"
     con = mature_learning.connect(db_path)
@@ -273,6 +278,7 @@ def test_merge_script_apply_converges_to_single_family(tmp_path):
         assert orphans == 0
         log_rows = con.execute("SELECT count(*) FROM family_merge_log").fetchone()[0]
         assert log_rows >= 2
+        assert research_runtime.get_memory_revision(con) > revision_before_apply
     finally:
         con.close()
 

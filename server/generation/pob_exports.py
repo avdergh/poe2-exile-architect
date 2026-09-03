@@ -62,6 +62,7 @@ def export_final_pob_artifact(
         "status": "exported",
         "artifactId": manifest.artifact_id,
         "sourceHash": manifest.source_hash,
+        "deliveryStatus": manifest.delivery_status,
         "outputs": outputs,
         "exportedAt": datetime.now(timezone.utc).isoformat(),
         "responseContainsRawPob": False,

@@ -28,7 +28,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from server.knowledge import mature_learning, research_identity, research_memory  # noqa: E402
+from server.knowledge import (  # noqa: E402
+    mature_learning,
+    research_identity,
+    research_memory,
+    research_runtime,
+)
 from server.knowledge.skill_equivalence import SkillEquivalenceIndex  # noqa: E402
 
 _MERGE_LOG_SQL = """
@@ -62,7 +67,7 @@ def _json(value) -> str:
 
 def load_families(con):
     rows = con.execute(
-        "SELECT build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys, "
+        "SELECT knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys, "
         "secondary_skill_keys, evidence_count FROM research_build_families"
     ).fetchall()
     families = []
@@ -72,6 +77,7 @@ def load_families(con):
             keys = [str(row["primary_skill_key"] or "")] if row["primary_skill_key"] else []
         families.append(
             {
+                "scope": str(row["knowledge_scope"]),
                 "key": str(row["build_family_key"]),
                 "ascendancy": str(row["ascendancy_key"]),
                 "primary_keys": [str(k) for k in keys if k],
@@ -82,10 +88,11 @@ def load_families(con):
     return families
 
 
-def collect_record_primary_keys(con, family_key: str) -> list[str]:
+def collect_record_primary_keys(con, scope: str, family_key: str) -> list[str]:
     rows = con.execute(
-        "SELECT component_mentions FROM deep_research_records WHERE build_family_key = ?",
-        (family_key,),
+        "SELECT component_mentions FROM deep_research_records "
+        "WHERE knowledge_scope = ? AND build_family_key = ?",
+        (scope, family_key),
     ).fetchall()
     keys: set[str] = set()
     for row in rows:
@@ -115,10 +122,10 @@ def merge_plan_expansions(con, families, idx: SkillEquivalenceIndex) -> list[dic
     Partial-overlap and disjoint families are left untouched (reported for review).
     """
     plan: list[dict] = []
-    by_ascendancy: dict[str, list[dict]] = {}
+    by_ascendancy: dict[tuple[str, str], list[dict]] = {}
     for fam in families:
-        by_ascendancy.setdefault(fam["ascendancy"], []).append(fam)
-    for ascendancy, group in by_ascendancy.items():
+        by_ascendancy.setdefault((fam["scope"], fam["ascendancy"]), []).append(fam)
+    for (_scope, _ascendancy), group in by_ascendancy.items():
         entries = [
             (canonical_set(con, f["primary_keys"], idx), f) for f in group if f["primary_keys"]
         ]
@@ -136,6 +143,7 @@ def merge_plan_expansions(con, families, idx: SkillEquivalenceIndex) -> list[dic
                 plan.append(
                     {
                         "src": fam["key"],
+                        "scope": fam["scope"],
                         "dst": other["key"],
                         "dst_key": None,  # expand: identity key is recomputed
                         "relation": "expand",
@@ -161,6 +169,7 @@ def merge_plan_expansions(con, families, idx: SkillEquivalenceIndex) -> list[dic
                     plan.append(
                         {
                             "src": fam["key"],
+                            "scope": fam["scope"],
                             "dst": target["key"],
                             "dst_key": target["key"],  # join keeps the target's stored key
                             "relation": "join",
@@ -202,15 +211,16 @@ def main() -> int:
         # damage declarations
         enriched = []
         for fam in families:
-            record_keys = collect_record_primary_keys(con, fam["key"])
+            fam["stored_primary_keys"] = list(fam["primary_keys"])
+            record_keys = collect_record_primary_keys(con, fam["scope"], fam["key"])
             fam["primary_keys"] = sorted(set(fam["primary_keys"]) | set(record_keys))
             enriched.append(fam)
         join_plan = merge_plan_expansions(con, enriched, idx)
         partial_overlap: list[dict] = []
-        by_asc: dict[str, list[dict]] = {}
+        by_asc: dict[tuple[str, str], list[dict]] = {}
         for fam in enriched:
-            by_asc.setdefault(fam["ascendancy"], []).append(fam)
-        for asc, group in by_asc.items():
+            by_asc.setdefault((fam["scope"], fam["ascendancy"]), []).append(fam)
+        for (scope, asc), group in by_asc.items():
             entries = [
                 (canonical_set(con, f["primary_keys"], idx), f) for f in group if f["primary_keys"]
             ]
@@ -228,6 +238,7 @@ def main() -> int:
                                 "family_a": fam_i["key"],
                                 "family_b": fam_j["key"],
                                 "ascendancy": asc,
+                                "knowledge_scope": scope,
                                 "shared": sorted(inter),
                             }
                         )
@@ -248,14 +259,15 @@ def main() -> int:
                         1
                         for f in enriched
                         if con.execute(
-                            "SELECT 1 FROM deep_research_records WHERE build_family_key = ?",
-                            (f["key"],),
+                            "SELECT 1 FROM deep_research_records "
+                            "WHERE knowledge_scope = ? AND build_family_key = ?",
+                            (f["scope"], f["key"]),
                         ).fetchone()
                         is None
                         and con.execute(
                             "SELECT 1 FROM research_build_family_evidence "
-                            "WHERE build_family_key = ?",
-                            (f["key"],),
+                            "WHERE knowledge_scope = ? AND build_family_key = ?",
+                            (f["scope"], f["key"]),
                         ).fetchone()
                         is None
                     ),
@@ -281,11 +293,18 @@ def main() -> int:
         now = _now()
         # Backfill primary_skill_keys on every family (stored value + record-level primary
         # damage declarations) so later rounds and future runs see a consistent identity.
+        primary_update_count = 0
         for fam in enriched:
+            if sorted(fam["stored_primary_keys"]) == sorted(fam["primary_keys"]):
+                continue
             con.execute(
-                "UPDATE research_build_families SET primary_skill_keys = ? WHERE build_family_key = ?",
-                (_json(fam["primary_keys"]), fam["key"]),
+                "UPDATE research_build_families SET primary_skill_keys = ? "
+                "WHERE knowledge_scope = ? AND build_family_key = ?",
+                (_json(fam["primary_keys"]), fam["scope"], fam["key"]),
             )
+            primary_update_count += 1
+        if primary_update_count:
+            research_runtime.bump_memory_revision(con)
         con.commit()
         merged = 0
         rounds = 0
@@ -294,18 +313,21 @@ def main() -> int:
             families = load_families(con)
             enriched_now = []
             for fam in families:
-                record_keys = collect_record_primary_keys(con, fam["key"])
+                record_keys = collect_record_primary_keys(con, fam["scope"], fam["key"])
                 fam["primary_keys"] = sorted(set(fam["primary_keys"]) | set(record_keys))
                 enriched_now.append(fam)
             plan_round = merge_plan_expansions(con, enriched_now, idx)
             if not plan_round:
                 break
+            round_merged = 0
             for entry in plan_round:
                 src = entry["src"]
+                scope = entry["scope"]
                 if (
                     con.execute(
-                        "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                        (src,),
+                        "SELECT 1 FROM research_build_families "
+                        "WHERE knowledge_scope = ? AND build_family_key = ?",
+                        (scope, src),
                     ).fetchone()
                     is None
                 ):
@@ -314,8 +336,9 @@ def main() -> int:
                 if dst_key is not None:
                     if (
                         con.execute(
-                            "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                            (dst_key,),
+                            "SELECT 1 FROM research_build_families "
+                            "WHERE knowledge_scope = ? AND build_family_key = ?",
+                            (scope, dst_key),
                         ).fetchone()
                         is None
                     ):
@@ -328,7 +351,7 @@ def main() -> int:
                                 secondary_skill_keys=tuple(sorted(fam["secondary_keys"])),
                             )
                             for fam in enriched_now
-                            if fam["key"] == dst_key
+                            if fam["scope"] == scope and fam["key"] == dst_key
                         ),
                         None,
                     )
@@ -337,7 +360,9 @@ def main() -> int:
                 else:
                     dst_identity = research_identity.BuildFamilyIdentity(
                         ascendancy_key=next(
-                            f["ascendancy"] for f in enriched_now if f["key"] == src
+                            f["ascendancy"]
+                            for f in enriched_now
+                            if f["scope"] == scope and f["key"] == src
                         ),
                         primary_skill_keys=tuple(sorted(entry["dst_primary_keys"])),
                     )
@@ -346,6 +371,7 @@ def main() -> int:
                     con,
                     src_family_key=src,
                     dst_identity=dst_identity,
+                    knowledge_scope=scope,
                     now=now,
                     dst_key=dst_key,
                 )
@@ -367,6 +393,9 @@ def main() -> int:
                     ),
                 )
                 merged += 1
+                round_merged += 1
+            if round_merged:
+                research_runtime.bump_memory_revision(con)
             con.commit()
             if rounds > 50:
                 print(

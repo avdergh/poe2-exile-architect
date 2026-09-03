@@ -14,6 +14,11 @@ def _legal_build() -> dict[str, object]:
         "pointsAvailable": 108,
         "spiritUsed": 100,
         "spiritAvailable": 100,
+        "spiritReservedCapped": 100,
+        "spiritUnreserved": 0,
+        "spiritRequested": 100,
+        "spiritOverBy": 0,
+        "activeWeaponSet": 1,
         "attributes": {
             "strength": 90,
             "dexterity": 120,
@@ -36,7 +41,15 @@ def _legal_build() -> dict[str, object]:
                 "name": "Legal Quarterstaff",
                 "levelRequirement": 78,
                 "affixLegality": {"ok": True, "issues": []},
-            }
+            },
+            "Flask 1": {"name": "Unique Life Flask", "rarity": "UNIQUE"},
+            "Flask 2": {
+                "name": "Magic Mana Flask",
+                "rarity": "MAGIC",
+                "itemLevel": 82,
+                "affixPrefixes": 1,
+                "affixSuffixes": 0,
+            },
         },
     }
 
@@ -93,7 +106,15 @@ def test_hard_legality_reports_exact_attribute_shortfall_before_judge():
             "incompatible_weapon_skill_tags",
         ),
         (
-            lambda build: build.update({"spiritUsed": 101}),
+            lambda build: build.update(
+                {
+                    "spiritUsed": 101,
+                    "spiritRequested": 101,
+                    "spiritReservedCapped": 100,
+                    "spiritUnreserved": -1,
+                    "spiritOverBy": 1,
+                }
+            ),
             "spirit_budget_exceeded",
         ),
         (
@@ -132,6 +153,70 @@ def test_hard_legality_accepts_a_fully_legal_candidate():
     assert result["status"] == "passed"
     assert result["hardLegalityReady"] is True
     assert result["hardFailures"] == []
+
+
+@pytest.mark.parametrize(
+    "flask2",
+    [
+        None,
+        {"rarity": "NORMAL"},
+        {"rarity": "MAGIC"},
+        {"rarity": "RARE", "itemLevel": 82, "affixPrefixes": 1, "affixSuffixes": 1},
+    ],
+)
+def test_generated_endgame_requires_modified_flasks(flask2):
+    build = _legal_build()
+    if flask2 is None:
+        build["gear"].pop("Flask 2")
+    else:
+        build["gear"]["Flask 2"] = flask2
+
+    result = hard_legality.audit_build(build)
+
+    assert "endgame_flask_loadout_incomplete" in result["hardFailures"]
+    assert result["checks"]["generatedItemDelivery"]["flaskIssues"]
+
+
+def test_hard_legality_blocks_capped_spirit_false_pass():
+    build = _legal_build()
+    build.update(
+        {
+            "spiritAvailable": 150,
+            "spiritReservedCapped": 150,
+            "spiritUnreserved": -227,
+            "spiritRequested": 377,
+            "spiritOverBy": 227,
+            "spiritUsed": 377,
+        }
+    )
+
+    result = hard_legality.audit_build(build)
+
+    assert result["checks"]["spiritBudget"]["ledgerStatus"] == "consistent"
+    assert result["checks"]["spiritBudget"]["reservedCapped"] == 150
+    assert "spirit_budget_exceeded" in result["hardFailures"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda build: build.pop("spiritUnreserved"),
+        lambda build: build.update({"spiritRequested": float("nan")}),
+        lambda build: build.update({"spiritOverBy": 0, "spiritUnreserved": -1}),
+        lambda build: build.update({"spiritAvailable": "100"}),
+        lambda build: build.update({"spiritOverBy": False}),
+        lambda build: build.update({"activeWeaponSet": "1"}),
+        lambda build: build.update({"activeWeaponSet": 3}),
+    ],
+)
+def test_hard_legality_fails_closed_on_unverified_spirit_ledger(mutation):
+    build = _legal_build()
+    mutation(build)
+
+    result = hard_legality.audit_build(build)
+
+    assert result["checks"]["spiritBudget"]["ledgerStatus"] != "consistent"
+    assert "spirit_budget_unverified" in result["hardFailures"]
 
 
 @pytest.mark.parametrize(

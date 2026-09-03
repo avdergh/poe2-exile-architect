@@ -14,18 +14,184 @@ optimizes a goal the caller gives, it does not decide the goal.
 
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
+import json
 import re
+import threading
 from typing import Any, Literal
+from weakref import WeakKeyDictionary
+import xml.etree.ElementTree as ET
 
-from ..knowledge import db, item_legality
+from ..knowledge import db, item_legality, itemparse
 from ..judge import hard_legality
 from ..runtime import craft_receipts
+from . import pob_structure
 from .engine import PobEngine
+from .state import build_state_hash
 
 _RANGE = re.compile(r"\((\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\)")
 _RES_KEYS = ("fire", "cold", "lightning")
 _CHAOS_RESIST_RE = re.compile(r"chaos resistance", re.IGNORECASE)
+_ALL_ELEMENTAL_RESIST_RE = re.compile(r"all elemental resistances", re.IGNORECASE)
+_ELEMENT_RESIST_RE = {
+    element: re.compile(rf"\b{element} resistance\b", re.IGNORECASE) for element in _RES_KEYS
+}
 GearStage = Literal["auto", "campaign", "maps_entry", "endgame"]
+
+_JEWEL_DECISION_LOCK = threading.RLock()
+_JEWEL_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, Any]]] = WeakKeyDictionary()
+_JEWEL_APPLY_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, Any]]] = WeakKeyDictionary()
+_JEWEL_DECISION_LIMIT_PER_ENGINE = 64
+
+
+def next_jewel_decision_for_state(engine: Any, state_hash: str) -> dict[str, Any] | None:
+    with _JEWEL_DECISION_LOCK:
+        value = (_JEWEL_DECISIONS.get(engine) or {}).get(state_hash)
+        return deepcopy(value) if value is not None else None
+
+
+def next_jewel_decision_freshness(engine: Any, state_hash: str) -> str:
+    with _JEWEL_DECISION_LOCK:
+        try:
+            decisions = _JEWEL_DECISIONS.get(engine) or {}
+        except TypeError:
+            return "missing"
+        if state_hash in decisions:
+            return "current"
+        return "stale" if decisions else "missing"
+
+
+def _record_next_jewel_decision(
+    engine: Any,
+    state_hash: str,
+    decision: dict[str, Any],
+) -> None:
+    with _JEWEL_DECISION_LOCK:
+        engine_decisions = _JEWEL_DECISIONS.setdefault(engine, {})
+        engine_decisions[state_hash] = deepcopy(decision)
+        while len(engine_decisions) > _JEWEL_DECISION_LIMIT_PER_ENGINE:
+            engine_decisions.pop(next(iter(engine_decisions)))
+
+
+def _record_jewel_apply_decision(engine: Any, payload: dict[str, Any]) -> str:
+    stable = {
+        "stateHash": payload["stateHash"],
+        "roundIndex": payload["roundIndex"],
+        "socket": payload["socket"],
+        "nodesToRemove": payload["nodesToRemove"],
+        "jewelFingerprint": payload["jewelFingerprint"],
+    }
+    decision_ref = "jewel-decision:" + hashlib.sha256(
+        json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    with _JEWEL_DECISION_LOCK:
+        decisions = _JEWEL_APPLY_DECISIONS.setdefault(engine, {})
+        decisions[decision_ref] = deepcopy(payload)
+        while len(decisions) > _JEWEL_DECISION_LIMIT_PER_ENGINE:
+            decisions.pop(next(iter(decisions)))
+    return decision_ref
+
+
+def apply_next_jewel_socket_decision(
+    engine: PobEngine,
+    *,
+    decision_ref: str,
+    expected_state_hash: str,
+) -> dict[str, Any]:
+    """Atomically apply one previously measured positive jewel-socket decision."""
+
+    with engine.transaction_lock():
+        snapshot = engine.get_xml()
+        state_hash = build_state_hash(snapshot)
+        if state_hash != expected_state_hash:
+            return {
+                "ok": False,
+                "errorCode": "build_state_conflict",
+                "expectedStateHash": expected_state_hash,
+                "actualStateHash": state_hash,
+            }
+        with _JEWEL_DECISION_LOCK:
+            decision = deepcopy(
+                (_JEWEL_APPLY_DECISIONS.get(engine) or {}).get(decision_ref)
+            )
+        if not isinstance(decision, dict):
+            return {"ok": False, "errorCode": "jewel_socket_decision_not_found"}
+        if decision.get("stateHash") != state_hash:
+            return {"ok": False, "errorCode": "jewel_socket_decision_stale"}
+        if decision.get("positiveNetBenefit") is not True:
+            return {"ok": False, "errorCode": "jewel_socket_decision_not_positive"}
+        prior_rounds = int(decision.get("priorRoundsCompleted") or 0)
+        round_index = int(decision.get("roundIndex") or 0)
+        if round_index != prior_rounds + 1 or round_index not in {1, 2}:
+            return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
+        try:
+            for node_id in decision.get("nodesToRemove") or []:
+                removed = engine.dealloc_passive(int(node_id))
+                if not isinstance(removed, dict) or not removed.get("ok"):
+                    raise ValueError("jewel_reallocation_failed")
+            allocated = engine.alloc_passive(int(decision["socket"]))
+            if (
+                not isinstance(allocated, dict)
+                or not allocated.get("ok")
+                or allocated.get("warning")
+            ):
+                raise ValueError("jewel_socket_path_allocation_failed")
+            equipped = engine.equip_jewel(
+                str(decision["raw"]),
+                socket=int(decision["socket"]),
+            )
+            if not isinstance(equipped, dict) or not equipped.get("ok"):
+                raise ValueError("candidate_jewel_equip_failed")
+            output_state_hash = build_state_hash(engine.get_xml())
+            if output_state_hash == state_hash:
+                raise ValueError("jewel_socket_decision_not_applied")
+            try:
+                root = ET.fromstring(engine.get_xml())
+            except (ET.ParseError, TypeError, ValueError) as exc:
+                raise ValueError("jewel_socket_readback_mismatch") from exc
+            assignments = pob_structure.active_spec_passive_jewels(root)
+            expected_assignment = (
+                str(decision["socket"]),
+                str(decision["jewelFingerprint"]),
+            )
+            if assignments is None or expected_assignment not in assignments:
+                raise ValueError("jewel_socket_readback_mismatch")
+        except Exception as exc:  # noqa: BLE001 - restore first, return stable error only.
+            restored = _restore_jewel_state(engine, snapshot, state_hash)
+            setattr(engine, "_poe2_mutation_batch_recovery_required", not restored)
+            return {
+                "ok": False,
+                "errorCode": str(exc) if isinstance(exc, ValueError) else "jewel_socket_apply_failed",
+                "rolledBack": restored,
+                "recoveryRequired": not restored,
+            }
+        applied = {
+            "status": "applied",
+            "roundIndex": round_index,
+            "roundsCompleted": prior_rounds + 1,
+            "socket": int(decision["socket"]),
+            "positiveNetBenefit": True,
+            "decisionRef": decision_ref,
+            "inputStateHash": state_hash,
+            "stateHash": output_state_hash,
+        }
+        _record_next_jewel_decision(engine, output_state_hash, applied)
+        setattr(engine, "_poe2_mutation_batch_recovery_required", False)
+        return {
+            "ok": True,
+            **applied,
+            "outputStateHash": output_state_hash,
+            "rolledBack": False,
+        }
+
+
+def _restore_jewel_state(engine: Any, xml: str, state_hash: str) -> bool:
+    try:
+        engine.load_build_xml(xml, name="jewel-socket-decision-rollback")
+        return build_state_hash(engine.get_xml()) == state_hash
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def gear_stage_profile(
@@ -33,6 +199,7 @@ def gear_stage_profile(
     *,
     stage: GearStage = "auto",
     chaos_resist_target: int | None = None,
+    elemental_resist_target: int | None = None,
 ) -> dict[str, Any]:
     """Return stage-aware gear goals without treating pinnacle defenses as a universal baseline."""
     if stage not in {"auto", "campaign", "maps_entry", "endgame"}:
@@ -42,15 +209,28 @@ def gear_stage_profile(
         lvl = int(level or 0)
         resolved = "campaign" if lvl < 70 else "maps_entry" if lvl < 80 else "endgame"
     profiles = {
-        "campaign": {"defenseWeight": 0.65, "chaosResistTarget": 0},
-        "maps_entry": {"defenseWeight": 0.72, "chaosResistTarget": 30},
-        "endgame": {"defenseWeight": 0.78, "chaosResistTarget": 60},
+        "campaign": {
+            "defenseWeight": 0.65,
+            "chaosResistTarget": 0,
+            "elementalResistTarget": 30,
+        },
+        "maps_entry": {
+            "defenseWeight": 0.72,
+            "chaosResistTarget": 30,
+            "elementalResistTarget": 50,
+        },
+        "endgame": {
+            "defenseWeight": 0.78,
+            "chaosResistTarget": 30,
+            "elementalResistTarget": 60,
+        },
     }
     profile = dict(profiles[resolved])
     if chaos_resist_target is not None:
         profile["chaosResistTarget"] = max(-60, min(75, int(chaos_resist_target)))
+    if elemental_resist_target is not None:
+        profile["elementalResistTarget"] = max(-60, min(75, int(elemental_resist_target)))
     profile["stage"] = resolved
-    profile["elementalResistTarget"] = 75
     return profile
 
 
@@ -60,6 +240,38 @@ def _without_unneeded_chaos_resistance(
     if current_chaos < target_chaos:
         return mods
     return [mod for mod in mods if not _CHAOS_RESIST_RE.search(str(mod.get("text") or ""))]
+
+
+def _without_satisfied_resistances(
+    mods: list[dict[str, Any]],
+    *,
+    current: dict[str, Any],
+    elemental_target: int,
+    chaos_target: int,
+) -> list[dict[str, Any]]:
+    """Stop buying ordinary resistance affixes after the configured stage target is met."""
+
+    output: list[dict[str, Any]] = []
+    elemental_met = {
+        element: float(current.get(element) or 0) >= elemental_target for element in _RES_KEYS
+    }
+    for mod in mods:
+        text = str(mod.get("text") or "")
+        lowered = text.casefold()
+        if "maximum" in lowered:
+            output.append(mod)
+            continue
+        if _CHAOS_RESIST_RE.search(text) and float(current.get("chaos") or 0) >= chaos_target:
+            continue
+        if _ALL_ELEMENTAL_RESIST_RE.search(text) and all(elemental_met.values()):
+            continue
+        if any(
+            elemental_met[element] and pattern.search(text)
+            for element, pattern in _ELEMENT_RESIST_RE.items()
+        ):
+            continue
+        output.append(mod)
+    return output
 
 
 def _num(x: Any) -> bool:
@@ -140,10 +352,71 @@ def _roll(text: str, rolls: str) -> str:
     return _RANGE.sub(sub, text)
 
 
-def _item_text(base: str, lines: list[str], slot: str, *, ilvl: int | None = None) -> str:
+def _generated_belt_charm_slots(base: str, *, ilvl: int | None) -> int | None:
+    item = db.get_item(base)
+    if not isinstance(item, dict) or item.get("item_class") != "Belt":
+        return None
+    level = int(ilvl or 1)
+    return 1 if level < 70 else 2 if level < 80 else 3
+
+
+def _generated_item_property_lines(base: str, *, ilvl: int | None) -> list[str]:
+    """Materialize variable item properties that PoB cannot infer from the base placeholder."""
+
+    charm_slots = _generated_belt_charm_slots(base, ilvl=ilvl)
+    if charm_slots is None:
+        return []
+    return [f"Charm Slots: {charm_slots}"]
+
+
+def _generated_item_implicit_lines(base: str, *, ilvl: int | None) -> list[str]:
+    charm_slots = _generated_belt_charm_slots(base, ilvl=ilvl)
+    if charm_slots is None:
+        return []
+    noun = "Slot" if charm_slots == 1 else "Slots"
+    return [f"Has {charm_slots} Charm {noun}"]
+
+
+def _craft_profile(base: str) -> dict[str, Any]:
+    return db.craft_profile(base) or {
+        "domain": "item",
+        "rarity": "Rare",
+        "prefixLimit": 3,
+        "suffixLimit": 3,
+    }
+
+
+def _is_life_or_mana_flask_base(base: str) -> bool:
+    item = db.get_item(base)
+    return isinstance(item, dict) and item.get("item_class") in {"LifeFlask", "ManaFlask"}
+
+
+def _item_text(
+    base: str,
+    lines: list[str],
+    slot: str,
+    *,
+    ilvl: int | None = None,
+    profile: dict[str, Any] | None = None,
+) -> str:
+    profile = profile or _craft_profile(base)
     body = "\n".join(lines)
     level_line = f"Item Level: {int(ilvl)}\n" if ilvl is not None else ""
-    return f"Rarity: Rare\nOptimized {slot}\n{base}\n{level_line}--------\n{body}"
+    property_lines = _generated_item_property_lines(base, ilvl=ilvl)
+    property_text = "".join(f"{line}\n" for line in property_lines)
+    implicit_lines = _generated_item_implicit_lines(base, ilvl=ilvl)
+    implicit_text = (
+        f"Implicits: {len(implicit_lines)}\n" + "\n".join(implicit_lines) + "\n"
+        if implicit_lines
+        else "--------\n"
+    )
+    rarity = str(profile.get("rarity") or "Rare")
+    header = (
+        f"Rarity: Magic\n{base}\n"
+        if rarity.casefold() == "magic"
+        else f"Rarity: Rare\nOptimized {slot}\n{base}\n"
+    )
+    return f"{header}{level_line}{property_text}{implicit_text}{body}"
 
 
 def _generated_item_legality(
@@ -157,6 +430,15 @@ def _generated_item_legality(
         prepared_receipt=prepared_receipt,
         require_special_provenance=True,
     )
+
+
+def _explicit_item_lines(raw: str) -> list[str]:
+    structure = itemparse.semantic_item_structure(raw)
+    return [
+        str(effect.get("text"))
+        for effect in structure.get("effects", [])
+        if isinstance(effect, dict) and effect.get("kind") == "explicit" and effect.get("text")
+    ]
 
 
 def _craft_summary(
@@ -211,6 +493,8 @@ def optimize_item(
     extra_mods: dict[str, list[dict[str, Any]]] | None = None,
     special_affix_sources: dict[str, dict[str, Any]] | None = None,
     planning: bool = False,
+    elemental_resist_target: int | None = None,
+    chaos_resist_target: int | None = None,
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare for a single `metric`, or a weighted blend via `goals`.
 
@@ -233,6 +517,24 @@ def optimize_item(
             "error": f"No base for slot '{slot}'. Equip an item there first, or pass base=.",
         }
 
+    base_profile = _craft_profile(base)
+    if str(base_profile.get("domain") or "") == "flask":
+        if _is_life_or_mana_flask_base(base):
+            return {
+                "ok": False,
+                "errorCode": "use_optimize_flask",
+                "error": "Life/Mana Flask bases use Magic 1/1 crafting; call optimize_flask.",
+                "slot": slot,
+                "base": base,
+            }
+        return {
+            "ok": False,
+            "errorCode": "unsupported_flask_item_class",
+            "error": "This Flask-domain base is not a Life or Mana Flask and is not supported by optimize_item.",
+            "slot": slot,
+            "base": base,
+        }
+
     # `goals` = weighted multi-objective (blended gear); falls back to the single `metric`.
     weights: dict[str, float] = {}
     if goals:
@@ -251,6 +553,36 @@ def optimize_item(
     if extra_mods:
         pool["prefixes"] = list(pool["prefixes"]) + list(extra_mods.get("prefixes") or [])
         pool["suffixes"] = list(pool["suffixes"]) + list(extra_mods.get("suffixes") or [])
+    profile = gear_stage_profile(
+        build.get("level"),
+        stage="auto",
+        elemental_resist_target=elemental_resist_target,
+        chaos_resist_target=chaos_resist_target,
+    )
+    resistance_snapshot = engine.get_xml()
+    can_probe_without_slot = callable(getattr(engine, "unequip_item", None))
+    try:
+        if can_probe_without_slot and isinstance(gear.get(slot), dict):
+            engine.unequip_item(slot)
+        current_resists = engine.get_defenses().get("resistances") or {}
+    finally:
+        if can_probe_without_slot:
+            try:
+                engine.load_build_xml(resistance_snapshot, name="item-resistance-target-restore")
+            except TypeError:
+                engine.load_build_xml(resistance_snapshot)
+    pool["prefixes"] = _without_satisfied_resistances(
+        list(pool["prefixes"]),
+        current=current_resists,
+        elemental_target=int(profile["elementalResistTarget"]),
+        chaos_target=int(profile["chaosResistTarget"]),
+    )
+    pool["suffixes"] = _without_satisfied_resistances(
+        list(pool["suffixes"]),
+        current=current_resists,
+        elemental_target=int(profile["elementalResistTarget"]),
+        chaos_target=int(profile["chaosResistTarget"]),
+    )
     pre = [
         {
             "group": m["group"],
@@ -579,6 +911,242 @@ def optimize_item(
     return out
 
 
+_FLASK_STRATEGY_GROUPS = {
+    "recovery": {
+        "prefix": ("FlaskRecoverySpeed", "FlaskRecoveryAmount", "FlaskBuffWhileHealing"),
+        "suffix": ("FlaskRechargeRate", "FlaskNumCharges", "FlaskChargesUsed", "FlaskGainCharge"),
+    },
+    "sustain": {
+        "prefix": ("FlaskRecoveryAmount", "FlaskRecoverySpeed", "FlaskBuffWhileHealing"),
+        "suffix": ("FlaskGainCharge", "FlaskChargesUsed", "FlaskNumCharges", "FlaskRechargeRate"),
+    },
+    "instant": {
+        "prefix": ("FlaskBuffWhileHealing", "FlaskRecoveryAmount", "FlaskRecoverySpeed"),
+        "suffix": ("FlaskChargesUsed", "FlaskGainCharge", "FlaskNumCharges", "FlaskRechargeRate"),
+    },
+}
+
+
+def _pick_flask_affix(
+    candidates: list[dict[str, Any]], priorities: tuple[str, ...]
+) -> dict[str, Any] | None:
+    for group in priorities:
+        matches = [item for item in candidates if str(item.get("group") or "") == group]
+        if matches:
+            return max(matches, key=lambda item: int(item.get("required_level") or 0))
+    return max(candidates, key=lambda item: int(item.get("required_level") or 0), default=None)
+
+
+def optimize_flask(
+    engine: PobEngine,
+    slot: str,
+    *,
+    base: str | None = None,
+    ilvl: int = 82,
+    rolls: str = "realistic",
+    strategy: Literal["recovery", "sustain", "instant"] = "recovery",
+) -> dict[str, Any]:
+    """Build one legal Magic life/mana Flask using the shared corpus and legality pipeline."""
+
+    slot = _canonical_slot(slot)
+    if slot not in {"Flask 1", "Flask 2"}:
+        return {"ok": False, "errorCode": "invalid_flask_slot", "slot": slot}
+    if strategy not in _FLASK_STRATEGY_GROUPS:
+        return {"ok": False, "errorCode": "invalid_flask_strategy", "strategy": strategy}
+    build = engine.get_build()
+    gear = build.get("gear") if isinstance(build.get("gear"), dict) else {}
+    if not base:
+        current = gear.get(slot) if isinstance(gear, dict) else None
+        base = current.get("base") if isinstance(current, dict) else None
+    profile = _craft_profile(str(base or ""))
+    if (
+        not base
+        or str(profile.get("domain") or "") != "flask"
+        or not _is_life_or_mana_flask_base(base)
+    ):
+        return {
+            "ok": False,
+            "errorCode": "invalid_flask_base",
+            "slot": slot,
+            "base": base,
+        }
+
+    pool = db.affix_pool(base, ilvl=ilvl)
+    priorities = _FLASK_STRATEGY_GROUPS[strategy]
+    prefix = _pick_flask_affix(list(pool["prefixes"]), priorities["prefix"])
+    suffix = _pick_flask_affix(list(pool["suffixes"]), priorities["suffix"])
+    chosen = [item for item in (prefix, suffix) if item is not None]
+    if not chosen:
+        return {
+            "ok": False,
+            "errorCode": "flask_affix_pool_empty",
+            "slot": slot,
+            "base": base,
+        }
+    lines = [_roll(str(item["text"]), rolls) for item in chosen]
+    raw = _item_text(base, lines, slot, ilvl=ilvl, profile=profile)
+    legality = _generated_item_legality(raw)
+    if not legality.get("ok"):
+        return {
+            "ok": False,
+            "errorCode": "generated_item_legality_check_failed",
+            "slot": slot,
+            "base": base,
+            "legalityCheck": legality,
+        }
+
+    snapshot = engine.get_xml()
+    before_slots = _equipped_slots(build)
+    before_audit = hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(build, snapshot)
+    )
+    try:
+        add_result = engine.add_item(raw, slot=slot)
+        if not isinstance(add_result, dict) or not add_result.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "optimized_item_equip_failed",
+                "slot": slot,
+                "base": base,
+            }
+        candidate_xml = engine.get_xml()
+        candidate_build = engine.get_build()
+        after_slots = _equipped_slots(candidate_build)
+        missing_slots = sorted(before_slots - after_slots)
+        after_audit = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(
+                candidate_build,
+                candidate_xml,
+                item_legality_overrides={slot: legality},
+            )
+        )
+        regression = hard_legality.compare_audits_for_regression(before_audit, after_audit)
+        if missing_slots or regression["regressed"]:
+            return {
+                "ok": False,
+                "errorCode": "whole_build_legality_check_failed",
+                "slot": slot,
+                "base": base,
+                "slotRegression": {"missingSlots": missing_slots},
+                "wholeBuildLegality": after_audit,
+                "legalityRegression": regression,
+            }
+    finally:
+        engine.load_build_xml(snapshot)
+
+    return {
+        "ok": True,
+        "slot": slot,
+        "base": base,
+        "itemLevel": ilvl,
+        "strategy": strategy,
+        "item": raw,
+        "affixes": lines,
+        "affixGroups": [str(item.get("group") or "") for item in chosen],
+        "attainability": [
+            {
+                "affix": line,
+                "ilvl": int(item.get("required_level") or 0),
+                "tiers": int(item.get("tiers") or 1),
+            }
+            for item, line in zip(chosen, lines)
+        ],
+        "legalityCheck": legality,
+        "wholeBuildLegality": after_audit,
+        "legalityRegression": regression,
+        "note": (
+            "Magic Flask target from the current corpus flask domain. Family/rotation chooses "
+            "the strategy; equip the returned item with equip_item."
+        ),
+    }
+
+
+_CHARM_PREFIX_STRATEGIES = {
+    "guard": ("FlaskRecoveryAmount",),
+    "recovery": ("FlaskRecoveryAmount",),
+    "duration": ("FlaskRecoverySpeed",),
+}
+_CHARM_SUFFIX_STRATEGIES = {
+    "charges": ("FlaskGainCharge", "FlaskChargesUsed", "FlaskNumCharges", "FlaskRechargeRate"),
+    "ailment": (
+        "FlaskBleedingAndCorruptedBloodImmunityDuringEffect",
+        "FlaskFreezeAndChillImmunityDuringEffect",
+        "FlaskIgniteImmunityDuringEffect",
+        "FlaskPoisonImmunityDuringEffect",
+        "FlaskShockImmunityDuringEffect",
+    ),
+}
+
+
+def optimize_charm(
+    engine: PobEngine,
+    slot: str,
+    *,
+    base: str,
+    ilvl: int = 82,
+    rolls: str = "realistic",
+    prefix_strategy: Literal["guard", "recovery", "duration"] = "guard",
+    suffix_strategy: Literal["charges", "ailment"] = "charges",
+) -> dict[str, Any]:
+    """Create one legal Magic Charm with a focused prefix and suffix."""
+
+    slot = _canonical_slot(slot)
+    if slot not in {"Charm 1", "Charm 2", "Charm 3"}:
+        return {"ok": False, "errorCode": "invalid_charm_slot", "slot": slot}
+    item = db.get_item(base)
+    if (
+        not isinstance(item, dict)
+        or item.get("item_class") != "UtilityFlask"
+        or "Charm" not in base
+    ):
+        return {"ok": False, "errorCode": "invalid_charm_base", "base": base}
+    if prefix_strategy not in _CHARM_PREFIX_STRATEGIES:
+        return {"ok": False, "errorCode": "invalid_charm_prefix_strategy"}
+    if suffix_strategy not in _CHARM_SUFFIX_STRATEGIES:
+        return {"ok": False, "errorCode": "invalid_charm_suffix_strategy"}
+    pool = db.affix_pool(base, ilvl=ilvl)
+    prefixes = list(pool.get("prefixes") or [])
+    suffixes = list(pool.get("suffixes") or [])
+    prefix = _pick_flask_affix(prefixes, _CHARM_PREFIX_STRATEGIES[prefix_strategy])
+    if prefix_strategy == "guard":
+        guard = [entry for entry in prefixes if "Guard" in str(entry.get("text") or "")]
+        if guard:
+            prefix = max(guard, key=lambda entry: int(entry.get("required_level") or 0))
+    suffix = _pick_flask_affix(suffixes, _CHARM_SUFFIX_STRATEGIES[suffix_strategy])
+    chosen = [entry for entry in (prefix, suffix) if entry is not None]
+    if len(chosen) < 2:
+        return {"ok": False, "errorCode": "charm_affix_pool_incomplete", "base": base}
+    lines = [_roll(str(entry["text"]), rolls) for entry in chosen]
+    profile = _craft_profile(base)
+    raw = _item_text(base, lines, slot, ilvl=ilvl, profile=profile)
+    legality = _generated_item_legality(raw)
+    if not legality.get("ok"):
+        return {
+            "ok": False,
+            "errorCode": "generated_item_legality_check_failed",
+            "legalityCheck": legality,
+        }
+    snapshot = engine.get_xml()
+    try:
+        equipped = engine.add_item(raw, slot=slot)
+        if not isinstance(equipped, dict) or not equipped.get("ok"):
+            return {"ok": False, "errorCode": "optimized_item_equip_failed", "slot": slot}
+    finally:
+        engine.load_build_xml(snapshot)
+    return {
+        "ok": True,
+        "slot": slot,
+        "base": base,
+        "itemLevel": ilvl,
+        "item": raw,
+        "affixes": lines,
+        "prefixStrategy": prefix_strategy,
+        "suffixStrategy": suffix_strategy,
+        "legalityCheck": legality,
+        "note": "Legal Magic Charm target; equip explicitly and re-run lifecycle/quality checks.",
+    }
+
+
 def _equipped_slots(build: dict[str, Any]) -> set[str]:
     gear = build.get("gear") if isinstance(build, dict) else None
     if not isinstance(gear, dict):
@@ -859,24 +1427,44 @@ def _marginal_craft(
     rolls: str,
     *,
     chaos_resist_target: int,
+    elemental_resist_target: int,
     ilvl: int,
+    max_affixes: int = 6,
+    max_deep_affixes: int | None = None,
 ) -> str | None:
     """Fast per-slot craft: rank each affix by its marginal weighted gain (TWO batched evals — bare
     base, then all single-affix candidates), then take the top 3 prefix + 3 suffix (group-exclusive).
     Approximate (ignores affix interaction) but ~6x cheaper than the full greedy — used by plan_gear
     so a whole-set plan fits in one call."""
     pool = db.affix_pool(base, ilvl=ilvl)
-    current_chaos = float((engine.get_defenses().get("resistances") or {}).get("chaos") or 0)
-    pre = _without_unneeded_chaos_resistance(
-        pool["prefixes"], current_chaos=current_chaos, target_chaos=chaos_resist_target
+    current_resists = engine.get_defenses().get("resistances") or {}
+    pre = _without_satisfied_resistances(
+        pool["prefixes"],
+        current=current_resists,
+        elemental_target=elemental_resist_target,
+        chaos_target=chaos_resist_target,
     )
-    suf = _without_unneeded_chaos_resistance(
-        pool["suffixes"], current_chaos=current_chaos, target_chaos=chaos_resist_target
+    suf = _without_satisfied_resistances(
+        pool["suffixes"],
+        current=current_resists,
+        elemental_target=elemental_resist_target,
+        chaos_target=chaos_resist_target,
     )
     if not pre and not suf:
         return None
     keys = list(weights)
-    meta = [(m, _roll(m["text"], rolls)) for m in pre + suf]
+    meta: list[tuple[dict[str, Any], str]] = []
+    for source in pre + suf:
+        top = dict(source)
+        top["_topTierAffix"] = int(top.get("tiers") or 1) >= 4
+        meta.append((top, _roll(top["text"], rolls)))
+        tier_options = list(top.get("tier_options") or [])
+        if max_deep_affixes is not None and top["_topTierAffix"] and len(tier_options) > 1:
+            lower = dict(top)
+            lower["text"] = str(tier_options[1]["text"])
+            lower["required_level"] = int(tier_options[1].get("required_level") or 0)
+            lower["_topTierAffix"] = False
+            meta.append((lower, _roll(lower["text"], rolls)))
     base_res = engine.eval_items(slot, [_item_text(base, [], slot, ilvl=ilvl)], keys=keys)[
         "results"
     ]
@@ -895,16 +1483,21 @@ def _marginal_craft(
         scored.append((gain, m, line))
     chosen_lines: list[str] = []
     used: set[str] = set()
+    deep_affixes = 0
     for typ in ("prefix", "suffix"):
         side = sorted((s for s in scored if s[1]["type"] == typ), key=lambda x: -x[0])
         n = 0
         for gain, m, line in side:
-            if n >= 3:
+            if n >= 3 or len(chosen_lines) >= max_affixes:
                 break
             if gain <= 1e-9 or m["group"] in used:
                 continue
+            is_deep = bool(m.get("_topTierAffix"))
+            if max_deep_affixes is not None and is_deep and deep_affixes >= max_deep_affixes:
+                continue
             chosen_lines.append(line)
             used.add(m["group"])
+            deep_affixes += int(is_deep)
             n += 1
     return _item_text(base, chosen_lines, slot, ilvl=ilvl) if chosen_lines else None
 
@@ -918,6 +1511,9 @@ def plan_gear(
     min_ehp: float | None = None,
     stage: GearStage = "auto",
     chaos_resist_target: int | None = None,
+    elemental_resist_target: int | None = None,
+    acquisition_profile: str = "realistic_trade",
+    locked_slots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Plan a whole gear set that maximizes damage while capping resists (budget-allocation heuristic).
 
@@ -934,9 +1530,21 @@ def plan_gear(
     per-slot plan + projected whole-build DPS/EHP/resists; equip the items yourself. Greedy heuristic.
     """
     dps_weight = min(max(float(dps_weight), 0.0), 1.0)
+    if acquisition_profile not in {"realistic_trade", "theoretical"}:
+        return {"ok": False, "errorCode": "invalid_acquisition_profile"}
+    realistic = acquisition_profile == "realistic_trade"
+    max_affixes = 5 if realistic else 6
+    # The corpus has no useful spawn weights, so "top-tier" remains a coarse tier-depth proxy. For
+    # the realistic profile, at most two deep mod families use their best tier; later selections
+    # automatically fall back to the next legal tier instead of dropping required resistance.
+    max_deep_affixes = 2 if realistic else None
+    locked = {_canonical_slot(str(slot)) for slot in locked_slots or []}
     build = engine.get_build()
     profile = gear_stage_profile(
-        build.get("level"), stage=stage, chaos_resist_target=chaos_resist_target
+        build.get("level"),
+        stage=stage,
+        chaos_resist_target=chaos_resist_target,
+        elemental_resist_target=elemental_resist_target,
     )
     character_level = max(1, int(build.get("level") or 1))
     item_level = min(100, character_level)
@@ -960,13 +1568,40 @@ def plan_gear(
     rejected_illegal: list[dict[str, Any]] = []
     slot_base: dict[str, str] = {}
     base_direction: dict[str, str] = {}
+    replaced_bootstrap_slots: list[str] = []
     try:
         dominant_attr = _attr_bias(engine) if auto_base else "int"
         layer_bias = _defense_layer_bias(build)
         for slot in order:
+            if slot in locked:
+                skipped.append({"slot": slot, "reason": "locked by selected mechanism/unique"})
+                continue
             cur = gear.get(slot)
             if isinstance(cur, dict) and cur.get("base"):
                 base: str | None = cur["base"]
+                if (
+                    realistic
+                    and slot in {"Weapon 1", "Weapon 2"}
+                    and (
+                        str(cur.get("rarity") or "").casefold() == "normal"
+                        or bool(cur.get("isScaffold"))
+                    )
+                ):
+                    base_info = db.get_item(base)
+                    item_class = (
+                        str(base_info.get("item_class"))
+                        if isinstance(base_info, dict) and base_info.get("item_class")
+                        else ""
+                    )
+                    replacement = (
+                        db.pick_base(item_class, max_drop_level=character_level)
+                        if item_class
+                        else None
+                    )
+                    if replacement and replacement != base:
+                        base = replacement
+                        replaced_bootstrap_slots.append(slot)
+                        engine.add_item(_item_text(base, [], slot, ilvl=item_level), slot=slot)
             elif auto_base and slot in _AUTO_BASE_CLASS:
                 # AUTO-BASE an empty armour/jewellery slot so a from-scratch build gets a whole set.
                 # Allocated defence passives (Spectral Ward / Subterfuge Mask / Iron Reflexes) can
@@ -999,7 +1634,10 @@ def plan_gear(
                 goal,
                 rolls,
                 chaos_resist_target=int(profile["chaosResistTarget"]),
+                elemental_resist_target=int(profile["elementalResistTarget"]),
                 ilvl=item_level,
+                max_affixes=max_affixes,
+                max_deep_affixes=max_deep_affixes,
             )
             if not item:
                 skipped.append({"slot": slot, "reason": "no improving affix in pool"})
@@ -1018,13 +1656,21 @@ def plan_gear(
                 )
                 continue
             engine.add_item(item, slot=slot)  # persist so the next slot is crafted coherently
-            affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
+            affixes = _explicit_item_lines(item)
+            parsed_item = itemparse.parse_item(item)
             plan.append(
                 {
                     "slot": slot,
                     "item": item,
                     "itemLevel": item_level,
                     "affixes": affixes,
+                    "topTierAffixCount": sum(
+                        1
+                        for affix in parsed_item.get("affixes") or []
+                        if isinstance(affix, dict)
+                        and affix.get("tier") == 1
+                        and int(affix.get("totalTiers") or 0) >= 4
+                    ),
                     "legalityCheck": legality,
                 }
             )
@@ -1035,6 +1681,19 @@ def plan_gear(
             for slot in [s for s in order if s in _DEFENSE_SLOTS and s in slot_base]:
                 if (engine.get_defenses().get("totalEHP") or 0) >= min_ehp:
                     break
+                before_recraft_xml = engine.get_xml()
+                before_resists = engine.get_defenses().get("resistances") or {}
+                before_resist_gap = sum(
+                    max(
+                        0,
+                        int(profile["elementalResistTarget"])
+                        - float(before_resists.get(element) or 0),
+                    )
+                    for element in _RES_KEYS
+                ) + max(
+                    0,
+                    int(profile["chaosResistTarget"]) - float(before_resists.get("chaos") or 0),
+                )
                 item = _marginal_craft(
                     engine,
                     slot,
@@ -1042,7 +1701,10 @@ def plan_gear(
                     {"TotalEHP": 1.0},
                     rolls,
                     chaos_resist_target=int(profile["chaosResistTarget"]),
+                    elemental_resist_target=int(profile["elementalResistTarget"]),
                     ilvl=item_level,
+                    max_affixes=max_affixes,
+                    max_deep_affixes=max_deep_affixes,
                 )
                 if not item:
                     continue
@@ -1057,7 +1719,23 @@ def plan_gear(
                     )
                     continue
                 engine.add_item(item, slot=slot)
-                affixes = [ln for ln in item.split("--------\n")[-1].split("\n") if ln.strip()]
+                after_resists = engine.get_defenses().get("resistances") or {}
+                after_resist_gap = sum(
+                    max(
+                        0,
+                        int(profile["elementalResistTarget"])
+                        - float(after_resists.get(element) or 0),
+                    )
+                    for element in _RES_KEYS
+                ) + max(
+                    0,
+                    int(profile["chaosResistTarget"]) - float(after_resists.get("chaos") or 0),
+                )
+                if after_resist_gap > before_resist_gap + 1e-9:
+                    engine.load_build_xml(before_recraft_xml)
+                    continue
+                affixes = _explicit_item_lines(item)
+                parsed_item = itemparse.parse_item(item)
                 plan[:] = [p for p in plan if p["slot"] != slot]
                 plan.append(
                     {
@@ -1065,18 +1743,33 @@ def plan_gear(
                         "item": item,
                         "itemLevel": item_level,
                         "affixes": affixes,
+                        "topTierAffixCount": sum(
+                            1
+                            for affix in parsed_item.get("affixes") or []
+                            if isinstance(affix, dict)
+                            and affix.get("tier") == 1
+                            and int(affix.get("totalTiers") or 0) >= 4
+                        ),
                         "legalityCheck": legality,
                     }
                 )
             ehp_floor_met = (engine.get_defenses().get("totalEHP") or 0) >= min_ehp
         stats = engine.get_stats(["TotalDPS", "FullDPS"])["stats"]
         d = engine.get_defenses()
+        planned_xml = engine.get_xml()
+        whole_build_legality = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(engine.get_build(), planned_xml)
+        )
     finally:
         engine.load_build_xml(snapshot)
 
     res = d.get("resistances") or {}
     missing = d.get("resistMissing") or {}
     res_capped = all((missing.get(e) or 0) <= 0 for e in _RES_KEYS)
+    resistance_target_met = (
+        all((res.get(element) or 0) >= profile["elementalResistTarget"] for element in _RES_KEYS)
+        and (res.get("chaos") or 0) >= profile["chaosResistTarget"]
+    )
     chaos_capped = (res.get("chaos") or 0) >= 75
     projected: dict[str, Any] = {
         "TotalDPS": _round2(stats.get("TotalDPS")),
@@ -1084,6 +1777,7 @@ def plan_gear(
         "TotalEHP": _round2(d.get("totalEHP")),
         "resistances": res,
         "resistsCapped": res_capped,
+        "resistanceTargetMet": resistance_target_met,
         "chaosCapped": chaos_capped,
         "chaosTarget": profile["chaosResistTarget"],
         "chaosTargetMet": (res.get("chaos") or 0) >= profile["chaosResistTarget"],
@@ -1109,15 +1803,20 @@ def plan_gear(
                 )
     return {
         "ok": True,
+        "status": ("planned" if whole_build_legality.get("hardLegalityReady") else "planning_only"),
         "plan": plan,
         "skipped": skipped,
         "rejectedIllegalCandidates": rejected_illegal,
         "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
         "baseDirection": base_direction,
+        "acquisitionProfile": acquisition_profile,
+        "lockedSlots": sorted(locked),
+        "replacedBootstrapSlots": replaced_bootstrap_slots,
         "conflictWarnings": conflict_warnings,
         "stageProfile": profile,
         "itemLevel": item_level,
         "projected": projected,
+        "wholeBuildLegality": whole_build_legality,
         "note": (
             "Budget-allocation heuristic: offense slots crafted damage-leaning, defense slots EHP-"
             "leaning (which pulls missing elemental resists onto the cheapest-DPS pieces), built "
@@ -1184,4 +1883,274 @@ def evaluate_jewel_socket(
         ),
         "noRawQuery": True,
         "noRawMatureBuildMaterial": True,
+    }
+
+
+def evaluate_next_jewel_socket(
+    engine: PobEngine,
+    *,
+    raw: str,
+    goals: dict[str, float],
+    round_index: int = 1,
+) -> dict[str, Any]:
+    """Run the bounded jewel review under one re-entrant engine transaction."""
+
+    with engine.transaction_lock():
+        try:
+            snapshot = engine.get_xml()
+            state_hash = build_state_hash(snapshot)
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "errorCode": "jewel_socket_probe_snapshot_failed"}
+        try:
+            result = _evaluate_next_jewel_socket_locked(
+                engine,
+                raw=raw,
+                goals=goals,
+                round_index=round_index,
+            )
+        except Exception as exc:  # noqa: BLE001 - restore before returning a stable error.
+            restored = _restore_jewel_state(engine, snapshot, state_hash)
+            setattr(engine, "_poe2_mutation_batch_recovery_required", not restored)
+            return {
+                "ok": False,
+                "errorCode": (
+                    "jewel_socket_probe_restore_failed"
+                    if str(exc) == "jewel_socket_probe_restore_failed"
+                    else "jewel_socket_probe_failed"
+                ),
+                "rolledBack": restored,
+                "recoveryRequired": not restored,
+            }
+        restored = _restore_jewel_state(engine, snapshot, state_hash)
+        setattr(engine, "_poe2_mutation_batch_recovery_required", not restored)
+        if not restored:
+            return {
+                "ok": False,
+                "errorCode": "jewel_socket_probe_restore_failed",
+                "rolledBack": False,
+                "recoveryRequired": True,
+            }
+        return result
+
+
+def _evaluate_next_jewel_socket_locked(
+    engine: PobEngine,
+    *,
+    raw: str,
+    goals: dict[str, float],
+    round_index: int = 1,
+) -> dict[str, Any]:
+    """Compare the current tree with its nearest reachable additional jewel socket.
+
+    The probe allocates the real PoB path, equips the supplied jewel, measures the weighted
+    marginal gain, then restores the exact input XML. Create intentionally permits at most two
+    rounds so this never expands into a full jewel-socket combination search.
+    """
+
+    if round_index not in {1, 2}:
+        return {"ok": False, "errorCode": "jewel_socket_round_out_of_range"}
+    weights = {
+        str(key): float(value) for key, value in goals.items() if _num(value) and float(value) > 0
+    }
+    if not weights:
+        return {"ok": False, "error": "goals must map stat names to positive weights"}
+    snapshot = engine.get_xml()
+    state_hash = build_state_hash(snapshot)
+    current_decision = next_jewel_decision_for_state(engine, state_hash)
+    prior_rounds = int((current_decision or {}).get("roundsCompleted") or 0)
+    if round_index == 2 and not (
+        (current_decision or {}).get("status") == "applied" and prior_rounds == 1
+    ):
+        return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
+    if round_index == 1 and (current_decision or {}).get("status") == "applied":
+        return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
+    sockets = [
+        dict(entry)
+        for entry in engine.list_jewel_sockets().get("sockets") or []
+        if isinstance(entry, dict) and not entry.get("allocated") and not entry.get("filled")
+    ]
+    candidates: list[dict[str, Any]] = []
+    for entry in sockets:
+        passive = engine.get_passive(int(entry["socket"]))
+        path_cost = passive.get("pathDist") if isinstance(passive, dict) else None
+        if isinstance(path_cost, (int, float)) and path_cost > 0:
+            candidates.append({**entry, "pathPointCost": int(path_cost)})
+    if not candidates:
+        decision = {
+            "status": "not_applicable",
+            "roundIndex": round_index,
+            "priorRoundsCompleted": prior_rounds,
+            "roundsCompleted": round_index,
+            "positiveNetBenefit": False,
+            "reason": "no_reachable_unallocated_jewel_socket",
+            "stateHash": state_hash,
+        }
+        _record_next_jewel_decision(engine, state_hash, decision)
+        return {"ok": True, **decision, "maxRounds": 2}
+    chosen = min(candidates, key=lambda entry: (entry["pathPointCost"], int(entry["socket"])))
+    build = engine.get_build()
+    unspent = int(build.get("unspentPoints") or 0)
+    keys = list(weights)
+    before = engine.get_stats(keys).get("stats") or {}
+    denom = {key: max(abs(float(before.get(key) or 0.0)), 1.0) for key in keys}
+    points_to_reallocate = max(0, int(chosen["pathPointCost"]) - unspent)
+    selected_reallocations: list[dict[str, Any]] = []
+    reallocation_probes: list[dict[str, Any]] = []
+    if points_to_reallocate:
+        passive = engine.get_passive(int(chosen["socket"]))
+        route_node_ids = {
+            int(value)
+            for value in (passive.get("pathNodeIds") or [])
+            if isinstance(value, (int, float))
+        }
+        route_node_ids.add(int(chosen["socket"]))
+        candidate_result = engine.list_reallocation_candidates(limit=12)
+        leaf_candidates = [
+            dict(entry)
+            for entry in (candidate_result.get("candidates") or [])
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), (int, float))
+            and int(entry["id"]) not in route_node_ids
+        ]
+        for entry in leaf_candidates:
+            try:
+                removed = engine.dealloc_passive(int(entry["id"]))
+                if not isinstance(removed, dict) or not removed.get("ok"):
+                    continue
+                points_freed = int(removed.get("pointsFreed") or 0)
+                if points_freed <= 0:
+                    continue
+                without = engine.get_stats(keys).get("stats") or {}
+                loss = sum(
+                    weight
+                    * (
+                        (float(before.get(key) or 0.0) - float(without.get(key) or 0.0))
+                        / denom[key]
+                    )
+                    for key, weight in weights.items()
+                )
+                reallocation_probes.append(
+                    {
+                        "nodeId": int(entry["id"]),
+                        "name": str(entry.get("name") or ""),
+                        "type": str(entry.get("type") or ""),
+                        "pointsFreed": points_freed,
+                        "weightedRelativeLoss": round(loss, 6),
+                        "metricDeltas": {
+                            key: round(
+                                float(without.get(key) or 0.0)
+                                - float(before.get(key) or 0.0),
+                                6,
+                            )
+                            for key in keys
+                        },
+                    }
+                )
+            finally:
+                if not _restore_jewel_state(engine, snapshot, state_hash):
+                    raise RuntimeError("jewel_socket_probe_restore_failed")
+        reallocation_probes.sort(
+            key=lambda entry: (
+                float(entry["weightedRelativeLoss"]) / max(int(entry["pointsFreed"]), 1),
+                int(entry["nodeId"]),
+            )
+        )
+        points_selected = 0
+        for entry in reallocation_probes:
+            selected_reallocations.append(entry)
+            points_selected += int(entry["pointsFreed"])
+            if points_selected >= points_to_reallocate:
+                break
+        if points_selected < points_to_reallocate:
+            decision = {
+                "status": "requires_reallocation",
+                "roundIndex": round_index,
+                "priorRoundsCompleted": prior_rounds,
+                "socket": int(chosen["socket"]),
+                "pathPointCost": chosen["pathPointCost"],
+                "pointsToReallocate": points_to_reallocate,
+                "positiveNetBenefit": None,
+                "reason": "bounded_reallocation_candidates_insufficient",
+                "reallocationCandidates": reallocation_probes,
+                "stateHash": state_hash,
+            }
+            _record_next_jewel_decision(engine, state_hash, decision)
+            return {"ok": True, **decision, "maxRounds": 2, "readOnly": True}
+    try:
+        for entry in selected_reallocations:
+            removed = engine.dealloc_passive(int(entry["nodeId"]))
+            if not isinstance(removed, dict) or not removed.get("ok"):
+                return {
+                    "ok": False,
+                    "errorCode": "jewel_reallocation_failed",
+                    "nodeId": int(entry["nodeId"]),
+                }
+        allocated = engine.alloc_passive(int(chosen["socket"]))
+        if not isinstance(allocated, dict) or not allocated.get("ok") or allocated.get("warning"):
+            return {
+                "ok": False,
+                "errorCode": "jewel_socket_path_allocation_failed",
+                "socket": int(chosen["socket"]),
+            }
+        equipped = engine.equip_jewel(raw, socket=int(chosen["socket"]))
+        if not isinstance(equipped, dict) or not equipped.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "candidate_jewel_equip_failed",
+                "socket": int(chosen["socket"]),
+            }
+        after = engine.get_stats(keys).get("stats") or {}
+    finally:
+        if not _restore_jewel_state(engine, snapshot, state_hash):
+            raise RuntimeError("jewel_socket_probe_restore_failed")
+    score = sum(
+        weight * ((float(after.get(key) or 0.0) - float(before.get(key) or 0.0)) / denom[key])
+        for key, weight in weights.items()
+    )
+    positive = score > 1e-9
+    decision = {
+        "status": "evaluated",
+        "roundIndex": round_index,
+        "priorRoundsCompleted": prior_rounds,
+        "socket": int(chosen["socket"]),
+        "pathPointCost": chosen["pathPointCost"],
+        "pointsReallocated": sum(
+            int(entry["pointsFreed"]) for entry in selected_reallocations
+        ),
+        "nodesToRemove": [int(entry["nodeId"]) for entry in selected_reallocations],
+        "reallocationCandidates": reallocation_probes,
+        "positiveNetBenefit": positive,
+        "weightedRelativeGain": round(score, 6),
+        "decision": (
+            "apply_then_run_second_round"
+            if positive and round_index == 1
+            else "positive_second_round_remains_candidate"
+            if positive and round_index == 2
+            else "stop_after_second_round"
+            if round_index == 2
+            else "keep_current_tree"
+        ),
+        "stateHash": state_hash,
+    }
+    if positive:
+        jewel_fingerprint = str(
+            itemparse.semantic_item_structure(raw).get("itemFingerprint") or ""
+        )
+        decision["jewelFingerprint"] = jewel_fingerprint
+        decision["decisionRef"] = _record_jewel_apply_decision(
+            engine,
+            {
+                **decision,
+                "raw": raw,
+            },
+        )
+    _record_next_jewel_decision(engine, state_hash, decision)
+    return {
+        "ok": True,
+        **decision,
+        "maxRounds": 2,
+        "goals": weights,
+        "metricsBefore": {key: before.get(key) for key in keys},
+        "metricsAfter": {key: after.get(key) for key in keys},
+        "readOnly": True,
     }

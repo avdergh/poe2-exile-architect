@@ -262,6 +262,10 @@ def knowledge_identity(record: Any, family: BuildFamilyIdentity) -> dict[str, An
     """Return the structured identity used for conservative canonical deduplication."""
 
     kind = str(_value(record, "record_kind", "") or "").strip()
+    try:
+        record_schema_version = int(_value(record, "record_schema_version", 1) or 1)
+    except (TypeError, ValueError):
+        record_schema_version = 1
     roles = _KIND_IDENTITY_ROLES.get(kind)
     if roles is None:
         roles = tuple(
@@ -283,11 +287,19 @@ def knowledge_identity(record: Any, family: BuildFamilyIdentity) -> dict[str, An
             if keys:
                 role_components.append(("subject_skill", keys[0]))
                 break
-        packages = support_packages(record)
+        packages = support_ownership_packages(record)
         if packages:
             role_components.extend(
-                ("support_package", _stable_package_value(skill_key, support_keys))
-                for skill_key, support_keys in packages
+                (
+                    "support_package",
+                    _stable_package_value(
+                        skill_key,
+                        support_keys,
+                        delivery_role=(delivery_role if record_schema_version >= 2 else None),
+                        host_skill_key=(host_skill_key if record_schema_version >= 2 else None),
+                    ),
+                )
+                for skill_key, support_keys, delivery_role, host_skill_key in packages
             )
         else:
             # Legacy records did not declare socket ownership. Preserve their support set in the
@@ -305,9 +317,36 @@ def knowledge_identity(record: Any, family: BuildFamilyIdentity) -> dict[str, An
                     role_components.append((role_buckets.get(role, role), key))
         role_components = sorted(set(role_components))
 
+        # Support ownership is meaningful outside ``skill_package`` too.  Earlier identity
+        # versions ignored it on defense/resource records, which allowed distinct socket
+        # packages to overwrite one another under the same Family/kind/component identity.
+        if record_schema_version >= 2:
+            role_components.extend(
+                (
+                    "support_package",
+                    _stable_package_value(
+                        skill_key,
+                        support_keys,
+                        delivery_role=delivery_role,
+                        host_skill_key=host_skill_key,
+                    ),
+                )
+                for skill_key, support_keys, delivery_role, host_skill_key in support_ownership_packages(
+                    record
+                )
+            )
+            role_components = sorted(set(role_components))
+
     if kind == "resource_engine":
         role_components.extend(
             ("resource_mechanism", tag) for tag in resource_mechanism_tags(record)
+        )
+        role_components = sorted(set(role_components))
+
+    if kind == "gear_synergy" and record_schema_version >= 2:
+        role_components.extend(
+            ("gear_subject", subject)
+            for subject in _typed_string_list(record, "gearSubjects", "gear_subjects")
         )
         role_components = sorted(set(role_components))
 
@@ -378,7 +417,7 @@ def automatic_family_skill_keys(records: Iterable[Any]) -> tuple[str, ...]:
 
 
 def support_packages(record: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Return normalized active-skill to support packages from the typed payload."""
+    """Return normalized root-skill socket packages from the typed payload."""
 
     payload = _typed_payload(record)
     raw = payload.get("supportPackages")
@@ -403,6 +442,44 @@ def support_packages(record: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
         )
         if normalized_supports:
             packages.add((skill_key, normalized_supports))
+    return tuple(sorted(packages))
+
+
+def support_ownership_packages(
+    record: Any,
+) -> tuple[tuple[str, tuple[str, ...], str, str], ...]:
+    """Return stable support topology used by identity v2.
+
+    Source-local group/root references are deliberately excluded. They prove physical socket
+    placement for one accepted case but are not durable cross-case identity.
+    """
+
+    payload = _typed_payload(record)
+    raw = payload.get("supportPackages")
+    if not isinstance(raw, list):
+        return ()
+    packages: set[tuple[str, tuple[str, ...], str, str]] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        skill_key = str(item.get("skillKey") or "").strip()
+        support_keys = item.get("supportKeys")
+        if not _is_skill_key(skill_key) or not isinstance(support_keys, list):
+            continue
+        normalized_supports = tuple(
+            sorted(
+                {
+                    str(value).strip()
+                    for value in support_keys
+                    if isinstance(value, str) and str(value).strip().startswith("support:")
+                }
+            )
+        )
+        if not normalized_supports:
+            continue
+        delivery_role = str(item.get("deliveryRole") or "direct").strip()
+        host_skill_key = str(item.get("hostSkillKey") or "").strip()
+        packages.add((skill_key, normalized_supports, delivery_role, host_skill_key))
     return tuple(sorted(packages))
 
 
@@ -511,5 +588,19 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _stable_package_value(skill_key: str, support_keys: tuple[str, ...]) -> str:
-    return _stable_hash({"skill_key": skill_key, "support_keys": list(support_keys)})
+def _stable_package_value(
+    skill_key: str,
+    support_keys: tuple[str, ...],
+    *,
+    delivery_role: str | None = "direct",
+    host_skill_key: str | None = "",
+) -> str:
+    payload: dict[str, Any] = {
+        "skill_key": skill_key,
+        "support_keys": list(support_keys),
+    }
+    if delivery_role is not None:
+        payload["delivery_role"] = delivery_role
+    if host_skill_key is not None:
+        payload["host_skill_key"] = host_skill_key
+    return _stable_hash(payload)

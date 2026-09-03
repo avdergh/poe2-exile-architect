@@ -28,7 +28,8 @@ def test_safe_evaluate_converts_engine_error_to_pob_compute_failed():
     result = runner.safe_evaluate_active_build(factory, snapshot_id="boom")
 
     assert result["pass"] is False
-    assert "pob_compute_failed" in result["hardFailures"]
+    assert result["hardFailures"] == []
+    assert result["scoreApplicability"]["reason"] == "pob_compute_failed"
     assert engines[0].closed is True
 
 
@@ -39,7 +40,8 @@ def test_safe_evaluate_converts_factory_error_to_pob_compute_failed():
     result = runner.safe_evaluate_active_build(factory, snapshot_id="bad-import")
 
     assert result["pass"] is False
-    assert "pob_compute_failed" in result["hardFailures"]
+    assert result["hardFailures"] == []
+    assert result["scoreApplicability"]["reason"] == "pob_compute_failed"
     assert "errorDetail" not in result
     assert result["errorKind"] == "PobEngineError"
 
@@ -122,7 +124,8 @@ def test_safe_evaluate_times_out_factory():
     )
 
     assert result["pass"] is False
-    assert "pob_compute_failed" in result["hardFailures"]
+    assert result["hardFailures"] == []
+    assert result["scoreApplicability"]["reason"] == "pob_compute_failed"
     assert "errorDetail" not in result
     assert result["errorKind"] == "TimeoutError"
 
@@ -254,7 +257,8 @@ def test_safe_evaluate_times_out_and_closes_engine():
     )
 
     assert result["pass"] is False
-    assert "pob_compute_failed" in result["hardFailures"]
+    assert result["hardFailures"] == []
+    assert result["scoreApplicability"]["reason"] == "pob_compute_failed"
     assert "errorDetail" not in result
     assert result["errorKind"] == "TimeoutError"
     assert engines[0].closed is True

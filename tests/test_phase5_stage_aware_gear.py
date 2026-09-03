@@ -6,20 +6,29 @@ from server.compute import itemopt
 
 
 @pytest.mark.parametrize(
-    ("level", "stage", "expected_stage", "chaos_target", "defense_weight"),
+    (
+        "level",
+        "stage",
+        "expected_stage",
+        "elemental_target",
+        "chaos_target",
+        "defense_weight",
+    ),
     [
-        (58, "auto", "campaign", 0, 0.65),
-        (75, "auto", "maps_entry", 30, 0.72),
-        (90, "auto", "endgame", 60, 0.78),
-        (58, "endgame", "endgame", 60, 0.78),
+        (58, "auto", "campaign", 30, 0, 0.65),
+        (75, "auto", "maps_entry", 50, 30, 0.72),
+        (90, "auto", "endgame", 60, 30, 0.78),
+        (58, "endgame", "endgame", 60, 30, 0.78),
     ],
 )
-def test_gear_stage_profile(level, stage, expected_stage, chaos_target, defense_weight):
+def test_gear_stage_profile(
+    level, stage, expected_stage, elemental_target, chaos_target, defense_weight
+):
     profile = itemopt.gear_stage_profile(level, stage=stage)
 
     assert profile == {
         "stage": expected_stage,
-        "elementalResistTarget": 75,
+        "elementalResistTarget": elemental_target,
         "chaosResistTarget": chaos_target,
         "defenseWeight": defense_weight,
     }
@@ -60,4 +69,7 @@ def test_item_text_keeps_the_affix_pool_item_level():
     item = itemopt._item_text("Fine Belt", ["+30 to maximum Life"], "Belt", ilvl=58)
 
     assert "Item Level: 58" in item
-    assert item.index("Item Level: 58") < item.index("--------")
+    assert "Charm Slots: 1" in item
+    assert "Implicits: 1" in item
+    assert "Has 1 Charm Slot" in item
+    assert item.index("Item Level: 58") < item.index("Implicits: 1")

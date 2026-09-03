@@ -687,6 +687,7 @@ def test_acceptance_is_idempotent_for_the_same_safe_review(tmp_path):
 
 def test_case_depth_rejection_writes_nothing(tmp_path):
     db_path = tmp_path / "memory.sqlite"
+    mature_learning.initialize_store(db_path)
     review_file = _write_review(
         tmp_path,
         filename="depth-rejected-review.json",
@@ -708,6 +709,15 @@ def test_case_depth_rejection_writes_nothing(tmp_path):
         review_file=review_file,
         graph_service=_graph_service(),
         require_deep_records=True,
+        acceptance_context={
+            "runRef": "research-run:depth-rejected",
+            "sampleId": "case:depth-rejected",
+            "acceptAttemptKey": "raa-depth-rejected",
+            "packetSafeHash": "packet-depth-rejected",
+            "canonicalReviewHash": "review-depth-rejected",
+            "contractVersion": "phase4-safe-review-v3",
+            "expectedOriginState": "claimed",
+        },
     )
 
     assert report["status"] == "rejected"
@@ -720,6 +730,7 @@ def test_case_depth_rejection_writes_nothing(tmp_path):
             == 0
         )
         assert con.execute("SELECT count(*) FROM research_build_patterns").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM research_record_write_receipts").fetchone()[0] == 0
     finally:
         con.close()
 
@@ -1530,6 +1541,464 @@ def test_name_based_typed_reference_does_not_guess_ambiguous_component():
     assert any("exactly one resolved component" in issue["msg"] for issue in issues)
 
 
+def test_v3_support_binding_uses_root_skill_and_strips_source_refs():
+    group_ref = "skill-set:1:group:4"
+    root_ref = f"{group_ref}:root:1"
+    payload, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={
+            "supportPackages": [
+                {
+                    "skillKey": "skill:MetaCastOnCritPlayer",
+                    "supportKeys": ["support:SupportGemArcaneTempo"],
+                    "deliveryRole": "direct",
+                    "sourceGroupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "socketedItemRefs": [f"{group_ref}:socketed:3"],
+                }
+            ]
+        },
+        component_mentions=[],
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "rootSkill": {
+                        "name": "Cast on Critical",
+                        "skillId": "MetaCastOnCritPlayer",
+                    },
+                    "activeSkills": [
+                        {
+                            "name": "Cast on Critical",
+                            "skillId": "MetaCastOnCritPlayer",
+                            "activeSkillRef": f"{group_ref}:active:1",
+                        },
+                        {
+                            "name": "Comet",
+                            "skillId": "CometPlayer",
+                            "activeSkillRef": f"{group_ref}:active:2",
+                        },
+                    ],
+                    "supports": [
+                        {
+                            "name": "Arcane Tempo",
+                            "gemId": "SupportGemArcaneTempo",
+                            "socketedItemRef": f"{group_ref}:socketed:3",
+                        }
+                    ],
+                }
+            ]
+        },
+        require_source_bindings=True,
+    )
+
+    assert issues == []
+    assert payload["supportPackages"] == [
+        {
+            "skillKey": "skill:MetaCastOnCritPlayer",
+            "supportKeys": ["support:SupportGemArcaneTempo"],
+            "deliveryRole": "direct",
+        }
+    ]
+
+
+def test_v3_support_binding_rejects_payload_as_physical_root():
+    group_ref = "skill-set:1:group:4"
+    root_ref = f"{group_ref}:root:1"
+    _, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={
+            "supportPackages": [
+                {
+                    "skillKey": "skill:CometPlayer",
+                    "supportKeys": ["support:SupportGemArcaneTempo"],
+                    "deliveryRole": "triggered_payload",
+                    "hostSkillKey": "skill:MetaCastOnCritPlayer",
+                    "sourceGroupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "socketedItemRefs": [f"{group_ref}:socketed:3"],
+                }
+            ]
+        },
+        component_mentions=[],
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "rootSkill": {
+                        "name": "Cast on Critical",
+                        "skillId": "MetaCastOnCritPlayer",
+                    },
+                    "activeSkills": [
+                        {
+                            "name": "Cast on Critical",
+                            "skillId": "MetaCastOnCritPlayer",
+                            "activeSkillRef": f"{group_ref}:active:1",
+                        },
+                        {
+                            "name": "Comet",
+                            "skillId": "CometPlayer",
+                            "activeSkillRef": f"{group_ref}:active:2",
+                        },
+                    ],
+                    "supports": [
+                        {
+                            "name": "Arcane Tempo",
+                            "gemId": "SupportGemArcaneTempo",
+                            "socketedItemRef": f"{group_ref}:socketed:3",
+                        }
+                    ],
+                }
+            ]
+        },
+        require_source_bindings=True,
+    )
+
+    messages = [issue["msg"] for issue in issues]
+    assert any("root skill" in message for message in messages)
+    assert any("host/payload mechanics separately" in message for message in messages)
+
+
+def test_v3_multi_active_socket_package_does_not_require_effect_owner():
+    group_ref = "skill-set:1:group:4"
+    root_ref = f"{group_ref}:root:1"
+    manifest = {
+        "socketHierarchyPolicyVersion": 1,
+        "activeSkillGroups": [
+            {
+                "groupRef": group_ref,
+                "rootSkillRef": root_ref,
+                "rootSkill": {
+                    "name": "Hollow Form",
+                    "skillId": "HollowFormPlayer",
+                },
+                "activeSkills": [
+                    {
+                        "name": "Hollow Form",
+                        "skillId": "HollowFormPlayer",
+                        "activeSkillRef": f"{group_ref}:active:1",
+                    },
+                    {
+                        "name": "Whirling Assault",
+                        "skillId": "WhirlingAssaultPlayer",
+                        "activeSkillRef": f"{group_ref}:active:2",
+                    },
+                ],
+                "supports": [
+                    {
+                        "name": "Mobility",
+                        "gemId": "SupportGemMobility",
+                        "socketedItemRef": f"{group_ref}:socketed:3",
+                        "socketedUnderSkillRef": root_ref,
+                    }
+                ],
+            }
+        ],
+    }
+    package = {
+        "skillKey": "skill:HollowFormPlayer",
+        "supportKeys": ["support:SupportGemMobility"],
+        "sourceGroupRef": group_ref,
+        "rootSkillRef": root_ref,
+        "socketedItemRefs": [f"{group_ref}:socketed:3"],
+    }
+
+    payload, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={"supportPackages": [package]},
+        component_mentions=[],
+        source_skill_manifest=manifest,
+        require_source_bindings=True,
+    )
+
+    assert issues == []
+    assert payload["supportPackages"][0]["skillKey"] == "skill:HollowFormPlayer"
+
+
+def test_v3_support_binding_allows_distinct_instances_with_same_stable_key():
+    shared_support_key = "support:SupportGemArcaneTempo"
+    groups = []
+    packages = []
+    for group_index, root_skill_id in enumerate(("CometPlayer", "FrostWallPlayer"), start=1):
+        group_ref = f"skill-set:1:group:{group_index}"
+        root_ref = f"{group_ref}:root:1"
+        instance_ref = f"{group_ref}:socketed:2"
+        groups.append(
+            {
+                "groupRef": group_ref,
+                "rootSkillRef": root_ref,
+                "rootSkill": {"name": root_skill_id, "skillId": root_skill_id},
+                "supports": [
+                    {
+                        "name": "Arcane Tempo",
+                        "gemId": "SupportGemArcaneTempo",
+                        "socketedItemRef": instance_ref,
+                    }
+                ],
+            }
+        )
+        packages.append(
+            {
+                "skillKey": f"skill:{root_skill_id}",
+                "supportKeys": [shared_support_key],
+                "socketedItemRefs": [instance_ref],
+                "deliveryRole": "direct",
+                "sourceGroupRef": group_ref,
+                "rootSkillRef": root_ref,
+            }
+        )
+
+    payload, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={"supportPackages": packages},
+        component_mentions=[],
+        source_skill_manifest={"activeSkillGroups": groups},
+        require_source_bindings=True,
+    )
+
+    assert issues == []
+    assert payload["supportPackages"] == [
+        {
+            "skillKey": "skill:CometPlayer",
+            "supportKeys": [shared_support_key],
+            "deliveryRole": "direct",
+        },
+        {
+            "skillKey": "skill:FrostWallPlayer",
+            "supportKeys": [shared_support_key],
+            "deliveryRole": "direct",
+        },
+    ]
+    assert "socketedItemRefs" not in json.dumps(payload)
+
+
+def test_v3_support_binding_collapses_same_durable_topology_after_instance_validation():
+    support_key = "support:SupportGemArcaneTempo"
+    groups = []
+    packages = []
+    for group_index in (1, 2):
+        group_ref = f"skill-set:1:group:{group_index}"
+        root_ref = f"{group_ref}:root:1"
+        instance_ref = f"{group_ref}:socketed:2"
+        groups.append(
+            {
+                "groupRef": group_ref,
+                "rootSkillRef": root_ref,
+                "rootSkill": {"name": "Comet", "skillId": "CometPlayer"},
+                "supports": [
+                    {
+                        "name": "Arcane Tempo",
+                        "gemId": "SupportGemArcaneTempo",
+                        "socketedItemRef": instance_ref,
+                    }
+                ],
+            }
+        )
+        packages.append(
+            {
+                "skillKey": "skill:CometPlayer",
+                "supportKeys": [support_key],
+                "socketedItemRefs": [instance_ref],
+                "deliveryRole": "direct",
+                "sourceGroupRef": group_ref,
+                "rootSkillRef": root_ref,
+            }
+        )
+
+    payload, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={"supportPackages": packages},
+        component_mentions=[],
+        source_skill_manifest={"activeSkillGroups": groups},
+        require_source_bindings=True,
+    )
+
+    assert issues == []
+    assert payload["supportPackages"] == [
+        {
+            "skillKey": "skill:CometPlayer",
+            "supportKeys": [support_key],
+            "deliveryRole": "direct",
+        }
+    ]
+    assert "socketedItemRefs" not in json.dumps(payload)
+    assert "sourceGroupRef" not in json.dumps(payload)
+    assert "rootSkillRef" not in json.dumps(payload)
+
+
+def test_v3_support_binding_rejects_reused_physical_instance():
+    group_ref = "skill-set:1:group:1"
+    root_ref = f"{group_ref}:root:1"
+    instance_ref = f"{group_ref}:socketed:2"
+    package = {
+        "skillKey": "skill:CometPlayer",
+        "supportKeys": ["support:SupportGemArcaneTempo"],
+        "socketedItemRefs": [instance_ref],
+        "deliveryRole": "direct",
+        "sourceGroupRef": group_ref,
+        "rootSkillRef": root_ref,
+    }
+
+    _, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={"supportPackages": [package, dict(package)]},
+        component_mentions=[],
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "rootSkill": {"name": "Comet", "skillId": "CometPlayer"},
+                    "supports": [
+                        {
+                            "name": "Arcane Tempo",
+                            "gemId": "SupportGemArcaneTempo",
+                            "socketedItemRef": instance_ref,
+                        }
+                    ],
+                }
+            ]
+        },
+        require_source_bindings=True,
+    )
+
+    assert any("same physical support instance" in issue["msg"] for issue in issues)
+
+
+def test_v3_support_binding_requires_one_instance_ref_per_support_key():
+    group_ref = "skill-set:1:group:1"
+    root_ref = f"{group_ref}:root:1"
+    _, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={
+            "supportPackages": [
+                {
+                    "skillKey": "skill:CometPlayer",
+                    "supportKeys": ["support:SupportGemArcaneTempo"],
+                    "deliveryRole": "direct",
+                    "sourceGroupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                }
+            ]
+        },
+        component_mentions=[],
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "rootSkill": {"name": "Comet", "skillId": "CometPlayer"},
+                    "supports": [
+                        {
+                            "name": "Arcane Tempo",
+                            "gemId": "SupportGemArcaneTempo",
+                            "socketedItemRef": f"{group_ref}:socketed:2",
+                        }
+                    ],
+                }
+            ]
+        },
+        require_source_bindings=True,
+    )
+
+    assert any("one socketedItemRef for each supportKey" in issue["msg"] for issue in issues)
+
+
+def test_v3_multi_active_wrong_root_ref_stays_gap():
+    group_ref = "skill-set:1:group:4"
+    root_ref = f"{group_ref}:root:1"
+    _, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={
+            "supportPackages": [
+                {
+                    "skillKey": "skill:WhirlingAssaultPlayer",
+                    "supportKeys": ["support:SupportGemMobility"],
+                    "sourceGroupRef": group_ref,
+                    "rootSkillRef": f"{group_ref}:root:2",
+                    "socketedItemRefs": [f"{group_ref}:socketed:3"],
+                }
+            ]
+        },
+        component_mentions=[],
+        source_skill_manifest={
+            "socketHierarchyPolicyVersion": 1,
+            "activeSkillGroups": [
+                {
+                    "groupRef": group_ref,
+                    "rootSkillRef": root_ref,
+                    "rootSkill": {
+                        "name": "Hollow Form",
+                        "skillId": "HollowFormPlayer",
+                    },
+                    "activeSkills": [
+                        {
+                            "name": "Hollow Form",
+                            "skillId": "HollowFormPlayer",
+                            "activeSkillRef": f"{group_ref}:active:1",
+                        },
+                        {
+                            "name": "Whirling Assault",
+                            "skillId": "WhirlingAssaultPlayer",
+                            "activeSkillRef": f"{group_ref}:active:2",
+                        },
+                    ],
+                    "supports": [
+                        {
+                            "name": "Mobility",
+                            "gemId": "SupportGemMobility",
+                            "socketedItemRef": f"{group_ref}:socketed:3",
+                            "socketedUnderSkillRef": root_ref,
+                        }
+                    ],
+                }
+            ],
+        },
+        require_source_bindings=True,
+    )
+
+    assert any("rootSkillRef" in issue["msg"] for issue in issues)
+
+
+def test_v3_support_binding_rejects_legacy_name_only_package():
+    _, issues = run_phase4_deep_review_acceptance._canonicalize_typed_payload_references(
+        typed_payload={
+            "supportPackages": [{"skillName": "Comet", "supportNames": ["Arcane Tempo"]}]
+        },
+        component_mentions=[],
+        source_skill_manifest={"activeSkillGroups": []},
+        require_source_bindings=True,
+    )
+    assert any("schema 2 support package" in issue["msg"] for issue in issues)
+
+
+def test_v3_group_review_schema_requires_dispositions_reason_and_exact_record_title():
+    review = {
+        "reviewContractVersion": "phase4-safe-review-v3",
+        "memoryUse": {"queries": []},
+        "candidateReviews": [],
+        "deepResearchRecords": [
+            {
+                "sampleId": "case:v3",
+                "researchGroupId": "research:case:v3",
+                "caseRef": "case:v3",
+                "recordKind": "skill_package",
+                "title": "Comet package",
+                "summary": "summary",
+                "content": "content",
+                "typedPayload": {},
+            }
+        ],
+        "sourceSkillGroupReviews": [
+            {
+                "groupRef": "skill-set:1:group:4",
+                "researchDisposition": "represented",
+                "supportDisposition": "packaged",
+                "affectedRecords": ["wrong title"],
+                "reason": "Reviewed the exact enabled group.",
+            }
+        ],
+    }
+
+    groups = run_phase4_deep_review_acceptance._structural_schema_issues(review)
+    messages = [issue["msg"] for _, _, issues in groups for issue in issues]
+    assert any("deepResearchRecords.title" in message for message in messages)
+
+
 def test_acceptance_resolves_name_based_support_ownership_before_schema_validation(tmp_path):
     review_file = _write_review(
         tmp_path,
@@ -1581,7 +2050,7 @@ def test_acceptance_resolves_name_based_support_ownership_before_schema_validati
     ]
 
 
-def test_source_skill_named_in_rotation_remains_advisory_when_not_family_core(
+def test_source_skill_named_in_rotation_blocks_clean_when_group_is_unreviewed(
     tmp_path,
 ):
     review_file = _write_review(
@@ -1640,9 +2109,9 @@ def test_source_skill_named_in_rotation_remains_advisory_when_not_family_core(
     )
 
     assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
-    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is False
     assert diagnostics["unstructuredSourceSkillMentions"][0]["name"] == "Spark"
-    assert coverage["supports"] == "covered"
+    assert coverage["supports"] == "evidence_missing"
     assert any("Spark" in item for item in advisories)
 
 
@@ -1716,7 +2185,7 @@ def test_source_support_diagnostics_block_evidence_group_with_unpackaged_support
     assert diagnostics["unstructuredSourceSupportMentionCount"] == 0
 
 
-def test_source_support_diagnostics_non_core_group_remains_advisory(tmp_path):
+def test_source_support_diagnostics_non_core_group_blocks_support_coverage(tmp_path):
     review_file = _write_review(
         tmp_path,
         filename="evidence-noncore-unpackaged-supports-review.json",
@@ -1783,9 +2252,15 @@ def test_source_support_diagnostics_non_core_group_remains_advisory(tmp_path):
     )
 
     assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
-    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is False
     assert diagnostics["unrepresentedActiveSkillGroupCount"] == 0
     assert diagnostics["skillGroupDispositions"][0]["disposition"] == "partially_packaged"
+    coverage, _ = run_phase4_deep_review_acceptance._evaluate_case_coverage(
+        review={"caseCoverage": {"supports": "covered"}},
+        accepted_records=review["deepResearchRecords"],
+        source_evidence_diagnostics=diagnostics,
+    )
+    assert coverage["supports"] == "evidence_missing"
 
 
 def test_source_support_diagnostics_allow_shared_support_in_evidence_group(tmp_path):
@@ -3093,6 +3568,36 @@ def test_structured_support_package_valid_when_any_gem_endpoint_matches(tmp_path
     assert deferred == []
     assert kept_summaries == [summary]
     assert kept_payload["deep_research_records"] == [record]
+
+
+def test_source_socket_package_contributes_socketed_active_skill_endpoints():
+    group_ref = "skill-set:1:group:4"
+    manifest = {
+        "activeSkillGroups": [
+            {
+                "groupRef": group_ref,
+                "rootSkill": {
+                    "name": "Cast on Critical",
+                    "skillId": "MetaCastOnCritPlayer",
+                },
+                "activeSkills": [
+                    {"name": "Cast on Critical", "skillId": "MetaCastOnCritPlayer"},
+                    {"name": "Comet", "skillId": "CometPlayer"},
+                ],
+                "supports": [
+                    {"name": "Arcane Tempo", "gemId": "SupportGemArcaneTempo"}
+                ],
+            }
+        ]
+    }
+
+    keys = run_phase4_deep_review_acceptance._source_socket_package_skill_keys(
+        source_skill_manifest=manifest,
+        root_skill_key="skill:MetaCastOnCritPlayer",
+        support_keys=["support:SupportGemArcaneTempo"],
+    )
+
+    assert keys == {"skill:MetaCastOnCritPlayer", "skill:CometPlayer"}
 
 
 def test_structured_support_package_defer_keeps_lightning_bolt_cdr_rejection(tmp_path):
@@ -5684,9 +6189,82 @@ def test_unique_gem_diagnostics_splits_non_gem_names_and_corpus_missing():
     assert "ThornsPlayer" in diagnostics["nonGemSkillNames"]
     assert "EnemyExplode" in diagnostics["nonGemSkillNames"]
     assert "Bonestorm" not in diagnostics["nonGemSkillNames"]
-    assert "Oisin's Oath" in diagnostics["corpusMissingGemNames"]
-    assert diagnostics["uniqueGemCandidates"] == []
+    assert "Oisin's Oath" not in diagnostics["corpusMissingGemNames"]
+    assert diagnostics["uniqueGemCandidates"] == ["Oisin's Oath"]
+    oisin_resolution = next(
+        item
+        for item in diagnostics["gemIdentityResolutions"]
+        if item["sourceName"] == "Oisin's Oath"
+    )
+    assert oisin_resolution["resolutionKind"] == "gem_id"
     assert diagnostics["proseMentionedWithoutComponentNames"] == []
+
+
+def test_pob_readback_audit_binds_the_current_packet_snapshot() -> None:
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    review = {
+        "reviewContractVersion": "phase4-safe-review-v3",
+        "pobReadbackAudit": [{"disposition": "reviewed"}],
+    }
+    dispositions, issues = acceptance._validated_pob_readback_dispositions(
+        review,
+        {"status": "available", "snapshotRef": "pob-readback:current"},
+    )
+    assert dispositions == set()
+    assert issues[0]["loc"] == ["pobReadbackAudit", 0, "readbackRef"]
+
+    review["pobReadbackAudit"][0]["readbackRef"] = "pob-readback:other"
+    dispositions, issues = acceptance._validated_pob_readback_dispositions(
+        review,
+        {"status": "available", "snapshotRef": "pob-readback:current"},
+    )
+    assert dispositions == set()
+    assert issues
+
+    review["pobReadbackAudit"][0]["readbackRef"] = "pob-readback:current"
+    dispositions, issues = acceptance._validated_pob_readback_dispositions(
+        review,
+        {"status": "available", "snapshotRef": "pob-readback:current"},
+    )
+    assert dispositions == {"reviewed"}
+    assert issues == []
+
+    unavailable = {
+        **review,
+        "pobReadbackAudit": [{"disposition": "unavailable"}],
+    }
+    assert acceptance._validated_pob_readback_dispositions(
+        unavailable,
+        {"status": "unavailable", "errorCode": "pob_readback_failed"},
+    ) == ({"unavailable"}, [])
+    assert acceptance._validated_pob_readback_dispositions(
+        unavailable,
+        {"status": "available", "snapshotRef": "pob-readback:current"},
+    )[1]
+
+
+def test_resource_defense_coverage_uses_only_bound_readback_disposition() -> None:
+    from scripts import run_phase4_deep_review_acceptance as acceptance
+
+    review = {
+        "reviewContractVersion": "phase4-safe-review-v3",
+        "caseCoverage": {"resourceDefense": "covered"},
+        "pobReadbackAudit": [{"disposition": "reviewed"}],
+    }
+    records = [{"recordKind": "defense_engine", "researchGroupId": "research:fixture"}]
+    coverage, _ = acceptance._evaluate_case_coverage(
+        review=review,
+        accepted_records=records,
+        validated_readback_dispositions=set(),
+    )
+    assert coverage["resourceDefense"] == "evidence_missing"
+    coverage, _ = acceptance._evaluate_case_coverage(
+        review=review,
+        accepted_records=records,
+        validated_readback_dispositions={"reviewed"},
+    )
+    assert coverage["resourceDefense"] == "covered"
 
 
 def test_unique_gem_diagnostics_reports_prose_mention_without_component():
@@ -6030,7 +6608,49 @@ def test_source_skill_diagnostics_matches_canonical_skill_exception(tmp_path):
     )
 
     disposition = diagnostics["skillGroupDispositions"][0]
-    assert disposition["disposition"] == "declared"
+    assert disposition["disposition"] == "source_coverage_gap"
+    assert diagnostics["undisposedSkillGroupCount"] == 1
+
+
+def test_source_skill_diagnostics_only_not_applicable_closes_group(tmp_path):
+    review_file = _write_review(
+        tmp_path,
+        filename="canonical-not-applicable-review.json",
+        components=[
+            {
+                "candidateName": "Explosive Grenade",
+                "componentKey": "skill:ExplosiveGrenadePlayer",
+                "role": "primary_damage",
+                "resolverQuery": "Explosive Grenade",
+            }
+        ],
+        include_deep_record=True,
+    )
+    review = json.loads(review_file.read_text(encoding="utf-8"))
+    review["deepResearchRecords"][0]["typedPayload"] = {
+        "supportCoverageExceptions": [
+            {
+                "skillKey": "skill:ExplosiveGrenadePlayer",
+                "reason": "not_applicable",
+                "detail": "This granted action does not accept ordinary supports.",
+            }
+        ]
+    }
+    diagnostics = run_phase4_deep_review_acceptance._source_skill_evidence_diagnostics(
+        review=review,
+        source_skill_manifest={
+            "activeSkillGroups": [
+                {
+                    "groupRef": "skill-set:1:group:3",
+                    "activeSkills": [
+                        {"name": "Explosive Grenade", "skillId": "ExplosiveGrenadePlayer"}
+                    ],
+                    "supports": [{"name": "Defy II", "gemId": "SupportGemDefyTwo"}],
+                }
+            ]
+        },
+    )
+    assert diagnostics["skillGroupDispositions"][0]["disposition"] == "not_applicable"
     assert diagnostics["undisposedSkillGroupCount"] == 0
 
 
@@ -6237,7 +6857,7 @@ def test_internal_id_group_with_supports_is_visible_but_diagnostic_only():
     assert disposition["disposition"] == "unrepresented"
     assert diagnostics["undisposedSkillGroupCount"] == 1
     assert diagnostics["supportCoverageBlockedByStructuredOmission"] is False
-    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is True
+    assert diagnostics["unrepresentedSkillGroupsAreDiagnosticOnly"] is False
 
 
 def test_core_skill_group_support_gaps_reports_triggered_payload_group():
@@ -6288,6 +6908,26 @@ def test_case_coverage_populates_structured_core_support_gaps():
 
     assert coverage["supports"] == "evidence_missing"
     assert diagnostics["coreSkillGroupSupportGaps"] == ["skill:ExplosiveGrenadePlayer"]
+
+
+def test_support_not_applicable_cannot_hide_undisposed_source_group():
+    diagnostics = {
+        "skillGroupDispositions": [
+            {"groupRef": "skill-set:1:group:1", "disposition": "unreviewed"}
+        ]
+    }
+
+    coverage, advisories = run_phase4_deep_review_acceptance._evaluate_case_coverage(
+        review={
+            "reviewContractVersion": "phase4-safe-review-v3",
+            "caseCoverage": {"supports": "not_applicable"},
+        },
+        accepted_records=[],
+        source_evidence_diagnostics=diagnostics,
+    )
+
+    assert coverage["supports"] == "evidence_missing"
+    assert any("cannot be not_applicable" in item for item in advisories)
 
 
 def test_family_core_source_support_omission_still_blocks_clean_coverage():

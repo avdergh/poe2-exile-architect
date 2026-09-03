@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .compute import itemopt
 from .compute.engine import PobEngine
 from .knowledge import db
 
@@ -88,8 +89,16 @@ def scaffold_gear(
                 continue
             mods.append(f"+{roll}% to {el.capitalize()} Resistance")
             gaps[el] -= roll
-        raw = "Rarity: Rare\nScaffold {}\n{}\nItem Level: {}\n--------\n{}".format(
-            slot, base, level, "\n".join(mods)
+        properties = itemopt._generated_item_property_lines(base, ilvl=level)
+        property_text = "".join(f"{line}\n" for line in properties)
+        implicits = itemopt._generated_item_implicit_lines(base, ilvl=level)
+        implicit_text = (
+            f"Implicits: {len(implicits)}\n" + "\n".join(implicits) + "\n"
+            if implicits
+            else "--------\n"
+        )
+        raw = "Rarity: Rare\nScaffold {}\n{}\nItem Level: {}\n{}{}{}".format(
+            slot, base, level, property_text, implicit_text, "\n".join(mods)
         )
         r = engine.add_item(raw, slot=slot)
         if r.get("ok"):

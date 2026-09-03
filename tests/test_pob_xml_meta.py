@@ -124,6 +124,11 @@ def test_main_skill_skill_id_selector() -> None:
   </Skills>
 </PathOfBuilding>"""
     assert pob_xml_meta.main_skill_from_pob_xml(xml) == "Comet"
+    assert pob_xml_meta.main_skill_identity_from_pob_xml(xml) == {
+        "name": "Comet",
+        "skillId": "CometPlayer",
+        "gemId": "",
+    }
 
 
 def test_main_skill_group_first_gem_without_selector() -> None:

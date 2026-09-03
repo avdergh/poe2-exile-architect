@@ -1,4 +1,5 @@
 from server.compute import itemopt
+from server.knowledge import db, itemparse
 
 
 class _SlotRegressionEngine:
@@ -218,3 +219,98 @@ def test_evaluate_jewel_socket_reports_empty_results():
     out = itemopt.evaluate_jewel_socket(engine, socket=2491, raw="anything")
     assert out["ok"] is False
     assert "failed to parse or equip" in out["error"]
+
+
+def test_resistance_candidates_saturate_at_stage_targets():
+    mods = [
+        {"text": "+44% to Fire Resistance"},
+        {"text": "+44% to Cold Resistance"},
+        {"text": "+16% to all Elemental Resistances"},
+        {"text": "+27% to Chaos Resistance"},
+        {"text": "16% increased Attack Speed"},
+    ]
+
+    remaining = itemopt._without_satisfied_resistances(
+        mods,
+        current={"fire": 60, "cold": 40, "lightning": 60, "chaos": 30},
+        elemental_target=60,
+        chaos_target=30,
+    )
+
+    texts = {item["text"] for item in remaining}
+    assert "+44% to Fire Resistance" not in texts
+    assert "+27% to Chaos Resistance" not in texts
+    assert "+44% to Cold Resistance" in texts
+    assert "+16% to all Elemental Resistances" in texts
+    assert "16% increased Attack Speed" in texts
+
+    explicit_cap = itemopt._without_satisfied_resistances(
+        mods,
+        current={"fire": 60, "cold": 60, "lightning": 60, "chaos": 30},
+        elemental_target=75,
+        chaos_target=75,
+    )
+    assert {item["text"] for item in explicit_cap} == {item["text"] for item in mods}
+
+
+def test_flask_affix_pool_includes_subtype_and_domain_wide_mods():
+    pool = db.affix_pool("Ultimate Mana Flask", ilvl=82)
+
+    prefix_groups = {item["group"] for item in pool["prefixes"]}
+    suffix_groups = {item["group"] for item in pool["suffixes"]}
+    texts = {item["text"] for item in pool["prefixes"] + pool["suffixes"]}
+    assert {"FlaskRecoveryAmount", "FlaskRecoverySpeed"} <= prefix_groups
+    assert {"FlaskGainCharge", "FlaskChargesUsed"} <= suffix_groups
+    assert not any("Low Life" in text for text in texts)
+
+
+def test_flask_domain_empty_default_and_subtype_tags_share_one_applicability_rule():
+    assert db.mod_tags_match_base("Ultimate Mana Flask", [], mod_domain="flask") is True
+    assert db.mod_tags_match_base(
+        "Ultimate Mana Flask", ["default"], mod_domain="flask"
+    ) is True
+    assert db.mod_tags_match_base(
+        "Ultimate Mana Flask", ["mana_flask"], mod_domain="flask"
+    ) is True
+    assert db.mod_tags_match_base(
+        "Ultimate Mana Flask", ["life_flask"], mod_domain="flask"
+    ) is False
+    assert db.mod_tags_match_base("Ultimate Mana Flask", ["default"], mod_domain="item") is False
+
+
+def test_magic_flask_single_line_header_round_trips_and_rare_is_rejected():
+    body = (
+        "Ultimate Mana Flask\nItem Level: 82\n--------\n"
+        "70% increased Recovery rate\nGains 0.25 Charges per Second"
+    )
+    magic = itemparse.parse_item("Rarity: Magic\n" + body)
+    rare = itemparse.audit_item_legality("Rarity: Rare\nOptimized Flask\n" + body)
+
+    assert magic["name"] == "Ultimate Mana Flask"
+    assert magic["base"] == "Ultimate Mana Flask"
+    assert magic["prefixes"] == 1
+    assert magic["suffixes"] == 1
+    assert rare["ok"] is False
+    assert "rarity_not_allowed_for_base_domain" in rare["issues"]
+
+
+def test_optimize_item_routes_flask_bases_to_specialized_tool():
+    class Engine:
+        def get_build(self):
+            return {"gear": {}}
+
+    result = itemopt.optimize_item(Engine(), "Flask 2", base="Ultimate Mana Flask")
+
+    assert result["errorCode"] == "use_optimize_flask"
+
+
+def test_utility_flask_charm_is_not_routed_or_accepted_as_recovery_flask():
+    class Engine:
+        def get_build(self):
+            return {"gear": {}}
+
+    routed = itemopt.optimize_item(Engine(), "Charm 1", base="Grounding Charm")
+    optimized = itemopt.optimize_flask(Engine(), "Flask 1", base="Grounding Charm")
+
+    assert routed["errorCode"] == "unsupported_flask_item_class"
+    assert optimized["errorCode"] == "invalid_flask_base"

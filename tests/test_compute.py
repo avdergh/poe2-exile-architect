@@ -6,7 +6,9 @@ these drift, re-verify against the GUI and update them in the same commit.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -16,7 +18,7 @@ from server.compute.engine import PobEngine
 from server.compute.pob_code import decode_code, encode_code
 from server.compute.state import build_state_hash
 from server.judge import hard_legality
-from server.knowledge import db, refbuilds
+from server.knowledge import db, itemparse, refbuilds
 
 FIREBALL_DPS = 124.833
 FIREBALL_AVG = 149.8
@@ -24,6 +26,26 @@ FIREBALL_AVG = 149.8
 
 def test_ping(engine):
     assert engine.ping()["pong"] is True
+
+
+def test_real_lifetap_signature_reads_life_cost_domain(engine):
+    from server.generation import mechanism_signature
+
+    engine.new_build()
+    engine.set_class("Sorceress", "Stormweaver")
+    engine.set_level(95)
+    engine.paste_skill("Spark 20/20 1 / Lifetap")
+
+    result = mechanism_signature.observe(
+        engine,
+        {"offenseSkillGroupIndex": 1, "activeSkillName": "Spark"},
+    )
+
+    assert result["ok"] is True
+    assert result["signature"]["resourceCostDomains"] == ["life"]
+    assert "Lifetap" in result["signature"]["supportNames"]
+    assert "lightning" in result["signature"]["hitDamageTypes"]
+    assert engine.info["runtimeContract"] == paths.POB_RUNTIME_CONTRACT
 
 
 def test_fireball_golden(fireball):
@@ -85,13 +107,16 @@ def test_witchhunter_on_kill_explosion_is_supplemental_not_primary(engine):
     engine.new_build()
     engine.load_build_code(code)
 
-    build = engine.get_build()
+    build = engine.select_judge_skill(
+        offense_skill_group_index=1,
+        expected_skill_name="Detonate Living",
+    )
 
-    assert build["judgeSelectedSkill"]["skillName"] == "Detonate Living"
-    assert build["judgeSelectedSkill"]["groupOrigin"] == "socketed"
+    assert build["selectedSkill"]["skillName"] == "Detonate Living"
+    assert build["selectedSkill"]["groupOrigin"] == "socketed"
     explosion = next(
         component
-        for component in build["judgeSupplementalSkills"]
+        for component in build["supplementalSkills"]
         if component["groupOrigin"] == "synthetic_on_kill"
     )
     assert explosion["skillName"] == "On Kill Monster Explosion"
@@ -114,13 +139,16 @@ def test_reactive_thorns_is_supplemental_not_primary(engine):
         "101 to 220 Physical Thorns damage"
     )
 
-    build = engine.get_build()
+    build = engine.select_judge_skill(
+        offense_skill_group_index=1,
+        expected_skill_name="Fireball",
+    )
 
-    assert build["judgeSelectedSkill"]["skillName"] == "Fireball"
-    assert build["judgeSelectedSkill"]["groupOrigin"] == "socketed"
+    assert build["selectedSkill"]["skillName"] == "Fireball"
+    assert build["selectedSkill"]["groupOrigin"] == "socketed"
     thorns = next(
         component
-        for component in build["judgeSupplementalSkills"]
+        for component in build["supplementalSkills"]
         if component["groupOrigin"] == "synthetic_reactive"
     )
     assert thorns["skillName"] == "Thorns"
@@ -184,6 +212,11 @@ def test_paste_tolerates_missing_count(engine):
     assert set(b["attributeRequirements"]) == {"strength", "dexterity", "intelligence"}
     assert "spiritUsed" in b
     assert "spiritAvailable" in b
+    assert b["spiritUsed"] == b["spiritRequested"]
+    assert b["spiritReservedCapped"] == min(b["spiritRequested"], b["spiritAvailable"])
+    assert b["spiritRequested"] == b["spiritAvailable"] - b["spiritUnreserved"]
+    assert b["spiritOverBy"] == max(0, -b["spiritUnreserved"])
+    assert b["activeWeaponSet"] in {1, 2}
     by_name = {g["name"]: g for g in b["mainSkillGroup"]}
     assert by_name["Spark"]["isSupport"] is False
     assert by_name["Controlled Destruction"]["isSupport"] is True
@@ -326,6 +359,46 @@ def test_optimize_item_improves_and_is_valid(engine):
     assert any("Lightning" in a for a in r["affixes"])
     # probing is restored
     assert engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(base, rel=1e-6)
+
+
+@pytest.mark.parametrize("strategy", ["recovery", "sustain", "instant"])
+def test_optimize_flask_round_trips_legal_magic_item_and_restores_build(engine, strategy):
+    engine.new_build()
+    engine.set_class("Sorceress", "Stormweaver")
+    engine.set_level(95)
+    before = engine.get_xml()
+
+    result = itemopt.optimize_flask(
+        engine,
+        "Flask 2",
+        base="Ultimate Mana Flask",
+        ilvl=82,
+        strategy=strategy,
+    )
+
+    assert result["ok"] is True
+    assert result["item"].startswith("Rarity: Magic\nUltimate Mana Flask\n")
+    assert result["legalityCheck"]["ok"] is True
+    parsed = itemparse.parse_item(result["item"])
+    assert parsed["rarity"] == "Magic"
+    assert parsed["base"] == "Ultimate Mana Flask"
+    assert parsed["prefixes"] == 1
+    assert parsed["suffixes"] == 1
+    assert parsed["affixes"]
+    assert build_state_hash(engine.get_xml()) == build_state_hash(before)
+
+
+def test_optimize_flask_rejects_utility_flask_charm_without_mutating_real_pob(engine):
+    engine.new_build()
+    engine.set_class("Sorceress", "Stormweaver")
+    engine.set_level(95)
+    before = build_state_hash(engine.get_xml())
+
+    result = itemopt.optimize_flask(engine, "Flask 1", base="Grounding Charm")
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "invalid_flask_base"
+    assert build_state_hash(engine.get_xml()) == before
 
 
 def test_optimize_item_on_empty_weapon_slot_for_attack_skill(engine):
@@ -508,7 +581,36 @@ def test_optimize_supports_picks_improving_set(engine):
     # pool dropped it entirely; the measurement-based pool must surface it and the greedy pick it.
     assert "Lightning Penetration" in r["supports"]
     assert r["screened"] >= 30  # solo-screened a broad pool, not a tiny tag-ranked slice
+    assert r["supportAudit"]["status"] == "inconclusive"
+    assert r["supportAudit"]["measurement"]["checkpointEligible"] is False
+    assert r["supportAudit"]["positiveGainSupportsMissing"]
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only: build restored
+
+
+def test_optimize_supports_can_target_secondary_group_and_restore(engine):
+    from server.compute import skillgroups, supportopt
+
+    engine.new_build()
+    engine.set_class("Huntress", "Amazon")
+    engine.set_level(95)
+    engine.paste_skill("Lightning Spear 20/20  1")
+    engine.add_skill_group("Fireball 20/20  1")
+    groups_before = skillgroups.list_skill_groups(engine)
+    target = next(group for group in groups_before["groups"] if group["index"] == 2)
+
+    result = supportopt.optimize_supports(
+        engine,
+        metric="TotalDPS",
+        max_supports=3,
+        group_index=2,
+        expected_fingerprint=target["fingerprint"],
+    )
+
+    assert result["ok"] is True
+    assert result["skill"] == "Fireball"
+    assert result["groupIndex"] == 2
+    assert engine.get_build()["mainSkill"] == "Lightning Spear"
+    assert skillgroups.list_skill_groups(engine)["groups"] == groups_before["groups"]
 
 
 def test_support_pool_surfaces_on_element_levers():
@@ -545,9 +647,10 @@ def test_optimize_jewel_crafts_damage_jewel(engine):
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only
 
 
-def test_plan_gear_caps_resists_while_keeping_damage(engine):
+def test_plan_gear_meets_stage_resists_while_keeping_damage(engine):
     # Cross-slot budget allocation: offense slots damage-leaning, defense slots EHP-leaning (which
-    # pulls resists onto the cheapest-DPS pieces). Read-only; returns a coherent whole-set plan.
+    # pulls resists onto the cheapest-DPS pieces). The default endgame target is 60/30, not a hidden
+    # universal 75% requirement. Read-only; returns a coherent whole-set plan.
     from server import scaffold
     from server.compute import itemopt
 
@@ -568,7 +671,7 @@ def test_plan_gear_caps_resists_while_keeping_damage(engine):
     assert not r["rejectedIllegalCandidates"]
     assert all(item["legalityCheck"]["ok"] for item in r["plan"])
     pj = r["projected"]
-    assert pj["resistsCapped"] is True  # defense slots pull resists to cap
+    assert pj["resistanceTargetMet"] is True
     assert isinstance(pj["TotalDPS"], (int, float))
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only: build restored
 
@@ -617,6 +720,29 @@ def test_alloc_passive_warns_over_budget(engine):
     ]
     a = engine.alloc_passive(cand[0]["id"])
     assert a.get("warning") and "over budget" in a["warning"]
+
+
+def test_real_engine_lists_bounded_reallocation_leaf_candidates(engine):
+    engine.new_build()
+    engine.set_class("Mercenary", "Tactician")
+    engine.set_level(95)
+    candidates = [
+        node
+        for node in engine.search_passives(query="", node_type="Notable", limit=200)["results"]
+        if not node.get("ascendancy")
+        and isinstance(node.get("pathDist"), (int, float))
+        and node["pathDist"] > 0
+    ]
+    assert candidates
+    allocated = engine.alloc_passive(candidates[0]["id"])
+    assert allocated["ok"] is True
+
+    result = engine.list_reallocation_candidates(limit=12)
+
+    assert result["boundedLimit"] == 12
+    assert result["candidates"]
+    assert all(entry["type"] in {"Normal", "Notable"} for entry in result["candidates"])
+    assert all(entry["pointsFreed"] == 1 for entry in result["candidates"])
 
 
 def test_unmodeled_skill_surfaced(engine):
@@ -800,9 +926,30 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
     planned = {p["slot"] for p in r["plan"]}
     for slot in ("Amulet", "Gloves", "Ring 1", "Ring 2", "Body Armour", "Helmet", "Boots", "Belt"):
         assert slot in planned, f"auto-base missed {slot}"
-    assert r["projected"]["resistsCapped"]  # a whole auto-based set caps resists
+    assert r["projected"]["resistanceTargetMet"]
     assert "ehpFloorMet" in r["projected"]  # the min_ehp floor is evaluated + reported
     assert engine.get_build()["mainSkill"] == "Spark"  # read-only: build restored
+
+
+def test_realistic_plan_replaces_normal_bootstrap_weapon(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Mercenary", "Tactician")
+    engine.set_level(95)
+    engine.paste_skill("Galvanic Shards 20/20  1")
+    engine.add_item("Rarity: Normal\nMakeshift Crossbow\nItem Level: 1", slot="Weapon 1")
+
+    result = itemopt.plan_gear(
+        engine,
+        slots=["Weapon 1"],
+        acquisition_profile="realistic_trade",
+    )
+
+    assert result["replacedBootstrapSlots"] == ["Weapon 1"]
+    assert result["plan"][0]["item"].splitlines()[2] != "Makeshift Crossbow"
+    assert len(result["plan"][0]["affixes"]) <= 5
+    assert all(entry["topTierAffixCount"] <= 2 for entry in result["plan"])
 
 
 def test_campaign_plan_gear_does_not_keep_chasing_capped_chaos_resistance(engine):
@@ -828,6 +975,419 @@ def test_campaign_plan_gear_does_not_keep_chasing_capped_chaos_resistance(engine
     assert result["projected"]["chaosTargetMet"] is True
     assert 0 <= result["projected"]["resistances"]["chaos"] < 75
     assert len(chaos_affixes) <= 3
+
+
+def test_optimize_charm_returns_magic_one_prefix_one_suffix(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Mercenary", "Tactician")
+    engine.set_level(95)
+    engine.add_item(
+        "Rarity: Rare\nTest Belt\nFine Belt\nItem Level: 82\nCharm Slots: 3\n"
+        "Implicits: 1\nHas 3 Charm Slots",
+        slot="Belt",
+    )
+
+    result = itemopt.optimize_charm(
+        engine,
+        "Charm 1",
+        base="Amethyst Charm",
+        prefix_strategy="guard",
+        suffix_strategy="charges",
+    )
+
+    assert result["ok"] is True
+    assert result["item"].startswith("Rarity: Magic")
+    assert len(result["affixes"]) == 2
+    assert result["legalityCheck"]["prefixes"] == 1
+    assert result["legalityCheck"]["suffixes"] == 1
+
+
+class _JewelMarginalEngine:
+    def __init__(self) -> None:
+        self.allocated = False
+        self.equipped = False
+        self.xml = (
+            '<PathOfBuilding><Build className="Mercenary" level="95"/>'
+            '<Tree activeSpec="1"><Spec><Sockets /></Spec></Tree>'
+            '<Items activeItemSet="1"><ItemSet id="1" /></Items></PathOfBuilding>'
+        )
+        self.unspent_points = 5
+        self.removed: set[int] = set()
+        self.mutation_count = 0
+
+    def get_xml(self):
+        return self.xml
+
+    def transaction_lock(self):
+        return nullcontext()
+
+    def _touch(self):
+        self.mutation_count += 1
+        while f"mutation{self.mutation_count}=" in self.xml:
+            self.mutation_count += 1
+        self.xml = self.xml.replace(
+            "/>", f' mutation{self.mutation_count}="true"/>', 1
+        )
+
+    def list_jewel_sockets(self):
+        root = ET.fromstring(self.xml)
+        filled = {
+            int(value.get("nodeId"))
+            for value in root.findall("./Tree/Spec/Sockets/Socket")
+        }
+        socket = 102 if 101 in filled else 101
+        return {"sockets": [{"socket": socket, "allocated": False, "filled": False}]}
+
+    def get_passive(self, _node):
+        return {"found": True, "pathDist": 2, "pathNodeIds": [301]}
+
+    def get_build(self):
+        return {"unspentPoints": self.unspent_points}
+
+    def get_stats(self, _keys):
+        value = 100 - 5 * len(self.removed)
+        value += 20 * len(ET.fromstring(self.xml).findall("./Tree/Spec/Sockets/Socket"))
+        return {"stats": {"Life": value}}
+
+    def list_reallocation_candidates(self, limit=12):
+        assert limit == 12
+        return {
+            "candidates": [
+                {"id": 201, "name": "Small Life", "type": "Normal", "pointsFreed": 1},
+                {"id": 202, "name": "Small Armour", "type": "Normal", "pointsFreed": 1},
+            ]
+        }
+
+    def dealloc_passive(self, node):
+        self.removed.add(int(node))
+        self._touch()
+        return {"ok": True, "pointsFreed": 1}
+
+    def alloc_passive(self, _node):
+        self.allocated = True
+        self._touch()
+        return {"ok": True, "pointsSpent": 2}
+
+    def equip_jewel(self, _raw, socket=None):
+        assert socket in {101, 102}
+        self.equipped = True
+        root = ET.fromstring(self.xml)
+        items = root.find("Items")
+        item_id = str(len(items.findall("Item")) + 1)
+        item = ET.SubElement(items, "Item", {"id": item_id})
+        item.text = _raw
+        sockets = root.find("./Tree/Spec/Sockets")
+        ET.SubElement(sockets, "Socket", {"nodeId": str(socket), "itemId": item_id})
+        self.xml = ET.tostring(root, encoding="unicode")
+        return {"ok": True}
+
+    def load_build_xml(self, xml, name=""):
+        del name
+        self.xml = xml
+        socket_count = len(ET.fromstring(xml).findall("./Tree/Spec/Sockets/Socket"))
+        self.allocated = socket_count > 0
+        self.equipped = socket_count > 0
+        self.removed.clear()
+        self.mutation_count = 0
+        return {"ok": True}
+
+
+def test_evaluate_next_jewel_socket_is_marginal_bounded_and_read_only():
+    engine = _JewelMarginalEngine()
+    before = engine.get_xml()
+
+    result = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+
+    assert result["ok"] is True
+    assert result["socket"] == 101
+    assert result["pathPointCost"] == 2
+    assert result["positiveNetBenefit"] is True
+    assert result["decisionRef"].startswith("jewel-decision:")
+    assert result["decision"] == "apply_then_run_second_round"
+    assert result["maxRounds"] == 2
+    assert engine.get_xml() == before
+    assert engine.allocated is False and engine.equipped is False
+
+
+def test_evaluate_next_jewel_socket_reports_restore_failure():
+    class RestoreFailureEngine(_JewelMarginalEngine):
+        def load_build_xml(self, xml, name=""):
+            del xml, name
+            raise RuntimeError("restore failed")
+
+    engine = RestoreFailureEngine()
+    result = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "jewel_socket_probe_restore_failed"
+    assert result["rolledBack"] is False
+    assert result["recoveryRequired"] is True
+
+
+def test_evaluate_next_jewel_socket_full_tree_measures_equal_point_reallocation():
+    engine = _JewelMarginalEngine()
+    engine.unspent_points = 0
+
+    result = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "evaluated"
+    assert result["pointsReallocated"] == 2
+    assert result["nodesToRemove"] == [201, 202]
+    assert result["positiveNetBenefit"] is True
+    assert result["metricsBefore"]["Life"] == 100
+    assert result["metricsAfter"]["Life"] == 110
+    assert engine.removed == set()
+
+
+def test_apply_next_jewel_socket_decision_is_atomic_and_marks_round_progress():
+    engine = _JewelMarginalEngine()
+    evaluated = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+
+    applied = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=evaluated["decisionRef"],
+        expected_state_hash=evaluated["stateHash"],
+    )
+
+    assert applied["ok"] is True
+    assert applied["roundsCompleted"] == 1
+    assert applied["outputStateHash"] != evaluated["stateHash"]
+    current = itemopt.next_jewel_decision_for_state(engine, applied["outputStateHash"])
+    assert current is not None and current["status"] == "applied"
+
+
+def test_apply_next_jewel_socket_decision_rejects_stale_state_without_mutation():
+    engine = _JewelMarginalEngine()
+    evaluated = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+    before = engine.get_xml()
+
+    rejected = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=evaluated["decisionRef"],
+        expected_state_hash="sha256:stale",
+    )
+
+    assert rejected["errorCode"] == "build_state_conflict"
+    assert engine.get_xml() == before
+
+
+def test_second_jewel_round_requires_applied_first_round():
+    engine = _JewelMarginalEngine()
+
+    rejected = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        round_index=2,
+    )
+
+    assert rejected["errorCode"] == "jewel_socket_round_sequence_invalid"
+
+
+def test_second_jewel_round_apply_records_bounded_review_complete():
+    engine = _JewelMarginalEngine()
+    raw = "Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life"
+    first = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw=raw,
+        goals={"Life": 1.0},
+        round_index=1,
+    )
+    first_applied = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=first["decisionRef"],
+        expected_state_hash=first["stateHash"],
+    )
+    second = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw=raw,
+        goals={"Life": 1.0},
+        round_index=2,
+    )
+    second_applied = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=second["decisionRef"],
+        expected_state_hash=second["stateHash"],
+    )
+
+    assert first_applied["roundsCompleted"] == 1
+    assert second_applied["roundsCompleted"] == 2
+    current = itemopt.next_jewel_decision_for_state(
+        engine, second_applied["outputStateHash"]
+    )
+    assert current["status"] == "applied"
+    assert current["roundsCompleted"] == 2
+
+
+def test_tactician_95_real_engine_selects_declared_boss_group(engine):
+    engine.new_build()
+    engine.set_class("Mercenary", "Tactician")
+    engine.set_level(95)
+    engine.add_item("Rarity: Normal\nMakeshift Crossbow\nItem Level: 1", slot="Weapon 1")
+    engine.paste_skill("Galvanic Shards 20/20 1")
+    engine.add_skill_group("Stormblast Bolts 20/20 1")
+
+    selection = engine.select_judge_skill(
+        offense_skill_group_index=2,
+        expected_skill_name="Stormblast Bolts",
+    )
+
+    assert selection["status"] == "selected"
+    assert selection["calculationContext"]["groupIndex"] == 2
+    assert selection["calculationContext"]["skillName"] == "Stormblast Bolts"
+
+
+class _SocketBatchEngine:
+    def get_xml(self):
+        return '<PathOfBuilding><Build className="Mercenary" level="95"/></PathOfBuilding>'
+
+
+def test_plan_item_sockets_batch_returns_explicit_slot_decisions(monkeypatch):
+    def fake_optimize(_engine, *, slot, **_kwargs):
+        if slot == "Helmet":
+            return {"ok": True, "changed": True, "item": "planned", "craftReceiptRef": "r"}
+        return {"ok": True, "changed": False, "reason": "no_beneficial_socket_option"}
+
+    monkeypatch.setattr(craftopt, "optimize_item_sockets", fake_optimize)
+    result = craftopt.plan_item_sockets_batch(
+        _SocketBatchEngine(),
+        slot_socket_counts={"Helmet": 1, "Boots": 1},
+        goals={"TotalEHP": 1.0},
+    )
+
+    assert result["ok"] is True
+    assert result["decisions"] == {"Helmet": "socketed", "Boots": "no_positive"}
+    assert result["readOnly"] is True
+
+
+def test_partial_socket_plan_only_carries_to_immediate_equip_output_state(monkeypatch):
+    engine = _SocketBatchEngine()
+    fingerprint = "sha256:" + ("a" * 64)
+    monkeypatch.setattr(
+        craftopt,
+        "optimize_item_sockets",
+        lambda _engine, *, slot, **_kwargs: {
+            "ok": True,
+            "changed": True,
+            "slot": slot,
+            "item": "planned",
+            "itemFingerprint": fingerprint,
+            "acceptedItemFingerprints": [fingerprint],
+            "remainingSocketCount": 1,
+        },
+    )
+
+    result = craftopt.plan_item_sockets_batch(
+        engine,
+        slot_socket_counts={"Helmet": 2},
+        goals={"TotalEHP": 1.0},
+    )
+    monkeypatch.setattr(
+        craftopt.completeness,
+        "equipped_item_metadata",
+        lambda _xml: {"Helmet": {"itemFingerprint": fingerprint}},
+    )
+
+    assert result["decisions"] == {"Helmet": "partial_no_positive"}
+    assert craftopt.socket_batch_decisions_for_state(engine, "post-equip-state") == {}
+    carried = craftopt.carry_socket_decision_to_equipped_state(
+        engine,
+        input_state_hash=result["stateHash"],
+        output_state_hash="post-equip-state",
+        slot="Helmet",
+        item_fingerprint=fingerprint,
+    )
+    assert carried == "partial_no_positive"
+    assert craftopt.socket_batch_decisions_for_state(engine, "post-equip-state") == {
+        "Helmet": "partial_no_positive"
+    }
+    assert craftopt.socket_batch_decisions_for_state(engine, "later-state") == {}
+
+
+def test_multi_slot_socket_plan_carries_across_consecutive_equip_outputs(monkeypatch):
+    engine = _SocketBatchEngine()
+    fingerprints = {
+        "Helmet": "sha256:" + ("a" * 64),
+        "Boots": "sha256:" + ("b" * 64),
+    }
+
+    def fake_optimize(_engine, *, slot, **_kwargs):
+        fingerprint = fingerprints[slot]
+        return {
+            "ok": True,
+            "changed": True,
+            "slot": slot,
+            "item": "planned",
+            "itemFingerprint": fingerprint,
+            "acceptedItemFingerprints": [fingerprint],
+            "remainingSocketCount": 1,
+        }
+
+    monkeypatch.setattr(craftopt, "optimize_item_sockets", fake_optimize)
+    planned = craftopt.plan_item_sockets_batch(
+        engine,
+        slot_socket_counts={"Helmet": 2, "Boots": 2},
+        goals={"TotalEHP": 1.0},
+    )
+    first = craftopt.carry_socket_decision_to_equipped_state(
+        engine,
+        input_state_hash=planned["stateHash"],
+        output_state_hash="after-helmet",
+        slot="Helmet",
+        item_fingerprint=fingerprints["Helmet"],
+    )
+    second = craftopt.carry_socket_decision_to_equipped_state(
+        engine,
+        input_state_hash="after-helmet",
+        output_state_hash="after-boots",
+        slot="Boots",
+        item_fingerprint=fingerprints["Boots"],
+    )
+
+    assert first == "partial_no_positive"
+    assert second == "partial_no_positive"
+    assert craftopt.socket_batch_decisions_for_state(engine, "after-boots") == {
+        "Helmet": "partial_no_positive",
+        "Boots": "partial_no_positive",
+    }
+    assert (
+        craftopt.carry_socket_decision_to_equipped_state(
+            engine,
+            input_state_hash="unrelated-state",
+            output_state_hash="unrelated-output",
+            slot="Boots",
+            item_fingerprint=fingerprints["Boots"],
+        )
+        is None
+    )
 
 
 def test_optimize_passives_respects_separate_ascendancy_budget(engine):
@@ -949,10 +1509,7 @@ def test_get_build_counts_extra_passive_and_weapon_set_points(engine):
     assert converted["stats"]["PassivePointsToWeaponSetPoints"] == 100
 
 
-def test_get_build_auto_selects_best_damage_skill_when_main_group_is_buff(engine):
-    # Imported poe.ninja/PoB samples often preserve the last-clicked UI skill as main.
-    # A buff main group must not force Judge to score offense as 0 when another enabled
-    # damage group is computable.
+def test_get_build_is_read_only_and_judge_selection_is_explicit(engine):
     engine.new_build()
     engine.set_class("Witch", "Infernalist")
     engine.set_level(90)
@@ -962,11 +1519,15 @@ def test_get_build_auto_selects_best_damage_skill_when_main_group_is_buff(engine
     b = engine.get_build()
 
     assert b["mainSkill"] == "Plague Bearer"
-    selected = b["judgeSelectedSkill"]
+    assert "judgeSelectedSkill" not in b
+    selection = engine.select_judge_skill(
+        offense_skill_group_index=2,
+        expected_skill_name="Fireball",
+    )
+    selected = selection["selectedSkill"]
     assert selected["skillName"] == "Fireball"
     assert selected["dps"] > 0
-    assert "auto_selected_damage_skill_caveat" in selected["caveats"]
-    selected_group_names = [g["name"] for g in b["judgeSelectedSkillGroup"]]
+    selected_group_names = [g["name"] for g in selection["selectedSkillGroup"]]
     assert selected_group_names == ["Fireball"]
 
 
@@ -980,7 +1541,10 @@ def test_get_build_exposes_weapon_requirement_mismatch_for_selected_skill(engine
         slot="Weapon 1",
     )
 
-    selected = engine.get_build()["judgeSelectedSkill"]
+    selected = engine.select_judge_skill(
+        offense_skill_group_index=1,
+        expected_skill_name="Lightning Spear",
+    )["selectedSkill"]
 
     assert selected["skillName"] == "Lightning Spear"
     assert selected["weaponCheck"]["weaponTypes"] == ["Spear"]
@@ -997,7 +1561,10 @@ def test_judge_selected_skill_uses_isolated_full_dps_per_group(engine):
     engine.add_skill_group("Spark 20/20  1", include_in_full_dps=True)
     global_full = engine.get_stats(["FullDPS"])["stats"]["FullDPS"]
 
-    selected = engine.get_build()["judgeSelectedSkill"]
+    selected = engine.select_judge_skill(
+        offense_skill_group_index=1,
+        expected_skill_name="Spark",
+    )["selectedSkill"]
 
     assert global_full > single_full * 1.5
     assert selected["sourceMetric"] != "FullDPS"
@@ -1013,12 +1580,35 @@ def test_judge_selected_skill_exposes_active_skill_count_for_minion_math(engine)
     engine.set_level(90)
     engine.paste_skill("Fireball 20/20  3")
 
-    selected = engine.get_build()["judgeSelectedSkill"]
+    selected = engine.select_judge_skill(
+        offense_skill_group_index=1,
+        expected_skill_name="Fireball",
+    )["selectedSkill"]
 
     assert selected["skillName"] == "Fireball"
     assert selected["activeSkillCount"] == 3
     assert selected["rawDps"] == pytest.approx(selected["dps"], rel=1e-6)
     assert selected["effectiveDps"] == pytest.approx(selected["dps"], rel=1e-6)
+
+
+def test_get_build_does_not_change_full_dps_or_skill_flags(engine):
+    _spark_caster(engine)
+    engine.paste_skill("Spark 20/20  1")
+    engine.add_skill_group("Spark 20/20  1", include_in_full_dps=True)
+    engine.add_skill_group("Attrition 20/20  1", include_in_full_dps=False)
+    before_stats = engine.get_stats(["TotalDPS", "FullDPS", "ManaCost", "Speed"])["stats"]
+    before_groups = engine.call("list_skill_groups")
+
+    engine.get_build()
+    engine.get_build()
+
+    after_stats = engine.get_stats(["TotalDPS", "FullDPS", "ManaCost", "Speed"])["stats"]
+    after_groups = engine.call("list_skill_groups")
+    assert after_stats == pytest.approx(before_stats, rel=1e-9)
+    assert [group["includeInFullDPS"] for group in after_groups["groups"]] == [
+        group["includeInFullDPS"] for group in before_groups["groups"]
+    ]
+    assert after_groups["mainGroupIndex"] == before_groups["mainGroupIndex"]
 
 
 def test_rank_levers_marginal_gain(fireball):
@@ -1116,6 +1706,60 @@ def test_set_skill_unknown_gem_leaves_build_unchanged(engine):
     after = engine.get_build()
     assert after["mainSkill"] == "Spark"  # unchanged
     assert engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(before, rel=1e-6)
+
+
+def test_complete_skill_mutation_rolls_back_silently_dropped_support(engine):
+    from contextlib import nullcontext
+
+    from server.compute import skillgroups
+    from server.compute.state import build_state_hash
+
+    class DroppingEngine:
+        def __init__(self):
+            self.xml = "<PathOfBuilding2><Skills /></PathOfBuilding2>"
+            self.mutated = False
+
+        def transaction_lock(self):
+            return nullcontext()
+
+        def get_xml(self):
+            return self.xml
+
+        def call(self, method, **_params):
+            assert method == "list_skill_groups"
+            if not self.mutated:
+                return {"mainGroupIndex": 0, "groups": []}
+            return {
+                "mainGroupIndex": 1,
+                "groups": [
+                    {
+                        "index": 1,
+                        "gems": [{"name": "Lightning Arrow"}],
+                    }
+                ],
+            }
+
+        def paste_skill(self, _skill):
+            self.xml = (
+                "<PathOfBuilding2><Skills><Skill><Gem nameSpec='Lightning Arrow' />"
+                "</Skill></Skills></PathOfBuilding2>"
+            )
+            self.mutated = True
+            return {"ok": True}
+
+        def load_build_xml(self, xml, **_params):
+            self.xml = xml
+            self.mutated = False
+
+    dropping_engine = DroppingEngine()
+    before = build_state_hash(dropping_engine.get_xml())
+
+    result = skillgroups.set_main_skill(dropping_engine, "Lightning Arrow\nVolt")
+
+    assert result["ok"] is False
+    assert result["errorCode"] == "skill_group_incomplete"
+    assert result["droppedGemNames"] == ["Volt"]
+    assert build_state_hash(dropping_engine.get_xml()) == before
 
 
 def test_set_skill_recovers_after_bad_input(engine):
@@ -1263,7 +1907,7 @@ def test_optimize_build_rejects_unset_build(engine):
 
 def test_optimize_build_smoke(engine):
     # Integration: the holistic optimizer assembles a whole build (tree + gear + jewels + supports)
-    # that beats the bare skill, caps resistances, and is left LOADED in the session. Slow (~30s).
+    # that beats the bare skill, meets stage resist targets, and is left LOADED. Slow (~30s).
     _spark_caster(engine)
     bare = engine.paste_skill("Spark 20/20  1")["stats"]["TotalDPS"]
     r = buildopt.optimize_build(engine, levers=[], passes=1, max_jewel_sockets=1, min_ehp=None)
@@ -1271,7 +1915,7 @@ def test_optimize_build_smoke(engine):
     assert r["committed"] == "balanced"  # levers=[] -> only the balanced candidate
     res = r["result"]
     assert (res["TotalDPS"] or 0) > bare  # synthesis added real DPS over the bare skill
-    assert res["resistsCapped"] is True  # the defensive constraint held
+    assert res["resistanceTargetMet"] is True  # the stage defensive constraint held
     # the winner is loaded in the session, so the live engine matches the reported result
     live = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
     assert live == pytest.approx(res["TotalDPS"], rel=1e-3)
@@ -1310,10 +1954,57 @@ def test_crafting_options_surfaces_pob_data(engine):
     assert any(e.get("special") for e in co["essences"])  # Perfect (beyond-pool) essences present
 
 
+def test_optimize_item_sockets_preserves_item_and_returns_receipt(engine, tmp_path, monkeypatch):
+    engine.new_build()
+    engine.set_class("Sorceress")
+    engine.set_level(92)
+    engine.paste_skill("Fireball 20/20  1")
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    base = db.pick_base("Body Armour", "int")
+    original_line = "+50 to maximum Life"
+    engine.add_item(
+        f"Rarity: Rare\nSocket Target\n{base}\nItem Level: 82\n--------\n{original_line}",
+        slot="Body Armour",
+    )
+
+    result = craftopt.optimize_item_sockets(
+        engine,
+        slot="Body Armour",
+        goals={"TotalEHP": 1.0},
+        socket_count=1,
+    )
+
+    assert result["ok"], result
+    assert result["changed"] is True
+    assert original_line in result["item"]
+    assert result["socketCount"] == 1
+    assert result["craftReceiptRef"].startswith("craft-legality:")
+    equipped = main.equip_item(
+        result["item"],
+        slot="Body Armour",
+        craft_receipt_ref=result["craftReceiptRef"],
+    )
+    assert equipped["ok"] is True, equipped
+
+
+def test_generated_endgame_belt_round_trips_three_charm_slots(engine):
+    engine.new_build()
+    engine.set_class("Ranger", "Deadeye")
+    engine.set_level(90)
+    raw = itemopt._item_text("Fine Belt", ["+30 to Dexterity"], "Belt", ilvl=90)
+
+    equipped = engine.add_item(raw, slot="Belt")
+    build = engine.get_build()
+
+    assert equipped["ok"] is True
+    assert build["gear"]["Belt"]["charmSlots"] == 3
+    assert build["charmLimit"] == 3
+
+
 @pytest.mark.timeout(1800)
-def test_optimize_build_crafting_keeps_resists_capped(engine):
+def test_optimize_build_crafting_keeps_resistance_target_met(engine):
     # The crafting post-pass re-crafts every slot independently, which can strip the cross-slot resist
-    # balance plan_gear set up. The re-cap pass must restore it —a crafted build must stay capped.
+    # balance plan_gear set up. The repair pass must restore the configured stage target.
     # Slow on Windows/PoB headless (about 15 min on the current pinned runtime, and slower after
     # earlier tests reuse the session engine): full crafting on a whole gear set. Match the
     # explicit compute profile's 30-minute heavy-test budget while ordinary tests remain strict.
@@ -1325,7 +2016,7 @@ def test_optimize_build_crafting_keeps_resists_capped(engine):
     assert r["ok"], r
     res = r["result"]
     assert res["craftedGear"]  # crafting actually ran on the gear
-    assert res["resistsCapped"] is True  # crafting must NOT break the resist cap
+    assert res["resistanceTargetMet"] is True
 
 
 def test_craft_item_beats_plain_rare_and_round_trips_source_receipt(

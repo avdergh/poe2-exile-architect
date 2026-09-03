@@ -27,6 +27,7 @@ from server.knowledge import (  # noqa: E402
     graph_tools,
     physical_graph,
     research_identity,
+    research_contracts,
     research_memory,
     research_models,
 )
@@ -64,7 +65,11 @@ CASE_COVERAGE_DIMENSIONS = {
 }
 CASE_COVERAGE_STATUSES = {"covered", "evidence_missing", "not_applicable"}
 DISPOSED_SKILL_GROUP_STATES = frozenset(
-    {"packaged", "declared", "source_has_no_supports", "exempt_internal_id"}
+    {"packaged", "not_applicable", "source_has_no_supports", "exempt_internal_id"}
+)
+SOURCE_GROUP_RESEARCH_DISPOSITIONS = frozenset({"represented", "not_relevant", "needs_followup"})
+SOURCE_GROUP_SUPPORT_DISPOSITIONS = frozenset(
+    {"packaged", "not_applicable", "source_has_no_supports", "source_coverage_gap"}
 )
 
 MECHANIC_AUDIT_CLAIM_TYPES = {
@@ -387,13 +392,15 @@ def _unique_gem_diagnostics(
     if not isinstance(source_skill_manifest, dict):
         return {
             "available": False,
+            "diagnosticVersion": 2,
             "uniqueGemCandidates": [],
             "unlabeledUniqueGemNames": [],
             "corpusMissingGemNames": [],
             "nonGemSkillNames": [],
             "proseMentionedWithoutComponentNames": [],
+            "gemIdentityResolutions": [],
         }
-    gem_names: list[str] = []
+    gem_refs: list[dict[str, str]] = []
     unique_by_id: list[str] = []
     non_gem_names: list[str] = []
     for group in source_skill_manifest.get("activeSkillGroups") or []:
@@ -408,7 +415,13 @@ def _unique_gem_diagnostics(
             name = str(item["name"]).strip()
             name_source = str(item.get("nameSource") or "gem_name")
             if name_source == "gem_name":
-                gem_names.append(name)
+                gem_refs.append(
+                    {
+                        "name": name,
+                        "gemId": str(item.get("gemId") or "").strip(),
+                        "skillId": str(item.get("skillId") or "").strip(),
+                    }
+                )
             else:
                 non_gem_names.append(name)
             if _is_unique_gem_identifier(
@@ -425,17 +438,51 @@ def _unique_gem_diagnostics(
     except Exception:  # pragma: no cover - import layout drift guard
         corpus_db = None
         corpus_available = False
-    for name in dict.fromkeys(gem_names):
+    identity_resolutions: list[dict[str, Any]] = []
+    seen_gem_refs: set[tuple[str, str]] = set()
+    for gem_ref in gem_refs:
+        name = gem_ref["name"]
+        gem_id = gem_ref["gemId"]
+        ref_identity = (name.casefold(), gem_id)
+        if ref_identity in seen_gem_refs:
+            continue
+        seen_gem_refs.add(ref_identity)
         if not corpus_available:
             corpus_missing_names.append(name)
             continue
         try:
-            gem = corpus_db.get_gem(name)
+            gem_candidates: dict[str, dict[str, Any]] = {}
+            if gem_id:
+                id_queries = [gem_id]
+                if "/" not in gem_id:
+                    id_queries.extend(
+                        [
+                            f"Metadata/Items/Gem/{gem_id}",
+                            f"Metadata/Items/Gems/{gem_id}",
+                        ]
+                    )
+                for query in id_queries:
+                    candidate = corpus_db.get_gem(query)
+                    if candidate is not None and str(candidate.get("id") or ""):
+                        gem_candidates[str(candidate["id"])] = candidate
+            gem = next(iter(gem_candidates.values())) if len(gem_candidates) == 1 else None
+            resolution_kind = "gem_id" if gem is not None else "display_name"
+            if gem is None and not gem_id:
+                gem = corpus_db.get_gem(name)
         except Exception:
             gem = None
+            resolution_kind = "unavailable"
         if gem is None:
             corpus_missing_names.append(name)
             continue
+        identity_resolutions.append(
+            {
+                "sourceName": name,
+                "sourceGemId": gem_id or None,
+                "canonicalName": str(gem.get("name") or name),
+                "resolutionKind": resolution_kind,
+            }
+        )
         if gem.get("is_lineage") is True and name not in unique_candidates:
             unique_candidates.append(name)
     if not unique_candidates:
@@ -446,6 +493,8 @@ def _unique_gem_diagnostics(
             "corpusMissingGemNames": corpus_missing_names,
             "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
             "proseMentionedWithoutComponentNames": [],
+            "diagnosticVersion": 2,
+            "gemIdentityResolutions": identity_resolutions,
         }
     raw_records = review.get("deepResearchRecords") or []
     raw_records = raw_records if isinstance(raw_records, list) else []
@@ -505,6 +554,8 @@ def _unique_gem_diagnostics(
         "corpusMissingGemNames": corpus_missing_names,
         "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
         "proseMentionedWithoutComponentNames": sorted(prose_only_mentions),
+        "diagnosticVersion": 2,
+        "gemIdentityResolutions": identity_resolutions,
     }
 
 
@@ -534,10 +585,12 @@ def accept_deep_review_candidates(
     graph_service: graph_tools.GraphQueryService | None = None,
     version_context: dict[str, str] | None = None,
     source_skill_manifest: dict[str, Any] | None = None,
+    pob_readback: dict[str, Any] | None = None,
     jewel_counts: dict[str, Any] | None = None,
     review_payload: dict[str, Any] | None = None,
     require_deep_records: bool = False,
     validation_only: bool = False,
+    acceptance_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     graph_service = graph_service or _graph_service()
     durable_version_context = _durable_version_context(version_context)
@@ -559,6 +612,16 @@ def accept_deep_review_candidates(
     structural_groups = _structural_schema_issues(review)
     if structural_groups:
         report = _structural_failure_report(structural_groups)
+        if not validation_only:
+            _write_safe_report(report, Path(json_output), Path(md_output))
+        return report
+    validated_readback_dispositions, readback_binding_issues = (
+        _validated_pob_readback_dispositions(review, pob_readback)
+    )
+    if readback_binding_issues:
+        report = _structural_failure_report(
+            [("", "research_case", readback_binding_issues)]
+        )
         if not validation_only:
             _write_safe_report(report, Path(json_output), Path(md_output))
         return report
@@ -591,6 +654,7 @@ def accept_deep_review_candidates(
         reviewed_mappings=reviewed_mappings,
         confirmed_review_components=confirmed_review_components,
         source_skill_resolutions=source_skill_resolutions,
+        source_skill_manifest=source_skill_manifest,
         version_context=durable_version_context,
     )
     _propagate_group_ascendancy_scope(deep_payload)
@@ -602,6 +666,7 @@ def accept_deep_review_candidates(
         graph_service=graph_service,
         deep_payload=deep_payload,
         accepted_records=accepted_record_summaries,
+        source_skill_manifest=source_skill_manifest,
     )
     deferred_records.extend(structured_support_deferred)
     (
@@ -628,6 +693,7 @@ def accept_deep_review_candidates(
         graph_service=graph_service,
         source_evidence_diagnostics=source_evidence_diagnostics,
         deep_records=deep_payload.get("deep_research_records") or [],
+        validated_readback_dispositions=validated_readback_dispositions,
     )
     deep_payload, accepted_record_summaries, gear_context_deferred = (
         _filter_mechanic_records_without_gear_context(
@@ -645,7 +711,7 @@ def accept_deep_review_candidates(
     deferred_records.extend(gear_context_deferred)
     if gear_context_deferred:
         # Gear coverage can defer mechanic_chain records after the first coverage pass. Recompute
-        # support ownership against the records that can actually be persisted; otherwise a
+        # root-skill socket coverage against the records that can actually be persisted; otherwise a
         # removed mechanic record could leave a ghost support package authorizing clean coverage.
         source_evidence_diagnostics = _source_skill_evidence_diagnostics(
             review=review,
@@ -661,6 +727,7 @@ def accept_deep_review_candidates(
             graph_service=graph_service,
             source_evidence_diagnostics=source_evidence_diagnostics,
             deep_records=deep_payload.get("deep_research_records") or [],
+            validated_readback_dispositions=validated_readback_dispositions,
         )
     blocked_pattern_dependencies = _blocked_pattern_dependencies(
         [
@@ -736,7 +803,7 @@ def accept_deep_review_candidates(
     service = research_memory.ResearchMemoryService(
         db_path=Path(db_path),
         graph_service=graph_service,
-        initialize_store=not validation_only,
+        initialize_store=not validation_only and not bool(acceptance_context),
     )
     if require_deep_records and not deep_payload["deep_research_records"]:
         submitted_sample_id = str(
@@ -836,7 +903,7 @@ def accept_deep_review_candidates(
             deep_payload=deep_payload,
         )
         edge_result = edge_validation
-    elif not all_payloads_valid:
+    elif not all_payloads_valid or acceptance_gate_failed:
         # Validate the complete acceptance unit before any durable writer runs.
         result = pattern_validation
         deep_result = _deep_record_validation_result(
@@ -845,17 +912,46 @@ def accept_deep_review_candidates(
         )
         edge_result = edge_validation
     else:
-        result = (
-            service.propose_build_patterns(payload) if has_pattern_payload else empty_pattern_result
-        )
-        deep_result = (
-            service.propose_deep_research_records(deep_payload)
-            if has_deep_payload
-            else empty_deep_result
-        )
-        edge_result = (
-            service.propose_semantic_edges(edge_payload) if has_edge_payload else empty_edge_result
-        )
+        if acceptance_context:
+            unit = service.accept_research_unit(
+                run_ref=str(acceptance_context["runRef"]),
+                sample_id=str(acceptance_context["sampleId"]),
+                accept_attempt_key=str(acceptance_context["acceptAttemptKey"]),
+                packet_safe_hash=str(acceptance_context["packetSafeHash"]),
+                canonical_review_hash=str(acceptance_context["canonicalReviewHash"]),
+                contract_version=str(acceptance_context["contractVersion"]),
+                expected_origin_state=str(acceptance_context["expectedOriginState"]),
+                pattern_payload=payload,
+                deep_payload=deep_payload,
+                edge_payload=edge_payload,
+                supplement=bool(acceptance_context.get("supplement")),
+            )
+            if unit.get("status") != "accepted":
+                result = unit
+                deep_result = unit.get("deepRecordWrite") or unit
+                edge_result = unit.get("semanticEdgeWrite") or unit
+            else:
+                result = unit.get("patternWrite") or empty_pattern_result
+                deep_result = unit.get("deepRecordWrite") or empty_deep_result
+                edge_result = unit.get("semanticEdgeWrite") or empty_edge_result
+            if unit.get("writeReceiptRef"):
+                deep_result = {**deep_result, "writeReceiptRef": unit["writeReceiptRef"]}
+        else:
+            result = (
+                service.propose_build_patterns(payload)
+                if has_pattern_payload
+                else empty_pattern_result
+            )
+            deep_result = (
+                service.propose_deep_research_records(deep_payload)
+                if has_deep_payload
+                else empty_deep_result
+            )
+            edge_result = (
+                service.propose_semantic_edges(edge_payload)
+                if has_edge_payload
+                else empty_edge_result
+            )
     accepted = (
         result.get("status") == "accepted"
         and deep_result.get("status") == "accepted"
@@ -907,7 +1003,16 @@ def accept_deep_review_candidates(
     )
     report = {
         "reportId": "phase4-deep-review-acceptance-v3",
+        "validationIssueContractVersion": 2,
         "status": "accepted" if accepted else "rejected",
+        "errorCode": (
+            None
+            if accepted
+            else deep_result.get("errorCode")
+            or result.get("errorCode")
+            or edge_result.get("errorCode")
+            or "research_acceptance_rejected"
+        ),
         "acceptanceMode": acceptance_mode,
         "validationOnly": validation_only,
         "durableWritePerformed": durable_write_happened,
@@ -916,6 +1021,7 @@ def accept_deep_review_candidates(
         "inputReviewReportId": str(review.get("reportId") or ""),
         "patternWrite": result,
         "deepRecordWrite": deep_result,
+        "writeReceiptRef": deep_result.get("writeReceiptRef"),
         "semanticEdgeWrite": edge_result,
         "acceptedSemanticEdgeCount": len(
             edge_result.get("edgeIds") or edge_result.get("candidateEdgeIds") or []
@@ -929,6 +1035,9 @@ def accept_deep_review_candidates(
         if deep_result.get("status") == "accepted"
         else 0,
         "updatedDeepRecordCount": int(deep_result.get("updatedRecordCount") or 0)
+        if deep_result.get("status") == "accepted"
+        else 0,
+        "unchangedDeepRecordCount": int(deep_result.get("unchangedRecordCount") or 0)
         if deep_result.get("status") == "accepted"
         else 0,
         "addedDeepRecordEvidenceCount": int(deep_result.get("evidenceAddedCount") or 0)
@@ -1122,7 +1231,16 @@ def accept_deep_review_candidates(
         ],
     }
     if not validation_only:
-        _write_safe_report(report, Path(json_output), Path(md_output))
+        if acceptance_context:
+            try:
+                _write_safe_report(report, Path(json_output), Path(md_output))
+                report["acceptanceArtifactWriteStatus"] = "written"
+            except (OSError, ValueError):
+                # Durable truth is the transactional receipt.  A local presentation artifact
+                # failure after commit must never turn an accepted case back into claimed.
+                report["acceptanceArtifactWriteStatus"] = "best_effort_failed"
+        else:
+            _write_safe_report(report, Path(json_output), Path(md_output))
     return report
 
 
@@ -1194,8 +1312,16 @@ def _build_deep_record_payload(
     reviewed_mappings: dict[tuple[str, str, str], dict[str, Any]],
     confirmed_review_components: dict[str, dict[str, Any]],
     source_skill_resolutions: dict[str, dict[str, Any]],
+    source_skill_manifest: dict[str, Any] | None,
     version_context: dict[str, str],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    v3_contract = (
+        str(review.get("reviewContractVersion") or "")
+        == research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    )
+    record_schema_version = 2 if v3_contract else 1
+    output_schema_version = 6 if v3_contract else 5
+    knowledge_scope = str(review.get("knowledgeScope") or "global_seed")
     records: list[dict[str, Any]] = []
     accepted: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
@@ -1242,6 +1368,8 @@ def _build_deep_record_payload(
         typed_payload, typed_reference_issues = _canonicalize_typed_payload_references(
             typed_payload=item["typedPayload"],
             component_mentions=component_mentions,
+            source_skill_manifest=source_skill_manifest,
+            require_source_bindings=v3_contract,
         )
         if typed_reference_issues:
             deferred.append(
@@ -1255,7 +1383,7 @@ def _build_deep_record_payload(
                         "Name-based typedPayload references must match exactly one resolved "
                         "component declared in the same record."
                     ],
-                    "validationIssues": typed_reference_issues,
+                    "validationIssues": _record_validation_issues(item, typed_reference_issues),
                     "candidateKind": "deep_research_record",
                 }
             )
@@ -1293,18 +1421,19 @@ def _build_deep_record_payload(
             "class_key": item["classKey"],
             "ascendancy_key": item["ascendancyKey"],
             "extraction_method_version": item["extractionMethodVersion"],
-            "record_schema_version": 1,
+            "record_schema_version": record_schema_version,
             "game_patch": version_context["gamePatch"],
             "passive_tree_version": version_context["passiveTreeVersion"],
             "pob_version_or_commit": version_context["pobVersionOrCommit"],
             "visibility": "creator_visible",
             "split": "train_context",
-            "knowledge_scope": "global_seed",
+            "knowledge_scope": knowledge_scope,
             "status": "valid",
             "copy_safety_state": "passed",
+            "source_state_scope": item["sourceStateScope"],
         }
         validation = research_models.validate_researcher_output(
-            {"schema_version": 5, "deep_research_records": [record]}
+            {"schema_version": output_schema_version, "deep_research_records": [record]}
         )
         if validation.get("status") == "error":
             deferred.append(
@@ -1315,8 +1444,9 @@ def _build_deep_record_payload(
                     "reason": str(validation.get("errorCode") or "invalid_deep_record"),
                     "componentKeys": component_keys,
                     "caveats": list(validation.get("caveats") or []),
-                    "validationIssues": list(
-                        (validation.get("facts") or {}).get("validationIssues") or []
+                    "validationIssues": _record_validation_issues(
+                        item,
+                        list((validation.get("facts") or {}).get("validationIssues") or []),
                     ),
                     "candidateKind": "deep_research_record",
                 }
@@ -1374,13 +1504,22 @@ def _build_deep_record_payload(
                 "candidateKind": "research_case",
             }
         )
-    return {"schema_version": 5, "deep_research_records": records}, accepted, deferred
+    return (
+        {
+            "schema_version": output_schema_version,
+            "deep_research_records": records,
+        },
+        accepted,
+        deferred,
+    )
 
 
 def _canonicalize_typed_payload_references(
     *,
     typed_payload: dict[str, Any],
     component_mentions: list[dict[str, Any]],
+    source_skill_manifest: dict[str, Any] | None = None,
+    require_source_bindings: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Resolve explicit name references without inferring research relationships."""
 
@@ -1428,7 +1567,39 @@ def _canonicalize_typed_payload_references(
 
     packages = normalized.get("supportPackages")
     if isinstance(packages, list):
+        source_groups = {
+            str(group.get("groupRef") or ""): group
+            for group in (
+                source_skill_manifest.get("activeSkillGroups") or []
+                if isinstance(source_skill_manifest, dict)
+                else []
+            )
+            if isinstance(group, dict) and str(group.get("groupRef") or "")
+        }
+        def source_binding_issue(index: int, field: str, message: str) -> None:
+            issues.append(
+                {
+                    "loc": ["typed_payload", "supportPackages", index, field],
+                    "msg": message,
+                    "type": "value_error",
+                }
+            )
+
+        def stable_key_matches_source(stable_key: Any, source: dict[str, Any]) -> bool:
+            return bool(
+                _source_identity_tokens(stable_key)
+                & _source_identity_tokens(source.get("skillId"), source.get("name"))
+            )
+
+        def support_key_matches_source(stable_key: Any, source: dict[str, Any]) -> bool:
+            return bool(
+                _source_identity_tokens(stable_key)
+                & _source_identity_tokens(source.get("gemId"), source.get("name"))
+            )
+
         canonical_packages: list[dict[str, Any]] = []
+        canonical_package_identities: set[tuple[str, tuple[str, ...], str, str]] = set()
+        claimed_support_instances: set[str] = set()
         for index, package in enumerate(packages):
             if not isinstance(package, dict):
                 issues.append(
@@ -1439,8 +1610,170 @@ def _canonicalize_typed_payload_references(
                     }
                 )
                 continue
-            if set(package) == {"skillKey", "supportKeys"}:
-                canonical_packages.append(package)
+            stable_keys = {"skillKey", "supportKeys", "deliveryRole", "hostSkillKey"}
+            source_binding_keys = {
+                "sourceGroupRef",
+                "rootSkillRef",
+                "socketedItemRefs",
+            }
+            if {"skillKey", "supportKeys"}.issubset(package) and set(package).issubset(
+                stable_keys | source_binding_keys
+            ):
+                source_group_ref = str(package.get("sourceGroupRef") or "")
+                root_skill_ref = str(package.get("rootSkillRef") or "")
+                socketed_item_refs = package.get("socketedItemRefs")
+                delivery_role = str(package.get("deliveryRole") or "direct")
+                source_group = source_groups.get(source_group_ref)
+                source_bindings_valid = True
+                if require_source_bindings and not source_group_ref:
+                    source_binding_issue(
+                        index,
+                        "sourceGroupRef",
+                        "schema 2 support package must declare its exact source skill group",
+                    )
+                    source_bindings_valid = False
+                elif source_group_ref and source_group is None:
+                    source_binding_issue(
+                        index,
+                        "sourceGroupRef",
+                        "sourceGroupRef must identify an enabled group in the packet manifest",
+                    )
+                    source_bindings_valid = False
+
+                if source_group is not None:
+                    expected_root_ref = str(source_group.get("rootSkillRef") or "")
+                    root_skill = source_group.get("rootSkill")
+                    root_skill = root_skill if isinstance(root_skill, dict) else {}
+                    if require_source_bindings and not root_skill_ref:
+                        source_binding_issue(
+                            index,
+                            "rootSkillRef",
+                            "schema 2 support package must declare the root skill whose sockets contain the supports",
+                        )
+                        source_bindings_valid = False
+                    elif root_skill_ref != expected_root_ref:
+                        source_binding_issue(
+                            index,
+                            "rootSkillRef",
+                            "rootSkillRef must identify the root skill of sourceGroupRef",
+                        )
+                        source_bindings_valid = False
+                    elif not stable_key_matches_source(package.get("skillKey"), root_skill):
+                        source_binding_issue(
+                            index,
+                            "skillKey",
+                            "skillKey must identify the root skill whose sockets contain supportKeys",
+                        )
+                        source_bindings_valid = False
+                    elif root_skill.get("enabled") is False:
+                        source_binding_issue(
+                            index,
+                            "rootSkillRef",
+                            "root skill is disabled in the source active snapshot",
+                        )
+                        source_bindings_valid = False
+                    if delivery_role != "direct" or package.get("hostSkillKey"):
+                        source_binding_issue(
+                            index,
+                            "deliveryRole",
+                            "socket placement belongs to the root skill; record host/payload mechanics separately",
+                        )
+                        source_bindings_valid = False
+
+                    support_keys = package.get("supportKeys") or []
+                    invalid_socketed_item_refs = socketed_item_refs is not None and (
+                        not isinstance(socketed_item_refs, list)
+                        or len(socketed_item_refs) != len(support_keys)
+                        or any(
+                            not isinstance(value, str) or not value.strip()
+                            for value in socketed_item_refs
+                        )
+                    )
+                    if (require_source_bindings and socketed_item_refs is None) or (
+                        invalid_socketed_item_refs
+                    ):
+                        source_binding_issue(
+                            index,
+                            "socketedItemRefs",
+                            "schema 2 support package must provide one socketedItemRef for each supportKey in the same order",
+                        )
+                        source_bindings_valid = False
+                    elif isinstance(socketed_item_refs, list):
+                        source_supports_by_ref = {
+                            str(item.get("socketedItemRef") or ""): item
+                            for item in source_group.get("supports") or []
+                            if isinstance(item, dict) and str(item.get("socketedItemRef") or "")
+                        }
+                        pending_instance_refs: set[str] = set()
+                        for support_offset, (support_key, socketed_item_ref) in enumerate(
+                            zip(support_keys, socketed_item_refs, strict=True)
+                        ):
+                            instance_ref = str(socketed_item_ref).strip()
+                            source_support = source_supports_by_ref.get(instance_ref)
+                            if source_support is None:
+                                source_binding_issue(
+                                    index,
+                                    "socketedItemRefs",
+                                    "socketedItemRefs[{}] is not a support instance in sourceGroupRef".format(
+                                        support_offset
+                                    ),
+                                )
+                                source_bindings_valid = False
+                                continue
+                            if not support_key_matches_source(support_key, source_support):
+                                source_binding_issue(
+                                    index,
+                                    "socketedItemRefs",
+                                    "socketedItemRefs[{}] does not identify supportKeys[{}]".format(
+                                        support_offset, support_offset
+                                    ),
+                                )
+                                source_bindings_valid = False
+                            if (
+                                instance_ref in pending_instance_refs
+                                or instance_ref in claimed_support_instances
+                            ):
+                                source_binding_issue(
+                                    index,
+                                    "socketedItemRefs",
+                                    "the same physical support instance cannot be assigned to more than one root skill package",
+                                )
+                                source_bindings_valid = False
+                            pending_instance_refs.add(instance_ref)
+                        if source_bindings_valid:
+                            claimed_support_instances.update(pending_instance_refs)
+                    else:
+                        for support_offset, support_key in enumerate(support_keys):
+                            wanted = _source_identity_tokens(support_key)
+                            if any(
+                                wanted
+                                & _source_identity_tokens(item.get("gemId"), item.get("name"))
+                                for item in source_group.get("supports") or []
+                                if isinstance(item, dict)
+                            ):
+                                continue
+                            source_binding_issue(
+                                index,
+                                "supportKeys",
+                                "supportKeys[{}] is not present in sourceGroupRef".format(
+                                    support_offset
+                                ),
+                            )
+                            source_bindings_valid = False
+                if not source_bindings_valid:
+                    continue
+                canonical = {key: package[key] for key in stable_keys if key in package}
+                canonical.setdefault("deliveryRole", "direct")
+                canonical_identity = (
+                    str(canonical.get("skillKey") or ""),
+                    tuple(sorted(str(value) for value in canonical.get("supportKeys") or [])),
+                    str(canonical.get("deliveryRole") or "direct"),
+                    str(canonical.get("hostSkillKey") or ""),
+                )
+                if require_source_bindings and canonical_identity in canonical_package_identities:
+                    continue
+                canonical_packages.append(canonical)
+                canonical_package_identities.add(canonical_identity)
                 continue
             if set(package) != {"skillName", "supportNames"}:
                 issues.append(
@@ -1449,6 +1782,18 @@ def _canonicalize_typed_payload_references(
                         "msg": (
                             "support package must use skillKey/supportKeys or "
                             "skillName/supportNames"
+                        ),
+                        "type": "value_error",
+                    }
+                )
+                continue
+            if require_source_bindings:
+                issues.append(
+                    {
+                        "loc": ["typed_payload", "supportPackages", index],
+                        "msg": (
+                            "schema 2 support package requires stable skill/support keys plus "
+                            "sourceGroupRef and rootSkillRef"
                         ),
                         "type": "value_error",
                     }
@@ -1958,13 +2303,13 @@ def _filter_deep_records_with_identity(
                     "reason": "invalid_schema",
                     "componentKeys": summary["componentKeys"],
                     "caveats": [
-                        "skill_package records with supports must preserve skill-to-support "
-                        "ownership in typedPayload.supportPackages."
+                        "skill_package records with supports must preserve the root-skill socket "
+                        "package in typedPayload.supportPackages."
                     ],
                     "validationIssues": [
                         {
                             "loc": ["typed_payload", "supportPackages"],
-                            "msg": "missing structured support ownership",
+                            "msg": "missing structured root-skill support package",
                             "type": "value_error",
                         }
                     ],
@@ -2321,7 +2666,7 @@ def _build_payload(
             "pob_version_or_commit": version_context["pobVersionOrCommit"],
             "visibility": "creator_visible",
             "split": "train_context",
-            "knowledge_scope": "global_seed",
+            "knowledge_scope": str(review.get("knowledgeScope") or "global_seed"),
         }
         observation = {
             "observation_type": candidate["patternType"],
@@ -2577,37 +2922,46 @@ def _source_support_compatibility_diagnostics(
             snapshot=graph_service.snapshot,
             skill_key=skill_key,
         )
-        endpoint_group_results: dict[str, dict[str, physical_graph.ComputedFactResult]] = {}
+        endpoint_group_results: dict[
+            tuple[str, str], dict[str, physical_graph.ComputedFactResult]
+        ] = {}
         if len(resolved_supports) == len(supports):
             for endpoint_skill_key in endpoint_skill_keys:
-                try:
-                    endpoint_group_results[endpoint_skill_key] = {
-                        str(result.request.inputs["support_key"]): result
-                        for result in physical_graph.support_skill_group_candidates(
-                            snapshot=graph_service.snapshot,
-                            support_keys=[support_key for _, support_key in resolved_supports],
-                            skill_key=endpoint_skill_key,
-                        )
-                    }
-                except ValueError:
-                    continue
+                endpoint_kinds = ["active_skill"]
+                if physical_graph.minion_payload_skill_types(
+                    graph_service.snapshot, endpoint_skill_key
+                ):
+                    endpoint_kinds.append("minion_payload")
+                for endpoint_kind in endpoint_kinds:
+                    try:
+                        endpoint_group_results[(endpoint_skill_key, endpoint_kind)] = {
+                            str(result.request.inputs["support_key"]): result
+                            for result in physical_graph.support_skill_group_candidates(
+                                snapshot=graph_service.snapshot,
+                                support_keys=[support_key for _, support_key in resolved_supports],
+                                skill_key=endpoint_skill_key,
+                                endpoint_kind=endpoint_kind,
+                            )
+                        }
+                    except ValueError:
+                        continue
 
         for support_name, support_key in resolved_supports:
             endpoint_results = [
-                (endpoint_skill_key, results[support_key])
-                for endpoint_skill_key, results in endpoint_group_results.items()
+                (endpoint_skill_key, endpoint_kind, results[support_key])
+                for (endpoint_skill_key, endpoint_kind), results in endpoint_group_results.items()
                 if support_key in results
             ]
             known_endpoint_result = next(
                 (
-                    (endpoint_skill_key, candidate)
-                    for endpoint_skill_key, candidate in endpoint_results
+                    (endpoint_skill_key, endpoint_kind, candidate)
+                    for endpoint_skill_key, endpoint_kind, candidate in endpoint_results
                     if candidate.status == "known"
                 ),
                 None,
             )
             all_endpoints_unsupported = bool(endpoint_results) and all(
-                candidate.status == "unsupported" for _, candidate in endpoint_results
+                candidate.status == "unsupported" for _, _, candidate in endpoint_results
             )
             selected_endpoint_result = known_endpoint_result or (
                 endpoint_results[0] if all_endpoints_unsupported else None
@@ -2626,10 +2980,15 @@ def _source_support_compatibility_diagnostics(
                 )
                 continue
             group_result = (
-                selected_endpoint_result[1] if selected_endpoint_result is not None else None
+                selected_endpoint_result[2] if selected_endpoint_result is not None else None
             )
             matched_skill_key = (
                 selected_endpoint_result[0] if selected_endpoint_result is not None else skill_key
+            )
+            matched_endpoint_kind = (
+                selected_endpoint_result[1]
+                if selected_endpoint_result is not None
+                else "active_skill"
             )
             if group_result is not None:
                 status = group_result.status
@@ -2654,6 +3013,7 @@ def _source_support_compatibility_diagnostics(
                         "supportName": support_name,
                         "supportKey": support_key,
                         "evaluatedSkillKeys": endpoint_skill_keys,
+                        "matchedEndpointKind": matched_endpoint_kind,
                         "excludedReason": str(
                             facts.get("excluded_reason") or "support_not_compatible"
                         ),
@@ -2840,13 +3200,50 @@ def _filter_records_with_unsupported_source_supports(
     )
 
 
+def _source_socket_package_skill_keys(
+    *,
+    source_skill_manifest: dict[str, Any] | None,
+    root_skill_key: str,
+    support_keys: list[str],
+) -> set[str]:
+    if not isinstance(source_skill_manifest, dict):
+        return set()
+    wanted_root = _source_identity_tokens(root_skill_key)
+    result: set[str] = set()
+    for group in source_skill_manifest.get("activeSkillGroups") or []:
+        if not isinstance(group, dict):
+            continue
+        root = group.get("rootSkill")
+        root = root if isinstance(root, dict) else {}
+        if not wanted_root & _source_identity_tokens(root.get("skillId"), root.get("name")):
+            continue
+        available_supports = [
+            _source_identity_tokens(support.get("gemId"), support.get("name"))
+            for support in group.get("supports") or []
+            if isinstance(support, dict)
+        ]
+        if not all(
+            any(_source_identity_tokens(support_key) & tokens for tokens in available_supports)
+            for support_key in support_keys
+        ):
+            continue
+        for active in group.get("activeSkills") or []:
+            if not isinstance(active, dict):
+                continue
+            skill_id = str(active.get("skillId") or "").strip()
+            if skill_id:
+                result.add(skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}")
+    return result
+
+
 def _filter_records_with_unsupported_structured_support_packages(
     *,
     graph_service: graph_tools.GraphQueryService,
     deep_payload: dict[str, Any],
     accepted_records: list[dict[str, Any]],
+    source_skill_manifest: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Validate explicit Researcher support ownership without inferring source-group ownership."""
+    """Validate a physical root-skill socket package across its root and socketed skill effects."""
 
     display_names = {node.stable_key: node.display_name for node in graph_service.snapshot.nodes}
     kept_records: list[dict[str, Any]] = []
@@ -2873,6 +3270,14 @@ def _filter_records_with_unsupported_structured_support_packages(
             endpoint_skill_keys = _active_gem_endpoint_keys(
                 snapshot=graph_service.snapshot,
                 skill_key=skill_key,
+            )
+            endpoint_skill_keys = sorted(
+                set(endpoint_skill_keys)
+                | _source_socket_package_skill_keys(
+                    source_skill_manifest=source_skill_manifest,
+                    root_skill_key=skill_key,
+                    support_keys=support_keys,
+                )
             )
             endpoint_results: dict[str, list[physical_graph.ComputedFactResult]] = {}
             for endpoint_skill_key in endpoint_skill_keys:
@@ -2943,14 +3348,12 @@ def _filter_records_with_unsupported_structured_support_packages(
                 "componentKeys": summary["componentKeys"],
                 "unsupportedPairs": unsupported_pairs,
                 "caveats": [
-                    "typedPayload.supportPackages explicitly assigns each support to an active "
-                    "skill, and the static fixed-point contract rejects at least one submitted "
-                    "pair. This check validates the Researcher claim and does not infer ownership "
-                    "for an unstructured multi-active source group.",
-                    "Unsupported pairs: " + pair_summary + ". Fix: move each rejected support into "
-                    "the supportPackages entry of the active skill it actually links to in the "
-                    "source group (meta hosts must not own the supports of their socketed skill), "
-                    "or remove it from supportPackages and describe it in content only. When the "
+                    "typedPayload.supportPackages preserves the source root-skill socket package, "
+                    "but the static fixed-point contract rejects the submitted support across both "
+                    "the root and every socketed active-skill endpoint found in that package.",
+                    "Unsupported pairs: " + pair_summary + ". Fix: verify the exported socket layout "
+                    "and component mapping, or remove the ineffective support from the durable "
+                    "package and describe the source mistake in content. When the "
                     "source group truly cannot supply a compatible support, declare the pair in "
                     "supportCoverageExceptions with reason=source_coverage_gap or "
                     "not_applicable and explain it in detail there - the declared-exception path, "
@@ -3821,6 +4224,168 @@ def _structural_schema_issues(
             )
         )
 
+    v3_contract = (
+        str(review.get("reviewContractVersion") or "")
+        == research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    )
+    group_reviews = review.get("sourceSkillGroupReviews") or []
+    if v3_contract and not isinstance(group_reviews, list):
+        groups.append(
+            (
+                "",
+                "research_case",
+                [
+                    _container_issue(
+                        ["sourceSkillGroupReviews"],
+                        "v3 sourceSkillGroupReviews must be a list",
+                    )
+                ],
+            )
+        )
+        group_reviews = []
+    seen_group_refs: set[str] = set()
+    if isinstance(group_reviews, list):
+        record_titles = {
+            str(item.get("title") or "")
+            for item in review.get("deepResearchRecords") or []
+            if isinstance(item, dict) and str(item.get("title") or "")
+        }
+        for index, group_review in enumerate(group_reviews):
+            issues: list[dict[str, Any]] = []
+            if not isinstance(group_review, dict):
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index],
+                        "source skill group review must be an object",
+                    )
+                )
+                groups.append(("", "research_case", issues))
+                continue
+            group_ref = str(group_review.get("groupRef") or "").strip()
+            research_disposition = str(group_review.get("researchDisposition") or "").strip()
+            support_disposition = str(group_review.get("supportDisposition") or "").strip()
+            reason = str(group_review.get("reason") or "").strip()
+            affected_records = group_review.get("affectedRecords")
+            if not group_ref:
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "groupRef"],
+                        "groupRef is required",
+                    )
+                )
+            elif group_ref in seen_group_refs:
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "groupRef"],
+                        "groupRef must be unique",
+                    )
+                )
+            seen_group_refs.add(group_ref)
+            if research_disposition not in SOURCE_GROUP_RESEARCH_DISPOSITIONS:
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "researchDisposition"],
+                        "researchDisposition must be represented, not_relevant, or needs_followup",
+                    )
+                )
+            if support_disposition not in SOURCE_GROUP_SUPPORT_DISPOSITIONS:
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "supportDisposition"],
+                        "supportDisposition must be packaged, not_applicable, "
+                        "source_has_no_supports, or source_coverage_gap",
+                    )
+                )
+            if not reason or len(reason) > 320:
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "reason"],
+                        "reason must contain 1-320 characters",
+                    )
+                )
+            if (
+                not isinstance(affected_records, list)
+                or len(affected_records) > 12
+                or any(
+                    not isinstance(value, str) or not value.strip() for value in affected_records
+                )
+                or len({str(value).strip() for value in affected_records or []})
+                != len(affected_records or [])
+            ):
+                issues.append(
+                    _container_issue(
+                        ["sourceSkillGroupReviews", index, "affectedRecords"],
+                        "affectedRecords must be a unique string list with at most 12 titles",
+                    )
+                )
+            else:
+                unknown_titles = sorted(
+                    {str(value).strip() for value in affected_records} - record_titles
+                )
+                if unknown_titles:
+                    issues.append(
+                        _container_issue(
+                            ["sourceSkillGroupReviews", index, "affectedRecords"],
+                            "affectedRecords must use exact deepResearchRecords.title values: "
+                            + ", ".join(unknown_titles),
+                        )
+                    )
+                if research_disposition == "represented" and not affected_records:
+                    issues.append(
+                        _container_issue(
+                            ["sourceSkillGroupReviews", index, "affectedRecords"],
+                            "represented groups must name at least one affected record",
+                        )
+                    )
+            if issues:
+                groups.append(("", "research_case", issues))
+
+    readback_audit = review.get("pobReadbackAudit") or []
+    if v3_contract and not isinstance(readback_audit, list):
+        groups.append(
+            (
+                "",
+                "research_case",
+                [
+                    _container_issue(
+                        ["pobReadbackAudit"],
+                        "v3 pobReadbackAudit must be a list",
+                    )
+                ],
+            )
+        )
+    elif isinstance(readback_audit, list):
+        for index, audit in enumerate(readback_audit):
+            issues: list[dict[str, Any]] = []
+            if not isinstance(audit, dict):
+                issues.append(
+                    _container_issue(
+                        ["pobReadbackAudit", index],
+                        "PoB readback audit must be an object",
+                    )
+                )
+            else:
+                disposition = str(audit.get("disposition") or "")
+                if disposition not in {"reviewed", "unavailable", "unmodelled"}:
+                    issues.append(
+                        _container_issue(
+                            ["pobReadbackAudit", index, "disposition"],
+                            "disposition must be reviewed, unavailable, or unmodelled",
+                        )
+                    )
+                reason = audit.get("reason")
+                if reason is not None and (
+                    not isinstance(reason, str) or not reason.strip() or len(reason) > 320
+                ):
+                    issues.append(
+                        _container_issue(
+                            ["pobReadbackAudit", index, "reason"],
+                            "reason, when present, must contain 1-320 characters",
+                        )
+                    )
+            if issues:
+                groups.append(("", "research_case", issues))
+
     candidates = review.get("candidateReviews") or []
     if not isinstance(candidates, list):
         groups.append(
@@ -3962,6 +4527,63 @@ def _structural_schema_issues(
         if issues:
             groups.append((sample_id, "deep_research_record", issues))
     return groups
+
+
+def _validated_pob_readback_dispositions(
+    review: dict[str, Any],
+    pob_readback: dict[str, Any] | None,
+) -> tuple[set[str], list[dict[str, Any]]]:
+    """Bind v3 coverage claims to the safe readback inside the exact lease packet."""
+
+    if (
+        str(review.get("reviewContractVersion") or "")
+        != research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    ):
+        return set(), []
+    audits = review.get("pobReadbackAudit") or []
+    if not isinstance(audits, list) or not audits:
+        return set(), []
+    packet = pob_readback if isinstance(pob_readback, dict) else {}
+    packet_status = str(packet.get("status") or "")
+    packet_snapshot_ref = str(packet.get("snapshotRef") or "")
+    dispositions: set[str] = set()
+    issues: list[dict[str, Any]] = []
+    for index, audit in enumerate(audits):
+        if not isinstance(audit, dict):
+            continue
+        disposition = str(audit.get("disposition") or "")
+        if disposition == "unavailable":
+            if packet_status != "unavailable":
+                issues.append(
+                    {
+                        "loc": ["pobReadbackAudit", index, "disposition"],
+                        "msg": "unavailable must match the current packet readback status",
+                        "type": "value_error",
+                    }
+                )
+            else:
+                dispositions.add(disposition)
+            continue
+        if disposition not in {"reviewed", "unmodelled"}:
+            continue
+        submitted_ref = str(audit.get("readbackRef") or "")
+        if (
+            packet_status != "available"
+            or not packet_snapshot_ref
+            or submitted_ref != packet_snapshot_ref
+        ):
+            issues.append(
+                {
+                    "loc": ["pobReadbackAudit", index, "readbackRef"],
+                    "msg": (
+                        "reviewed/unmodelled must bind the exact snapshotRef from the current packet"
+                    ),
+                    "type": "value_error",
+                }
+            )
+        else:
+            dispositions.add(disposition)
+    return dispositions, issues
 
 
 def _structural_failure_report(
@@ -4159,7 +4781,7 @@ def _deep_record_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(values, list):
         raise ValueError("deep review deepResearchRecords must be a list")
     normalized: list[dict[str, Any]] = []
-    for item in values:
+    for record_index, item in enumerate(values):
         if not isinstance(item, dict):
             raise ValueError("deep research record must be an object")
         components = item.get("components") or []
@@ -4168,14 +4790,37 @@ def _deep_record_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
         typed_payload = item.get("typedPayload") or {}
         if not isinstance(typed_payload, dict):
             raise ValueError("deep research record typedPayload must be an object")
+        sample_id = _required(item, "sampleId")
+        research_group_id = _required(item, "researchGroupId")
+        record_kind = _required(item, "recordKind")
+        title = _required(item, "title")
+        record_ref = (
+            "rr-"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "sampleId": sample_id,
+                        "researchGroupId": research_group_id,
+                        "recordKind": record_kind,
+                        "title": " ".join(title.split()),
+                        "occurrence": record_index,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+        )
         normalized.append(
             {
-                "sampleId": _required(item, "sampleId"),
-                "researchGroupId": _required(item, "researchGroupId"),
+                "recordIndex": record_index,
+                "recordRef": record_ref,
+                "sampleId": sample_id,
+                "researchGroupId": research_group_id,
                 "caseRef": _required(item, "caseRef"),
                 "safeEvidenceRefs": _safe_evidence_refs(item),
-                "recordKind": _required(item, "recordKind"),
-                "title": _required(item, "title"),
+                "recordKind": record_kind,
+                "title": title,
                 "summary": _required(item, "summary"),
                 "content": _required(item, "content"),
                 "contentLanguage": str(item.get("contentLanguage") or "zh-CN"),
@@ -4192,9 +4837,63 @@ def _deep_record_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
                 "gamePatch": str(item.get("gamePatch") or "unknown"),
                 "passiveTreeVersion": str(item.get("passiveTreeVersion") or "unknown"),
                 "pobVersionOrCommit": str(item.get("pobVersionOrCommit") or "unknown"),
+                "sourceStateScope": str(item.get("sourceStateScope") or "unknown"),
             }
         )
     return normalized
+
+
+def _record_validation_issues(
+    item: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Map validator-local single-item paths back to the authored safe review."""
+
+    mapped: list[dict[str, Any]] = []
+    record_index = int(item.get("recordIndex") or 0)
+    for raw_issue in issues:
+        issue = dict(raw_issue)
+        raw_loc = issue.get("loc")
+        if not isinstance(raw_loc, list):
+            raw_loc = [part for part in str(issue.get("path") or "").split(".") if part]
+        tail = list(raw_loc)
+        if tail[:2] == ["deep_research_records", 0] or tail[:2] == [
+            "deep_research_records",
+            "0",
+        ]:
+            tail = tail[2:]
+        elif tail and tail[0] in {"deep_research_records", "deepResearchRecords"}:
+            tail = tail[1:]
+        field_map = {
+            "component_mentions": "components",
+            "typed_payload": "typedPayload",
+            "record_kind": "recordKind",
+            "research_group_id": "researchGroupId",
+            "content_language": "contentLanguage",
+            "failure_conditions": "failureConditions",
+            "length_exception_reason": "lengthExceptionReason",
+        }
+        review_tail = [field_map.get(str(part), part) for part in tail]
+        review_loc: list[Any] = ["deepResearchRecords", record_index, *review_tail]
+        issue.update(
+            {
+                "recordRef": item.get("recordRef"),
+                "recordIndex": record_index,
+                "recordTitle": item.get("title"),
+                "recordKind": item.get("recordKind"),
+                "reviewLoc": review_loc,
+                "reviewPath": "deepResearchRecords[{}]{}".format(
+                    record_index,
+                    "".join(
+                        f"[{part}]" if isinstance(part, int) else f".{part}" for part in review_tail
+                    ),
+                ),
+                "reviewPathPrecision": "field" if review_tail else "record",
+            }
+        )
+
+        mapped.append(issue)
+    return mapped
 
 
 def _source_identity_tokens(*values: Any) -> set[str]:
@@ -4278,7 +4977,7 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroupCount": 0,
         "unrepresentedActiveSkillGroups": [],
         "supportCoverageBlockedByStructuredOmission": False,
-        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
+        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
         "structuredMentionClosureEnforced": True,
         "skillGroupDispositions": [],
         "undisposedSkillGroupCount": 0,
@@ -4293,6 +4992,16 @@ def _source_skill_evidence_diagnostics(
     ]
     if not groups:
         return {**empty, "available": True}
+
+    v3_group_reviews_required = (
+        str(review.get("reviewContractVersion") or "")
+        == research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    )
+    declared_group_reviews = {
+        str(item.get("groupRef") or ""): item
+        for item in review.get("sourceSkillGroupReviews") or []
+        if isinstance(item, dict) and str(item.get("groupRef") or "")
+    }
 
     records = _deep_record_reviews(review)
     ownership_records = list(accepted_records) if accepted_records is not None else records
@@ -4324,7 +5033,7 @@ def _source_skill_evidence_diagnostics(
 
     represented_skill_keys: set[str] = set()
     package_supports_by_skill: dict[str, set[str]] = {}
-    exception_skill_keys: set[str] = set()
+    exception_reasons_by_skill: dict[str, set[str]] = {}
     for record in ownership_records:
         components = [item for item in record.get("components") or [] if isinstance(item, dict)]
         for component in components:
@@ -4361,7 +5070,9 @@ def _source_skill_evidence_diagnostics(
                 if len(candidates) == 1:
                     skill_key = next(iter(candidates))
             if skill_key.startswith("skill:"):
-                exception_skill_keys.add(skill_key)
+                exception_reasons_by_skill.setdefault(skill_key, set()).add(
+                    str(exception.get("reason") or "")
+                )
     evidence_records = [record for record in records if record.get("recordKind") in evidence_kinds]
     record_text_parts: dict[str, list[str]] = {}
     for record in evidence_records:
@@ -4408,7 +5119,11 @@ def _source_skill_evidence_diagnostics(
             source_skill_resolutions=source_skill_resolutions,
         )
         represented = bool(group_skill_keys & represented_skill_keys)
-        declared = bool(group_skill_keys & exception_skill_keys)
+        group_exception_reasons = {
+            reason
+            for skill_key in group_skill_keys
+            for reason in exception_reasons_by_skill.get(skill_key, set())
+        }
         packaged_support_keys = {
             support_key
             for skill_key in group_skill_keys
@@ -4436,12 +5151,76 @@ def _source_skill_evidence_diagnostics(
             source.strip().casefold() != "gem_name" for source in active_name_sources
         )
         exempt_internal_id = all_internal_ids and not support_items
-        if exempt_internal_id:
+        declared_group_review = declared_group_reviews.get(group_ref)
+        declared_research_disposition = str(
+            (declared_group_review or {}).get("researchDisposition") or ""
+        )
+        declared_affected_records = {
+            str(value).strip()
+            for value in (declared_group_review or {}).get("affectedRecords") or []
+            if str(value).strip()
+        }
+        group_record_titles = {
+            str(record.get("title") or "")
+            for record in records
+            if group_skill_keys
+            & {
+                str(component.get("componentKey") or "")
+                for component in record.get("components") or []
+                if isinstance(component, dict)
+            }
+        }
+        affected_records_match = bool(declared_affected_records) and bool(
+            declared_affected_records <= group_record_titles
+        )
+        declared_support_disposition = str(
+            (declared_group_review or {}).get("supportDisposition") or ""
+        )
+        if v3_group_reviews_required and declared_group_review is None:
+            disposition = "unreviewed"
+        elif v3_group_reviews_required and declared_research_disposition == "needs_followup":
+            disposition = "research_gap"
+        elif (
+            v3_group_reviews_required
+            and declared_research_disposition == "represented"
+            and (not represented or not affected_records_match)
+        ):
+            disposition = "unrepresented"
+        elif declared_support_disposition == "source_coverage_gap":
+            disposition = "source_coverage_gap"
+        elif (
+            declared_support_disposition == "not_applicable"
+            and "not_applicable" in group_exception_reasons
+        ):
+            disposition = "not_applicable"
+        elif declared_support_disposition == "not_applicable":
+            disposition = "support_exception_missing"
+        elif (
+            v3_group_reviews_required
+            and not support_items
+            and declared_support_disposition == "source_has_no_supports"
+        ):
+            disposition = "source_has_no_supports"
+        elif v3_group_reviews_required and not support_items:
+            disposition = "support_disposition_mismatch"
+        elif (
+            v3_group_reviews_required
+            and not missing_support_names
+            and declared_support_disposition == "packaged"
+        ):
+            disposition = "packaged"
+        elif v3_group_reviews_required and declared_support_disposition == "packaged":
+            disposition = "partially_packaged"
+        elif v3_group_reviews_required:
+            disposition = "support_disposition_mismatch"
+        elif exempt_internal_id:
             disposition = "exempt_internal_id"
         elif not group_skill_keys or not represented:
             disposition = "unrepresented"
-        elif declared:
-            disposition = "declared"
+        elif "source_coverage_gap" in group_exception_reasons:
+            disposition = "source_coverage_gap"
+        elif "not_applicable" in group_exception_reasons:
+            disposition = "not_applicable"
         elif not support_items:
             disposition = "source_has_no_supports"
         elif not missing_support_names:
@@ -4469,6 +5248,10 @@ def _source_skill_evidence_diagnostics(
                 "represented": represented,
                 "exemptInternalId": exempt_internal_id,
                 "disposition": disposition,
+                "researchDisposition": str(
+                    (declared_group_review or {}).get("researchDisposition") or ""
+                ),
+                "declaredSupportDisposition": declared_support_disposition,
                 "unrepresentedSupportNames": missing_support_names[:12],
             }
         )
@@ -4507,6 +5290,26 @@ def _source_skill_evidence_diagnostics(
                     "recordKinds": record_kinds,
                 }
             )
+    manifest_group_refs = {str(group.get("groupRef") or "") for group in groups}
+    for unknown_group_ref in sorted(set(declared_group_reviews) - manifest_group_refs):
+        skill_group_dispositions.append(
+            {
+                "groupRef": unknown_group_ref,
+                "slot": "",
+                "activeSkillNames": [],
+                "supportCount": 0,
+                "represented": False,
+                "exemptInternalId": False,
+                "disposition": "unknown_source_group",
+                "researchDisposition": str(
+                    declared_group_reviews[unknown_group_ref].get("researchDisposition") or ""
+                ),
+                "declaredSupportDisposition": str(
+                    declared_group_reviews[unknown_group_ref].get("supportDisposition") or ""
+                ),
+                "unrepresentedSupportNames": [],
+            }
+        )
     undisposed_groups = [
         item
         for item in skill_group_dispositions
@@ -4522,7 +5325,7 @@ def _source_skill_evidence_diagnostics(
         "unrepresentedActiveSkillGroups": unrepresented_groups[:12],
         "unrepresentedActiveSkillGroupsTruncated": len(unrepresented_groups) > 12,
         "supportCoverageBlockedByStructuredOmission": core_support_blocked,
-        "unrepresentedSkillGroupsAreDiagnosticOnly": True,
+        "unrepresentedSkillGroupsAreDiagnosticOnly": False,
         "structuredMentionClosureEnforced": True,
         "skillGroupDispositions": skill_group_dispositions,
         "undisposedSkillGroupCount": len(undisposed_groups),
@@ -4537,6 +5340,7 @@ def _evaluate_case_coverage(
     graph_service: graph_tools.GraphQueryService | None = None,
     source_evidence_diagnostics: dict[str, Any] | None = None,
     deep_records: list[dict[str, Any]] | None = None,
+    validated_readback_dispositions: set[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     declared = review.get("caseCoverage")
     advisories: list[str] = []
@@ -4551,6 +5355,14 @@ def _evaluate_case_coverage(
     if unknown:
         raise ValueError("deep review caseCoverage has unknown dimensions: " + ", ".join(unknown))
     record_kinds = {str(item.get("recordKind") or "") for item in accepted_records}
+    v3_contract = (
+        str(review.get("reviewContractVersion") or "")
+        == research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    )
+    readback_dispositions = set(validated_readback_dispositions or ())
+    numeric_readback_handled = bool(
+        readback_dispositions & {"reviewed", "unavailable", "unmodelled"}
+    )
     source_evidence_diagnostics = source_evidence_diagnostics or {}
     core_gaps = _core_skill_group_support_gaps(accepted_records)
     source_evidence_diagnostics["coreSkillGroupSupportGaps"] = core_gaps
@@ -4561,9 +5373,8 @@ def _evaluate_case_coverage(
     ]
     inferred = {
         "supports": _support_packages_cover_core_skill_groups(accepted_records)
-        and not source_evidence_diagnostics.get(
-            "supportCoverageBlockedByStructuredOmission", False
-        ),
+        and not source_evidence_diagnostics.get("supportCoverageBlockedByStructuredOmission", False)
+        and not undisposed_group_items,
         "rotation": "rotation" in record_kinds,
         "passiveAscendancy": _has_explicit_ascendancy_responsibility(
             accepted_records, graph_service=graph_service
@@ -4571,7 +5382,8 @@ def _evaluate_case_coverage(
         "gearRoles": _has_explicit_gear_responsibilities(
             accepted_records, deep_records=deep_records or []
         ),
-        "resourceDefense": bool(record_kinds & {"resource_engine", "defense_engine"}),
+        "resourceDefense": bool(record_kinds & {"resource_engine", "defense_engine"})
+        and (not v3_contract or numeric_readback_handled),
     }
     coverage: dict[str, str] = {}
     for dimension in sorted(CASE_COVERAGE_DIMENSIONS):
@@ -4581,7 +5393,13 @@ def _evaluate_case_coverage(
                 f"deep review caseCoverage.{dimension} must be one of "
                 + ", ".join(sorted(CASE_COVERAGE_STATUSES))
             )
-        if status == "not_applicable":
+        if status == "not_applicable" and dimension == "supports" and undisposed_group_items:
+            coverage[dimension] = "evidence_missing"
+            advisories.append(
+                "caseCoverage.supports cannot be not_applicable while enabled source skill "
+                "groups remain undisposed."
+            )
+        elif status == "not_applicable":
             coverage[dimension] = status
         elif inferred[dimension]:
             coverage[dimension] = "covered"
@@ -4601,7 +5419,7 @@ def _evaluate_case_coverage(
             "Source active skills named in skill/mechanic/rotation conclusions were omitted from "
             "structured components: "
             + _bounded_join_diagnostics(omitted_skills)
-            + ". Review their role and support ownership; this diagnostic does not decide whether "
+            + ". Review their role and root-skill socket placement; this diagnostic does not decide whether "
             "they are Family identity skills."
         )
     omitted_supports = [
@@ -4775,7 +5593,7 @@ def _support_packages_cover_core_skill_groups(
             for exception in typed_payload.get("supportCoverageExceptions") or []:
                 if not isinstance(exception, dict):
                     continue
-                if exception.get("reason") in {"source_coverage_gap", "not_applicable"}:
+                if exception.get("reason") == "not_applicable":
                     exceptions.add(str(exception.get("skillKey") or ""))
         if not core_skill_keys or any(
             len(package_supports.get(skill_key, set())) < 2 and skill_key not in exceptions
@@ -4816,7 +5634,7 @@ def _core_skill_group_support_gaps(accepted_records: list[dict[str, Any]]) -> li
             for exception in typed_payload.get("supportCoverageExceptions") or []:
                 if not isinstance(exception, dict):
                     continue
-                if exception.get("reason") in {"source_coverage_gap", "not_applicable"}:
+                if exception.get("reason") == "not_applicable":
                     exceptions.add(str(exception.get("skillKey") or ""))
         for skill_key in sorted(core_skill_keys):
             if len(package_supports.get(skill_key, set())) < 2 and skill_key not in exceptions:
@@ -5448,6 +6266,7 @@ def _markdown(report: dict[str, Any]) -> str:
         f"- Accepted deep records: `{report.get('acceptedDeepRecordCount')}`",
         f"- Created canonical deep records: `{report.get('createdDeepRecordCount')}`",
         f"- Updated canonical deep records: `{report.get('updatedDeepRecordCount')}`",
+        f"- Unchanged canonical deep records: `{report.get('unchangedDeepRecordCount')}`",
         f"- Added source evidence: `{report.get('addedDeepRecordEvidenceCount')}`",
         f"- Created Build Families: `{report.get('createdBuildFamilyCount')}`",
         f"- Added Build Family evidence: `{report.get('addedBuildFamilyEvidenceCount')}`",

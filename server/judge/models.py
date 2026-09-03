@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v8"
+EVALUATOR_VERSION = "judge_phase1_v10"
 WEIGHT_PROFILE = "judge_v6_evidence_separated"
 
 LIMITED_REWARD_CAVEATS = {
@@ -58,6 +58,7 @@ FAILURE_CODES = {
     "offense_quality_target_missed",
     "offense_delivery_not_established",
     "mana_sustain_unsustainable",
+    "life_sustain_unsustainable",
     "mana_flask_dependency",
     "pob_compute_failed",
     "primary_pool_unavailable_caveat",
@@ -139,9 +140,17 @@ JUDGE_METRIC_KEYS = [
     "LifeUnreserved",
     "LifeReserved",
     "LifeUnreservedPercent",
+    "LifeCost",
+    "LifePercentCost",
+    "LifePerSecondCost",
+    "LifePercentPerSecondCost",
     "Mana",
     "ManaUnreserved",
     "ManaUnreservedPercent",
+    "ManaCost",
+    "ManaPercentCost",
+    "ManaPerSecondCost",
+    "ManaPercentPerSecondCost",
     "Spirit",
     "SpiritReserved",
     "SpiritUnreserved",

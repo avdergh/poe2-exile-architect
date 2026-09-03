@@ -1,0 +1,51 @@
+diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
+index aacd735..83f9619 100644
+--- a/src/Modules/CalcSetup.lua
++++ b/src/Modules/CalcSetup.lua
+@@ -1586,10 +1586,11 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 				if not group then
+ 					-- Create a new group for this skill
+ 					group = { label = "On Kill Monster Explosion", enabled = true, gemList = { }, source = "Explode", noSupports = true }
+ 					t_insert(build.skillsTab.socketGroupList, group)
+ 				end
++				group.noSupports = true
+ 				-- Hack to remove duplicates
+ 				local explodeBySource = { }
+ 				for _, explodeSource in ipairs(env.explodeSources) do
+ 					explodeBySource[explodeSource.modSource or explodeSource.id] = explodeSource
+ 				end
+@@ -1614,10 +1615,11 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 							level = 1,
+ 							triggered = true,
+ 							explodeSource = explodeSource,
+ 						}
+ 					end
++					activeGemInstance.noSupports = true
+ 					t_insert(group.gemList, activeGemInstance)
+ 				end
+ 				markList[group] = true
+ 				build.skillsTab:ProcessSocketGroup(group)
+ 			end
+@@ -1665,20 +1667,22 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 				else
+ 					if not group then
+ 						group = { label = "Thorns", enabled = true, gemList = { }, source = "Thorns", noSupports = true }
+ 						t_insert(build.skillsTab.socketGroupList, group)
+ 					end
++					group.noSupports = true
+ 
+ 					group.thornsSources = env.thornsSources
+ 					wipeTable(group.gemList)
+ 
+ 					local activeGemInstance = {
+ 						skillId = "ThornsPlayer",
+ 						quality = 0,
+ 						enabled = true,
+ 						level = 1,
+ 						triggered = true,
++						noSupports = true,
+ 					}
+ 					t_insert(group.gemList, activeGemInstance)
+ 					markList[group] = true
+ 					build.skillsTab:ProcessSocketGroup(group)
+ 				end

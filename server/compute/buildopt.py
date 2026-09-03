@@ -146,12 +146,30 @@ def _near_jewel_sockets(engine: PobEngine, n: int) -> list[int]:
     return [sid for _, sid in cands[:n]]
 
 
+def _resistance_target_status(
+    build: dict[str, Any], defenses: dict[str, Any]
+) -> tuple[bool, bool, int, int]:
+    profile = itemopt.gear_stage_profile(build.get("level"), stage="auto")
+    missing = defenses.get("resistMissing") or {}
+    resistances = defenses.get("resistances") or {}
+    res_capped = all((missing.get(e) or 0) <= 0 for e in _RES_KEYS)
+    elemental_target = int(profile["elementalResistTarget"])
+    chaos_target = int(profile["chaosResistTarget"])
+    ci = "Chaos Inoculation" in set(build.get("keystones") or [])
+    resistance_target_met = all(
+        (resistances.get(element) or 0) >= elemental_target for element in _RES_KEYS
+    ) and (ci or (resistances.get("chaos") or 0) >= chaos_target)
+    return res_capped, resistance_target_met, elemental_target, chaos_target
+
+
 def _result(engine: PobEngine, metric: str, min_ehp: float | None) -> dict[str, Any]:
     """Whole-build snapshot for ranking: the metric + defensive constraint flags."""
     st = engine.get_stats(["TotalDPS", "FullDPS"]).get("stats") or {}
     d = engine.get_defenses() or {}
-    missing = d.get("resistMissing") or {}
-    res_capped = all((missing.get(e) or 0) <= 0 for e in _RES_KEYS)
+    build = engine.get_build()
+    res_capped, resistance_target_met, elemental_target, chaos_target = (
+        _resistance_target_status(build, d)
+    )
     ehp = d.get("totalEHP")
     ehp_ok = (ehp or 0) >= min_ehp if min_ehp else True
     val = st.get(metric)
@@ -164,8 +182,11 @@ def _result(engine: PobEngine, metric: str, min_ehp: float | None) -> dict[str, 
         "FullDPS": _r2(st.get("FullDPS")),
         "TotalEHP": _r2(ehp),
         "resistsCapped": res_capped,
+        "resistanceTargetMet": resistance_target_met,
+        "elementalResistTarget": elemental_target,
+        "chaosResistTarget": chaos_target,
         "ehpFloorMet": ehp_ok,
-        "constraintsMet": bool(res_capped and ehp_ok),
+        "constraintsMet": bool(resistance_target_met and ehp_ok),
         "score": score,
     }
 
@@ -401,16 +422,18 @@ _CRAFT_OFFENSE = ("Weapon 1", "Amulet", "Gloves", "Ring 1", "Ring 2")
 _CRAFT_DEFENSE = ("Body Armour", "Helmet", "Boots", "Belt", "Weapon 2")
 
 
-def _resists_capped(engine: PobEngine) -> bool:
-    missing = engine.get_defenses().get("resistMissing") or {}
-    return all((missing.get(e) or 0) <= 0 for e in _RES_KEYS)
+def _resistance_target_met(engine: PobEngine) -> bool:
+    _capped, target_met, _elemental_target, _chaos_target = _resistance_target_status(
+        engine.get_build(), engine.get_defenses() or {}
+    )
+    return target_met
 
 
 def _craft_gear(engine: PobEngine, metric: str) -> list[dict[str, Any]]:
     """'Awesome gear' post-pass: re-craft every equipped gear slot with the FULL crafting system
     (runes + Perfect essences + corruption). Each slot keeps a resist/EHP weight (offense damage-heavy,
-    defense EHP-heavy) so it doesn't strip its resistances, then a re-cap pass restores any cross-slot
-    resist balance the per-slot crafting disturbed. Crafted on the live build so gains compound. Heavy."""
+    defense EHP-heavy) so it doesn't strip its resistances, then a repair pass restores any cross-slot
+    stage-target balance the per-slot crafting disturbed. Crafted on the live build so gains compound. Heavy."""
     gear = engine.get_build().get("gear") or {}
     craftable = [
         s
@@ -434,10 +457,10 @@ def _craft_gear(engine: PobEngine, metric: str) -> list[dict[str, Any]]:
             do(slot, {"TotalEHP": 0.8, metric: 0.2})
 
     # Per-slot crafting can disturb plan_gear's cross-slot resist allocation; recraft defence slots
-    # toward pure EHP (PoB's EHP heavily credits capped resists) until the build is capped again.
-    if not _resists_capped(engine):
+    # toward pure EHP until the configured stage resistance target is met again.
+    if not _resistance_target_met(engine):
         for slot in [s for s in _CRAFT_DEFENSE if s in craftable]:
-            if _resists_capped(engine):
+            if _resistance_target_met(engine):
                 break
             do(slot, {"TotalEHP": 1.0})
 
@@ -475,7 +498,7 @@ def optimize_build(
 
     `levers` auto-seeds from the reference set for the build's delivery when omitted; pass explicit
     reference lever names to force the search. `min_ehp` is the EHP floor (hard constraint, with
-    resists-capped). `try_uniques` adds the v2 unique pass. `archetypes` (v3) evaluates alternative
+    stage resistance targets). `try_uniques` adds the v2 unique pass. `archetypes` (v3) evaluates alternative
     class/skill/weapon configs too and keeps the best — the LLM proposes archetypes, the optimizer
     picks. `parallel` spreads the lever search across engine subprocesses. See the module docstring.
     """
@@ -560,7 +583,16 @@ def optimize_build(
     if crafting:
         crafted_gear = _craft_gear(engine, metric)
         post = _result(engine, metric, min_ehp)
-        for k in ("TotalDPS", "FullDPS", "TotalEHP", "resistsCapped", "ehpFloorMet"):
+        for k in (
+            "TotalDPS",
+            "FullDPS",
+            "TotalEHP",
+            "resistsCapped",
+            "resistanceTargetMet",
+            "elementalResistTarget",
+            "chaosResistTarget",
+            "ehpFloorMet",
+        ):
             best[k] = post[k]
 
     bench = refbuilds.benchmark(
@@ -587,12 +619,19 @@ def optimize_build(
             "FullDPS": best.get("FullDPS"),
             "TotalEHP": best.get("TotalEHP"),
             "resistsCapped": best.get("resistsCapped"),
+            "resistanceTargetMet": best.get("resistanceTargetMet"),
+            "elementalResistTarget": best.get("elementalResistTarget"),
+            "chaosResistTarget": best.get("chaosResistTarget"),
             "ehpFloorMet": best.get("ehpFloorMet"),
             "jewelsSocketed": best.get("jewelsSocketed"),
             "uniquesEquipped": best.get("uniquesEquipped") or [],
             "craftedGear": crafted_gear,
         },
-        "constraints": {"minEHP": min_ehp, "resistsCapped": True, "satisfied": bool(satisfying)},
+        "constraints": {
+            "minEHP": min_ehp,
+            "resistanceTargetMet": True,
+            "satisfied": bool(satisfying),
+        },
         "leverResults": sorted(
             (_slim(r) for r in results), key=lambda r: r.get("metricValue") or 0, reverse=True
         ),

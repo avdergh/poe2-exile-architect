@@ -20,8 +20,10 @@ from typing import Any
 from uuid import uuid4
 
 from .. import paths
+from ..runtime.file_lock import interprocess_file_lock
+from . import research_contracts, research_runtime
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = research_contracts.RESEARCH_MEMORY_DB_SCHEMA_VERSION
 SANITIZER_VERSION = "phase3n1-v1"
 EXTRACTOR_VERSION = "phase3n2-v1"
 EXTRACTION_METHOD = "deterministic_mature_case_summary"
@@ -563,6 +565,8 @@ CREATE TABLE IF NOT EXISTS deep_research_records (
     status TEXT NOT NULL,
     copy_safety_state TEXT NOT NULL,
     current_version_context TEXT NOT NULL,
+    projection_hash TEXT,
+    source_state_scope TEXT NOT NULL DEFAULT 'unknown',
     created_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     last_validated_at TEXT,
@@ -584,27 +588,36 @@ ON deep_research_records(
 );
 
 CREATE TABLE IF NOT EXISTS research_build_families (
-    build_family_key TEXT PRIMARY KEY,
+    knowledge_scope TEXT NOT NULL,
+    build_family_key TEXT NOT NULL,
     ascendancy_key TEXT NOT NULL,
     primary_skill_key TEXT NOT NULL,
     primary_skill_keys TEXT NOT NULL DEFAULT '[]',
     secondary_skill_keys TEXT NOT NULL,
     evidence_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (knowledge_scope, build_family_key),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
 );
 
 CREATE TABLE IF NOT EXISTS research_build_family_evidence (
+    knowledge_scope TEXT NOT NULL,
     build_family_key TEXT NOT NULL,
     source_case_ref TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
-    PRIMARY KEY (build_family_key, source_case_ref),
-    FOREIGN KEY (build_family_key) REFERENCES research_build_families(build_family_key)
+    PRIMARY KEY (knowledge_scope, build_family_key, source_case_ref),
+    FOREIGN KEY (knowledge_scope, build_family_key)
+        REFERENCES research_build_families(knowledge_scope, build_family_key)
         ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_research_build_family_evidence_source
+ON research_build_family_evidence(knowledge_scope, source_case_ref, build_family_key);
+
 CREATE TABLE IF NOT EXISTS deep_research_record_evidence (
+    knowledge_scope TEXT NOT NULL DEFAULT 'global_seed',
     knowledge_key TEXT NOT NULL,
     source_case_ref TEXT NOT NULL,
     safe_evidence_refs TEXT NOT NULL,
@@ -615,9 +628,21 @@ CREATE TABLE IF NOT EXISTS deep_research_record_evidence (
     game_patch TEXT NOT NULL,
     passive_tree_version TEXT NOT NULL,
     pob_version_or_commit TEXT NOT NULL,
+    accepted_projection_hash TEXT,
+    source_state_scope TEXT NOT NULL DEFAULT 'unknown',
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
-    PRIMARY KEY (knowledge_key, source_case_ref)
+    PRIMARY KEY (knowledge_scope, knowledge_key, source_case_ref)
+);
+
+CREATE TABLE IF NOT EXISTS research_source_provenance (
+    source_case_ref TEXT NOT NULL,
+    knowledge_scope TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (knowledge_scope, source_case_ref),
+    CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
 );
 
 CREATE TABLE IF NOT EXISTS research_rejected_proposals (
@@ -644,8 +669,57 @@ CREATE TABLE IF NOT EXISTS research_dedupe_queries (
     visibility TEXT NOT NULL,
     split TEXT NOT NULL,
     knowledge_scope TEXT NOT NULL,
+    retrieval_ref TEXT,
+    run_ref TEXT,
+    claim_ref TEXT,
+    effective_scope TEXT,
+    selected_source_case_ref TEXT,
+    source_state_scope TEXT,
+    memory_revision INTEGER,
+    manifest_hash TEXT,
+    page_index INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL DEFAULT 1,
+    retrieval_complete INTEGER NOT NULL DEFAULT 1,
+    create_authorizing INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_query_sessions (
+    retrieval_ref TEXT PRIMARY KEY,
+    request_contract TEXT NOT NULL,
+    response_profile TEXT NOT NULL,
+    run_ref TEXT,
+    claim_ref TEXT,
+    effective_scope TEXT NOT NULL,
+    selected_source_case_ref TEXT,
+    source_state_scope TEXT NOT NULL,
+    memory_revision INTEGER NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    next_page_index INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_record_write_receipts (
+    receipt_ref TEXT PRIMARY KEY,
+    run_ref TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    accept_attempt_key TEXT NOT NULL,
+    packet_safe_hash TEXT NOT NULL,
+    canonical_review_hash TEXT NOT NULL,
+    contract_version TEXT NOT NULL,
+    expected_origin_state TEXT NOT NULL,
+    acceptance_summary TEXT NOT NULL,
+    record_writes_json TEXT NOT NULL,
+    pattern_ids TEXT NOT NULL DEFAULT '[]',
+    semantic_edge_ids TEXT NOT NULL DEFAULT '[]',
+    provenance TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_ref, sample_id)
 );
 
 CREATE TABLE IF NOT EXISTS research_revalidation_events (
@@ -714,29 +788,83 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def initialize_store(db_path: Path | None = None) -> Path:
     path = db_path or mature_learning_path()
-    if db_path is None:
-        _install_bundled_release_seed_if_missing(path)
-    con = connect(path)
-    try:
-        existing = schema_version(con)
-        if existing > SCHEMA_VERSION:
-            raise SchemaVersionError(
-                f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
+    with interprocess_file_lock(research_runtime.research_write_lock_path(path)):
+        if db_path is None:
+            _install_bundled_release_seed_if_missing(path)
+        con = connect(path)
+        try:
+            existing = schema_version(con)
+            if existing > SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
+                )
+            if existing == SCHEMA_VERSION:
+                if _v5_structure_complete(con):
+                    return path
+                _backup_before_schema_upgrade(con, path=path, existing=existing)
+                con.execute("PRAGMA foreign_keys = OFF")
+                con.execute("BEGIN IMMEDIATE")
+                _migrate_research_memory_v5(con, apply_known_repairs=False)
+                if con.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise ValueError(
+                        "research memory structural repair failed foreign-key validation"
+                    )
+                con.commit()
+                con.execute("PRAGMA foreign_keys = ON")
+                return path
+            if existing == 0:
+                # Fresh stores have no user data to protect.  Build the legacy/base tables first,
+                # then apply the same additive v5 contract as an upgraded store.
+                con.executescript(_SCHEMA_SQL)
+                con.executescript(_PHASE4_SCHEMA_SQL)
+                con.execute("BEGIN IMMEDIATE")
+            else:
+                if existing < 4:
+                    # Pre-v4 development stores may contain only a subset of the historical
+                    # tables.  Bring those legacy fixtures to the v4 structural baseline before
+                    # the protected v4->v5 transaction; production v4 stores never take this path.
+                    con.executescript(_SCHEMA_SQL)
+                    con.executescript(_PHASE4_SCHEMA_SQL)
+                _backup_before_schema_upgrade(con, path=path, existing=existing)
+                con.execute("PRAGMA foreign_keys = OFF")
+                con.execute("BEGIN IMMEDIATE")
+            _migrate_phase4_additive_schema(con)
+            _migrate_research_memory_v5(con)
+            con.execute(
+                """
+                INSERT INTO meta(key, value) VALUES ('schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(SCHEMA_VERSION),),
             )
-        con.executescript(_SCHEMA_SQL)
-        con.executescript(_PHASE4_SCHEMA_SQL)
-        _migrate_phase4_additive_schema(con)
-        con.execute(
-            """
-            INSERT INTO meta(key, value) VALUES ('schema_version', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            (str(SCHEMA_VERSION),),
-        )
-        con.commit()
-    finally:
-        con.close()
+            if con.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError("research memory schema migration failed foreign-key validation")
+            con.commit()
+            con.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            con.rollback()
+            con.execute("PRAGMA foreign_keys = ON")
+            raise
+        finally:
+            con.close()
     return path
+
+
+def _backup_before_schema_upgrade(
+    con: sqlite3.Connection,
+    *,
+    path: Path,
+    existing: int,
+) -> None:
+    backup_path = path.with_name(f"{path.name}.pre-schema-{existing}.sqlite")
+    if backup_path.exists():
+        return
+    backup = sqlite3.connect(backup_path)
+    try:
+        con.backup(backup)
+        backup.commit()
+    finally:
+        backup.close()
 
 
 def _install_bundled_release_seed_if_missing(target: Path) -> bool:
@@ -747,7 +875,7 @@ def _install_bundled_release_seed_if_missing(target: Path) -> bool:
     seed = paths.mature_learning_release_seed_path()
     if not seed.is_file():
         return False
-    validate_release_seed(seed)
+    validate_release_seed(seed, allow_legacy_schema=True)
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.name}.{uuid4().hex}.installing")
     shutil.copy2(seed, temp)
@@ -763,7 +891,7 @@ def _install_bundled_release_seed_if_missing(target: Path) -> bool:
         temp.unlink(missing_ok=True)
 
 
-def validate_release_seed(seed: Path) -> None:
+def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> None:
     """Fail closed if a bundled Research seed contains mutable or non-creator-safe state."""
 
     uri = f"file:{seed.as_posix()}?mode=ro"
@@ -772,11 +900,42 @@ def validate_release_seed(seed: Path) -> None:
         integrity = con.execute("PRAGMA quick_check").fetchone()
         if not integrity or str(integrity[0]).casefold() != "ok":
             raise ValueError("research release seed failed SQLite integrity check")
-        if schema_version(con) != SCHEMA_VERSION:
+        actual_schema = schema_version(con)
+        if actual_schema != SCHEMA_VERSION and not (allow_legacy_schema and actual_schema == 4):
             raise ValueError("research release seed schema version mismatch")
         meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
         if meta.get("release_seed_kind") != RELEASE_SEED_KIND:
             raise ValueError("research release seed kind is missing or unsupported")
+        if actual_schema == 4:
+            # Packaged v4 seeds were validated by the previous release contract.  Existing-store
+            # initialization immediately migrates the private copy to v5; release packaging still
+            # calls this function without the compatibility flag and therefore fails closed.
+            return
+        family_columns = {
+            str(row[1]) for row in con.execute("PRAGMA table_info(research_build_families)")
+        }
+        if allow_legacy_schema and "knowledge_scope" not in family_columns:
+            legacy_counts = (
+                con.execute("SELECT count(*) FROM research_build_families").fetchone()[0],
+                con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0],
+            )
+            if legacy_counts == (0, 0):
+                return
+            raise ValueError("legacy schema-5 release seed contains unscoped Family data")
+        if not _scoped_source_provenance_complete(con) and not allow_legacy_schema:
+            raise ValueError("research release seed source provenance is not scope-separated")
+        allowed_meta = {
+            "schema_version",
+            "release_seed_kind",
+            "release_seed_version",
+            "release_seed_created_at",
+        }
+        unexpected_meta = sorted(set(meta) - allowed_meta)
+        if unexpected_meta:
+            raise ValueError(
+                "research release seed contains runtime/backfill metadata: "
+                + ", ".join(unexpected_meta)
+            )
         for table in (
             "source_groups",
             "source_snapshots",
@@ -786,6 +945,8 @@ def validate_release_seed(seed: Path) -> None:
             "technique_edges",
             "research_rejected_proposals",
             "research_dedupe_queries",
+            "research_query_sessions",
+            "research_record_write_receipts",
             "research_revalidation_events",
             "research_decay_events",
         ):
@@ -801,13 +962,44 @@ def validate_release_seed(seed: Path) -> None:
         for table in scoped_tables:
             where = (
                 "visibility <> 'creator_visible' OR split <> 'train_context' "
-                "OR knowledge_scope NOT IN ('global_seed', 'local_user') "
+                "OR knowledge_scope <> 'global_seed' "
                 "OR copy_safety_state <> 'passed'"
             )
             if table != "research_build_design_observations":
                 where += " OR status <> 'valid'"
             if con.execute(f"SELECT count(*) FROM {table} WHERE {where}").fetchone()[0]:
                 raise ValueError(f"research release seed contains non-creator-safe rows: {table}")
+        invalid_deep_records = con.execute(
+            """
+            SELECT count(*) FROM deep_research_records
+            WHERE record_schema_version <> 2 OR projection_hash IS NULL
+               OR source_state_scope NOT IN ('active_state', 'state_agnostic')
+               OR COALESCE(json_extract(typed_payload, '$.availability'), 'standard') <> 'standard'
+            """
+        ).fetchone()[0]
+        if invalid_deep_records:
+            raise ValueError("research release seed contains legacy or non-authorizing records")
+        ineligible_deep_records = con.execute(
+            """
+            SELECT count(*) FROM deep_research_records AS record
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM deep_research_record_evidence AS evidence
+                JOIN research_source_provenance AS provenance
+                  ON provenance.source_case_ref = evidence.source_case_ref
+                 AND provenance.knowledge_scope = evidence.knowledge_scope
+                JOIN research_build_families AS family
+                  ON family.knowledge_scope = record.knowledge_scope
+                 AND family.build_family_key = record.build_family_key
+                WHERE evidence.knowledge_scope = record.knowledge_scope
+                  AND evidence.knowledge_key = record.knowledge_key
+                  AND evidence.accepted_projection_hash = record.projection_hash
+                  AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
+            )
+            """
+        ).fetchone()[0]
+        if ineligible_deep_records:
+            raise ValueError("research release seed contains deep records without eligible lanes")
         orphan_family_count = con.execute(
             """
             SELECT count(*)
@@ -815,12 +1007,19 @@ def validate_release_seed(seed: Path) -> None:
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM deep_research_records AS record
-                WHERE record.build_family_key = family.build_family_key
+                WHERE record.knowledge_scope = family.knowledge_scope
+                  AND record.build_family_key = family.build_family_key
             )
             """
         ).fetchone()[0]
         if orphan_family_count:
             raise ValueError("research release seed contains Family rows without public records")
+        non_global_family_count = con.execute(
+            "SELECT count(*) FROM research_build_families "
+            "WHERE knowledge_scope <> 'global_seed'"
+        ).fetchone()[0]
+        if non_global_family_count:
+            raise ValueError("research release seed contains non-global Family rows")
         orphan_evidence_count = con.execute(
             """
             SELECT count(*)
@@ -828,12 +1027,47 @@ def validate_release_seed(seed: Path) -> None:
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM research_build_families AS family
-                WHERE family.build_family_key = evidence.build_family_key
+                WHERE family.knowledge_scope = evidence.knowledge_scope
+                  AND family.build_family_key = evidence.build_family_key
             )
             """
         ).fetchone()[0]
         if orphan_evidence_count:
             raise ValueError("research release seed contains orphaned Family evidence")
+        orphan_record_evidence_count = con.execute(
+            """
+            SELECT count(*)
+            FROM deep_research_record_evidence AS evidence
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM deep_research_records AS record
+                WHERE record.knowledge_scope = evidence.knowledge_scope
+                  AND record.knowledge_key = evidence.knowledge_key
+                  AND record.status = 'valid'
+                  AND record.superseded_by_id IS NULL
+            )
+            """
+        ).fetchone()[0]
+        if orphan_record_evidence_count:
+            raise ValueError("research release seed contains orphaned deep-record evidence")
+        invalid_source_provenance = con.execute(
+            "SELECT count(*) FROM research_source_provenance WHERE knowledge_scope <> 'global_seed'"
+        ).fetchone()[0]
+        if invalid_source_provenance:
+            raise ValueError("research release seed contains non-global source provenance")
+        unproven_evidence = con.execute(
+            """
+            SELECT count(*)
+            FROM deep_research_record_evidence AS evidence
+            WHERE NOT EXISTS (
+                SELECT 1 FROM research_source_provenance AS provenance
+                WHERE provenance.source_case_ref = evidence.source_case_ref
+                  AND provenance.knowledge_scope = 'global_seed'
+            )
+            """
+        ).fetchone()[0]
+        if unproven_evidence:
+            raise ValueError("research release seed contains evidence without global provenance")
     finally:
         con.close()
 
@@ -951,6 +1185,613 @@ def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
     _migrate_revalidation_events_target_kind_check(con)
 
 
+def _migrate_research_memory_v5(
+    con: sqlite3.Connection, *, apply_known_repairs: bool = True
+) -> None:
+    """Apply the additive Research v5 storage contract inside the caller transaction."""
+
+    _add_column_if_missing(
+        con,
+        "deep_research_records",
+        "source_state_scope",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )
+    _add_column_if_missing(con, "deep_research_records", "projection_hash", "TEXT")
+    for column, definition in (
+        ("retrieval_ref", "TEXT"),
+        ("run_ref", "TEXT"),
+        ("claim_ref", "TEXT"),
+        ("effective_scope", "TEXT"),
+        ("selected_source_case_ref", "TEXT"),
+        ("source_state_scope", "TEXT"),
+        ("memory_revision", "INTEGER"),
+        ("manifest_hash", "TEXT"),
+        ("page_index", "INTEGER NOT NULL DEFAULT 0"),
+        ("page_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("retrieval_complete", "INTEGER NOT NULL DEFAULT 1"),
+        ("create_authorizing", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        _add_column_if_missing(con, "research_dedupe_queries", column, definition)
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_query_sessions (
+            retrieval_ref TEXT PRIMARY KEY,
+            request_contract TEXT NOT NULL,
+            response_profile TEXT NOT NULL,
+            run_ref TEXT,
+            claim_ref TEXT,
+            effective_scope TEXT NOT NULL,
+            selected_source_case_ref TEXT,
+            source_state_scope TEXT NOT NULL,
+            memory_revision INTEGER NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            next_page_index INTEGER NOT NULL DEFAULT 0,
+            page_count INTEGER NOT NULL,
+            complete INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_record_write_receipts (
+            receipt_ref TEXT PRIMARY KEY,
+            run_ref TEXT NOT NULL,
+            sample_id TEXT NOT NULL,
+            accept_attempt_key TEXT NOT NULL,
+            packet_safe_hash TEXT NOT NULL,
+            canonical_review_hash TEXT NOT NULL,
+            contract_version TEXT NOT NULL,
+            expected_origin_state TEXT NOT NULL,
+            acceptance_summary TEXT NOT NULL,
+            record_writes_json TEXT NOT NULL,
+            pattern_ids TEXT NOT NULL DEFAULT '[]',
+            semantic_edge_ids TEXT NOT NULL DEFAULT '[]',
+            provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_ref, sample_id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_source_provenance (
+            source_case_ref TEXT NOT NULL,
+            knowledge_scope TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (knowledge_scope, source_case_ref),
+            CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
+        )
+        """
+    )
+    _migrate_scoped_source_provenance_v5(con)
+
+    evidence_columns = {
+        str(row["name"]) for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")
+    }
+    if {
+        "knowledge_scope",
+        "accepted_projection_hash",
+        "source_state_scope",
+    } - evidence_columns:
+        con.execute(
+            "ALTER TABLE deep_research_record_evidence RENAME TO deep_research_record_evidence_v4"
+        )
+        con.execute(
+            """
+            CREATE TABLE deep_research_record_evidence (
+                knowledge_scope TEXT NOT NULL,
+                knowledge_key TEXT NOT NULL,
+                source_case_ref TEXT NOT NULL,
+                safe_evidence_refs TEXT NOT NULL,
+                observed_component_keys TEXT NOT NULL,
+                observed_component_mentions TEXT NOT NULL,
+                conditions TEXT NOT NULL,
+                failure_conditions TEXT NOT NULL,
+                game_patch TEXT NOT NULL,
+                passive_tree_version TEXT NOT NULL,
+                pob_version_or_commit TEXT NOT NULL,
+                accepted_projection_hash TEXT,
+                source_state_scope TEXT NOT NULL DEFAULT 'unknown',
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (knowledge_scope, knowledge_key, source_case_ref)
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO deep_research_record_evidence(
+                knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
+                observed_component_keys, observed_component_mentions, conditions,
+                failure_conditions, game_patch, passive_tree_version, pob_version_or_commit,
+                accepted_projection_hash, source_state_scope, first_seen_at, last_seen_at
+            )
+            SELECT COALESCE((
+                       SELECT record.knowledge_scope
+                       FROM deep_research_records AS record
+                       WHERE record.knowledge_key = old.knowledge_key
+                         AND record.superseded_by_id IS NULL
+                       ORDER BY record.last_seen_at DESC
+                       LIMIT 1
+                   ), 'local_user'),
+                   old.knowledge_key, old.source_case_ref, old.safe_evidence_refs,
+                   old.observed_component_keys, old.observed_component_mentions,
+                   old.conditions, old.failure_conditions, old.game_patch,
+                   old.passive_tree_version, old.pob_version_or_commit,
+                   NULL, 'unknown', old.first_seen_at, old.last_seen_at
+            FROM deep_research_record_evidence_v4 AS old
+            """
+        )
+        con.execute("DROP TABLE deep_research_record_evidence_v4")
+
+    _migrate_scoped_research_families_v5(con)
+
+    con.execute("DROP INDEX IF EXISTS idx_deep_research_records_canonical_knowledge")
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_research_records_scope_knowledge
+        ON deep_research_records(knowledge_scope, knowledge_key)
+        WHERE knowledge_key IS NOT NULL AND superseded_by_id IS NULL
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_deep_research_record_evidence_lane
+        ON deep_research_record_evidence(knowledge_scope, source_case_ref, knowledge_key)
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO meta(key, value) VALUES ('research_memory_revision', '0')
+        ON CONFLICT(key) DO NOTHING
+        """
+    )
+    if _migrate_legacy_support_package_status_v5(con):
+        research_runtime.bump_memory_revision(con)
+    if apply_known_repairs:
+        _apply_known_research_repairs_v5(con)
+
+
+def _scoped_family_tables_complete(con: sqlite3.Connection) -> bool:
+    family_info = list(con.execute("PRAGMA table_info(research_build_families)"))
+    evidence_info = list(con.execute("PRAGMA table_info(research_build_family_evidence)"))
+    family_pk = [
+        str(row["name"])
+        for row in sorted(family_info, key=lambda item: int(item["pk"] or 0))
+        if int(row["pk"] or 0) > 0
+    ]
+    evidence_pk = [
+        str(row["name"])
+        for row in sorted(evidence_info, key=lambda item: int(item["pk"] or 0))
+        if int(row["pk"] or 0) > 0
+    ]
+    return family_pk == ["knowledge_scope", "build_family_key"] and evidence_pk == [
+        "knowledge_scope",
+        "build_family_key",
+        "source_case_ref",
+    ]
+
+
+def _scoped_source_provenance_complete(con: sqlite3.Connection) -> bool:
+    info = list(con.execute("PRAGMA table_info(research_source_provenance)"))
+    def column_name(row: sqlite3.Row | tuple[Any, ...]) -> str:
+        return str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
+
+    def primary_position(row: sqlite3.Row | tuple[Any, ...]) -> int:
+        return int((row["pk"] if isinstance(row, sqlite3.Row) else row[5]) or 0)
+
+    primary_key = [
+        column_name(row)
+        for row in sorted(info, key=primary_position)
+        if primary_position(row) > 0
+    ]
+    return primary_key == ["knowledge_scope", "source_case_ref"]
+
+
+def _migrate_scoped_source_provenance_v5(con: sqlite3.Connection) -> None:
+    """Allow one safe source hash to carry independent Global and Local provenance."""
+
+    if _scoped_source_provenance_complete(con):
+        return
+    con.execute(
+        "ALTER TABLE research_source_provenance "
+        "RENAME TO research_source_provenance_unscoped_v5"
+    )
+    con.execute(
+        """
+        CREATE TABLE research_source_provenance (
+            source_case_ref TEXT NOT NULL,
+            knowledge_scope TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (knowledge_scope, source_case_ref),
+            CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO research_source_provenance(
+            source_case_ref, knowledge_scope, provenance, created_at, last_seen_at
+        )
+        SELECT source_case_ref, knowledge_scope, provenance, created_at, last_seen_at
+        FROM research_source_provenance_unscoped_v5
+        """
+    )
+    con.execute("DROP TABLE research_source_provenance_unscoped_v5")
+
+
+def _migrate_scoped_research_families_v5(con: sqlite3.Connection) -> None:
+    """Repair the schema-5 Family projection so Local and Global never share mutable state.
+
+    The semantic Family key remains scope-independent.  Only a scope whose durable typed records
+    can be reconciled with the legacy Family identity receives a new scoped row; uncertain legacy
+    mounts fail closed as ``needs_revalidation`` and must be restored through a normal v3 review.
+    """
+
+    if _scoped_family_tables_complete(con):
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_research_build_family_evidence_source "
+            "ON research_build_family_evidence(knowledge_scope, source_case_ref, build_family_key)"
+        )
+        return
+
+    from . import research_identity, skill_equivalence
+
+    legacy_families = list(con.execute("SELECT * FROM research_build_families"))
+    con.execute(
+        "ALTER TABLE research_build_family_evidence "
+        "RENAME TO research_build_family_evidence_unscoped_v5"
+    )
+    con.execute(
+        "ALTER TABLE research_build_families RENAME TO research_build_families_unscoped_v5"
+    )
+    con.execute(
+        """
+        CREATE TABLE research_build_families (
+            knowledge_scope TEXT NOT NULL,
+            build_family_key TEXT NOT NULL,
+            ascendancy_key TEXT NOT NULL,
+            primary_skill_key TEXT NOT NULL,
+            primary_skill_keys TEXT NOT NULL DEFAULT '[]',
+            secondary_skill_keys TEXT NOT NULL,
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (knowledge_scope, build_family_key),
+            CHECK (knowledge_scope IN ('global_seed', 'local_user', 'eval_ephemeral'))
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE research_build_family_evidence (
+            knowledge_scope TEXT NOT NULL,
+            build_family_key TEXT NOT NULL,
+            source_case_ref TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (knowledge_scope, build_family_key, source_case_ref),
+            FOREIGN KEY (knowledge_scope, build_family_key)
+                REFERENCES research_build_families(knowledge_scope, build_family_key)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+    for family in legacy_families:
+        family_key = str(family["build_family_key"])
+        primary_keys = _json_loads(family["primary_skill_keys"], None)
+        if not primary_keys:
+            primary_key = str(family["primary_skill_key"] or "")
+            primary_keys = [primary_key] if primary_key else []
+        stored_primary = {str(value) for value in primary_keys if str(value)}
+        scopes = [
+            str(row[0])
+            for row in con.execute(
+                "SELECT DISTINCT knowledge_scope FROM deep_research_records "
+                "WHERE build_family_key = ? AND superseded_by_id IS NULL "
+                "ORDER BY knowledge_scope",
+                (family_key,),
+            ).fetchall()
+        ]
+        for scope in scopes:
+            records = list(
+                con.execute(
+                    "SELECT * FROM deep_research_records WHERE build_family_key = ? "
+                    "AND knowledge_scope = ? AND superseded_by_id IS NULL "
+                    "AND status IN ('valid', 'needs_revalidation') ORDER BY research_group_id, record_id",
+                    (family_key, scope),
+                ).fetchall()
+            )
+            groups: dict[str, list[sqlite3.Row]] = {}
+            for record in records:
+                groups.setdefault(str(record["research_group_id"]), []).append(record)
+            inferred = [
+                identity
+                for group_records in groups.values()
+                if (identity := research_identity.infer_build_family(group_records)) is not None
+            ]
+            equivalence_index = skill_equivalence.SkillEquivalenceIndex.shared()
+            stored_canonical = skill_equivalence.canonical_identity_set(
+                con, stored_primary, index=equivalence_index
+            )
+            inferred_canonical = [
+                (
+                    identity,
+                    skill_equivalence.canonical_identity_set(
+                        con, identity.primary_skill_keys, index=equivalence_index
+                    ),
+                )
+                for identity in inferred
+            ]
+            containment_compatible = bool(inferred_canonical) and all(
+                identity.ascendancy_key == str(family["ascendancy_key"])
+                and canonical
+                and canonical <= stored_canonical
+                for identity, canonical in inferred_canonical
+            )
+            exact_witness = any(
+                canonical == stored_canonical for _identity, canonical in inferred_canonical
+            )
+            if not containment_compatible or not exact_witness:
+                con.execute(
+                    "UPDATE deep_research_records SET status = 'needs_revalidation' "
+                    "WHERE build_family_key = ? AND knowledge_scope = ? "
+                    "AND superseded_by_id IS NULL AND status = 'valid'",
+                    (family_key, scope),
+                )
+                continue
+
+            secondary = set(research_identity.automatic_family_skill_keys(records))
+            secondary.update(
+                key for record in records for key in research_identity.family_core_skill_keys(record)
+            )
+            secondary -= stored_primary
+            con.execute(
+                """
+                INSERT INTO research_build_families(
+                    knowledge_scope, build_family_key, ascendancy_key, primary_skill_key,
+                    primary_skill_keys, secondary_skill_keys, evidence_count, created_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    scope,
+                    family_key,
+                    str(family["ascendancy_key"]),
+                    str(family["primary_skill_key"]),
+                    json.dumps(primary_keys, ensure_ascii=False, sort_keys=True),
+                    json.dumps(sorted(secondary), ensure_ascii=False),
+                    str(family["created_at"]),
+                    str(family["last_seen_at"]),
+                ),
+            )
+            legacy_evidence = con.execute(
+                "SELECT * FROM research_build_family_evidence_unscoped_v5 "
+                "WHERE build_family_key = ? ORDER BY source_case_ref",
+                (family_key,),
+            ).fetchall()
+            for evidence in legacy_evidence:
+                source_ref = str(evidence["source_case_ref"])
+                proven = con.execute(
+                    """
+                    SELECT 1
+                    FROM research_source_provenance AS provenance
+                    WHERE provenance.source_case_ref = ?
+                      AND provenance.knowledge_scope = ?
+                      AND EXISTS (
+                          SELECT 1
+                          FROM deep_research_record_evidence AS record_evidence
+                          JOIN deep_research_records AS record
+                            ON record.knowledge_scope = record_evidence.knowledge_scope
+                           AND record.knowledge_key = record_evidence.knowledge_key
+                          WHERE record_evidence.source_case_ref = provenance.source_case_ref
+                            AND record.knowledge_scope = provenance.knowledge_scope
+                            AND record.build_family_key = ?
+                            AND record.superseded_by_id IS NULL
+                      )
+                    """,
+                    (source_ref, scope, family_key),
+                ).fetchone()
+                if proven is None:
+                    continue
+                con.execute(
+                    """
+                    INSERT INTO research_build_family_evidence(
+                        knowledge_scope, build_family_key, source_case_ref,
+                        first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scope,
+                        family_key,
+                        source_ref,
+                        str(evidence["first_seen_at"]),
+                        str(evidence["last_seen_at"]),
+                    ),
+                )
+            con.execute(
+                """
+                UPDATE research_build_families
+                SET evidence_count = (
+                    SELECT count(*) FROM research_build_family_evidence AS evidence
+                    WHERE evidence.knowledge_scope = research_build_families.knowledge_scope
+                      AND evidence.build_family_key = research_build_families.build_family_key
+                )
+                WHERE knowledge_scope = ? AND build_family_key = ?
+                """,
+                (scope, family_key),
+            )
+
+    con.execute("DROP TABLE research_build_family_evidence_unscoped_v5")
+    con.execute("DROP TABLE research_build_families_unscoped_v5")
+    con.execute(
+        "CREATE INDEX idx_research_build_family_evidence_source "
+        "ON research_build_family_evidence(knowledge_scope, source_case_ref, build_family_key)"
+    )
+
+
+def _v5_structure_complete(con: sqlite3.Connection) -> bool:
+    required_tables = {
+        "research_query_sessions",
+        "research_record_write_receipts",
+        "research_source_provenance",
+    }
+    tables = {
+        str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if not required_tables <= tables:
+        return False
+    required_indexes = {
+        "idx_deep_research_records_scope_knowledge",
+        "idx_deep_research_record_evidence_lane",
+        "idx_research_build_family_evidence_source",
+    }
+    indexes = {
+        str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+    }
+    if not required_indexes <= indexes:
+        return False
+    if not _scoped_family_tables_complete(con):
+        return False
+    if not _scoped_source_provenance_complete(con):
+        return False
+    required_columns = {
+        "deep_research_records": {"projection_hash", "source_state_scope"},
+        "deep_research_record_evidence": {
+            "knowledge_scope",
+            "accepted_projection_hash",
+            "source_state_scope",
+        },
+        "research_dedupe_queries": {
+            "retrieval_ref",
+            "run_ref",
+            "claim_ref",
+            "effective_scope",
+            "selected_source_case_ref",
+            "source_state_scope",
+            "memory_revision",
+            "manifest_hash",
+            "page_index",
+            "page_count",
+            "retrieval_complete",
+            "create_authorizing",
+        },
+    }
+    for table, expected in required_columns.items():
+        actual = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
+        if not expected <= actual:
+            return False
+    if _legacy_support_packages_need_revalidation(con):
+        return False
+    return (
+        con.execute("SELECT 1 FROM meta WHERE key = 'research_memory_revision'").fetchone()
+        is not None
+    )
+
+
+def _legacy_support_packages_need_revalidation(con: sqlite3.Connection) -> bool:
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM deep_research_records
+            WHERE record_schema_version = 1
+              AND status = 'valid'
+              AND (
+                    record_kind = 'skill_package'
+                    OR (
+                        json_valid(typed_payload)
+                        AND json_type(typed_payload, '$.supportPackages') = 'array'
+                        AND json_array_length(json_extract(typed_payload, '$.supportPackages')) > 0
+                    )
+              )
+            LIMIT 1
+            """
+        ).fetchone()
+        is not None
+    )
+
+
+def _migrate_legacy_support_package_status_v5(con: sqlite3.Connection) -> int:
+    cursor = con.execute(
+        """
+        UPDATE deep_research_records
+        SET status = 'needs_revalidation'
+        WHERE record_schema_version = 1
+          AND status = 'valid'
+          AND (
+                record_kind = 'skill_package'
+                OR (
+                    json_valid(typed_payload)
+                    AND json_type(typed_payload, '$.supportPackages') = 'array'
+                    AND json_array_length(json_extract(typed_payload, '$.supportPackages')) > 0
+                )
+          )
+        """
+    )
+    return max(0, int(cursor.rowcount or 0))
+
+
+def _apply_known_research_repairs_v5(con: sqlite3.Connection) -> None:
+    """Quarantine only exact known-bad fingerprints during the v4->v5 transaction."""
+
+    repair_id = research_contracts.KNOWN_RESEARCH_REPAIR_ID
+    if con.execute("SELECT 1 FROM meta WHERE key = ?", (repair_id,)).fetchone():
+        return
+    matched: list[str] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for expected in research_contracts.KNOWN_BAD_RESEARCH_RECORDS:
+        row = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?",
+            (expected["recordId"],),
+        ).fetchone()
+        if row is None:
+            continue
+        evidence_sources = sorted(
+            str(item[0])
+            for item in con.execute(
+                "SELECT source_case_ref FROM deep_research_record_evidence "
+                "WHERE knowledge_scope = ? AND knowledge_key = ? ORDER BY source_case_ref",
+                (str(row["knowledge_scope"]), str(row["knowledge_key"])),
+            ).fetchall()
+        )
+        wanted_sources = sorted(expected["sourceCaseRefs"])
+        actual_sources = sorted(_json_loads(row["source_case_refs"], []))
+        if (
+            str(row["knowledge_key"] or "") != expected["knowledgeKey"]
+            or str(row["record_kind"]) != expected["recordKind"]
+            or research_runtime.projection_hash(row) != expected["projectionHash"]
+            or actual_sources != wanted_sources
+            or evidence_sources != wanted_sources
+        ):
+            raise ValueError(
+                "known Research repair fingerprint mismatch: " + str(expected["recordId"])
+            )
+        matched.append(str(expected["recordId"]))
+    if not matched:
+        return
+    placeholders = ",".join("?" for _ in matched)
+    con.execute(
+        f"""
+        UPDATE deep_research_records
+        SET visibility = 'quarantined', split = 'quarantine', status = 'quarantined',
+            source_state_scope = 'unknown', last_seen_at = ?
+        WHERE record_id IN ({placeholders}) AND superseded_by_id IS NULL
+        """,
+        (now, *matched),
+    )
+    revision = research_runtime.bump_memory_revision(con)
+    con.execute("INSERT INTO meta(key, value) VALUES (?, ?)", (repair_id, str(revision)))
+
+
 def _add_column_if_missing(
     con: sqlite3.Connection,
     table: str,
@@ -960,6 +1801,8 @@ def _add_column_if_missing(
     try:
         columns = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
     except sqlite3.OperationalError:
+        return
+    if not columns:
         return
     if column not in columns:
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -1635,7 +2478,10 @@ def _required_prerequisites(row: sqlite3.Row) -> list[str]:
     if "projectile" in delivery:
         prerequisites.append("projectile coverage and scaling support")
     if row["pob_modelability"] != "full":
-        prerequisites.append("PoB/engine caveat review before recommendation")
+        prerequisites.append(
+            "PoB/engine evidence-coverage caveat for numeric claims; use game-mechanic or in-game "
+            "evidence for unmodelled portions"
+        )
 
     if not prerequisites:
         prerequisites.append("stage-appropriate passive points, gems, and baseline gear")
@@ -1655,9 +2501,6 @@ def _starter_risk_reason(row: sqlite3.Row) -> str:
         risks.append("starter risk: expensive budget can hide leveling weaknesses")
     if any(word in lower_keypoints for word in ("starter-risk", "not a direct campaign", "caveat")):
         risks.append("starter risk: sanitized evidence explicitly flags a transition caveat")
-    if row["pob_modelability"] != "full":
-        risks.append("starter risk: PoB/engine modelability is incomplete")
-
     if not risks:
         return "No specific starter risk recorded; still verify before treating as starter viable."
     return "; ".join(risks) + "."

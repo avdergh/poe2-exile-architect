@@ -150,7 +150,8 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             "defense": ["Life", "EnergyShield"],
             "sustain": ["Mana", "ManaCost"],
         },
-        "targetChecks": ["main_skill_socketed", "sustain_ok", "pob_model_supported"],
+        "requiredChecks": ["main_skill_socketed", "sustain_ok"],
+        "advisoryChecks": ["pob_model_supported"],
         "failureModes": [
             "skill unavailable",
             "mana cost too high",
@@ -174,12 +175,12 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             "defense": ["Life", "EnergyShield"],
             "sustain": ["Mana", "ManaCost"],
         },
-        "targetChecks": [
+        "requiredChecks": [
             "first_ascendancy_or_key_support",
             "single_target_feels_ok",
             "sustain_ok",
-            "pob_model_supported",
         ],
+        "advisoryChecks": ["pob_model_supported"],
         "failureModes": ["single target falls behind", "support setup breaks sustain"],
         "caveats": ["Do not assume endgame uniques or late clusters exist yet."],
     },
@@ -200,7 +201,8 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             ],
             "sustain": ["Mana", "ManaCost"],
         },
-        "targetChecks": ["resists_near_cap", "basic_defense_online", "single_target_feels_ok"],
+        "requiredChecks": ["resists_near_cap", "basic_defense_online", "single_target_feels_ok"],
+        "advisoryChecks": ["pob_model_supported"],
         "failureModes": [
             "uncapped resists",
             "boss damage too low",
@@ -225,12 +227,12 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             ],
             "sustain": ["Mana", "ManaCost", "Spirit"],
         },
-        "targetChecks": [
+        "requiredChecks": [
             "resists_capped",
             "basic_defense_online",
             "sustain_ok",
-            "pob_model_supported",
         ],
+        "advisoryChecks": ["pob_model_supported"],
         "failureModes": ["resists not capped", "recovery missing", "mana/spirit sustain fails"],
         "caveats": ["Hold this stage until the first endgame transition gate is satisfied."],
     },
@@ -260,12 +262,12 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             "sustain": ["Mana", "ManaCost", "Spirit"],
             "calibration": ["reference_range", "dominant_levers"],
         },
-        "targetChecks": [
+        "requiredChecks": [
             "build_defining_component_online",
             "resists_capped",
             "sustain_ok",
-            "pob_model_supported",
         ],
+        "advisoryChecks": ["pob_model_supported"],
         "failureModes": [
             "missing key item",
             "budget gear cannot sustain supports",
@@ -293,11 +295,16 @@ _BUDGETS: dict[str, dict[str, Any]] = {
             "sustain": ["Mana", "ManaCost", "Spirit"],
             "calibration": ["reference_range", "pinnacle_readiness", "dominant_levers"],
         },
-        "targetChecks": [
+        "requiredChecks": [
+            "main_skill_socketed",
+            "basic_defense_online",
+            "sustain_ok",
+        ],
+        "advisoryChecks": [
+            "pob_model_supported",
             "core_threshold_met",
             "upgrade_budget_ready",
             "pinnacle_ready",
-            "pob_model_supported",
         ],
         "failureModes": [
             "unmodelled trigger or threshold",
@@ -315,6 +322,12 @@ def plan_stage_verification(stage: str, state: dict[str, Any] | None = None) -> 
     if budget is None:
         return {"ok": False, "error": "unknown lifecycle stage", "stage": stage}
     plan = deepcopy(budget)
+    required_checks = list(plan.get("requiredChecks") or plan.get("targetChecks") or [])
+    advisory_checks = list(plan.get("advisoryChecks") or [])
+    plan["requiredChecks"] = required_checks
+    plan["advisoryChecks"] = advisory_checks
+    # Compatibility view for existing clients that display the whole verification plan.
+    plan["targetChecks"] = required_checks + advisory_checks
     planned_level = _lifecycle_level((state or {}).get("level"), fallback=plan["levelTarget"])
     resistance_minimum = lifecycle_elemental_resistance_minimum(planned_level)
     plan.update(
@@ -355,8 +368,9 @@ def verify_stage_metrics(
     non-engine evidence stay unknown so the caller cannot accidentally overclaim a stage.
 
     ``unmodelled_mana_mechanisms`` must come from the evaluated build itself (see
-    ``preflight.inspect_resource_model_gap``); it never authorizes sustain by itself, it only
-    prevents an engine blind spot from being misread as a build failure.
+    ``preflight.inspect_resource_model_gap``). Their presence prevents an engine blind spot from
+    becoming a lifecycle blocker, while the result still requires non-PoB verification before a
+    numeric sustain claim is made.
     """
     plan = plan_stage_verification(stage, state=state)
     if not plan.get("ok"):
@@ -369,10 +383,19 @@ def verify_stage_metrics(
         fallback_level=plan["levelTarget"],
         unmodelled_mana_mechanisms=unmodelled_mana_mechanisms,
     )
-    checks = _evaluate_known_checks(stage, plan["targetChecks"], observations, engine_warning)
-    failed = [row["check"] for row in checks if row["status"] == "failed"]
-    unknown = [row["check"] for row in checks if row["status"] == "unknown"]
+    required_names = list(plan.get("requiredChecks") or plan.get("targetChecks") or [])
+    advisory_names = list(plan.get("advisoryChecks") or [])
+    required_checks = _evaluate_known_checks(stage, required_names, observations, engine_warning)
+    advisory_checks = _evaluate_known_checks(stage, advisory_names, observations, engine_warning)
+    checks = required_checks + advisory_checks
+    failed = [row["check"] for row in required_checks if row["status"] == "failed"]
+    unknown = [row["check"] for row in required_checks if row["status"] == "unknown"]
+    advisory_failed = [row["check"] for row in advisory_checks if row["status"] == "failed"]
+    advisory_unknown = [row["check"] for row in advisory_checks if row["status"] == "unknown"]
     passed = not failed and not unknown
+    verification_required = any(
+        bool(row.get("verificationRequired")) for row in required_checks
+    )
 
     result_caveats = list(plan.get("caveats") or [])
     if engine_warning:
@@ -381,22 +404,9 @@ def verify_stage_metrics(
     mana_sustain = observations.get("manaSustain") or {}
     if mana_sustain.get("classification") == "model_gap_flask_assisted":
         gap_names = ", ".join(mana_sustain.get("unmodelledManaMechanisms") or [])
-        deficit = mana_sustain.get("netDeficitPerSecond")
-        seconds = mana_sustain.get("secondsFromFull")
         result_caveats.append(
-            "unmodelled_mana_layer_present: "
-            + (f"{gap_names}; " if gap_names else "")
-            + (
-                f"engine-model deficit {deficit:.1f}/s, "
-                if isinstance(deficit, (int, float))
-                else ""
-            )
-            + (
-                f"full-mana buffer {seconds:.1f}s under the modelled continuous rate; "
-                if isinstance(seconds, (int, float))
-                else ""
-            )
-            + "verify the in-game recovery layer and disclose boss-fight mana risk"
+            "unmodelled_mana_recovery_requires_verification: "
+            + (gap_names or "detected recovery mechanism")
         )
 
     return {
@@ -404,12 +414,17 @@ def verify_stage_metrics(
         "stage": stage,
         "status": "passed" if passed else "failed" if failed else "unknown",
         "pass": passed,
+        "verificationRequired": verification_required,
         "plan": plan,
         "stateSnapshot": state or {},
         "observations": observations,
         "checks": checks,
+        "requiredChecks": required_checks,
+        "advisoryChecks": advisory_checks,
         "failedChecks": failed,
         "unknownChecks": unknown,
+        "advisoryFailedChecks": advisory_failed,
+        "advisoryUnknownChecks": advisory_unknown,
         "recommendedActions": _recommended_actions(stage, checks, failed, unknown),
         "caveats": result_caveats,
         "evidenceTags": ["engine-computed", "stage-verification"],
@@ -431,14 +446,28 @@ def requested_metric_keys(stage: str) -> list[str]:
         [
             "TotalEHP",
             "Life",
+            "LifeUnreserved",
+            "LifeUnreservedPercent",
             "EnergyShield",
             "Mana",
             "ManaUnreserved",
+            "ManaUnreservedPercent",
             "ManaCost",
+            "ManaPercentCost",
+            "ManaPerSecondCost",
+            "ManaPercentPerSecondCost",
+            "LifeCost",
+            "LifePercentCost",
+            "LifePerSecondCost",
+            "LifePercentPerSecondCost",
             "ManaRegenRecovery",
             "ManaLeechGainRate",
             "ManaOnHitRate",
             "NetManaRegen",
+            "LifeRegenRecovery",
+            "LifeLeechGainRate",
+            "LifeOnHitRate",
+            "NetLifeRegen",
             "Speed",
         ]
     )
@@ -466,11 +495,13 @@ def _observations(
     mana_on_hit_rate = _number(stats.get("ManaOnHitRate"))
     speed = _number(stats.get("Speed"))
     spirit = _number(stats.get("Spirit") or defenses.get("spirit"))
-    mana_sustain = sustain.classify_mana_sustain(
+    resource_sustain = sustain.classify_resource_sustain(
         stats,
         mana_flask_equipped=_optional_bool(state.get("manaFlaskEquipped")),
         unmodelled_mana_mechanisms=unmodelled_mana_mechanisms,
     )
+    mana_sustain = dict(resource_sustain["manaSustain"])
+    life_sustain = dict(resource_sustain["lifeSustain"])
     return {
         "level": _lifecycle_level(state.get("level"), fallback=fallback_level),
         "resistances": resists,
@@ -487,6 +518,8 @@ def _observations(
         "manaOnHitRate": mana_on_hit_rate,
         "skillUseRate": speed,
         "manaSustain": mana_sustain,
+        "lifeSustain": life_sustain,
+        "resourceSustain": resource_sustain,
         "mainSkillSocketed": _optional_bool(state.get("mainSkillSocketed")),
         "mainSkillSocketEvidence": (
             dict(state["mainSkillSocketEvidence"])
@@ -553,6 +586,7 @@ def _evaluate_known_checks(
                     "status": "failed" if engine_warning else "passed",
                     "ok": not bool(engine_warning),
                     "detail": engine_warning or "no engine warning supplied",
+                    "scope": "numeric_evidence_coverage_only",
                 }
             )
         else:
@@ -638,7 +672,7 @@ def _main_skill_socketed_check(observations: dict[str, Any]) -> dict[str, Any]:
             "status": "passed",
             "ok": True,
             "detail": evidence or {"socketed": True},
-            "target": "one enabled active gem in the active PoB main socket group",
+            "target": "a legal enabled active composition in the PoB main socket group",
         }
     if socketed is False:
         return {
@@ -646,7 +680,7 @@ def _main_skill_socketed_check(observations: dict[str, Any]) -> dict[str, Any]:
             "status": "failed",
             "ok": False,
             "detail": evidence or {"socketed": False},
-            "target": "one enabled active gem in the active PoB main socket group",
+            "target": "a legal enabled active composition in the PoB main socket group",
         }
     return {
         "check": "main_skill_socketed",
@@ -750,7 +784,10 @@ def _basic_defense_check(stage: str, observations: dict[str, Any]) -> dict[str, 
 
 
 def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
-    detail = dict(observations.get("manaSustain") or {})
+    detail = dict(observations.get("resourceSustain") or {})
+    if not detail and isinstance(observations.get("manaSustain"), dict):
+        # Direct helper callers from the v1 Mana-only contract retain their policy semantics.
+        detail = dict(observations["manaSustain"])
     classification = detail.get("classification")
     if classification == "sustainable_baseline":
         return {
@@ -758,7 +795,7 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "status": "passed",
             "ok": True,
             "detail": detail,
-            "target": "continuous mana demand is covered without flask recovery",
+            "target": "continuous Mana and Life costs are payable and covered",
         }
     if classification == "model_gap_flask_assisted":
         # The build carries engine-invisible resource layers (e.g. Mana Remnants pickup,
@@ -771,9 +808,10 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "status": "passed",
             "ok": True,
             "detail": detail,
+            "verificationRequired": True,
             "target": (
-                "engine-invisible mana mechanisms are present; disclose the modelled deficit and "
-                "verify the unmodelled recovery layer in-game"
+                "engine-invisible mana mechanisms are present; verify that their recovery covers "
+                "the actual skill rotation; any deterministic Life failure remains blocking"
             ),
         }
     if classification == "flask_assisted_required":
@@ -783,7 +821,7 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "detail": detail,
             "target": (
-                "continuous use depends on a mana flask; long boss fights can run out of mana"
+                "continuous use depends on an unclosed Mana or Life recovery source"
             ),
         }
     if classification == "unsustainable":
@@ -792,7 +830,7 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
             "status": "failed",
             "ok": False,
             "detail": detail,
-            "target": "continuous mana demand requires a recovery solution",
+            "target": "continuous Mana or Life demand requires a recovery solution",
         }
     return {
         "check": "sustain_ok",
@@ -800,8 +838,7 @@ def _sustain_check(observations: dict[str, Any]) -> dict[str, Any]:
         "ok": None,
         "detail": detail,
         "target": (
-            "requires cast/attack rate plus recovery, flask, on-hit/leech, rotation, or encounter "
-            "evidence; no fixed mana-pool multiplier is used"
+            "requires use rate, unreserved pools and recovery evidence for both Mana and Life"
         ),
     }
 
@@ -832,13 +869,20 @@ def _recommended_actions(
             "Verify sustain with use rate, recovery, flasks and the real skill rotation; do not "
             "remove supports from mana-pool size alone."
         )
-    if "pob_model_supported" in failed:
+    modelability_row = next(
+        (row for row in checks if row.get("check") == "pob_model_supported"),
+        None,
+    )
+    if modelability_row and modelability_row.get("status") == "failed":
         actions.append(
-            "PoB reports a modeling limitation; do not present the computed number as the true "
-            "mechanic value."
+            "PoB reports a modeling limitation. Preserve any game-valid mechanic and use current "
+            "mechanic/Research or in-game evidence; do not present the computed number as its true value."
         )
     if "main_skill_socketed" in failed:
-        actions.append("Socket exactly one enabled active gem in the active PoB main skill group.")
+        actions.append(
+            "Socket one ordinary active, or one valid meta/invocation host with its payload, in the "
+            "active PoB main skill group."
+        )
     if "first_ascendancy_or_key_support" in failed:
         actions.append("Activate the stage ascendancy or socket a support in the PoB main group.")
     if "single_target_feels_ok" in failed:

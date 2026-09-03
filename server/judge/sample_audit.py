@@ -27,11 +27,6 @@ def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
         out["scoreReviewNeeded"] = False
         out["finalClassification"] = "source_data_problem"
         return out
-    modelability = out.get("modelability") or {}
-    if bool(modelability.get("coreBlocked")) or modelability.get("status") == "not_modelable":
-        out["scoreReviewNeeded"] = False
-        out["finalClassification"] = "judge_unsolved_modelability_gap"
-        return out
     if out.get("playabilityFailures"):
         out["scoreReviewNeeded"] = False
         out["finalClassification"] = "severe_playability_failure"
@@ -48,8 +43,6 @@ def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
             out["finalClassification"] = "judge_unsolved_modelability_gap"
         elif caveats & UNSOLVED_GAP_CAVEATS:
             out["finalClassification"] = "judge_unsolved_modelability_gap"
-        elif bool(modelability.get("coreBlocked")) or modelability.get("status") == "not_modelable":
-            out["finalClassification"] = "judge_unsolved_modelability_gap"
         elif failures:
             out["finalClassification"] = "real_legality_failure"
         else:
@@ -57,14 +50,24 @@ def finalize_sample_classification(sample: dict[str, Any]) -> dict[str, Any]:
         return out
 
     reasons: list[str] = []
+    score_unavailable = (
+        (out.get("scoreApplicability") or {}).get("status") == "unavailable"
+    )
     aggregate = float((out.get("aggregateScore") or {}).get("value") or 0.0)
-    if aggregate < 0.5:
+    if not score_unavailable and aggregate < 0.5:
         reasons.append("aggregate_below_0_5")
     vector = out.get("scoreVector") or {}
     for key in ("offense", "defense", "recovery", "mobility"):
+        if score_unavailable and key == "offense":
+            continue
         value = float((vector.get(key) or {}).get("value") or 0.0)
         if value < 0.5:
             reasons.append(f"{key}_below_0_5")
+
+    if score_unavailable and not reasons:
+        out["scoreReviewNeeded"] = False
+        out["finalClassification"] = "judge_pass_numeric_evidence_limited"
+        return out
 
     out["scoreReviewNeeded"] = bool(reasons)
     if reasons:

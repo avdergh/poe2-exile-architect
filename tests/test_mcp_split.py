@@ -2,7 +2,7 @@
 
 The full tool surface stays in ``server.main`` (single fact source). Each domain server
 re-registers its own subset with its own short bootstrap; the legacy aggregate server keeps all
-143 tools so tests, smoke scripts and old host configurations keep working.
+160 tools so tests, smoke scripts and old host configurations keep working.
 """
 
 from __future__ import annotations
@@ -50,11 +50,15 @@ def test_key_tools_land_in_the_right_server():
     assert "import_build" in _tool_names(build_server.mcp)
     assert "evaluate_generation_candidate" in _tool_names(build_server.mcp)
     assert "save_final_build_artifact" in _tool_names(build_server.mcp)
+    assert "preview_final_artifact_spirit_revalidation" in _tool_names(build_server.mcp)
+    assert "apply_final_artifact_spirit_revalidation" in _tool_names(build_server.mcp)
     assert "verify_lifecycle_stage" in _tool_names(build_server.mcp)
     assert "evaluate_jewel_socket" in _tool_names(build_server.mcp)
+    assert "optimize_flask" in _tool_names(build_server.mcp)
 
     assert "search_items" in _tool_names(knowledge_server.mcp)
     assert "query_research_memory" in _tool_names(knowledge_server.mcp)
+    assert "get_research_write_receipt" in _tool_names(knowledge_server.mcp)
     assert "get_freshness_report" in _tool_names(knowledge_server.mcp)
     assert "graph_tool_query" in _tool_names(knowledge_server.mcp)
     assert "explain_mechanic" in _tool_names(knowledge_server.mcp)
@@ -65,6 +69,9 @@ def test_key_tools_land_in_the_right_server():
     assert "propose_research_fragments" in _tool_names(research_server.mcp)
     assert "validate_researcher_output" in _tool_names(research_server.mcp)
     assert "build_research_packet" in _tool_names(research_server.mcp)
+    assert "preview_research_record_merge" in _tool_names(research_server.mcp)
+    assert "apply_research_record_merge" in _tool_names(research_server.mcp)
+    assert "inspect_research_merge_candidates" in _tool_names(research_server.mcp)
     assert {
         "start_research_run",
         "get_research_run_status",
@@ -120,6 +127,7 @@ def test_legacy_aggregate_still_registers_everything():
     assert "claim_learning_phase" in legacy
     assert "propose_research_fragments" in legacy
     assert "query_research_memory" in legacy
+    assert "get_research_write_receipt" in legacy
 
 
 def test_manifest_tool_list_matches_registered_surface():

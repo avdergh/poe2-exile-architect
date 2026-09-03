@@ -203,6 +203,63 @@ def mark_accepted(db_path: str | Path, *, league: str, character_ref: str) -> bo
     return cur.rowcount > 0
 
 
+def finalize_accepted(
+    db_path: str | Path,
+    *,
+    league: str,
+    character_ref: str,
+    source_hash: str = "",
+    sample_id: str = "",
+) -> str:
+    """Idempotently finalize one ledger row after a committed Research receipt."""
+
+    path = Path(db_path)
+    can_recreate = bool(str(source_hash or "").strip() and str(sample_id or "").strip())
+    if not path.is_file() and not can_recreate:
+        return "conflict"
+    init_db(path)
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT status FROM intake_records WHERE league = ? AND character_ref = ?",
+            (str(league or "").strip(), str(character_ref or "").strip()),
+        ).fetchone()
+        if row is None:
+            if not can_recreate:
+                return "conflict"
+            now = _now_iso()
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO intake_records(
+                    league, character_ref, source_hash, first_sample_id,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'accepted', ?, ?)
+                """,
+                (
+                    str(league or "").strip(),
+                    str(character_ref or "").strip(),
+                    str(source_hash or "").strip(),
+                    str(sample_id or "").strip(),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return "recreated" if cur.rowcount == 1 else "conflict"
+        if str(row[0]) == ACCEPTED_STATUS:
+            return "already_accepted"
+        cur = conn.execute(
+            "UPDATE intake_records SET status = 'accepted', updated_at = ? "
+            "WHERE league = ? AND character_ref = ? AND status = 'queued'",
+            (
+                _now_iso(),
+                str(league or "").strip(),
+                str(character_ref or "").strip(),
+            ),
+        )
+        conn.commit()
+    return "accepted" if cur.rowcount == 1 else "conflict"
+
+
 def release_queued_case(
     db_path: str | Path,
     *,
@@ -243,9 +300,10 @@ def release_queued_case(
             return "status_mismatch"
         stored_source_hash = str(row[2] or "")
         stored_sample_id = str(row[3] or "")
-        if stored_source_hash != str(source_hash or "").strip() or stored_sample_id != str(
-            sample_id or ""
-        ).strip():
+        if (
+            stored_source_hash != str(source_hash or "").strip()
+            or stored_sample_id != str(sample_id or "").strip()
+        ):
             return "ownership_mismatch"
         cur = conn.execute(
             "DELETE FROM intake_records WHERE id = ? AND status = 'queued'",

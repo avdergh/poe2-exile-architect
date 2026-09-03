@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..knowledge import db
+from ..knowledge.skill_equivalence import SkillEquivalenceIndex
 
 _GEAR_CLASSES = {
     "Body Armour": "Body Armour",
@@ -30,22 +31,50 @@ _GEAR_CLASSES = {
 }
 
 
-def _gem_name_for_key(key: str) -> str | None:
-    """Resolve a gem display name from a display name, `gem:` key, or None when unresolvable.
+def _gem_identity_for_key(key: str) -> dict[str, Any]:
+    """Resolve display, gem and active-skill identities at the level-verification boundary."""
 
-    `skill:` keys belong to the Family identity system (player active skills) and do not map to
-    a gem here — callers in no-Family mode should use gem display names or `gem:` keys.
-    """
     key = str(key or "").strip()
     if not key:
-        return None
+        return {"status": "unavailable", "reason": "empty_skill_identity"}
+    index = SkillEquivalenceIndex.shared()
+    gem: dict[str, Any] | None = None
     if key.startswith("gem:"):
         gem = db.get_gem(key[len("gem:") :])
-        return gem["name"] if gem else None
-    if key.startswith("skill:"):
-        return None
-    gem = db.get_gem(key)
-    return gem["name"] if gem else None
+    elif key.startswith("skill:"):
+        gem_ids = index.gem_ids_for_skill_key(key)
+        if len(gem_ids) > 1:
+            return {
+                "status": "ambiguous",
+                "reason": "active_skill_granted_by_multiple_gems",
+                "candidateGemKeys": [f"gem:{gem_id}" for gem_id in gem_ids],
+            }
+        gem = db.get_gem(gem_ids[0]) if gem_ids else None
+    else:
+        gem_ids = index.gem_ids(key)
+        if len(gem_ids) > 1:
+            return {
+                "status": "ambiguous",
+                "reason": "gem_display_name_is_ambiguous",
+                "candidateGemKeys": [f"gem:{gem_id}" for gem_id in gem_ids],
+            }
+        gem = db.get_gem(gem_ids[0]) if gem_ids else db.get_gem(key)
+    if gem is None:
+        return {
+            "status": "unavailable",
+            "reason": (
+                "unresolvable_skill_identity"
+                if key.startswith("skill:")
+                else "gem_not_found_in_corpus"
+            ),
+        }
+    active_keys = [f"skill:{value}" for value in (gem.get("grants") or []) if value]
+    return {
+        "status": "resolved",
+        "gemName": str(gem["name"]),
+        "gemKey": f"gem:{gem['id']}",
+        "activeSkillKeys": active_keys,
+    }
 
 
 def _gem_level_curve(engine: Any, gem_name: str) -> dict[str, Any] | None:
@@ -117,23 +146,19 @@ def validate_level_availability(
     """
     results: list[dict[str, Any]] = []
     for key in skill_keys or []:
-        gem_name = _gem_name_for_key(key)
-        if gem_name is None:
+        identity = _gem_identity_for_key(key)
+        if identity.get("status") != "resolved":
             results.append(
                 {
                     "skill": str(key),
-                    "status": "unavailable",
-                    "reason": (
-                        "unresolvable_skill_identity"
-                        if str(key).startswith("skill:")
-                        else "gem_not_found_in_corpus"
-                    ),
+                    **identity,
                 }
             )
             continue
+        gem_name = str(identity["gemName"])
         entry = gem_level_availability(engine, gem_name, level)
         entry["skill"] = str(key)
-        entry["gemName"] = gem_name
+        entry.update({name: value for name, value in identity.items() if name != "status"})
         entry["attributeCompatible"] = (
             _attribute_compatible_for_class(gem_name, class_key) if class_key else True
         )

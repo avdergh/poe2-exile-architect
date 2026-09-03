@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +17,8 @@ from . import graph_tools
 from . import mature_learning
 from . import research_identity
 from . import research_models
+from . import research_contracts
+from . import research_runtime
 from . import skill_equivalence
 from ..freshness import providers as freshness_providers
 
@@ -55,6 +58,7 @@ MECHANISM_RECORD_KIND_PRIORITY = (
     "resource_engine",
     "failure_mode",
 )
+ScopedFamilyRef = tuple[str, str]
 
 
 def _normalize_deep_record_version_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +123,47 @@ def _follow_supersession_head(con: sqlite3.Connection, start_record_id: str) -> 
     return None
 
 
+_QUERY_VISIBLE_ACCEPTANCE_TABLES = (
+    "research_fragments",
+    "research_semantic_edges",
+    "research_build_design_observations",
+    "research_build_patterns",
+    "deep_research_records",
+    "research_build_families",
+    "research_build_family_evidence",
+    "deep_research_record_evidence",
+    "research_source_provenance",
+)
+_NON_SEMANTIC_ACCEPTANCE_COLUMNS = {
+    "created_at",
+    "last_seen_at",
+    "last_validated_at",
+}
+
+
+def _query_visible_acceptance_fingerprint(con: sqlite3.Connection) -> str:
+    """Hash Query/Create-visible Memory state while excluding audit-only timestamps."""
+
+    projection: dict[str, list[list[Any]]] = {}
+    for table in _QUERY_VISIBLE_ACCEPTANCE_TABLES:
+        columns = [
+            str(row["name"])
+            for row in con.execute(f"PRAGMA table_info({table})")
+            if str(row["name"]) not in _NON_SEMANTIC_ACCEPTANCE_COLUMNS
+        ]
+        if not columns:
+            projection[table] = []
+            continue
+        quoted = ", ".join(f'"{column}"' for column in columns)
+        rows = [
+            [row[column] for column in columns]
+            for row in con.execute(f"SELECT {quoted} FROM {table}").fetchall()
+        ]
+        rows.sort(key=research_runtime.stable_hash)
+        projection[table] = rows
+    return research_runtime.stable_hash(projection)
+
+
 class ResearchMemoryService:
     def __init__(
         self,
@@ -132,7 +177,10 @@ class ResearchMemoryService:
         self.last_build_family_backfill: dict[str, Any] = {"status": "not_run"}
         if initialize_store:
             mature_learning.initialize_store(db_path)
-            self.last_build_family_backfill = self.backfill_deep_research_knowledge()
+            # Construction must be side-effect free beyond structural initialization.  Legacy
+            # semantic backfill is an explicit maintenance operation; running it here allowed a
+            # read-only service creation to change Create-visible memory before acceptance gates.
+            self.last_build_family_backfill = {"status": "explicit_maintenance_required"}
 
     def backfill_deep_research_knowledge(self, *, force: bool = False) -> dict[str, Any]:
         """Assign high-confidence historical records to families and canonical knowledge units."""
@@ -147,6 +195,36 @@ class ResearchMemoryService:
                     "version": BUILD_FAMILY_BACKFILL_VERSION,
                 }
 
+            unsafe_v5_rows = int(
+                con.execute(
+                    """
+                    SELECT count(*) FROM deep_research_records
+                    WHERE record_schema_version >= 2 OR knowledge_scope <> 'global_seed'
+                    """
+                ).fetchone()[0]
+            )
+            unsafe_v5_evidence = int(
+                con.execute(
+                    """
+                    SELECT count(*) FROM deep_research_record_evidence
+                    WHERE knowledge_scope <> 'global_seed'
+                    """
+                ).fetchone()[0]
+            )
+            if unsafe_v5_rows or unsafe_v5_evidence:
+                return {
+                    "status": "blocked_scope_unsafe",
+                    "version": BUILD_FAMILY_BACKFILL_VERSION,
+                    "recordCount": unsafe_v5_rows,
+                    "evidenceCount": unsafe_v5_evidence,
+                    "repair": (
+                        "Legacy family backfill cannot run across schema-2 or non-global lanes; "
+                        "use v3 supplement/revalidation instead."
+                    ),
+                }
+
+            con.execute("BEGIN IMMEDIATE")
+
             rows = con.execute(
                 """
                 SELECT * FROM deep_research_records
@@ -158,7 +236,8 @@ class ResearchMemoryService:
             stored_family_keys = {
                 str(row[0])
                 for row in con.execute(
-                    "SELECT build_family_key FROM research_build_families"
+                    "SELECT build_family_key FROM research_build_families "
+                    "WHERE knowledge_scope = 'global_seed'"
                 ).fetchall()
                 if str(row[0] or "")
             }
@@ -211,6 +290,7 @@ class ResearchMemoryService:
                 family_evidence_added_count += self._upsert_build_family(
                     con,
                     family=family,
+                    knowledge_scope="global_seed",
                     source_case_refs=source_refs,
                     now=now,
                 )
@@ -362,7 +442,7 @@ class ResearchMemoryService:
                     con.execute(
                         """
                         SELECT count(*) FROM deep_research_record_evidence
-                        WHERE knowledge_key = ?
+                        WHERE knowledge_scope = 'global_seed' AND knowledge_key = ?
                         """,
                         (key,),
                     ).fetchone()[0]
@@ -520,7 +600,8 @@ class ResearchMemoryService:
                 still_referenced = con.execute(
                     """
                     SELECT 1 FROM deep_research_records
-                    WHERE build_family_key = ? AND superseded_by_id IS NULL
+                    WHERE knowledge_scope = 'global_seed' AND build_family_key = ?
+                      AND superseded_by_id IS NULL
                       AND status != 'deprecated'
                     LIMIT 1
                     """,
@@ -528,15 +609,20 @@ class ResearchMemoryService:
                 ).fetchone()
                 if still_referenced is None:
                     con.execute(
-                        "DELETE FROM research_build_family_evidence WHERE build_family_key = ?",
+                        "DELETE FROM research_build_family_evidence "
+                        "WHERE knowledge_scope = 'global_seed' AND build_family_key = ?",
                         (stale_key,),
                     )
                     con.execute(
-                        "DELETE FROM research_build_families WHERE build_family_key = ?",
+                        "DELETE FROM research_build_families "
+                        "WHERE knowledge_scope = 'global_seed' AND build_family_key = ?",
                         (stale_key,),
                     )
 
-            updated_family_secondary_count = self._reconcile_build_family_secondary_skill_keys(con)
+            updated_family_secondary_count = self._reconcile_build_family_secondary_skill_keys(
+                con,
+                knowledge_scope="global_seed",
+            )
 
             family_by_source: dict[str, str] = {}
             for group_id, family in family_by_group.items():
@@ -548,7 +634,8 @@ class ResearchMemoryService:
                 """
                 SELECT pattern_id, transfer_scope, source_case_refs, origin_family_keys
                 FROM research_build_patterns
-                WHERE status IN ('valid', 'needs_revalidation')
+                WHERE knowledge_scope = 'global_seed'
+                  AND status IN ('valid', 'needs_revalidation')
                   AND superseded_by_id IS NULL
                 """
             ).fetchall()
@@ -594,10 +681,12 @@ class ResearchMemoryService:
                 """,
                 (BUILD_FAMILY_BACKFILL_VERSION,),
             )
+            memory_revision = research_runtime.bump_memory_revision(con)
             con.commit()
             return {
                 "status": "applied",
                 "version": BUILD_FAMILY_BACKFILL_VERSION,
+                "memoryRevision": memory_revision,
                 "scannedRecordCount": len(rows),
                 "classifiedFamilyCount": len({family.key for family in family_by_group.values()}),
                 "classifiedResearchGroupCount": len(family_by_group),
@@ -628,11 +717,18 @@ class ResearchMemoryService:
         research_axes: list[str] | None = None,
         ascendancy_key: str | None = None,
         primary_skill_key: str | None = None,
+        related_skill_key: str | None = None,
         build_family_keys: list[str] | None = None,
         record_kinds: list[str] | None = None,
         class_key: str | None = None,
         game_patch: str | None = None,
         passive_tree_version: str | None = None,
+        response_profile: str = "full",
+        knowledge_scope: str | None = None,
+        source_case_ref: str | None = None,
+        run_ref: str | None = None,
+        claim_ref: str | None = None,
+        blind_global_only: bool = False,
     ) -> dict[str, Any]:
         if detail_level not in {"summary", "record", "family"}:
             return research_models.public_error(
@@ -642,9 +738,27 @@ class ResearchMemoryService:
         research_axes = sorted({str(axis) for axis in research_axes or [] if str(axis).strip()})
         ascendancy_key = str(ascendancy_key or "").strip() or None
         primary_skill_key = str(primary_skill_key or "").strip() or None
+        related_skill_key = str(related_skill_key or "").strip() or None
         class_key = str(class_key or "").strip() or None
         game_patch = str(game_patch or "").strip() or None
         passive_tree_version = str(passive_tree_version or "").strip() or None
+        response_profile = str(response_profile or "full")
+        if response_profile not in {"full", "create_compact"}:
+            return research_models.public_error(
+                "invalid_response_profile", ["response_profile must be full or create_compact"]
+            )
+        requested_scope = str(knowledge_scope or "").strip() or None
+        if requested_scope and requested_scope not in {"global_seed", "local_user"}:
+            return research_models.public_error(
+                "invalid_knowledge_scope",
+                ["knowledge_scope must be global_seed or local_user"],
+            )
+        if blind_global_only and requested_scope not in {None, "global_seed"}:
+            return research_models.public_error(
+                "blind_research_scope_mismatch",
+                ["Blind Research retrieval is restricted to global_seed by the server claim"],
+            )
+        source_case_ref = str(source_case_ref or "").strip() or None
         if ascendancy_key and not ascendancy_key.startswith("ascendancy:"):
             return research_models.public_error(
                 "invalid_identity_parameter",
@@ -670,6 +784,19 @@ class ResearchMemoryService:
                         "primary_skill_key must not contain spaces; use the engine stable key "
                         f"like 'skill:DetonateDeadPlayer' (got '{primary_skill_key}')."
                     ],
+                )
+        if related_skill_key:
+            if detail_level != "family":
+                return research_models.public_error(
+                    "related_skill_requires_family_discovery",
+                    ["related_skill_key is only valid with detail_level=family"],
+                )
+            if not related_skill_key.startswith(("skill:", "gem:")) or any(
+                char.isspace() for char in related_skill_key
+            ):
+                return research_models.public_error(
+                    "invalid_identity_parameter",
+                    ["related_skill_key must use a resolved skill:/gem: stable key"],
                 )
         if detail_level == "family" and not (class_key and game_patch and passive_tree_version):
             return research_models.public_error(
@@ -722,9 +849,22 @@ class ResearchMemoryService:
             if primary_skill_key
             else []
         )
+        related_skill_keys = (
+            sorted(
+                {key for group in self._component_key_groups([related_skill_key]) for key in group}
+            )
+            if related_skill_key
+            else []
+        )
         record_ids = sorted({str(item) for item in record_ids or [] if str(item).strip()})
         con = mature_learning.connect(self.db_path)
         try:
+            snapshot_revision: int | None = None
+            if response_profile == "create_compact":
+                # Pin all compact-result reads and the raw DQ to one revision.  Without an
+                # explicit transaction, sqlite3 SELECT calls may observe different commits.
+                con.execute("BEGIN IMMEDIATE")
+                snapshot_revision = research_runtime.get_memory_revision(con)
             now = _now()
             family_discovery = detail_level == "family"
             # Explicit record IDs define an exact deep-read lane. The natural-language query is
@@ -745,7 +885,9 @@ class ResearchMemoryService:
                     passive_tree_version=passive_tree_version or "",
                     ascendancy_key=ascendancy_key,
                     primary_skill_keys=primary_skill_keys,
+                    related_skill_keys=related_skill_keys,
                     build_family_keys=build_family_keys,
+                    knowledge_scope=requested_scope,
                     limit=10,
                 )
                 if family_discovery
@@ -754,12 +896,105 @@ class ResearchMemoryService:
                     ascendancy_key=ascendancy_key,
                     primary_skill_keys=primary_skill_keys,
                     build_family_keys=build_family_keys,
+                    knowledge_scope=requested_scope,
                     limit=max(1, limit),
                 )
                 if explicit_family_filter
                 else []
             )
+            if blind_global_only and family_rows:
+                family_rows = [
+                    row
+                    for row in family_rows
+                    if str(row["knowledge_scope"]) == "global_seed"
+                    and con.execute(
+                        """
+                        SELECT 1
+                        FROM deep_research_records AS record
+                        JOIN deep_research_record_evidence AS evidence
+                          ON evidence.knowledge_scope = record.knowledge_scope
+                         AND evidence.knowledge_key = record.knowledge_key
+                        JOIN research_source_provenance AS provenance
+                          ON provenance.source_case_ref = evidence.source_case_ref
+                         AND provenance.knowledge_scope = evidence.knowledge_scope
+                        JOIN research_build_families AS family
+                          ON family.knowledge_scope = record.knowledge_scope
+                         AND family.build_family_key = record.build_family_key
+                        WHERE record.build_family_key = ?
+                          AND record.knowledge_scope = 'global_seed'
+                          AND record.status = 'valid'
+                          AND record.superseded_by_id IS NULL
+                          AND record.record_schema_version = 2
+                          AND record.source_state_scope IN ('active_state', 'state_agnostic')
+                          AND record.projection_hash IS NOT NULL
+                          AND evidence.accepted_projection_hash = record.projection_hash
+                        LIMIT 1
+                        """,
+                        (str(row["build_family_key"]),),
+                    ).fetchone()
+                    is not None
+                ]
             selected_family_keys = [str(row["build_family_key"]) for row in family_rows]
+            source_case_lane: dict[str, Any] | None = None
+            selected_lane_scope: str | None = None
+            selected_lane_case: str | None = None
+            if (
+                response_profile == "create_compact"
+                and not family_discovery
+                and selected_family_keys
+            ):
+                source_case_lane = self._select_source_case_lane(
+                    con,
+                    family_keys=selected_family_keys,
+                    requested_scope=requested_scope,
+                    requested_source_case_ref=source_case_ref,
+                    blind_global_only=blind_global_only,
+                    record_ids=record_ids,
+                    record_kinds=record_kinds,
+                    game_patch=game_patch,
+                    passive_tree_version=passive_tree_version,
+                )
+                family_lane_inventory = self._select_source_case_lane(
+                    con,
+                    family_keys=selected_family_keys,
+                    requested_scope=requested_scope,
+                    requested_source_case_ref=None,
+                    blind_global_only=blind_global_only,
+                    record_ids=None,
+                    record_kinds=None,
+                    game_patch=game_patch,
+                    passive_tree_version=passive_tree_version,
+                )
+                family_available_lanes = list(family_lane_inventory.get("available") or [])
+                source_case_lane["familyAvailable"] = family_available_lanes
+                source_case_lane["comparisonRequiredCount"] = min(
+                    2,
+                    max(0, len(family_available_lanes) - 1),
+                )
+                eligible_lane_family_keys = set(
+                    source_case_lane.pop("_eligibleBuildFamilyKeys", [])
+                )
+                selected_lane_scope = (
+                    str((source_case_lane or {}).get("selectedKnowledgeScope") or "") or None
+                )
+                selected_lane_case = (
+                    str((source_case_lane or {}).get("selectedSourceCaseRef") or "") or None
+                )
+                if selected_lane_scope:
+                    family_rows = [
+                        row
+                        for row in family_rows
+                        if str(row["knowledge_scope"]) == selected_lane_scope
+                        and str(row["build_family_key"]) in eligible_lane_family_keys
+                    ]
+                    selected_family_keys = [
+                        str(row["build_family_key"]) for row in family_rows
+                    ]
+                else:
+                    # This branch ran lane selection for an exact Create query.  Family discovery
+                    # skips lane selection and remains a non-authorizing ToolReference path.
+                    family_rows = []
+                    selected_family_keys = []
             record_rows = (
                 []
                 if family_discovery
@@ -774,6 +1009,9 @@ class ResearchMemoryService:
                     query_is_preference=explicit_family_filter,
                     game_patch=game_patch,
                     passive_tree_version=passive_tree_version,
+                    create_authorizing=response_profile == "create_compact",
+                    knowledge_scope=selected_lane_scope,
+                    source_case_ref=selected_lane_case,
                 )
             )
             deep_records = [
@@ -794,6 +1032,7 @@ class ResearchMemoryService:
                     ascendancy_key=None,
                     primary_skill_keys=[],
                     build_family_keys=selected_family_keys,
+                    knowledge_scope=requested_scope,
                     limit=max(1, limit),
                 )
             build_families = (
@@ -807,24 +1046,61 @@ class ResearchMemoryService:
                 if family_discovery
                 else self._build_family_results(con, family_rows)
             )
+            if blind_global_only:
+                for family in build_families:
+                    family["secondarySkillKeys"] = []
+            if response_profile == "create_compact" and selected_lane_case:
+                rows_by_family: dict[str, list[sqlite3.Row]] = {}
+                for row in record_rows:
+                    rows_by_family.setdefault(str(row["build_family_key"] or ""), []).append(row)
+                for family in build_families:
+                    lane_rows = rows_by_family.get(str(family.get("buildFamilyKey") or ""), [])
+                    kind_counts: dict[str, int] = {}
+                    secondary_keys: set[str] = set()
+                    for lane_row in lane_rows:
+                        kind = str(lane_row["record_kind"])
+                        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+                        for mention in _loads(lane_row["component_mentions"], []):
+                            if not isinstance(mention, dict):
+                                continue
+                            key = str(mention.get("component_key") or "")
+                            role = str(mention.get("role") or "")
+                            if key.startswith("skill:") and role != "primary_damage":
+                                secondary_keys.add(key)
+                    family["secondarySkillKeys"] = sorted(secondary_keys)
+                    family["evidenceCount"] = 1 if lane_rows else 0
+                    family["deepRecordCount"] = len(lane_rows)
+                    family["recordKindCounts"] = kind_counts
+                    family["availableRecordKinds"] = sorted(kind_counts)
             family_record_coverage: list[dict[str, Any]] = []
             family_record_index: list[dict[str, Any]] = []
             family_premise_catalog: list[dict[str, Any]] = []
             if not family_discovery and selected_family_keys:
+                selected_family_refs = [
+                    (str(row["knowledge_scope"]), str(row["build_family_key"]))
+                    for row in family_rows
+                ]
                 (
                     family_record_coverage,
                     family_record_index,
                     family_premise_catalog,
                 ) = self._build_family_record_context(
                     con,
-                    family_keys=selected_family_keys,
+                    family_refs=selected_family_refs,
                     returned_record_ids={
                         str(row["record_id"]) for row in record_rows if row["record_id"]
                     },
                     game_patch=game_patch,
                     passive_tree_version=passive_tree_version,
+                    create_authorizing=response_profile == "create_compact",
+                    knowledge_scope=selected_lane_scope,
+                    source_case_ref=selected_lane_case,
                 )
             family_keys = [str(row["buildFamilyKey"]) for row in build_families]
+            family_refs = [
+                (str(row["knowledgeScope"]), str(row["buildFamilyKey"]))
+                for row in build_families
+            ]
             scope_component_keys = {key for group in component_key_groups for key in group}
             for row in rows:
                 scope_component_keys.update(_loads(row["component_keys"], []))
@@ -855,7 +1131,7 @@ class ResearchMemoryService:
                 else self._query_creator_build_patterns(
                     con,
                     component_keys=sorted(str(key) for key in scope_component_keys if str(key)),
-                    family_keys=family_keys,
+                    family_refs=family_refs,
                     limit=context_limit,
                 )
             )
@@ -871,6 +1147,13 @@ class ResearchMemoryService:
                 if include_transferable and not family_discovery
                 else []
             )
+            if response_profile == "create_compact" and source_case_lane is not None:
+                # These knowledge kinds do not carry per-source content projections.  They remain
+                # available to full Research queries but cannot authorize a lane-specific Create.
+                results = []
+                semantic_edges = []
+                build_patterns = []
+                transferable_patterns = []
             request_contract = {
                 "componentKeys": component_keys,
                 # Family discovery has one stable contract: compare up to ten exact-version
@@ -883,20 +1166,48 @@ class ResearchMemoryService:
                 "ascendancyKey": ascendancy_key,
                 "primarySkillKey": primary_skill_key,
                 **({"primarySkillKeys": primary_skill_keys} if primary_skill_key else {}),
+                "relatedSkillKey": related_skill_key,
+                **({"relatedSkillKeys": related_skill_keys} if related_skill_key else {}),
                 "buildFamilyKeys": build_family_keys,
                 "recordKinds": record_kinds,
                 "classKey": class_key,
                 "gamePatch": game_patch,
                 "passiveTreeVersion": passive_tree_version,
+                "responseProfile": response_profile,
+                "knowledgeScope": selected_lane_scope or requested_scope,
+                "sourceCaseRef": selected_lane_case or source_case_ref,
+                "runRef": run_ref,
+                "claimRef": claim_ref,
+                "blindGlobalOnly": bool(blind_global_only),
             }
             result_contract = {
+                "queryContractVersion": 2 if response_profile == "create_compact" else 1,
+                "responseProfile": response_profile,
+                "selectedKnowledgeScope": selected_lane_scope,
+                "selectedSourceCaseRef": selected_lane_case,
+                "familyAvailableSourceCaseLanes": list(
+                    (source_case_lane or {}).get("familyAvailable") or []
+                ),
+                "comparisonRequiredCount": int(
+                    (source_case_lane or {}).get("comparisonRequiredCount") or 0
+                ),
+                "memoryRevision": (
+                    snapshot_revision
+                    if snapshot_revision is not None
+                    else research_runtime.get_memory_revision(con)
+                ),
+                # The raw query result is never Create-authorizing.  Only the bounded retrieval
+                # session pages produced from the final public response can authorize Create.
+                "createAuthorizing": False,
                 "buildFamilies": sorted(
                     [
                         {
                             "buildFamilyKey": item["buildFamilyKey"],
                             "ascendancyKey": item["ascendancyKey"],
                             "primarySkillKey": item["primarySkillKey"],
+                            "primarySkillKeys": sorted(item.get("primarySkillKeys") or []),
                             "secondarySkillKeys": sorted(item["secondarySkillKeys"]),
+                            "createEligibility": item.get("createEligibility"),
                         }
                         for item in build_families
                     ],
@@ -956,6 +1267,7 @@ class ResearchMemoryService:
             "requestedResearchAxes": research_axes,
             "requestedAscendancyKey": ascendancy_key,
             "requestedPrimarySkillKey": primary_skill_key,
+            "requestedRelatedSkillKey": related_skill_key,
             "requestedBuildFamilyKeys": build_family_keys,
             "requestedRecordKinds": record_kinds,
             "requestedClassKey": class_key,
@@ -973,11 +1285,25 @@ class ResearchMemoryService:
             },
             "componentKeyGroups": component_key_groups,
             "detailLevel": detail_level,
+            "sourceCaseLane": source_case_lane,
+            "selectedKnowledgeScope": selected_lane_scope,
+            "selectedSourceCaseRef": selected_lane_case,
             **(
                 {
                     "familyDiscovery": {
                         "requestedCandidateCount": 10,
                         "returnedCandidateCount": len(build_families),
+                        "outcome": (
+                            "no_family"
+                            if not build_families
+                            else "authorized"
+                            if any(
+                                (family.get("createEligibility") or {}).get("status")
+                                == "authorized"
+                                for family in build_families
+                            )
+                            else "known_family_not_authorized"
+                        ),
                         "coverage": (
                             "sufficient"
                             if len(build_families) >= 5
@@ -1006,7 +1332,10 @@ class ResearchMemoryService:
             row = con.execute(
                 """
                 SELECT dedupe_query_ref, query_hash, component_keys, request_contract,
-                       result_contract, created_at, last_seen_at
+                       result_contract, created_at, last_seen_at, retrieval_ref, run_ref,
+                       claim_ref, effective_scope, selected_source_case_ref,
+                       source_state_scope, memory_revision, manifest_hash, page_index,
+                       page_count, retrieval_complete, create_authorizing
                 FROM research_dedupe_queries
                 WHERE dedupe_query_ref = ?
                   AND visibility = 'creator_visible'
@@ -1015,11 +1344,15 @@ class ResearchMemoryService:
                 """,
                 (dedupe_query_ref,),
             ).fetchone()
+            current_memory_revision = research_runtime.get_memory_revision(con)
         except sqlite3.OperationalError:
             return None
         finally:
             con.close()
         if row is None:
+            return None
+        stored_revision = int(row["memory_revision"]) if row["memory_revision"] is not None else -1
+        if row["retrieval_ref"] and stored_revision != current_memory_revision:
             return None
         request = _loads(row["request_contract"], {})
         result = _loads(row["result_contract"], {})
@@ -1035,6 +1368,18 @@ class ResearchMemoryService:
             "result": result,
             "createdAt": row["created_at"],
             "lastSeenAt": row["last_seen_at"],
+            "retrievalRef": row["retrieval_ref"],
+            "runRef": row["run_ref"],
+            "claimRef": row["claim_ref"],
+            "effectiveScope": row["effective_scope"],
+            "selectedSourceCaseRef": row["selected_source_case_ref"],
+            "sourceStateScope": row["source_state_scope"],
+            "memoryRevision": row["memory_revision"],
+            "manifestHash": row["manifest_hash"],
+            "pageIndex": int(row["page_index"] or 0),
+            "pageCount": int(row["page_count"] or 1),
+            "retrievalComplete": bool(row["retrieval_complete"]),
+            "createAuthorizing": bool(row["create_authorizing"]),
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
@@ -1045,6 +1390,427 @@ class ResearchMemoryService:
         ):
             return None
         return receipt
+
+    def start_retrieval_session(
+        self,
+        payload: dict[str, Any],
+        *,
+        response_profile: str,
+        run_ref: str | None,
+        claim_ref: str | None,
+        effective_scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist and return page zero of one bounded, non-reusable retrieval session."""
+
+        if payload.get("status") == "error":
+            return payload
+        con = mature_learning.connect(self.db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            raw_dedupe_ref = str(payload.get("dedupeQueryRef") or "")
+            raw_row = con.execute(
+                "SELECT result_contract FROM research_dedupe_queries "
+                "WHERE dedupe_query_ref = ? AND retrieval_ref IS NULL LIMIT 1",
+                (raw_dedupe_ref,),
+            ).fetchone()
+            raw_result = _loads(raw_row["result_contract"], {}) if raw_row is not None else {}
+            try:
+                source_revision = int(raw_result.get("memoryRevision"))
+            except (TypeError, ValueError):
+                source_revision = -1
+            current_revision = research_runtime.get_memory_revision(con)
+            if (
+                not raw_dedupe_ref
+                or int(raw_result.get("queryContractVersion") or 0) < 2
+                or raw_result.get("responseProfile") != "create_compact"
+                or source_revision != current_revision
+            ):
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_session_stale",
+                    ["Research Memory changed; restart from the first compact query"],
+                )
+            now = _now()
+            memory_revision = source_revision
+            selected_scope = str(payload.get("selectedKnowledgeScope") or "")
+            selected_case = str(payload.get("selectedSourceCaseRef") or "")
+            effective_scope = str(effective_scope or selected_scope or "")
+            create_authorizing = bool(
+                response_profile == "create_compact" and selected_scope and selected_case
+            )
+            request_contract = {
+                "responseProfile": response_profile,
+                "detailLevel": payload.get("detailLevel"),
+                "classKey": payload.get("requestedClassKey"),
+                "ascendancyKey": payload.get("requestedAscendancyKey"),
+                "relatedSkillKey": payload.get("requestedRelatedSkillKey"),
+                "familyDiscovery": deepcopy(payload.get("familyDiscovery")),
+                "familyDiscoveryFamilies": [
+                    {
+                        "buildFamilyKey": str(family.get("buildFamilyKey") or ""),
+                        "createEligibility": deepcopy(family.get("createEligibility") or {}),
+                    }
+                    for family in payload.get("buildFamilies") or []
+                    if isinstance(family, dict) and family.get("buildFamilyKey")
+                ],
+                "runRef": str(run_ref or "") or None,
+                "claimRef": str(claim_ref or "") or None,
+                "knowledgeScope": selected_scope or None,
+                "sourceCaseRef": selected_case or None,
+                "effectiveScope": effective_scope or None,
+                "blindClaimBound": bool(payload.get("blindClaimBound")),
+                "requestedBuildFamilyKeys": list(payload.get("requestedBuildFamilyKeys") or []),
+                "requestedGamePatch": payload.get("requestedGamePatch"),
+                "requestedPassiveTreeVersion": payload.get("requestedPassiveTreeVersion"),
+                "familyAvailableSourceCaseLanes": list(
+                    ((payload.get("sourceCaseLane") or {}).get("familyAvailable") or [])
+                ),
+                "comparisonRequiredCount": int(
+                    ((payload.get("sourceCaseLane") or {}).get("comparisonRequiredCount") or 0)
+                ),
+            }
+            retrieval_ref = (
+                "rq-"
+                + _stable_hash(
+                    {
+                        "nonce": os.urandom(16).hex(),
+                        "createdAt": now,
+                        "request": request_contract,
+                    }
+                )[:20]
+            )
+            try:
+                pages, manifest_hash = self._bounded_retrieval_pages(
+                    payload,
+                    retrieval_ref=retrieval_ref,
+                    memory_revision=memory_revision,
+                )
+            except ValueError as exc:
+                con.rollback()
+                return research_models.public_error(
+                    str(exc),
+                    ["One Research Memory item exceeds the bounded response budget."],
+                )
+            con.execute(
+                """
+                INSERT INTO research_query_sessions(
+                    retrieval_ref, request_contract, response_profile, run_ref, claim_ref,
+                    effective_scope, selected_source_case_ref, source_state_scope,
+                    memory_revision, manifest_hash, manifest_json, next_page_index,
+                    page_count, complete, created_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active_or_agnostic', ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (
+                    retrieval_ref,
+                    _json(request_contract),
+                    response_profile,
+                    str(run_ref or "") or None,
+                    str(claim_ref or "") or None,
+                    effective_scope,
+                    selected_case or None,
+                    memory_revision,
+                    manifest_hash,
+                    _json(pages),
+                    len(pages),
+                    int(len(pages) == 1),
+                    now,
+                    now,
+                ),
+            )
+            page = self._record_retrieval_page(
+                con,
+                retrieval_ref=retrieval_ref,
+                pages=pages,
+                page_index=0,
+                manifest_hash=manifest_hash,
+                memory_revision=memory_revision,
+                request_contract=request_contract,
+                create_authorizing=create_authorizing,
+                now=now,
+            )
+            con.commit()
+            return page
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+    def continue_retrieval_session(self, continuation_cursor: str) -> dict[str, Any]:
+        parsed = self._parse_retrieval_cursor(continuation_cursor)
+        if parsed is None:
+            return research_models.public_error(
+                "invalid_research_query_cursor", ["continuation_cursor is invalid or corrupted"]
+            )
+        retrieval_ref, page_index = parsed
+        con = mature_learning.connect(self.db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM research_query_sessions WHERE retrieval_ref = ?",
+                (retrieval_ref,),
+            ).fetchone()
+            if row is None:
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_continuation_missing", ["retrieval session is unavailable"]
+                )
+            if int(row["memory_revision"]) != research_runtime.get_memory_revision(con):
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_continuation_stale",
+                    ["Research Memory changed; restart from the first page"],
+                )
+            if int(row["next_page_index"]) != page_index:
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_continuation_out_of_order",
+                    ["continuation pages must be consumed once and in order"],
+                )
+            pages = _loads(row["manifest_json"], [])
+            if not isinstance(pages, list) or not 0 <= page_index < len(pages):
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_continuation_complete", ["retrieval session is complete"]
+                )
+            request_contract = _loads(row["request_contract"], {})
+            now = _now()
+            page = self._record_retrieval_page(
+                con,
+                retrieval_ref=retrieval_ref,
+                pages=pages,
+                page_index=page_index,
+                manifest_hash=str(row["manifest_hash"]),
+                memory_revision=int(row["memory_revision"]),
+                request_contract=request_contract,
+                create_authorizing=bool(row["effective_scope"] and row["selected_source_case_ref"]),
+                now=now,
+            )
+            next_index = page_index + 1
+            con.execute(
+                "UPDATE research_query_sessions SET next_page_index = ?, complete = ?, "
+                "last_seen_at = ? WHERE retrieval_ref = ?",
+                (next_index, int(next_index >= len(pages)), now, retrieval_ref),
+            )
+            con.commit()
+            return page
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+    def _bounded_retrieval_pages(
+        self,
+        payload: dict[str, Any],
+        *,
+        retrieval_ref: str,
+        memory_revision: int,
+    ) -> tuple[list[dict[str, Any]], str]:
+        section_names = (
+            "results",
+            "deepResearchRecords",
+            "buildFamilies",
+            "semanticEdges",
+            "buildPatterns",
+            "transferablePatterns",
+            "familyRecordCoverage",
+            "familyRecordIndex",
+            "familyPremiseCatalog",
+            "criticalPremiseDigest",
+        )
+        base = {key: value for key, value in payload.items() if key not in section_names}
+        base.pop("dedupeQueryRef", None)
+        items = [
+            (section, item) for section in section_names for item in (payload.get(section) or [])
+        ]
+        manifest_hash = _stable_hash(
+            {
+                "base": base,
+                "items": items,
+                "memoryRevision": memory_revision,
+            }
+        )
+        pages: list[dict[str, Any]] = []
+        current: dict[str, Any] = {**base, **{section: [] for section in section_names}}
+
+        def fits(page: dict[str, Any], page_index: int) -> bool:
+            probe = {
+                **page,
+                "dedupeQueryRef": "dq-" + "f" * 16,
+                "retrieval": {
+                    "contractVersion": 2,
+                    "retrievalRef": retrieval_ref,
+                    "pageIndex": page_index,
+                    "pageCount": 999999,
+                    "complete": False,
+                    "nextCursor": "rc-" + "f" * 48,
+                    "manifestHash": manifest_hash,
+                    "memoryRevision": memory_revision,
+                    "responseBudgetBytes": research_contracts.RESEARCH_QUERY_RESPONSE_BUDGET_BYTES,
+                },
+            }
+            return (
+                len(json.dumps(probe, ensure_ascii=False).encode("utf-8"))
+                <= research_contracts.RESEARCH_QUERY_RESPONSE_BUDGET_BYTES
+            )
+
+        if not fits(current, 0):
+            raise ValueError("memory_item_too_large")
+        for section, item in items:
+            candidate = json.loads(json.dumps(current, ensure_ascii=False))
+            candidate[section].append(item)
+            if fits(candidate, len(pages)):
+                current = candidate
+                continue
+            if not any(current[section_name] for section_name in section_names):
+                raise ValueError("memory_item_too_large")
+            pages.append(current)
+            current = {**base, **{name: [] for name in section_names}}
+            current[section].append(item)
+            if not fits(current, len(pages)):
+                raise ValueError("memory_item_too_large")
+        if not pages or any(current[name] for name in section_names) or not items:
+            pages.append(current)
+        return pages, manifest_hash
+
+    def _record_retrieval_page(
+        self,
+        con: sqlite3.Connection,
+        *,
+        retrieval_ref: str,
+        pages: list[dict[str, Any]],
+        page_index: int,
+        manifest_hash: str,
+        memory_revision: int,
+        request_contract: dict[str, Any],
+        create_authorizing: bool,
+        now: str,
+    ) -> dict[str, Any]:
+        complete = page_index == len(pages) - 1
+        cursor = None if complete else self._retrieval_cursor(retrieval_ref, page_index + 1)
+        page = json.loads(json.dumps(pages[page_index], ensure_ascii=False))
+        result_contract = {
+            "queryContractVersion": 2,
+            "retrievalRef": retrieval_ref,
+            "pageIndex": page_index,
+            "pageCount": len(pages),
+            "retrievalComplete": complete,
+            "manifestHash": manifest_hash,
+            "memoryRevision": memory_revision,
+            "selectedKnowledgeScope": request_contract.get("knowledgeScope"),
+            "selectedSourceCaseRef": request_contract.get("sourceCaseRef"),
+            "effectiveKnowledgeScope": request_contract.get("effectiveScope"),
+            "blindClaimBound": bool(request_contract.get("blindClaimBound")),
+            "requestedBuildFamilyKeys": list(
+                request_contract.get("requestedBuildFamilyKeys") or []
+            ),
+            "requestedGamePatch": request_contract.get("requestedGamePatch"),
+            "requestedPassiveTreeVersion": request_contract.get(
+                "requestedPassiveTreeVersion"
+            ),
+            "familyAvailableSourceCaseLanes": list(
+                request_contract.get("familyAvailableSourceCaseLanes") or []
+            ),
+            "comparisonRequiredCount": int(
+                request_contract.get("comparisonRequiredCount") or 0
+            ),
+            "createAuthorizing": create_authorizing,
+            "familyDiscovery": deepcopy(request_contract.get("familyDiscovery")),
+            "buildFamilies": (
+                deepcopy(request_contract.get("familyDiscoveryFamilies") or [])
+                if request_contract.get("detailLevel") == "family"
+                else page.get("buildFamilies") or []
+            ),
+            "deepRecordIds": [
+                str(item.get("recordId"))
+                for item in page.get("deepResearchRecords") or []
+                if isinstance(item, dict) and item.get("recordId")
+            ],
+            "deepReadRecordIds": [
+                str(item.get("recordId"))
+                for item in page.get("deepResearchRecords") or []
+                if isinstance(item, dict) and item.get("content") and item.get("recordId")
+            ],
+            "patternIds": [],
+            "semanticEdgeIds": [],
+            "memoryItemIds": [],
+            "familyPremiseCatalog": page.get("familyPremiseCatalog") or [],
+            "premiseAuditVersion": page.get("premiseAuditVersion"),
+        }
+        dedupe_ref = (
+            "dq-" + _stable_hash({"retrievalRef": retrieval_ref, "pageIndex": page_index})[:16]
+        )
+        self._record_dedupe_query(
+            con,
+            dedupe_ref=dedupe_ref,
+            query="retrieval-page",
+            component_keys=[],
+            request_contract=request_contract,
+            result_contract=result_contract,
+            now=now,
+        )
+        con.execute(
+            """
+            UPDATE research_dedupe_queries
+            SET retrieval_ref = ?, run_ref = ?, claim_ref = ?, effective_scope = ?,
+                selected_source_case_ref = ?, source_state_scope = 'active_or_agnostic',
+                memory_revision = ?, manifest_hash = ?, page_index = ?, page_count = ?,
+                retrieval_complete = ?, create_authorizing = ?
+            WHERE dedupe_query_ref = ?
+            """,
+            (
+                retrieval_ref,
+                request_contract.get("runRef"),
+                request_contract.get("claimRef"),
+                request_contract.get("effectiveScope"),
+                request_contract.get("sourceCaseRef"),
+                memory_revision,
+                manifest_hash,
+                page_index,
+                len(pages),
+                int(complete),
+                int(create_authorizing),
+                dedupe_ref,
+            ),
+        )
+        page["dedupeQueryRef"] = dedupe_ref
+        page["retrieval"] = {
+            "contractVersion": 2,
+            "retrievalRef": retrieval_ref,
+            "pageIndex": page_index,
+            "pageCount": len(pages),
+            "complete": complete,
+            "nextCursor": cursor,
+            "manifestHash": manifest_hash,
+            "memoryRevision": memory_revision,
+            "responseBudgetBytes": research_contracts.RESEARCH_QUERY_RESPONSE_BUDGET_BYTES,
+        }
+        if (
+            len(json.dumps(page, ensure_ascii=False).encode("utf-8"))
+            > research_contracts.RESEARCH_QUERY_RESPONSE_BUDGET_BYTES
+        ):
+            raise ValueError("memory_page_exceeds_response_budget")
+        return page
+
+    @staticmethod
+    def _retrieval_cursor(retrieval_ref: str, page_index: int) -> str:
+        signature = _stable_hash({"retrievalRef": retrieval_ref, "pageIndex": page_index})[:16]
+        return f"rc-{retrieval_ref[3:]}-{page_index}-{signature}"
+
+    @staticmethod
+    def _parse_retrieval_cursor(value: str) -> tuple[str, int] | None:
+        match = re.fullmatch(r"rc-([0-9a-f]{20})-([0-9]+)-([0-9a-f]{16})", str(value or ""))
+        if not match:
+            return None
+        retrieval_ref = "rq-" + match.group(1)
+        page_index = int(match.group(2))
+        if (
+            match.group(3)
+            != _stable_hash({"retrievalRef": retrieval_ref, "pageIndex": page_index})[:16]
+        ):
+            return None
+        return retrieval_ref, page_index
 
     def _component_key_groups(self, component_keys: list[str]) -> list[list[str]]:
         """Expand graph-backed gem/active-skill identities without fuzzy matching."""
@@ -1103,6 +1869,19 @@ class ResearchMemoryService:
             group_id: research_identity.infer_build_family(records)
             for group_id, records in records_by_group.items()
         }
+        scopes_by_group = {
+            group_id: {record.knowledge_scope for record in records}
+            for group_id, records in records_by_group.items()
+        }
+        mixed_scope_group = next(
+            (group_id for group_id, scopes in scopes_by_group.items() if len(scopes) != 1),
+            None,
+        )
+        if mixed_scope_group is not None:
+            return research_models.rejection(
+                "mixed_knowledge_scope_research_group",
+                facts={"researchGroupId": mixed_scope_group},
+            )
         for record in output.deep_research_records:
             scope_keys = [key for key in (record.class_key, record.ascendancy_key) if key]
             endpoint_error = self._component_endpoint_error([*record.component_keys, *scope_keys])
@@ -1119,17 +1898,75 @@ class ResearchMemoryService:
             {family.key for family in families_by_group.values() if family is not None}
         )
         resolved_families, family_resolution_preview = self._preview_family_targets(
-            families_by_group
+            families_by_group,
+            {group_id: next(iter(scopes)) for group_id, scopes in scopes_by_group.items()},
         )
         family_keys = sorted(
             {family.key for family in resolved_families.values() if family is not None}
         )
+        family_refs = {
+            (next(iter(scopes_by_group[group_id])), family.key)
+            for group_id, family in resolved_families.items()
+            if family is not None
+        }
         sibling_hints: list[dict[str, Any]] = []
+        duplicate_advisories: list[dict[str, Any]] = []
+        same_batch: dict[
+            tuple[str, str], list[tuple[int, research_models.DeepResearchRecordProposal]]
+        ] = {}
+        for index, record in enumerate(output.deep_research_records):
+            family = resolved_families.get(record.research_group_id)
+            key = research_identity.knowledge_key(record, family) if family else None
+            if key:
+                same_batch.setdefault((record.knowledge_scope, key), []).append((index, record))
+        collision = next((item for item in same_batch.items() if len(item[1]) > 1), None)
+        if collision is not None:
+            (scope, key), indexed_records = collision
+            return research_models.rejection(
+                "duplicate_knowledge_identity_in_payload",
+                facts={
+                    "knowledgeScope": scope,
+                    "knowledgeKey": key,
+                    "candidateIndexes": [item[0] for item in indexed_records],
+                    "candidateTitles": [item[1].title for item in indexed_records],
+                },
+            )
         if family_keys and self.db_path and os.path.exists(self.db_path):
             try:
                 con = mature_learning.connect(self.db_path)
                 try:
-                    sibling_hints = _sibling_family_hints(con, set(family_keys))
+                    sibling_hints = _sibling_family_hints(con, family_refs)
+                    for index, record in enumerate(output.deep_research_records):
+                        family = resolved_families.get(record.research_group_id)
+                        key = research_identity.knowledge_key(record, family) if family else None
+                        if key:
+                            existing = con.execute(
+                                "SELECT * FROM deep_research_records WHERE knowledge_scope = ? "
+                                "AND knowledge_key = ? AND superseded_by_id IS NULL LIMIT 1",
+                                (record.knowledge_scope, key),
+                            ).fetchone()
+                            if (
+                                existing is not None
+                                and (
+                                    set(record.source_case_refs)
+                                    - set(_loads(existing["source_case_refs"], []))
+                                )
+                                and research_runtime.projection_hash(existing)
+                                != research_runtime.projection_hash(record.model_dump(mode="json"))
+                            ):
+                                return research_models.rejection(
+                                    "duplicate_knowledge_identity_conflict",
+                                    facts={
+                                        "recordIndex": index,
+                                        "recordTitle": record.title,
+                                        "knowledgeScope": record.knowledge_scope,
+                                        "knowledgeKey": key,
+                                        "existingRecordId": str(existing["record_id"]),
+                                    },
+                                )
+                        duplicate_advisories.extend(
+                            self._cross_family_duplicate_advisories(con, record, family)
+                        )
                 finally:
                     con.close()
             except sqlite3.Error:
@@ -1150,6 +1987,7 @@ class ResearchMemoryService:
             "resolvedTargetFamilyKeys": family_keys,
             "familyResolutionPreview": family_resolution_preview,
             "siblingFamilyHints": sibling_hints,
+            "duplicateAdvisories": duplicate_advisories,
             "nextStep": "Write the validated candidates to the leased safe review and run accept.",
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
@@ -1158,6 +1996,7 @@ class ResearchMemoryService:
     def _preview_family_targets(
         self,
         families_by_group: dict[str, research_identity.BuildFamilyIdentity | None],
+        scopes_by_group: dict[str, str],
     ) -> tuple[
         dict[str, research_identity.BuildFamilyIdentity | None],
         list[dict[str, Any]],
@@ -1180,13 +2019,18 @@ class ResearchMemoryService:
                 relation = "new"
                 source_key: str | None = None
                 if con is not None:
-                    target, relation, source_key = self._resolve_family_target(con, family=family)
+                    target, relation, source_key = self._resolve_family_target(
+                        con,
+                        family=family,
+                        knowledge_scope=scopes_by_group[group_id],
+                    )
                 resolved[group_id] = target
                 previews.append(
                     {
                         "researchGroupId": group_id,
                         "inferredKey": family.key,
                         "targetKey": target.key,
+                        "knowledgeScope": scopes_by_group[group_id],
                         "relation": relation,
                         "sourceKey": source_key,
                     }
@@ -1314,7 +2158,14 @@ class ResearchMemoryService:
             "noRawMatureBuildMaterial": True,
         }
 
-    def propose_deep_research_records(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def propose_deep_research_records(
+        self,
+        payload: dict[str, Any],
+        *,
+        _con: sqlite3.Connection | None = None,
+        _commit: bool = True,
+        _bump_revision: bool = True,
+    ) -> dict[str, Any]:
         payload = _normalize_deep_record_version_context(payload)
         unsupported_pob_version = str(payload.pop("__unsupported_pob_version__", "") or "")
         if unsupported_pob_version:
@@ -1344,17 +2195,20 @@ class ResearchMemoryService:
                 self._record_rejection(payload, endpoint_error)
                 return endpoint_error
 
-        con = mature_learning.connect(self.db_path)
+        owns_connection = _con is None
+        con = _con or mature_learning.connect(self.db_path)
         try:
             now = _now()
             record_ids: list[str] = []
             record_writes: list[dict[str, Any]] = []
             knowledge_keys: set[str] = set()
             build_family_keys: set[str] = set()
+            build_family_refs: set[ScopedFamilyRef] = set()
             affected_build_family_keys: set[str] = set()
             family_relocation_targets: dict[str, set[str]] = {}
             created_record_count = 0
             updated_record_count = 0
+            unchanged_record_count = 0
             evidence_added_count = 0
             family_evidence_added_count = 0
             created_build_family_count = 0
@@ -1366,16 +2220,87 @@ class ResearchMemoryService:
                 group_id: research_identity.infer_build_family(records)
                 for group_id, records in records_by_group.items()
             }
+            scopes_by_group = {
+                group_id: {record.knowledge_scope for record in records}
+                for group_id, records in records_by_group.items()
+            }
+            if any(len(scopes) != 1 for scopes in scopes_by_group.values()):
+                if owns_connection:
+                    con.rollback()
+                return research_models.rejection("mixed_knowledge_scope_research_group")
+            scope_by_group = {
+                group_id: next(iter(scopes)) for group_id, scopes in scopes_by_group.items()
+            }
+            acceptance_scopes = set(scope_by_group.values())
+            if len(acceptance_scopes) > 1:
+                if owns_connection:
+                    con.rollback()
+                return research_models.rejection("mixed_knowledge_scope_acceptance_unit")
+            acceptance_scope = next(iter(acceptance_scopes), "global_seed")
             family_relations: dict[str, tuple[str, str | None]] = {}
+            resolved_family_targets: dict[str, research_identity.BuildFamilyIdentity | None] = dict(
+                families_by_group
+            )
             for group_id, family in families_by_group.items():
                 if family is None:
                     continue
-                target, relation, src_key = self._resolve_family_target(con, family=family)
+                target, relation, src_key = self._resolve_family_target(
+                    con,
+                    family=family,
+                    knowledge_scope=scope_by_group[group_id],
+                )
+                resolved_family_targets[group_id] = target
+                family_relations[group_id] = (relation, src_key)
+
+            same_batch_identities: dict[
+                tuple[str, str], list[research_models.DeepResearchRecordProposal]
+            ] = {}
+            for record in output.deep_research_records:
+                target = resolved_family_targets.get(record.research_group_id)
+                key = research_identity.knowledge_key(record, target) if target else None
+                if key:
+                    same_batch_identities.setdefault((record.knowledge_scope, key), []).append(
+                        record
+                    )
+            collisions = [
+                (scope, key, records)
+                for (scope, key), records in same_batch_identities.items()
+                if len(records) > 1
+            ]
+            if collisions:
+                scope, key, records = collisions[0]
+                if owns_connection:
+                    con.rollback()
+                return research_models.rejection(
+                    "duplicate_knowledge_identity_in_payload",
+                    caveats=[
+                        "Multiple deep records in one acceptance resolve to the same scoped "
+                        "knowledge identity; merge them or add typed identity subjects."
+                    ],
+                    facts={
+                        "knowledgeScope": scope,
+                        "knowledgeKey": key,
+                        "candidateTitles": [record.title for record in records],
+                        "candidateIndexes": [
+                            index
+                            for index, candidate in enumerate(output.deep_research_records)
+                            if candidate in records
+                        ],
+                    },
+                )
+
+            families_by_group = resolved_family_targets
+            for group_id, target in families_by_group.items():
+                family = target
+                if family is None:
+                    continue
+                relation, src_key = family_relations.get(group_id, ("new", None))
                 if relation == "expand" and src_key is not None:
                     if (
                         con.execute(
-                            "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                            (src_key,),
+                            "SELECT 1 FROM research_build_families "
+                            "WHERE knowledge_scope = ? AND build_family_key = ?",
+                            (scope_by_group[group_id], src_key),
                         ).fetchone()
                         is None
                     ):
@@ -1389,6 +2314,7 @@ class ResearchMemoryService:
                             con,
                             src_family_key=src_key,
                             dst_identity=target,
+                            knowledge_scope=scope_by_group[group_id],
                             now=now,
                         )
                         con.execute(
@@ -1409,7 +2335,6 @@ class ResearchMemoryService:
                             ),
                         )
                 families_by_group[group_id] = target
-                family_relations[group_id] = (relation, src_key)
             for group_id, family in families_by_group.items():
                 if family is None:
                     continue
@@ -1417,8 +2342,9 @@ class ResearchMemoryService:
                 if relation != "expand":
                     created_build_family_count += int(
                         con.execute(
-                            "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                            (family.key,),
+                            "SELECT 1 FROM research_build_families "
+                            "WHERE knowledge_scope = ? AND build_family_key = ?",
+                            (scope_by_group[group_id], family.key),
                         ).fetchone()
                         is None
                     )
@@ -1429,13 +2355,22 @@ class ResearchMemoryService:
                         for source in record.source_case_refs
                     }
                 )
+                for record in records_by_group[group_id]:
+                    self._upsert_source_provenance(
+                        con,
+                        source_case_refs=record.source_case_refs,
+                        knowledge_scope=record.knowledge_scope,
+                        now=now,
+                    )
                 family_evidence_added_count += self._upsert_build_family(
                     con,
                     family=family,
+                    knowledge_scope=scope_by_group[group_id],
                     source_case_refs=sources,
                     now=now,
                 )
                 build_family_keys.add(family.key)
+                build_family_refs.add((scope_by_group[group_id], family.key))
             for record in output.deep_research_records:
                 persisted = self._persist_deep_record(
                     con,
@@ -1447,7 +2382,9 @@ class ResearchMemoryService:
                     """
                     SELECT record_id, research_group_id, build_family_key, knowledge_key,
                            evidence_count, record_kind, title, summary, content,
-                           component_keys, source_case_refs, safe_evidence_refs
+                           component_keys, source_case_refs, safe_evidence_refs,
+                           knowledge_scope, projection_hash, source_state_scope,
+                           record_schema_version, status, typed_payload
                     FROM deep_research_records
                     WHERE record_id = ?
                     """,
@@ -1461,6 +2398,8 @@ class ResearchMemoryService:
                 record_writes.append(
                     {
                         "recordId": persisted["record_id"],
+                        "knowledgeKey": persisted.get("knowledge_key"),
+                        "knowledgeScope": record.knowledge_scope,
                         "researchGroupId": record.research_group_id,
                         "recordKind": record.record_kind,
                         "title": record.title,
@@ -1484,6 +2423,31 @@ class ResearchMemoryService:
                             and canonical["content"] == record.content
                         ),
                         "created": bool(persisted["created"]),
+                        "writeAction": (
+                            "created"
+                            if persisted["created"]
+                            else "updated"
+                            if persisted["semantic_changed"]
+                            else "unchanged"
+                        ),
+                        "writtenSourceCaseRefs": sorted(set(record.source_case_refs)),
+                        "beforeProjectionHash": persisted.get("before_projection_hash"),
+                        "afterProjectionHash": canonical["projection_hash"],
+                        "availability": str(
+                            (_loads(canonical["typed_payload"], {}) or {}).get("availability")
+                            or "standard"
+                        ),
+                        "defaultCreateEligible": bool(
+                            int(canonical["record_schema_version"] or 1) >= 2
+                            and str(canonical["status"]) == "valid"
+                            and str(canonical["source_state_scope"])
+                            in research_contracts.CREATE_AUTHORIZING_SOURCE_STATE_SCOPES
+                            and str(
+                                (_loads(canonical["typed_payload"], {}) or {}).get("availability")
+                                or "standard"
+                            )
+                            == "standard"
+                        ),
                         "evidenceAddedCount": int(persisted["evidence_added_count"]),
                         "crossFamilyDuplicateAdvisories": list(
                             persisted.get("crossFamilyDuplicateAdvisories") or []
@@ -1495,7 +2459,12 @@ class ResearchMemoryService:
                 elif families_by_group.get(record.research_group_id) is not None:
                     unkeyed_record_titles.append(record.title)
                 created_record_count += int(persisted["created"])
-                updated_record_count += int(not persisted["created"])
+                updated_record_count += int(
+                    not persisted["created"] and persisted["semantic_changed"]
+                )
+                unchanged_record_count += int(
+                    not persisted["created"] and not persisted["semantic_changed"]
+                )
                 evidence_added_count += int(persisted["evidence_added_count"])
                 previous_family_key = persisted.get("previous_build_family_key")
                 if previous_family_key:
@@ -1508,7 +2477,9 @@ class ResearchMemoryService:
                             current_family.key
                         )
             self._reconcile_build_family_secondary_skill_keys(
-                con, family_keys=affected_build_family_keys
+                con,
+                family_keys=affected_build_family_keys,
+                knowledge_scope=acceptance_scope,
             )
             removed_orphan_family_count = self._delete_unreferenced_build_families(
                 con,
@@ -1518,14 +2489,20 @@ class ResearchMemoryService:
                     for source_key, target_keys in family_relocation_targets.items()
                     if len(target_keys) == 1
                 },
+                knowledge_scope=acceptance_scope,
             )
-            sibling_hints = _sibling_family_hints(con, build_family_keys)
-            con.commit()
+            sibling_hints = _sibling_family_hints(con, build_family_refs)
+            if _bump_revision:
+                research_runtime.bump_memory_revision(con)
+            if _commit:
+                con.commit()
         except BaseException:
-            con.rollback()
+            if _commit:
+                con.rollback()
             raise
         finally:
-            con.close()
+            if owns_connection:
+                con.close()
         return {
             "status": "accepted",
             "recordIds": sorted(set(record_ids)),
@@ -1535,6 +2512,7 @@ class ResearchMemoryService:
             "siblingFamilyHints": sibling_hints,
             "createdRecordCount": created_record_count,
             "updatedRecordCount": updated_record_count,
+            "unchangedRecordCount": unchanged_record_count,
             "evidenceAddedCount": evidence_added_count,
             "familyEvidenceAddedCount": family_evidence_added_count,
             "createdBuildFamilyCount": created_build_family_count,
@@ -1547,6 +2525,318 @@ class ResearchMemoryService:
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def accept_research_unit(
+        self,
+        *,
+        run_ref: str,
+        sample_id: str,
+        accept_attempt_key: str,
+        packet_safe_hash: str,
+        canonical_review_hash: str,
+        contract_version: str,
+        expected_origin_state: str,
+        pattern_payload: dict[str, Any],
+        deep_payload: dict[str, Any],
+        edge_payload: dict[str, Any],
+        supplement: bool = False,
+        _fault_after_step: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically persist one accepted Research case in the Memory database."""
+
+        pattern_validation = self.validate_build_patterns(pattern_payload)
+        deep_validation = self.validate_deep_research_records(deep_payload)
+        edge_validation = self.validate_semantic_edges(edge_payload)
+        for validation in (pattern_validation, deep_validation, edge_validation):
+            if validation.get("status") != "accepted":
+                return {
+                    "status": "rejected",
+                    "patternWrite": pattern_validation,
+                    "deepRecordWrite": deep_validation,
+                    "semanticEdgeWrite": edge_validation,
+                    "noRawMatureBuildMaterial": True,
+                }
+
+        receipt_ref = research_runtime.write_receipt_ref(run_ref, sample_id)
+        con = mature_learning.connect(self.db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if _fault_after_step == "begin":
+                raise RuntimeError("injected_research_acceptance_fault:begin")
+            existing_receipt = con.execute(
+                "SELECT * FROM research_record_write_receipts WHERE receipt_ref = ?",
+                (receipt_ref,),
+            ).fetchone()
+            if existing_receipt is not None:
+                if (
+                    str(existing_receipt["accept_attempt_key"]) != accept_attempt_key
+                    or str(existing_receipt["packet_safe_hash"]) != packet_safe_hash
+                    or str(existing_receipt["canonical_review_hash"]) != canonical_review_hash
+                ):
+                    con.rollback()
+                    return research_models.rejection("research_acceptance_receipt_conflict")
+                con.rollback()
+                summary = _loads(existing_receipt["acceptance_summary"], {})
+                return {
+                    **summary,
+                    "status": "accepted",
+                    "writeReceiptRef": receipt_ref,
+                    "idempotentReplay": True,
+                    "noRawMatureBuildMaterial": True,
+                }
+
+            revision_before = research_runtime.get_memory_revision(con)
+            fingerprint_before = _query_visible_acceptance_fingerprint(con)
+
+            pattern_result = self.propose_build_patterns(
+                pattern_payload,
+                _con=con,
+                _commit=False,
+                _bump_revision=False,
+            )
+            if _fault_after_step == "pattern":
+                raise RuntimeError("injected_research_acceptance_fault:pattern")
+            deep_result = self.propose_deep_research_records(
+                deep_payload,
+                _con=con,
+                _commit=False,
+                _bump_revision=False,
+            )
+            if _fault_after_step == "deep_record":
+                raise RuntimeError("injected_research_acceptance_fault:deep_record")
+            edge_result = self.propose_semantic_edges(
+                edge_payload,
+                _con=con,
+                _commit=False,
+                _bump_revision=False,
+            )
+            if _fault_after_step == "semantic_edge":
+                raise RuntimeError("injected_research_acceptance_fault:semantic_edge")
+            if any(
+                result.get("status") != "accepted"
+                for result in (pattern_result, deep_result, edge_result)
+            ):
+                con.rollback()
+                return {
+                    "status": "rejected",
+                    "patternWrite": pattern_result,
+                    "deepRecordWrite": deep_result,
+                    "semanticEdgeWrite": edge_result,
+                    "noRawMatureBuildMaterial": True,
+                }
+            if (
+                supplement
+                and (
+                    int(deep_result.get("createdRecordCount") or 0)
+                    + int(deep_result.get("updatedRecordCount") or 0)
+                )
+                == 0
+            ):
+                con.rollback()
+                return research_models.rejection(
+                    "supplement_no_gain",
+                    caveats=["Supplement acceptance must create or correct at least one record."],
+                )
+
+            now = _now()
+            fingerprint_after = _query_visible_acceptance_fingerprint(con)
+            semantic_mutation = fingerprint_before != fingerprint_after
+            revision = (
+                research_runtime.bump_memory_revision(con)
+                if semantic_mutation
+                else revision_before
+            )
+            acceptance_summary = {
+                "patternWrite": pattern_result,
+                "deepRecordWrite": deep_result,
+                "semanticEdgeWrite": edge_result,
+                "acceptedPatternCount": len(pattern_result.get("patternIds") or []),
+                "acceptedDeepRecordCount": len(deep_result.get("recordIds") or []),
+                "acceptedSemanticEdgeCount": len(edge_result.get("edgeIds") or []),
+                "createdDeepRecordCount": int(deep_result.get("createdRecordCount") or 0),
+                "updatedDeepRecordCount": int(deep_result.get("updatedRecordCount") or 0),
+                "unchangedDeepRecordCount": int(
+                    deep_result.get("unchangedRecordCount") or 0
+                ),
+                "addedDeepRecordEvidenceCount": int(deep_result.get("evidenceAddedCount") or 0),
+                "semanticMutation": semantic_mutation,
+                "memoryRevisionBefore": revision_before,
+                "memoryRevisionAfter": revision,
+                "memoryRevision": revision,
+            }
+            con.execute(
+                """
+                INSERT INTO research_record_write_receipts(
+                    receipt_ref, run_ref, sample_id, accept_attempt_key, packet_safe_hash,
+                    canonical_review_hash, contract_version, expected_origin_state,
+                    acceptance_summary, record_writes_json, pattern_ids, semantic_edge_ids,
+                    provenance, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transactional', ?)
+                """,
+                (
+                    receipt_ref,
+                    run_ref,
+                    sample_id,
+                    accept_attempt_key,
+                    packet_safe_hash,
+                    canonical_review_hash,
+                    contract_version,
+                    expected_origin_state,
+                    _json(acceptance_summary),
+                    _json(deep_result.get("recordWrites") or []),
+                    _json(pattern_result.get("patternIds") or []),
+                    _json(edge_result.get("edgeIds") or []),
+                    now,
+                ),
+            )
+            if _fault_after_step == "receipt":
+                raise RuntimeError("injected_research_acceptance_fault:receipt")
+            con.commit()
+            if _fault_after_step == "commit":
+                raise RuntimeError("injected_research_acceptance_fault:commit")
+            return {
+                **acceptance_summary,
+                "status": "accepted",
+                "writeReceiptRef": receipt_ref,
+                "idempotentReplay": False,
+                "noRawMatureBuildMaterial": True,
+            }
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+    def get_research_write_receipt(self, receipt_ref: str) -> dict[str, Any] | None:
+        if not re.fullmatch(r"rwr-[0-9a-f]{20}", str(receipt_ref or "")):
+            return None
+        con = mature_learning.connect(self.db_path)
+        try:
+            row = con.execute(
+                "SELECT * FROM research_record_write_receipts WHERE receipt_ref = ?",
+                (receipt_ref,),
+            ).fetchone()
+            if row is None:
+                return None
+            writes = _loads(row["record_writes_json"], [])
+            current: list[dict[str, Any]] = []
+            for item in writes:
+                if not isinstance(item, dict):
+                    continue
+                original_id = str(item.get("recordId") or "")
+                head = _follow_supersession_head(con, original_id) if original_id else None
+                source_refs = list(item.get("writtenSourceCaseRefs") or [])
+                if not source_refs:
+                    source_refs = list((item.get("canonicalRecord") or {}).get("sourceCaseRefs") or [])
+                if not source_refs:
+                    source_refs = [""]
+                knowledge_scope = str(
+                    item.get("knowledgeScope")
+                    or (head["knowledge_scope"] if head is not None else "")
+                )
+                for source_ref in source_refs:
+                    eligible, reasons = self._record_lane_eligibility(
+                        con,
+                        head=head,
+                        knowledge_scope=knowledge_scope,
+                        source_case_ref=str(source_ref),
+                    )
+                    current.append(
+                        {
+                            "writtenRecordId": original_id,
+                            "currentRecordId": (
+                                str(head["record_id"]) if head is not None else None
+                            ),
+                            "knowledgeScope": knowledge_scope or None,
+                            "sourceCaseRef": str(source_ref) or None,
+                            "currentStatus": str(head["status"]) if head is not None else None,
+                            "currentEligibility": eligible,
+                            "currentExclusionReasons": reasons,
+                        }
+                    )
+            receipt = {
+                "status": "ok",
+                "writeReceiptRef": row["receipt_ref"],
+                "runRef": row["run_ref"],
+                "sampleId": row["sample_id"],
+                "acceptAttemptKey": row["accept_attempt_key"],
+                "provenance": row["provenance"],
+                "acceptanceSummary": _loads(row["acceptance_summary"], {}),
+                "writtenMapping": writes,
+                "currentProjection": current,
+                "createdAt": row["created_at"],
+                "createAuthorizing": False,
+                "noRawQuery": True,
+                "noRawMatureBuildMaterial": True,
+            }
+            return None if _copy_safety_error(receipt) is not None else receipt
+        finally:
+            con.close()
+
+    @staticmethod
+    def _record_lane_eligibility(
+        con: sqlite3.Connection,
+        *,
+        head: sqlite3.Row | None,
+        knowledge_scope: str,
+        source_case_ref: str,
+    ) -> tuple[bool, list[str]]:
+        reasons: list[str] = []
+        if head is None:
+            return False, ["record_missing"]
+        if str(head["knowledge_scope"]) != knowledge_scope:
+            reasons.append("knowledge_scope")
+        if head["visibility"] != "creator_visible" or head["split"] != "train_context":
+            reasons.append("not_creator_visible")
+        if head["copy_safety_state"] != "passed":
+            reasons.append("copy_safety")
+        if head["status"] != "valid" or head["superseded_by_id"] is not None:
+            reasons.append("status")
+        if int(head["record_schema_version"] or 1) < 2:
+            reasons.append("legacy_schema")
+        if (
+            str((_loads(head["typed_payload"], {}) or {}).get("availability") or "standard")
+            != "standard"
+        ):
+            reasons.append("availability")
+        if (
+            head["source_state_scope"]
+            not in research_contracts.CREATE_AUTHORIZING_SOURCE_STATE_SCOPES
+        ):
+            reasons.append("source_state")
+        family = con.execute(
+            "SELECT 1 FROM research_build_families "
+            "WHERE knowledge_scope = ? AND build_family_key = ?",
+            (knowledge_scope, str(head["build_family_key"] or "")),
+        ).fetchone()
+        if family is None:
+            reasons.append("scoped_family")
+        evidence = con.execute(
+            "SELECT accepted_projection_hash, source_state_scope "
+            "FROM deep_research_record_evidence "
+            "WHERE knowledge_scope = ? AND knowledge_key = ? AND source_case_ref = ?",
+            (knowledge_scope, str(head["knowledge_key"] or ""), source_case_ref),
+        ).fetchone()
+        if evidence is None:
+            reasons.append("record_evidence")
+        else:
+            if not head["projection_hash"] or (
+                evidence["accepted_projection_hash"] != head["projection_hash"]
+            ):
+                reasons.append("projection_provenance")
+            if (
+                evidence["source_state_scope"]
+                not in research_contracts.CREATE_AUTHORIZING_SOURCE_STATE_SCOPES
+            ):
+                reasons.append("evidence_state")
+        provenance = con.execute(
+            "SELECT 1 FROM research_source_provenance "
+            "WHERE source_case_ref = ? AND knowledge_scope = ?",
+            (source_case_ref, knowledge_scope),
+        ).fetchone()
+        if provenance is None:
+            reasons.append("source_provenance")
+        return not reasons, reasons
 
     def _persist_deep_record(
         self,
@@ -1562,10 +2852,10 @@ class ResearchMemoryService:
             existing = con.execute(
                 """
                 SELECT * FROM deep_research_records
-                WHERE knowledge_key = ? AND superseded_by_id IS NULL
+                WHERE knowledge_scope = ? AND knowledge_key = ? AND superseded_by_id IS NULL
                 LIMIT 1
                 """,
-                (knowledge_key,),
+                (record.knowledge_scope, knowledge_key),
             ).fetchone()
         adopted_by_id = False
         if existing is None and knowledge_key:
@@ -1573,7 +2863,7 @@ class ResearchMemoryService:
             # hash(knowledge_key) is the same knowledge unit even when its stored key
             # drifted (historical backfill decoupling). Adopt it instead of INSERTing into
             # a taken primary key; the update path below reconciles the key and evidence.
-            anchor_id = "drr-" + _stable_hash({"knowledge_key": knowledge_key})[:16]
+            anchor_id = research_runtime.canonical_record_id(record.knowledge_scope, knowledge_key)
             occupant = con.execute(
                 "SELECT * FROM deep_research_records WHERE record_id = ?",
                 (anchor_id,),
@@ -1636,6 +2926,26 @@ class ResearchMemoryService:
                     (existing_id,),
                 ).fetchone()
 
+        before_projection_hash = (
+            research_runtime.projection_hash(existing) if existing is not None else None
+        )
+        incoming_projection_hash = research_runtime.projection_hash(
+            {
+                **record.model_dump(mode="json"),
+                "source_state_scope": record.source_state_scope,
+            }
+        )
+        if existing is not None:
+            stored_sources = set(_loads(existing["source_case_refs"], []))
+            incoming_sources = set(record.source_case_refs)
+            if incoming_sources - stored_sources:
+                stored_projection_hash = research_runtime.projection_hash(existing)
+                if stored_projection_hash != incoming_projection_hash:
+                    raise ValueError(
+                        "duplicate_knowledge_identity_conflict: a different source produced "
+                        "non-equivalent Create-visible content for the same scoped identity"
+                    )
+
         cross_family_advisories = self._cross_family_duplicate_advisories(con, record, family)
 
         evidence_added_count = 0
@@ -1644,13 +2954,15 @@ class ResearchMemoryService:
                 con,
                 knowledge_key=knowledge_key,
                 record=record,
+                accepted_projection_hash=incoming_projection_hash,
                 now=now,
             )
         evidence_count = (
             int(
                 con.execute(
-                    "SELECT count(*) FROM deep_research_record_evidence WHERE knowledge_key = ?",
-                    (knowledge_key,),
+                    "SELECT count(*) FROM deep_research_record_evidence "
+                    "WHERE knowledge_scope = ? AND knowledge_key = ?",
+                    (record.knowledge_scope, knowledge_key),
                 ).fetchone()[0]
             )
             if knowledge_key
@@ -1659,7 +2971,7 @@ class ResearchMemoryService:
 
         if existing is None:
             record_id = (
-                "drr-" + _stable_hash({"knowledge_key": knowledge_key})[:16]
+                research_runtime.canonical_record_id(record.knowledge_scope, knowledge_key)
                 if knowledge_key
                 else _deep_record_id(record)
             )
@@ -1682,6 +2994,8 @@ class ResearchMemoryService:
                 "knowledge_key": knowledge_key,
                 "previous_build_family_key": None,
                 "created": True,
+                "semantic_changed": True,
+                "before_projection_hash": before_projection_hash,
                 "evidence_added_count": evidence_added_count,
                 "crossFamilyDuplicateAdvisories": cross_family_advisories,
             }
@@ -1746,13 +3060,15 @@ class ResearchMemoryService:
                 # above; retain no orphan evidence under the superseded identity once no record
                 # references it.
                 still_referenced = con.execute(
-                    "SELECT 1 FROM deep_research_records WHERE knowledge_key = ? LIMIT 1",
-                    (old_knowledge_key,),
+                    "SELECT 1 FROM deep_research_records WHERE knowledge_scope = ? "
+                    "AND knowledge_key = ? LIMIT 1",
+                    (record.knowledge_scope, old_knowledge_key),
                 ).fetchone()
                 if still_referenced is None:
                     con.execute(
-                        "DELETE FROM deep_research_record_evidence WHERE knowledge_key = ?",
-                        (old_knowledge_key,),
+                        "DELETE FROM deep_research_record_evidence WHERE knowledge_scope = ? "
+                        "AND knowledge_key = ?",
+                        (record.knowledge_scope, old_knowledge_key),
                     )
         else:
             con.execute(
@@ -1783,6 +3099,12 @@ class ResearchMemoryService:
             "knowledge_key": knowledge_key,
             "previous_build_family_key": previous_build_family_key,
             "created": False,
+            "semantic_changed": bool(
+                identity_changed
+                or adopted_by_id
+                or (use_incoming and before_projection_hash != incoming_projection_hash)
+            ),
+            "before_projection_hash": before_projection_hash,
             "evidence_added_count": evidence_added_count,
             "crossFamilyDuplicateAdvisories": cross_family_advisories,
         }
@@ -1792,7 +3114,7 @@ class ResearchMemoryService:
         con: sqlite3.Connection,
         record: research_models.DeepResearchRecordProposal,
         family: research_identity.BuildFamilyIdentity | None,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         """Advisory-only cross-Family duplicate hint (never blocks, never rewrites).
 
         Flags only when another Build Family already holds a live record with the SAME
@@ -1809,14 +3131,16 @@ class ResearchMemoryService:
             return []
         rows = con.execute(
             """
-            SELECT record_id, build_family_key, title, component_keys
+            SELECT record_id, build_family_key, record_kind, title, summary, component_keys,
+                   conditions, failure_conditions, typed_payload, source_state_scope
             FROM deep_research_records
             WHERE record_kind = ? AND superseded_by_id IS NULL AND status = 'valid'
+              AND knowledge_scope = ?
               AND build_family_key IS NOT NULL AND build_family_key != ?
             """,
-            (str(record.record_kind), family.key),
+            (str(record.record_kind), record.knowledge_scope, family.key),
         ).fetchall()
-        advisories: list[str] = []
+        advisories: list[dict[str, Any]] = []
         for row in rows:
             stored_keys = sorted(
                 {
@@ -1826,10 +3150,46 @@ class ResearchMemoryService:
                 }
             )
             if stored_keys == current_keys:
+                candidate_fields = {
+                    "title": record.title,
+                    "summary": record.summary,
+                    "componentKeys": sorted(set(record.component_keys)),
+                    "conditions": list(record.conditions),
+                    "failureConditions": list(record.failure_conditions),
+                    "typedPayload": record.typed_payload,
+                    "sourceStateScope": record.source_state_scope,
+                }
+                existing_fields = {
+                    "title": str(row["title"]),
+                    "summary": str(row["summary"]),
+                    "componentKeys": _loads(row["component_keys"], []),
+                    "conditions": _loads(row["conditions"], []),
+                    "failureConditions": _loads(row["failure_conditions"], []),
+                    "typedPayload": _loads(row["typed_payload"], {}),
+                    "sourceStateScope": str(row["source_state_scope"]),
+                }
+                field_differences = {
+                    field: {
+                        "existingHash": _stable_hash(existing_fields[field]),
+                        "candidateHash": _stable_hash(candidate_fields[field]),
+                    }
+                    for field in candidate_fields
+                    if existing_fields[field] != candidate_fields[field]
+                }
                 advisories.append(
-                    f"同 recordKind + 完全相同 skill 组件集已存在于其他 Build Family "
-                    f"({row['build_family_key']} / {row['title']})。若属同一知识的跨 Family 变体，"
-                    f"这是合法可迁移记录（由 transferablePatterns 承载）；若为重复归档请复核。"
+                    {
+                        "advisoryType": "cross_family_duplicate",
+                        "advisoryOnly": True,
+                        "resolutionRequired": False,
+                        "existingRecordId": str(row["record_id"]),
+                        "existingBuildFamilyKey": str(row["build_family_key"]),
+                        "candidateBuildFamilyKey": family.key,
+                        "matchReason": {
+                            "recordKind": str(row["record_kind"]),
+                            "skillComponentKeys": current_keys,
+                        },
+                        "fieldDifferences": field_differences,
+                    }
                 )
         return advisories
 
@@ -1883,6 +3243,8 @@ class ResearchMemoryService:
                     "pob_version_or_commit": record.pob_version_or_commit,
                 }
             ),
+            "projection_hash": research_runtime.projection_hash(record.model_dump(mode="json")),
+            "source_state_scope": record.source_state_scope,
             "created_at": now,
             "last_seen_at": now,
             "last_validated_at": now,
@@ -1894,6 +3256,7 @@ class ResearchMemoryService:
         con: sqlite3.Connection,
         *,
         family: research_identity.BuildFamilyIdentity,
+        knowledge_scope: str,
     ) -> tuple[research_identity.BuildFamilyIdentity, str, str | None]:
         """Decide where a newly inferred identity belongs among existing families.
 
@@ -1916,10 +3279,10 @@ class ResearchMemoryService:
             SELECT build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
                    secondary_skill_keys, evidence_count
             FROM research_build_families
-            WHERE ascendancy_key = ?
+            WHERE knowledge_scope = ? AND ascendancy_key = ?
             ORDER BY evidence_count DESC, build_family_key
             """,
-            (family.ascendancy_key,),
+            (knowledge_scope, family.ascendancy_key),
         ).fetchall()
         for row in rows:
             existing_keys = _loads(row["primary_skill_keys"], None)
@@ -1975,34 +3338,7 @@ class ResearchMemoryService:
         Variants whose granting gem has no display name in the index stay on a distinct
         ``key:`` token until a model-confirmed ``skill_equivalence`` row unions them.
         """
-        index = idx or skill_equivalence.SkillEquivalenceIndex.shared()
-        canon = index.canonical_set(skill_keys)
-        if not canon:
-            return canon
-        rows = con.execute(
-            "SELECT key_a, key_b FROM skill_equivalence WHERE status = 'valid'"
-        ).fetchall()
-        if not rows:
-            return canon
-        parent: dict[str, str] = {}
-
-        def find(token: str) -> str:
-            while parent.get(token, token) != token:
-                token = parent[token]
-            return token
-
-        def union(a: str, b: str) -> None:
-            root_a, root_b = find(a), find(b)
-            if root_a != root_b:
-                parent[max(root_a, root_b)] = min(root_a, root_b)
-
-        for key_a, key_b in rows:
-            token_a = index.canonical_key(str(key_a))
-            token_b = index.canonical_key(str(key_b))
-            if token_a.startswith("key:") or token_b.startswith("key:"):
-                continue
-            union(token_a, token_b)
-        return frozenset({find(token) for token in canon})
+        return skill_equivalence.canonical_identity_set(con, skill_keys, index=idx)
 
     def _merge_family_records(
         self,
@@ -2010,6 +3346,7 @@ class ResearchMemoryService:
         *,
         src_family_key: str,
         dst_identity: research_identity.BuildFamilyIdentity,
+        knowledge_scope: str,
         now: str,
         merge_log: list[dict[str, Any]] | None = None,
         dst_key: str | None = None,
@@ -2036,15 +3373,16 @@ class ResearchMemoryService:
                 str(row[0])
                 for row in con.execute(
                     "SELECT DISTINCT source_case_ref FROM research_build_family_evidence "
-                    "WHERE build_family_key = ?",
-                    (src_key,),
+                    "WHERE knowledge_scope = ? AND build_family_key = ?",
+                    (knowledge_scope, src_key),
                 ).fetchall()
             }
         )
         dst_exists = (
             con.execute(
-                "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                (dst_key,),
+                "SELECT 1 FROM research_build_families "
+                "WHERE knowledge_scope = ? AND build_family_key = ?",
+                (knowledge_scope, dst_key),
             ).fetchone()
             is not None
         )
@@ -2052,11 +3390,12 @@ class ResearchMemoryService:
             con.execute(
                 """
                 INSERT INTO research_build_families(
-                    build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                    knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
                     secondary_skill_keys, evidence_count, created_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
+                    knowledge_scope,
                     dst_key,
                     dst_identity.ascendancy_key,
                     dst_identity.primary_skill_key,
@@ -2070,18 +3409,19 @@ class ResearchMemoryService:
             con.execute(
                 """
                 INSERT INTO research_build_family_evidence(
-                    build_family_key, source_case_ref, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                    knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(knowledge_scope, build_family_key, source_case_ref) DO UPDATE SET
                     last_seen_at = excluded.last_seen_at
                 """,
-                (dst_key, source_ref, now, now),
+                (knowledge_scope, dst_key, source_ref, now, now),
             )
         moved = 0
         deprecated = 0
         rows = con.execute(
-            "SELECT * FROM deep_research_records WHERE build_family_key = ?",
-            (src_key,),
+            "SELECT * FROM deep_research_records "
+            "WHERE knowledge_scope = ? AND build_family_key = ?",
+            (knowledge_scope, src_key),
         ).fetchall()
         for row in rows:
             record_id = str(row["record_id"])
@@ -2090,11 +3430,11 @@ class ResearchMemoryService:
                 occupant = con.execute(
                     """
                     SELECT record_id, status FROM deep_research_records
-                    WHERE knowledge_key = ? AND build_family_key = ?
+                    WHERE knowledge_scope = ? AND knowledge_key = ? AND build_family_key = ?
                       AND status IN ('valid', 'needs_revalidation')
                     LIMIT 1
                     """,
-                    (knowledge_key, dst_key),
+                    (knowledge_scope, knowledge_key, dst_key),
                 ).fetchone()
                 if occupant is not None and str(occupant["record_id"]) != record_id:
                     occupant_row = con.execute(
@@ -2139,20 +3479,21 @@ class ResearchMemoryService:
             UPDATE research_build_families
             SET evidence_count = (
                 SELECT count(*) FROM research_build_family_evidence
-                WHERE build_family_key = ?
+                WHERE knowledge_scope = ? AND build_family_key = ?
             ), last_seen_at = ?
-            WHERE build_family_key = ?
+            WHERE knowledge_scope = ? AND build_family_key = ?
             """,
-            (dst_key, now, dst_key),
+            (knowledge_scope, dst_key, now, knowledge_scope, dst_key),
         )
         con.execute(
-            "DELETE FROM research_build_families WHERE build_family_key = ?",
-            (src_key,),
+            "DELETE FROM research_build_families "
+            "WHERE knowledge_scope = ? AND build_family_key = ?",
+            (knowledge_scope, src_key),
         )
         pattern_rows = con.execute(
             "SELECT pattern_id, origin_family_keys FROM research_build_patterns "
-            "WHERE origin_family_keys LIKE ?",
-            (f"%{src_key}%",),
+            "WHERE knowledge_scope = ? AND origin_family_keys LIKE ?",
+            (knowledge_scope, f"%{src_key}%"),
         ).fetchall()
         for pattern_row in pattern_rows:
             origin = _loads(pattern_row["origin_family_keys"], [])
@@ -2173,7 +3514,11 @@ class ResearchMemoryService:
                     "at": now,
                 }
             )
-        self._reconcile_build_family_secondary_skill_keys(con, family_keys={dst_key})
+        self._reconcile_build_family_secondary_skill_keys(
+            con,
+            family_keys={dst_key},
+            knowledge_scope=knowledge_scope,
+        )
         return {"moved": moved, "deprecated": deprecated, "dst_family_key": dst_key}
 
     def _upsert_build_family(
@@ -2181,18 +3526,21 @@ class ResearchMemoryService:
         con: sqlite3.Connection,
         *,
         family: research_identity.BuildFamilyIdentity,
+        knowledge_scope: str,
         source_case_refs: list[str],
         now: str,
     ) -> int:
         con.execute(
             """
             INSERT INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
+                knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys,
                 secondary_skill_keys, evidence_count, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(build_family_key) DO UPDATE SET last_seen_at = excluded.last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(knowledge_scope, build_family_key) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at
             """,
             (
+                knowledge_scope,
                 family.key,
                 family.ascendancy_key,
                 family.primary_skill_key,
@@ -2207,39 +3555,60 @@ class ResearchMemoryService:
             exists = con.execute(
                 """
                 SELECT 1 FROM research_build_family_evidence
-                WHERE build_family_key = ? AND source_case_ref = ?
+                WHERE knowledge_scope = ? AND build_family_key = ? AND source_case_ref = ?
                 """,
-                (family.key, source_ref),
+                (knowledge_scope, family.key, source_ref),
             ).fetchone()
             added += int(exists is None)
             con.execute(
                 """
                 INSERT INTO research_build_family_evidence(
-                    build_family_key, source_case_ref, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                    knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(knowledge_scope, build_family_key, source_case_ref) DO UPDATE SET
                     last_seen_at = excluded.last_seen_at
                 """,
-                (family.key, source_ref, now, now),
+                (knowledge_scope, family.key, source_ref, now, now),
             )
         con.execute(
             """
             UPDATE research_build_families
             SET evidence_count = (
                 SELECT count(*) FROM research_build_family_evidence
-                WHERE build_family_key = ?
+                WHERE knowledge_scope = ? AND build_family_key = ?
             ), last_seen_at = ?
-            WHERE build_family_key = ?
+            WHERE knowledge_scope = ? AND build_family_key = ?
             """,
-            (family.key, now, family.key),
+            (knowledge_scope, family.key, now, knowledge_scope, family.key),
         )
         return added
+
+    @staticmethod
+    def _upsert_source_provenance(
+        con: sqlite3.Connection,
+        *,
+        source_case_refs: list[str],
+        knowledge_scope: str,
+        now: str,
+    ) -> None:
+        for source_ref in sorted(set(source_case_refs)):
+            con.execute(
+                """
+                INSERT INTO research_source_provenance(
+                    source_case_ref, knowledge_scope, provenance, created_at, last_seen_at
+                ) VALUES (?, ?, 'accepted_review', ?, ?)
+                ON CONFLICT(knowledge_scope, source_case_ref)
+                DO UPDATE SET last_seen_at = excluded.last_seen_at
+                """,
+                (source_ref, knowledge_scope, now, now),
+            )
 
     @staticmethod
     def _reconcile_build_family_secondary_skill_keys(
         con: sqlite3.Connection,
         *,
         family_keys: Iterable[str] | None = None,
+        knowledge_scope: str | None = None,
     ) -> int:
         """Rebuild mutable Family secondary metadata from current durable records."""
 
@@ -2247,26 +3616,31 @@ class ResearchMemoryService:
             {str(value).strip() for value in family_keys or [] if str(value).strip()}
         )
         params: tuple[Any, ...] = ()
-        where = ""
+        clauses: list[str] = []
         if family_keys is not None:
             if not normalized_keys:
                 return 0
             placeholders = ", ".join("?" for _ in normalized_keys)
-            where = f"WHERE build_family_key IN ({placeholders})"
+            clauses.append(f"build_family_key IN ({placeholders})")
             params = tuple(normalized_keys)
+        if knowledge_scope is not None:
+            clauses.append("knowledge_scope = ?")
+            params = (*params, knowledge_scope)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         families = con.execute(
             f"""
-            SELECT build_family_key, primary_skill_key, primary_skill_keys,
+            SELECT knowledge_scope, build_family_key, primary_skill_key, primary_skill_keys,
                    secondary_skill_keys
             FROM research_build_families
             {where}
-            ORDER BY build_family_key
+            ORDER BY knowledge_scope, build_family_key
             """,
             params,
         ).fetchall()
         updated = 0
         for family in families:
             family_key = str(family["build_family_key"])
+            family_scope = str(family["knowledge_scope"])
             primary_keys = _loads(family["primary_skill_keys"], None)
             if not primary_keys:
                 primary_key = str(family["primary_skill_key"] or "").strip()
@@ -2275,12 +3649,12 @@ class ResearchMemoryService:
                 """
                 SELECT record_kind, component_mentions, typed_payload
                 FROM deep_research_records
-                WHERE build_family_key = ?
+                WHERE knowledge_scope = ? AND build_family_key = ?
                   AND status IN ('valid', 'needs_revalidation')
                   AND superseded_by_id IS NULL
                 ORDER BY record_id
                 """,
-                (family_key,),
+                (family_scope, family_key),
             ).fetchall()
             secondary = set(research_identity.automatic_family_skill_keys(records))
             secondary.update(
@@ -2297,9 +3671,9 @@ class ResearchMemoryService:
                 """
                 UPDATE research_build_families
                 SET secondary_skill_keys = ?
-                WHERE build_family_key = ?
+                WHERE knowledge_scope = ? AND build_family_key = ?
                 """,
-                (_json(normalized_secondary), family_key),
+                (_json(normalized_secondary), family_scope, family_key),
             )
             updated += 1
         return updated
@@ -2310,6 +3684,7 @@ class ResearchMemoryService:
         *,
         family_keys: Iterable[str],
         relocation_targets: dict[str, str],
+        knowledge_scope: str,
     ) -> int:
         removed = 0
         for family_key in sorted(
@@ -2318,12 +3693,12 @@ class ResearchMemoryService:
             live = con.execute(
                 """
                 SELECT 1 FROM deep_research_records
-                WHERE build_family_key = ?
+                WHERE knowledge_scope = ? AND build_family_key = ?
                   AND status IN ('valid', 'needs_revalidation')
                   AND superseded_by_id IS NULL
                 LIMIT 1
                 """,
-                (family_key,),
+                (knowledge_scope, family_key),
             ).fetchone()
             if live is not None:
                 continue
@@ -2331,25 +3706,26 @@ class ResearchMemoryService:
             target_key = str(relocation_targets.get(family_key) or "").strip()
             if target_key and target_key != family_key:
                 target_exists = con.execute(
-                    "SELECT 1 FROM research_build_families WHERE build_family_key = ?",
-                    (target_key,),
+                    "SELECT 1 FROM research_build_families "
+                    "WHERE knowledge_scope = ? AND build_family_key = ?",
+                    (knowledge_scope, target_key),
                 ).fetchone()
                 if target_exists is None:
                     continue
                 con.execute(
                     "UPDATE deep_research_records SET build_family_key = ? "
-                    "WHERE build_family_key = ?",
-                    (target_key, family_key),
+                    "WHERE knowledge_scope = ? AND build_family_key = ?",
+                    (target_key, knowledge_scope, family_key),
                 )
                 con.execute(
                     """
                     INSERT INTO research_build_family_evidence(
-                        build_family_key, source_case_ref, first_seen_at, last_seen_at
+                        knowledge_scope, build_family_key, source_case_ref, first_seen_at, last_seen_at
                     )
-                    SELECT ?, source_case_ref, first_seen_at, last_seen_at
+                    SELECT knowledge_scope, ?, source_case_ref, first_seen_at, last_seen_at
                     FROM research_build_family_evidence
-                    WHERE build_family_key = ?
-                    ON CONFLICT(build_family_key, source_case_ref) DO UPDATE SET
+                    WHERE knowledge_scope = ? AND build_family_key = ?
+                    ON CONFLICT(knowledge_scope, build_family_key, source_case_ref) DO UPDATE SET
                         first_seen_at = min(
                             research_build_family_evidence.first_seen_at,
                             excluded.first_seen_at
@@ -2359,29 +3735,29 @@ class ResearchMemoryService:
                             excluded.last_seen_at
                         )
                     """,
-                    (target_key, family_key),
+                    (target_key, knowledge_scope, family_key),
                 )
                 con.execute(
                     """
                     UPDATE research_build_families
                     SET evidence_count = (
                         SELECT count(*) FROM research_build_family_evidence
-                        WHERE build_family_key = ?
+                        WHERE knowledge_scope = ? AND build_family_key = ?
                     )
-                    WHERE build_family_key = ?
+                    WHERE knowledge_scope = ? AND build_family_key = ?
                     """,
-                    (target_key, target_key),
+                    (knowledge_scope, target_key, knowledge_scope, target_key),
                 )
                 pattern_rows = con.execute(
                     """
                     SELECT pattern_id, transfer_scope, origin_family_keys
                     FROM research_build_patterns
-                    WHERE EXISTS (
+                    WHERE knowledge_scope = ? AND EXISTS (
                         SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
                         WHERE json_each.value = ?
                     )
                     """,
-                    (family_key,),
+                    (knowledge_scope, family_key),
                 ).fetchall()
                 for pattern_row in pattern_rows:
                     origin_family_keys = sorted(
@@ -2411,29 +3787,32 @@ class ResearchMemoryService:
                     )
             else:
                 remaining_reference = con.execute(
-                    "SELECT 1 FROM deep_research_records WHERE build_family_key = ? LIMIT 1",
-                    (family_key,),
+                    "SELECT 1 FROM deep_research_records "
+                    "WHERE knowledge_scope = ? AND build_family_key = ? LIMIT 1",
+                    (knowledge_scope, family_key),
                 ).fetchone()
                 pattern_reference = con.execute(
                     """
                     SELECT 1 FROM research_build_patterns
-                    WHERE EXISTS (
+                    WHERE knowledge_scope = ? AND EXISTS (
                         SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
                         WHERE json_each.value = ?
                     )
                     LIMIT 1
                     """,
-                    (family_key,),
+                    (knowledge_scope, family_key),
                 ).fetchone()
                 if remaining_reference is not None or pattern_reference is not None:
                     continue
             con.execute(
-                "DELETE FROM research_build_family_evidence WHERE build_family_key = ?",
-                (family_key,),
+                "DELETE FROM research_build_family_evidence "
+                "WHERE knowledge_scope = ? AND build_family_key = ?",
+                (knowledge_scope, family_key),
             )
             removed += con.execute(
-                "DELETE FROM research_build_families WHERE build_family_key = ?",
-                (family_key,),
+                "DELETE FROM research_build_families "
+                "WHERE knowledge_scope = ? AND build_family_key = ?",
+                (knowledge_scope, family_key),
             ).rowcount
         return removed
 
@@ -2443,6 +3822,7 @@ class ResearchMemoryService:
         *,
         knowledge_key: str,
         record: research_models.DeepResearchRecordProposal,
+        accepted_projection_hash: str | None = None,
         now: str,
     ) -> int:
         added = 0
@@ -2450,9 +3830,9 @@ class ResearchMemoryService:
             existing = con.execute(
                 """
                 SELECT safe_evidence_refs FROM deep_research_record_evidence
-                WHERE knowledge_key = ? AND source_case_ref = ?
+                WHERE knowledge_scope = ? AND knowledge_key = ? AND source_case_ref = ?
                 """,
-                (knowledge_key, source_ref),
+                (record.knowledge_scope, knowledge_key, source_ref),
             ).fetchone()
             added += int(existing is None)
             safe_refs = sorted(
@@ -2462,12 +3842,13 @@ class ResearchMemoryService:
             con.execute(
                 """
                 INSERT INTO deep_research_record_evidence(
-                    knowledge_key, source_case_ref, safe_evidence_refs,
+                    knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
                     observed_component_keys, observed_component_mentions, conditions,
                     failure_conditions, game_patch, passive_tree_version,
-                    pob_version_or_commit, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(knowledge_key, source_case_ref) DO UPDATE SET
+                    pob_version_or_commit, accepted_projection_hash, source_state_scope,
+                    first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref) DO UPDATE SET
                     safe_evidence_refs = excluded.safe_evidence_refs,
                     observed_component_keys = excluded.observed_component_keys,
                     observed_component_mentions = excluded.observed_component_mentions,
@@ -2476,9 +3857,12 @@ class ResearchMemoryService:
                     game_patch = excluded.game_patch,
                     passive_tree_version = excluded.passive_tree_version,
                     pob_version_or_commit = excluded.pob_version_or_commit,
+                    accepted_projection_hash = excluded.accepted_projection_hash,
+                    source_state_scope = excluded.source_state_scope,
                     last_seen_at = excluded.last_seen_at
                 """,
                 (
+                    record.knowledge_scope,
                     knowledge_key,
                     source_ref,
                     _json(safe_refs),
@@ -2491,6 +3875,8 @@ class ResearchMemoryService:
                     record.game_patch,
                     record.passive_tree_version,
                     record.pob_version_or_commit,
+                    accepted_projection_hash,
+                    record.source_state_scope,
                     now,
                     now,
                 ),
@@ -2506,9 +3892,9 @@ class ResearchMemoryService:
             """
             SELECT record_id, title, source_case_refs
             FROM deep_research_records
-            WHERE research_group_id = ? AND record_kind = ?
+            WHERE research_group_id = ? AND record_kind = ? AND knowledge_scope = ?
             """,
-            (record.research_group_id, record.record_kind),
+            (record.research_group_id, record.record_kind, record.knowledge_scope),
         ).fetchall()
         wanted_title = _normalize_text(record.title)
         wanted_sources = sorted(set(record.source_case_refs))
@@ -2591,6 +3977,8 @@ class ResearchMemoryService:
                     now=now,
                 )
                 fragment_ids.append(fragment_id)
+            if fragment_ids:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         finally:
             con.close()
@@ -2659,6 +4047,7 @@ class ResearchMemoryService:
                 confidence=confidence,
                 now=now,
             )
+            research_runtime.bump_memory_revision(con)
             con.commit()
             count = con.execute(
                 "SELECT evidence_count FROM research_fragments WHERE fragment_id = ?",
@@ -2674,7 +4063,14 @@ class ResearchMemoryService:
             "noRawMatureBuildMaterial": True,
         }
 
-    def propose_semantic_edges(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def propose_semantic_edges(
+        self,
+        payload: dict[str, Any],
+        *,
+        _con: sqlite3.Connection | None = None,
+        _commit: bool = True,
+        _bump_revision: bool = True,
+    ) -> dict[str, Any]:
         validation = research_models.validate_researcher_output(payload)
         if validation["status"] == "error":
             self._record_rejection(payload, validation)
@@ -2685,7 +4081,8 @@ class ResearchMemoryService:
             return copy_error
 
         output = research_models.ResearcherOutput.model_validate(payload)
-        con = mature_learning.connect(self.db_path)
+        owns_connection = _con is None
+        con = _con or mature_learning.connect(self.db_path)
         try:
             now = _now()
             edge_ids: list[str] = []
@@ -2693,17 +4090,20 @@ class ResearchMemoryService:
                 resolution_error = self._endpoint_resolution_error(edge)
                 if resolution_error is not None:
                     self._record_rejection(payload, resolution_error, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return resolution_error
                 endpoint_error = self._endpoint_error(edge.source_key, edge.target_key)
                 if endpoint_error is not None:
                     self._record_rejection(payload, endpoint_error, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return endpoint_error
                 conflict = self._semantic_conflict(con, edge)
                 if conflict is not None:
                     self._record_rejection(payload, conflict, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return conflict
                 edge_id, source_key, target_key = _edge_identity(edge)
                 planner_visible = _planner_visible(edge.status, edge.copy_safety_state)
@@ -2771,9 +4171,13 @@ class ResearchMemoryService:
                     ),
                 )
                 edge_ids.append(edge_id)
-            con.commit()
+            if _bump_revision and edge_ids:
+                research_runtime.bump_memory_revision(con)
+            if _commit:
+                con.commit()
         finally:
-            con.close()
+            if owns_connection:
+                con.close()
         return {
             "status": "accepted",
             "edgeIds": edge_ids,
@@ -2781,7 +4185,14 @@ class ResearchMemoryService:
             "noRawMatureBuildMaterial": True,
         }
 
-    def propose_build_patterns(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def propose_build_patterns(
+        self,
+        payload: dict[str, Any],
+        *,
+        _con: sqlite3.Connection | None = None,
+        _commit: bool = True,
+        _bump_revision: bool = True,
+    ) -> dict[str, Any]:
         validation = research_models.validate_researcher_output(payload)
         if validation["status"] == "error":
             self._record_rejection(payload, validation)
@@ -2796,7 +4207,8 @@ class ResearchMemoryService:
         if observation_link_error is not None:
             self._record_rejection(payload, observation_link_error)
             return observation_link_error
-        con = mature_learning.connect(self.db_path)
+        owns_connection = _con is None
+        con = _con or mature_learning.connect(self.db_path)
         try:
             now = _now()
             observation_ids: list[str] = []
@@ -2807,14 +4219,16 @@ class ResearchMemoryService:
                 resolution_error = self._observation_resolution_error(observation)
                 if resolution_error is not None:
                     self._record_rejection(payload, resolution_error, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return resolution_error
                 endpoint_error = self._component_endpoint_error(
                     [component.component_key for component in observation.components]
                 )
                 if endpoint_error is not None:
                     self._record_rejection(payload, endpoint_error, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return endpoint_error
                 observation_id = _observation_id(observation)
                 con.execute(
@@ -2878,7 +4292,8 @@ class ResearchMemoryService:
                 endpoint_error = self._component_endpoint_error(pattern.component_keys)
                 if endpoint_error is not None:
                     self._record_rejection(payload, endpoint_error, con=con)
-                    con.commit()
+                    if _commit:
+                        con.commit()
                     return endpoint_error
                 pattern, pattern_id, transfer_key, promoted = _prepare_pattern_for_persistence(
                     con, pattern
@@ -2992,9 +4407,13 @@ class ResearchMemoryService:
                     transfer_candidate_ids.append(pattern_id)
                 if promoted:
                     promoted_pattern_ids.append(pattern_id)
-            con.commit()
+            if _bump_revision and (observation_ids or pattern_ids):
+                research_runtime.bump_memory_revision(con)
+            if _commit:
+                con.commit()
         finally:
-            con.close()
+            if owns_connection:
+                con.close()
         return {
             "status": "accepted",
             "observationIds": observation_ids,
@@ -3124,6 +4543,8 @@ class ResearchMemoryService:
                     ),
                 )
                 patterns_updated += 1
+            if fragments_updated or edges_updated or patterns_updated:
+                research_runtime.bump_memory_revision(con)
             con.commit()
         finally:
             con.close()
@@ -3257,6 +4678,7 @@ class ResearchMemoryService:
                     now,
                 ),
             )
+            research_runtime.bump_memory_revision(con)
             con.commit()
         finally:
             con.close()
@@ -3364,10 +4786,14 @@ class ResearchMemoryService:
         ascendancy_key: str | None,
         primary_skill_keys: list[str],
         build_family_keys: list[str],
+        knowledge_scope: str | None,
         limit: int,
     ) -> list[sqlite3.Row]:
         where = ["1 = 1"]
         params: list[Any] = []
+        if knowledge_scope:
+            where.append("knowledge_scope = ?")
+            params.append(knowledge_scope)
         if ascendancy_key:
             where.append("ascendancy_key = ?")
             params.append(ascendancy_key)
@@ -3388,7 +4814,7 @@ class ResearchMemoryService:
             where.append(f"build_family_key IN ({placeholders})")
             params.extend(build_family_keys)
         sql = "SELECT * FROM research_build_families WHERE " + " AND ".join(where)
-        sql += " ORDER BY evidence_count DESC, build_family_key LIMIT ?"
+        sql += " ORDER BY evidence_count DESC, knowledge_scope, build_family_key LIMIT ?"
         params.append(limit)
         return list(con.execute(sql, params).fetchall())
 
@@ -3401,7 +4827,9 @@ class ResearchMemoryService:
         passive_tree_version: str,
         ascendancy_key: str | None,
         primary_skill_keys: list[str],
+        related_skill_keys: list[str],
         build_family_keys: list[str],
+        knowledge_scope: str | None,
         limit: int,
     ) -> list[sqlite3.Row]:
         """Return only exact-version Families backed by eligible mature Research records."""
@@ -3419,7 +4847,7 @@ class ResearchMemoryService:
             "records.visibility = 'creator_visible'",
             "records.split = 'train_context'",
             "records.copy_safety_state = 'passed'",
-            "records.status = 'valid'",
+            "records.status IN ('valid', 'needs_revalidation')",
             "COALESCE(json_extract(records.typed_payload, '$.availability'), 'standard') "
             "!= 'source_specific_random'",
         ]
@@ -3429,6 +4857,9 @@ class ResearchMemoryService:
             game_patch,
             passive_tree_version,
         ]
+        if knowledge_scope:
+            where.append("families.knowledge_scope = ?")
+            params.append(knowledge_scope)
         if ascendancy_key:
             where.append("families.ascendancy_key = ?")
             params.append(ascendancy_key)
@@ -3443,6 +4874,20 @@ class ResearchMemoryService:
             )
             params.extend(primary_skill_keys)
             params.extend(primary_skill_keys)
+        if related_skill_keys:
+            placeholders = ",".join("?" for _ in related_skill_keys)
+            where.append(
+                "(EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(families.primary_skill_keys) "
+                "THEN families.primary_skill_keys ELSE '[]' END) "
+                f"WHERE json_each.value IN ({placeholders})) "
+                f"OR families.primary_skill_key IN ({placeholders}) "
+                "OR EXISTS (SELECT 1 FROM json_each(families.secondary_skill_keys) "
+                f"WHERE json_each.value IN ({placeholders})))"
+            )
+            params.extend(related_skill_keys)
+            params.extend(related_skill_keys)
+            params.extend(related_skill_keys)
         if build_family_keys:
             placeholders = ",".join("?" for _ in build_family_keys)
             where.append(f"families.build_family_key IN ({placeholders})")
@@ -3454,9 +4899,10 @@ class ResearchMemoryService:
                    COALESCE(SUM(records.evidence_count), 0) AS eligible_evidence_count
             FROM research_build_families AS families
             JOIN deep_research_records AS records
-              ON records.build_family_key = families.build_family_key
+              ON records.knowledge_scope = families.knowledge_scope
+             AND records.build_family_key = families.build_family_key
             WHERE {" AND ".join(where)}
-            GROUP BY families.build_family_key
+            GROUP BY families.knowledge_scope, families.build_family_key
             ORDER BY eligible_evidence_count DESC,
                      eligible_record_kind_count DESC,
                      eligible_record_count DESC,
@@ -3479,8 +4925,13 @@ class ResearchMemoryService:
 
         if not family_rows:
             return []
-        family_keys = [str(row["build_family_key"]) for row in family_rows]
-        placeholders = ",".join("?" for _ in family_keys)
+        family_refs = [
+            (str(row["knowledge_scope"]), str(row["build_family_key"])) for row in family_rows
+        ]
+        family_filter = " OR ".join(
+            "(records.knowledge_scope = ? AND records.build_family_key = ?)"
+            for _ in family_refs
+        )
         class_token = re.sub(
             r"[^a-z0-9_]+",
             "_",
@@ -3488,13 +4939,15 @@ class ResearchMemoryService:
         ).strip("_")
         record_rows = con.execute(
             f"""
-            SELECT records.record_id, records.build_family_key, records.record_kind,
+            SELECT records.record_id, records.knowledge_scope, records.build_family_key,
+                   records.record_kind,
                    records.summary, records.conditions, records.failure_conditions,
                    records.evidence_count
             FROM deep_research_records AS records
             JOIN research_build_families AS families
-              ON families.build_family_key = records.build_family_key
-            WHERE records.build_family_key IN ({placeholders})
+              ON families.knowledge_scope = records.knowledge_scope
+             AND families.build_family_key = records.build_family_key
+            WHERE ({family_filter})
               AND (
                     records.class_key = ?
                     OR (
@@ -3514,20 +4967,30 @@ class ResearchMemoryService:
                      records.last_validated_at DESC, records.record_id
             """,
             [
-                *family_keys,
+                *(value for family_ref in family_refs for value in family_ref),
                 class_key,
                 f"ascendancy:{class_token}:%",
                 game_patch,
                 passive_tree_version,
             ],
         ).fetchall()
-        grouped: dict[str, list[sqlite3.Row]] = {key: [] for key in family_keys}
+        grouped: dict[ScopedFamilyRef, list[sqlite3.Row]] = {
+            family_ref: [] for family_ref in family_refs
+        }
         for row in record_rows:
-            grouped[str(row["build_family_key"])].append(row)
+            grouped[(str(row["knowledge_scope"]), str(row["build_family_key"]))].append(row)
         results: list[dict[str, Any]] = []
         for family in family_rows:
             family_key = str(family["build_family_key"])
-            records = grouped.get(family_key, [])
+            family_scope = str(family["knowledge_scope"])
+            records = grouped.get((family_scope, family_key), [])
+            create_eligibility = self._family_create_eligibility(
+                con,
+                knowledge_scope=family_scope,
+                build_family_key=family_key,
+                game_patch=game_patch,
+                passive_tree_version=passive_tree_version,
+            )
             representative_records = self._representative_family_records(records)
             kind_counts: dict[str, int] = {}
             premises: list[str] = []
@@ -3547,8 +5010,13 @@ class ResearchMemoryService:
             results.append(
                 {
                     "buildFamilyKey": family_key,
+                    "knowledgeScope": family_scope,
                     "ascendancyKey": family["ascendancy_key"],
                     "primarySkillKey": family["primary_skill_key"],
+                    "primarySkillKeys": (
+                        _loads(family["primary_skill_keys"], None)
+                        or [str(family["primary_skill_key"] or "")]
+                    ),
                     "secondarySkillKeys": _loads(family["secondary_skill_keys"], []),
                     "classKey": class_key,
                     "gamePatch": game_patch,
@@ -3569,9 +5037,69 @@ class ResearchMemoryService:
                         "copySafetyPassed": True,
                         "status": "valid",
                     },
+                    "createEligibility": create_eligibility,
                 }
             )
         return results
+
+    @staticmethod
+    def _family_create_eligibility(
+        con: sqlite3.Connection,
+        *,
+        knowledge_scope: str,
+        build_family_key: str,
+        game_patch: str,
+        passive_tree_version: str,
+    ) -> dict[str, Any]:
+        rows = con.execute(
+            """
+            SELECT record.record_schema_version, record.source_state_scope,
+                   record.projection_hash, record.status,
+                   evidence.accepted_projection_hash,
+                   evidence.source_state_scope AS evidence_state_scope,
+                   provenance.source_case_ref AS provenance_source_case_ref
+            FROM deep_research_records AS record
+            LEFT JOIN deep_research_record_evidence AS evidence
+              ON evidence.knowledge_scope = record.knowledge_scope
+             AND evidence.knowledge_key = record.knowledge_key
+            LEFT JOIN research_source_provenance AS provenance
+              ON provenance.knowledge_scope = evidence.knowledge_scope
+             AND provenance.source_case_ref = evidence.source_case_ref
+            WHERE record.knowledge_scope = ?
+              AND record.build_family_key = ?
+              AND record.game_patch = ?
+              AND record.passive_tree_version = ?
+              AND record.visibility = 'creator_visible'
+              AND record.split = 'train_context'
+              AND record.copy_safety_state = 'passed'
+            """,
+            (knowledge_scope, build_family_key, game_patch, passive_tree_version),
+        ).fetchall()
+        authorizing_states = {"active_state", "state_agnostic"}
+        authorized = any(
+            row["status"] == "valid"
+            and int(row["record_schema_version"] or 1) >= 2
+            and row["source_state_scope"] in authorizing_states
+            and row["evidence_state_scope"] in authorizing_states
+            and row["projection_hash"]
+            and row["accepted_projection_hash"] == row["projection_hash"]
+            and row["provenance_source_case_ref"]
+            for row in rows
+        )
+        if authorized:
+            return {"status": "authorized", "blockers": []}
+        blockers: list[str] = []
+        if any(int(row["record_schema_version"] or 1) < 2 for row in rows):
+            blockers.append("record_schema_version_1")
+        if any(row["source_state_scope"] not in authorizing_states for row in rows):
+            blockers.append("source_state_scope_unknown")
+        if not any(row["projection_hash"] for row in rows):
+            blockers.append("missing_projection")
+        blockers.append("missing_accepted_source_lane")
+        return {
+            "status": "needs_revalidation",
+            "blockers": list(dict.fromkeys(blockers)),
+        }
 
     @staticmethod
     def _representative_family_records(
@@ -3600,33 +5128,40 @@ class ResearchMemoryService:
     ) -> list[dict[str, Any]]:
         if not family_rows:
             return []
-        family_keys = [str(row["build_family_key"]) for row in family_rows]
-        placeholders = ",".join("?" for _ in family_keys)
+        family_refs = [
+            (str(row["knowledge_scope"]), str(row["build_family_key"])) for row in family_rows
+        ]
+        family_filter = " OR ".join(
+            "(knowledge_scope = ? AND build_family_key = ?)" for _ in family_refs
+        )
         count_rows = con.execute(
             f"""
-            SELECT build_family_key, record_kind, COUNT(*) AS record_count
+            SELECT knowledge_scope, build_family_key, record_kind, COUNT(*) AS record_count
             FROM deep_research_records
-            WHERE build_family_key IN ({placeholders})
+            WHERE ({family_filter})
               AND visibility = 'creator_visible'
               AND split = 'train_context'
               AND copy_safety_state = 'passed'
               AND status IN ('valid', 'needs_revalidation')
               AND COALESCE(json_extract(typed_payload, '$.availability'), 'standard')
                   != 'source_specific_random'
-            GROUP BY build_family_key, record_kind
-            ORDER BY build_family_key, record_kind
+            GROUP BY knowledge_scope, build_family_key, record_kind
+            ORDER BY knowledge_scope, build_family_key, record_kind
             """,
-            family_keys,
+            [value for family_ref in family_refs for value in family_ref],
         ).fetchall()
-        counts_by_family: dict[str, dict[str, int]] = {key: {} for key in family_keys}
+        counts_by_family: dict[ScopedFamilyRef, dict[str, int]] = {
+            family_ref: {} for family_ref in family_refs
+        }
         for row in count_rows:
-            counts_by_family[str(row["build_family_key"])][str(row["record_kind"])] = int(
-                row["record_count"] or 0
-            )
+            counts_by_family[
+                (str(row["knowledge_scope"]), str(row["build_family_key"]))
+            ][str(row["record_kind"])] = int(row["record_count"] or 0)
         results: list[dict[str, Any]] = []
         for row in family_rows:
             family_key = str(row["build_family_key"])
-            record_kind_counts = counts_by_family.get(family_key, {})
+            family_scope = str(row["knowledge_scope"])
+            record_kind_counts = counts_by_family.get((family_scope, family_key), {})
             primary_keys = _loads(row["primary_skill_keys"], None)
             if not primary_keys:
                 primary_keys = (
@@ -3635,6 +5170,7 @@ class ResearchMemoryService:
             results.append(
                 {
                     "buildFamilyKey": family_key,
+                    "knowledgeScope": family_scope,
                     "ascendancyKey": row["ascendancy_key"],
                     "primarySkillKey": (
                         primary_keys[0] if primary_keys else str(row["primary_skill_key"] or "")
@@ -3649,22 +5185,177 @@ class ResearchMemoryService:
             )
         return results
 
-    def _build_family_record_context(
+    def _select_source_case_lane(
         self,
         con: sqlite3.Connection,
         *,
         family_keys: list[str],
+        requested_scope: str | None,
+        requested_source_case_ref: str | None,
+        blind_global_only: bool,
+        record_ids: list[str] | None = None,
+        record_kinds: list[str] | None = None,
+        game_patch: str | None = None,
+        passive_tree_version: str | None = None,
+    ) -> dict[str, Any]:
+        if not family_keys:
+            return {
+                "selection": "none",
+                "selectedKnowledgeScope": None,
+                "selectedSourceCaseRef": None,
+                "available": [],
+            }
+        family_placeholders = ",".join("?" for _ in family_keys)
+        allowed_scopes = ["global_seed"] if blind_global_only else ["local_user", "global_seed"]
+        if requested_scope:
+            allowed_scopes = [requested_scope]
+        scope_placeholders = ",".join("?" for _ in allowed_scopes)
+        filter_clauses: list[str] = []
+        filter_params: list[Any] = []
+        if record_ids:
+            resolved_record_ids: list[str] = []
+            for record_id in record_ids:
+                resolved_record_ids.append(record_id)
+                head = con.execute(
+                    "SELECT superseded_by_id FROM deep_research_records WHERE record_id = ?",
+                    (record_id,),
+                ).fetchone()
+                head_id = head["superseded_by_id"] if head is not None else None
+                seen = {record_id}
+                while head_id is not None and head_id not in seen:
+                    seen.add(head_id)
+                    resolved_record_ids.append(str(head_id))
+                    head = con.execute(
+                        "SELECT superseded_by_id FROM deep_research_records WHERE record_id = ?",
+                        (head_id,),
+                    ).fetchone()
+                    head_id = head["superseded_by_id"] if head is not None else None
+            record_id_placeholders = ",".join("?" for _ in resolved_record_ids)
+            filter_clauses.append(f"record.record_id IN ({record_id_placeholders})")
+            filter_params.extend(resolved_record_ids)
+        if record_kinds:
+            record_kind_placeholders = ",".join("?" for _ in record_kinds)
+            filter_clauses.append(f"record.record_kind IN ({record_kind_placeholders})")
+            filter_params.extend(record_kinds)
+        if game_patch:
+            filter_clauses.append("record.game_patch = ?")
+            filter_params.append(game_patch)
+        if passive_tree_version:
+            filter_clauses.append("record.passive_tree_version = ?")
+            filter_params.append(passive_tree_version)
+        filtered_where = "".join(f"\n              AND {clause}" for clause in filter_clauses)
+        rows = con.execute(
+            f"""
+            SELECT evidence.knowledge_scope, evidence.source_case_ref,
+                   count(DISTINCT record.record_kind) AS kind_count,
+                   count(DISTINCT record.record_id) AS record_count,
+                   json_group_array(DISTINCT record.build_family_key) AS family_keys
+            FROM deep_research_record_evidence AS evidence
+            JOIN deep_research_records AS record
+              ON record.knowledge_scope = evidence.knowledge_scope
+             AND record.knowledge_key = evidence.knowledge_key
+            JOIN research_source_provenance AS provenance
+              ON provenance.source_case_ref = evidence.source_case_ref
+             AND provenance.knowledge_scope = evidence.knowledge_scope
+            JOIN research_build_families AS family
+              ON family.knowledge_scope = record.knowledge_scope
+             AND family.build_family_key = record.build_family_key
+            WHERE record.build_family_key IN ({family_placeholders})
+              AND evidence.knowledge_scope IN ({scope_placeholders})
+              AND record.visibility = 'creator_visible'
+              AND record.split = 'train_context'
+              AND record.copy_safety_state = 'passed'
+              AND record.status = 'valid'
+              AND record.superseded_by_id IS NULL
+              AND record.record_schema_version = 2
+              AND record.source_state_scope IN ('active_state', 'state_agnostic')
+              AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
+              AND record.projection_hash IS NOT NULL
+              AND evidence.accepted_projection_hash = record.projection_hash
+              AND COALESCE(json_extract(record.typed_payload, '$.availability'), 'standard') = 'standard'
+              {filtered_where}
+            GROUP BY evidence.knowledge_scope, evidence.source_case_ref
+            """,
+            [*family_keys, *allowed_scopes, *filter_params],
+        ).fetchall()
+        available = [
+            {
+                "knowledgeScope": str(row["knowledge_scope"]),
+                "sourceCaseRef": str(row["source_case_ref"]),
+                "eligibleRecordKindCount": int(row["kind_count"] or 0),
+                "eligibleRecordCount": int(row["record_count"] or 0),
+                "eligibleBuildFamilyKeys": sorted(
+                    str(value) for value in _loads(row["family_keys"], []) if str(value)
+                ),
+            }
+            for row in rows
+        ]
+        if requested_source_case_ref:
+            candidates = [
+                item
+                for item in available
+                if item["sourceCaseRef"] == requested_source_case_ref
+                and (not requested_scope or item["knowledgeScope"] == requested_scope)
+            ]
+            selection = "explicit"
+        else:
+            candidates = available
+            selection = "single" if len(candidates) == 1 else "defaulted"
+        scope_rank = {"local_user": 0, "global_seed": 1}
+        candidates.sort(
+            key=lambda item: (
+                -item["eligibleRecordKindCount"],
+                -item["eligibleRecordCount"],
+                scope_rank.get(item["knowledgeScope"], 9),
+                item["knowledgeScope"] + ":" + item["sourceCaseRef"],
+            )
+        )
+        selected = candidates[0] if candidates else None
+        return {
+            "selection": selection if selected else "none",
+            "selectedKnowledgeScope": selected["knowledgeScope"] if selected else None,
+            "selectedSourceCaseRef": selected["sourceCaseRef"] if selected else None,
+            "_eligibleBuildFamilyKeys": (
+                list(selected.get("eligibleBuildFamilyKeys") or []) if selected else []
+            ),
+            "available": sorted(
+                [
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key != "eligibleBuildFamilyKeys"
+                    }
+                    for item in available
+                ],
+                key=lambda item: item["knowledgeScope"] + ":" + item["sourceCaseRef"],
+            ),
+        }
+
+    def _build_family_record_context(
+        self,
+        con: sqlite3.Connection,
+        *,
+        family_refs: list[ScopedFamilyRef],
         returned_record_ids: set[str],
         game_patch: str | None,
         passive_tree_version: str | None,
+        create_authorizing: bool = False,
+        knowledge_scope: str | None = None,
+        source_case_ref: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """Expose a complete safe index even when the first content page is intentionally small."""
 
-        if not family_keys:
+        if not family_refs:
             return [], [], []
-        placeholders = ",".join("?" for _ in family_keys)
+        family_filter = " OR ".join(
+            "(knowledge_scope = ? AND build_family_key = ?)" for _ in family_refs
+        )
+        storage_summary = {
+            family_ref: {"storedRecordCount": 0, "exclusionReasonCounts": {}}
+            for family_ref in family_refs
+        }
         where = [
-            f"build_family_key IN ({placeholders})",
+            f"({family_filter})",
             "visibility = 'creator_visible'",
             "split = 'train_context'",
             "copy_safety_state = 'passed'",
@@ -3674,7 +5365,57 @@ class ResearchMemoryService:
                 "!= 'source_specific_random'"
             ),
         ]
-        params: list[Any] = [*family_keys]
+        params: list[Any] = [value for family_ref in family_refs for value in family_ref]
+        if create_authorizing:
+            if not knowledge_scope or not source_case_ref:
+                return (
+                    [
+                        {
+                            "buildFamilyKey": key,
+                            "knowledgeScope": scope,
+                            "storedRecordCount": 0,
+                            "eligibleRecordCount": 0,
+                            "excludedRecordCount": 0,
+                            "returnedRecordCount": 0,
+                            "unreturnedRecordCount": 0,
+                            "recordKindCounts": {},
+                            "requiredDeepReadRecordIds": [],
+                            "responseComplete": True,
+                        }
+                        for scope, key in family_refs
+                    ],
+                    [],
+                    [],
+                )
+            where.extend(
+                [
+                    "knowledge_scope = ?",
+                    "record_schema_version = 2",
+                    "source_state_scope IN ('active_state', 'state_agnostic')",
+                    "projection_hash IS NOT NULL",
+                    "EXISTS (SELECT 1 FROM deep_research_record_evidence AS evidence "
+                    "WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope "
+                    "AND evidence.knowledge_key = deep_research_records.knowledge_key "
+                    "AND evidence.source_case_ref = ? "
+                    "AND evidence.accepted_projection_hash = deep_research_records.projection_hash "
+                    "AND evidence.source_state_scope IN ('active_state', 'state_agnostic') "
+                    "AND EXISTS (SELECT 1 FROM research_source_provenance AS provenance "
+                    "WHERE provenance.source_case_ref = evidence.source_case_ref "
+                    "AND provenance.knowledge_scope = evidence.knowledge_scope))",
+                    "EXISTS (SELECT 1 FROM research_build_families AS family "
+                    "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
+                    "AND family.build_family_key = deep_research_records.build_family_key)",
+                ]
+            )
+            params.extend([knowledge_scope, source_case_ref])
+            storage_summary = self._source_lane_storage_summary(
+                con,
+                family_keys=sorted({key for _scope, key in family_refs}),
+                knowledge_scope=knowledge_scope,
+                source_case_ref=source_case_ref,
+                game_patch=game_patch,
+                passive_tree_version=passive_tree_version,
+            )
         if game_patch:
             where.append("game_patch = ?")
             params.append(game_patch)
@@ -3684,8 +5425,9 @@ class ResearchMemoryService:
         rows = list(
             con.execute(
                 """
-                SELECT record_id, build_family_key, record_kind, title, summary,
-                       component_keys, conditions, failure_conditions, evidence_count
+                SELECT record_id, knowledge_scope, build_family_key, record_kind, title, summary,
+                       component_keys, conditions, failure_conditions, evidence_count,
+                       typed_payload
                 FROM deep_research_records
                 WHERE """
                 + " AND ".join(where)
@@ -3695,21 +5437,46 @@ class ResearchMemoryService:
                 params,
             ).fetchall()
         )
-        grouped: dict[str, list[sqlite3.Row]] = {key: [] for key in family_keys}
+        grouped: dict[ScopedFamilyRef, list[sqlite3.Row]] = {
+            family_ref: [] for family_ref in family_refs
+        }
         for row in rows:
-            grouped.setdefault(str(row["build_family_key"]), []).append(row)
+            grouped.setdefault(
+                (str(row["knowledge_scope"]), str(row["build_family_key"])), []
+            ).append(row)
 
         coverage: list[dict[str, Any]] = []
         record_index: list[dict[str, Any]] = []
         premise_catalog: list[dict[str, Any]] = []
-        for family_key in family_keys:
-            family_rows = grouped.get(family_key, [])
+        for family_scope, family_key in family_refs:
+            family_rows = grouped.get((family_scope, family_key), [])
+            representative_ids = {
+                str(row["record_id"])
+                for row in self._representative_family_records(family_rows)
+                if str(row["record_kind"]) in MECHANISM_RECORD_KINDS
+            }
+            required_deep_read_ids: set[str] = set(representative_ids)
             kind_counts: dict[str, int] = {}
             returned_count = 0
             for row in family_rows:
                 record_id = str(row["record_id"])
                 record_kind = str(row["record_kind"])
                 component_keys = _loads(row["component_keys"], [])
+                typed_payload = _loads(row["typed_payload"], {}) or {}
+                gear_responsibilities = typed_payload.get("gearResponsibilities") or []
+                has_required_gear = any(
+                    isinstance(item, dict)
+                    and item.get("responsibilityType")
+                    not in {"optional_upgrade", "budget_substitute"}
+                    for item in gear_responsibilities
+                )
+                if (
+                    typed_payload.get("supportPackages")
+                    or typed_payload.get("resourceMechanisms")
+                    or has_required_gear
+                    or _loads(row["failure_conditions"], [])
+                ):
+                    required_deep_read_ids.add(record_id)
                 returned = record_id in returned_record_ids
                 returned_count += int(returned)
                 kind_counts[record_kind] = kind_counts.get(record_kind, 0) + 1
@@ -3718,6 +5485,7 @@ class ResearchMemoryService:
                         {
                             "recordId": record_id,
                             "buildFamilyKey": family_key,
+                            "knowledgeScope": family_scope,
                             "recordKind": record_kind,
                             "title": row["title"],
                             "summary": row["summary"],
@@ -3743,6 +5511,7 @@ class ResearchMemoryService:
                                     text,
                                 ),
                                 "buildFamilyKey": family_key,
+                                "knowledgeScope": family_scope,
                                 "evidenceRef": record_id,
                                 "recordKind": record_kind,
                                 "premiseType": premise_type,
@@ -3751,17 +5520,127 @@ class ResearchMemoryService:
                             }
                         )
             eligible_count = len(family_rows)
+            stored_count = int(
+                storage_summary.get((family_scope, family_key), {}).get("storedRecordCount")
+                or eligible_count
+            )
+            exclusion_reason_counts = dict(
+                storage_summary.get((family_scope, family_key), {}).get("exclusionReasonCounts")
+                or {}
+            )
             coverage.append(
                 {
                     "buildFamilyKey": family_key,
+                    "knowledgeScope": family_scope,
+                    "storedRecordCount": stored_count,
                     "eligibleRecordCount": eligible_count,
+                    "excludedRecordCount": max(0, stored_count - eligible_count),
+                    "exclusionReasonCounts": exclusion_reason_counts,
                     "returnedRecordCount": returned_count,
                     "unreturnedRecordCount": eligible_count - returned_count,
                     "recordKindCounts": kind_counts,
+                    "requiredDeepReadRecordIds": sorted(required_deep_read_ids),
                     "responseComplete": returned_count == eligible_count,
                 }
             )
         return coverage, record_index, premise_catalog
+
+    def _source_lane_storage_summary(
+        self,
+        con: sqlite3.Connection,
+        *,
+        family_keys: list[str],
+        knowledge_scope: str,
+        source_case_ref: str,
+        game_patch: str | None,
+        passive_tree_version: str | None,
+    ) -> dict[ScopedFamilyRef, dict[str, Any]]:
+        """Count all stored lane records separately from Create-eligible records."""
+
+        placeholders = ",".join("?" for _ in family_keys)
+        where = [
+            f"record.build_family_key IN ({placeholders})",
+            "record.knowledge_scope = ?",
+            "evidence.source_case_ref = ?",
+            "record.superseded_by_id IS NULL",
+        ]
+        params: list[Any] = [*family_keys, knowledge_scope, source_case_ref]
+        if game_patch:
+            where.append("record.game_patch = ?")
+            params.append(game_patch)
+        if passive_tree_version:
+            where.append("record.passive_tree_version = ?")
+            params.append(passive_tree_version)
+        rows = con.execute(
+            """
+            SELECT record.build_family_key, record.visibility, record.split,
+                   record.copy_safety_state, record.status, record.record_schema_version,
+                   record.source_state_scope, record.projection_hash, record.typed_payload,
+                   evidence.accepted_projection_hash,
+                   evidence.source_state_scope AS evidence_state_scope,
+                   provenance.source_case_ref AS provenance_source_case_ref,
+                   family.build_family_key AS scoped_family_key
+            FROM deep_research_records AS record
+            JOIN deep_research_record_evidence AS evidence
+              ON evidence.knowledge_scope = record.knowledge_scope
+             AND evidence.knowledge_key = record.knowledge_key
+            LEFT JOIN research_source_provenance AS provenance
+              ON provenance.source_case_ref = evidence.source_case_ref
+             AND provenance.knowledge_scope = evidence.knowledge_scope
+            LEFT JOIN research_build_families AS family
+              ON family.knowledge_scope = record.knowledge_scope
+             AND family.build_family_key = record.build_family_key
+            WHERE """
+            + " AND ".join(where),
+            params,
+        ).fetchall()
+        result = {
+            (knowledge_scope, key): {
+                "storedRecordCount": 0,
+                "exclusionReasonCounts": {},
+            }
+            for key in family_keys
+        }
+        for row in rows:
+            family_key = str(row["build_family_key"])
+            summary = result.setdefault(
+                (knowledge_scope, family_key),
+                {"storedRecordCount": 0, "exclusionReasonCounts": {}},
+            )
+            summary["storedRecordCount"] += 1
+            reason: str | None = None
+            if row["visibility"] != "creator_visible" or row["split"] != "train_context":
+                reason = "not_creator_visible"
+            elif row["copy_safety_state"] != "passed":
+                reason = "copy_safety"
+            elif row["status"] != "valid":
+                reason = "status"
+            elif int(row["record_schema_version"] or 1) < 2:
+                reason = "legacy_schema"
+            elif (
+                str((_loads(row["typed_payload"], {}) or {}).get("availability") or "standard")
+                != "standard"
+            ):
+                reason = "availability"
+            elif (
+                row["source_state_scope"]
+                not in research_contracts.CREATE_AUTHORIZING_SOURCE_STATE_SCOPES
+                or row["evidence_state_scope"]
+                not in research_contracts.CREATE_AUTHORIZING_SOURCE_STATE_SCOPES
+            ):
+                reason = "source_state"
+            elif not row["projection_hash"] or (
+                row["accepted_projection_hash"] != row["projection_hash"]
+            ):
+                reason = "projection_provenance"
+            elif not row["provenance_source_case_ref"]:
+                reason = "source_provenance"
+            elif not row["scoped_family_key"]:
+                reason = "scoped_family"
+            if reason:
+                counts = summary["exclusionReasonCounts"]
+                counts[reason] = int(counts.get(reason) or 0) + 1
+        return result
 
     def _query_deep_record_rows(
         self,
@@ -3776,6 +5655,9 @@ class ResearchMemoryService:
         query_is_preference: bool,
         game_patch: str | None,
         passive_tree_version: str | None,
+        create_authorizing: bool = False,
+        knowledge_scope: str | None = None,
+        source_case_ref: str | None = None,
     ) -> list[sqlite3.Row]:
         where = [
             "visibility = 'creator_visible'",
@@ -3783,6 +5665,31 @@ class ResearchMemoryService:
             "copy_safety_state = 'passed'",
             "status IN ('valid', 'needs_revalidation')",
         ]
+        if create_authorizing:
+            if not knowledge_scope or not source_case_ref:
+                return []
+            where.extend(
+                [
+                    "status = 'valid'",
+                    "knowledge_scope = ?",
+                    "record_schema_version = 2",
+                    "source_state_scope IN ('active_state', 'state_agnostic')",
+                    "projection_hash IS NOT NULL",
+                    "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') = 'standard'",
+                    "EXISTS (SELECT 1 FROM deep_research_record_evidence AS evidence "
+                    "WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope "
+                    "AND evidence.knowledge_key = deep_research_records.knowledge_key "
+                    "AND evidence.source_case_ref = ? "
+                    "AND evidence.accepted_projection_hash = deep_research_records.projection_hash "
+                    "AND evidence.source_state_scope IN ('active_state', 'state_agnostic') "
+                    "AND EXISTS (SELECT 1 FROM research_source_provenance AS provenance "
+                    "WHERE provenance.source_case_ref = evidence.source_case_ref "
+                    "AND provenance.knowledge_scope = evidence.knowledge_scope))",
+                    "EXISTS (SELECT 1 FROM research_build_families AS family "
+                    "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
+                    "AND family.build_family_key = deep_research_records.build_family_key)",
+                ]
+            )
         if record_ids:
             # Explicit record IDs are deep-read anchors that may have been issued before a
             # relocation (backfill/migration moves a unit to id = hash(knowledge_key) and
@@ -3807,12 +5714,14 @@ class ResearchMemoryService:
                     ).fetchone()
                     head_id = head["superseded_by_id"] if head is not None else None
             record_ids = resolved_ids
-        if not record_ids:
+        if not record_ids and not create_authorizing:
             where.append(
                 "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
                 "!= 'source_specific_random'"
             )
         params: list[Any] = []
+        if create_authorizing:
+            params.extend([knowledge_scope, source_case_ref])
         if record_ids:
             placeholders = ",".join("?" for _ in record_ids)
             where.append(f"record_id IN ({placeholders})")
@@ -3860,7 +5769,9 @@ class ResearchMemoryService:
                         )
                         OR EXISTS (
                             SELECT 1 FROM research_build_families
-                            WHERE research_build_families.build_family_key =
+                            WHERE research_build_families.knowledge_scope =
+                                  deep_research_records.knowledge_scope
+                              AND research_build_families.build_family_key =
                                   deep_research_records.build_family_key
                               AND (
                                   research_build_families.ascendancy_key IN ({placeholders})
@@ -3921,18 +5832,24 @@ class ResearchMemoryService:
             return self._balanced_deep_record_rows(rows, limit=limit)
         if record_ids or not query.strip() or len(rows) >= limit:
             return rows
-        family_keys = sorted(
-            {str(row["build_family_key"]) for row in rows if row["build_family_key"]}
+        family_refs = sorted(
+            {
+                (str(row["knowledge_scope"]), str(row["build_family_key"]))
+                for row in rows
+                if row["build_family_key"]
+            }
         )
-        if not family_keys:
+        if not family_refs:
             return rows
         existing_ids = {str(row["record_id"]) for row in rows}
-        family_placeholders = ",".join("?" for _ in family_keys)
+        family_filter = " OR ".join(
+            "(knowledge_scope = ? AND build_family_key = ?)" for _ in family_refs
+        )
         id_placeholders = ",".join("?" for _ in existing_ids)
         expanded = con.execute(
             f"""
             SELECT * FROM deep_research_records
-            WHERE build_family_key IN ({family_placeholders})
+            WHERE ({family_filter})
               AND record_id NOT IN ({id_placeholders})
               AND visibility = 'creator_visible'
               AND split = 'train_context'
@@ -3942,7 +5859,11 @@ class ResearchMemoryService:
             ORDER BY evidence_count DESC, last_validated_at DESC, record_id
             LIMIT ?
             """,
-            [*family_keys, *sorted(existing_ids), limit - len(rows)],
+            [
+                *(value for family_ref in family_refs for value in family_ref),
+                *sorted(existing_ids),
+                limit - len(rows),
+            ],
         ).fetchall()
         return [*rows, *expanded]
 
@@ -3954,17 +5875,20 @@ class ResearchMemoryService:
     ) -> list[sqlite3.Row]:
         """Return a bounded cross-Family preview without letting one Family consume every slot."""
 
-        queues: dict[str, list[sqlite3.Row]] = {}
-        family_order: list[str] = []
+        queues: dict[ScopedFamilyRef, list[sqlite3.Row]] = {}
+        family_order: list[ScopedFamilyRef] = []
         for row in rows:
-            family_key = str(row["build_family_key"] or "unclassified")
-            if family_key not in queues:
-                queues[family_key] = []
-                family_order.append(family_key)
-            queues[family_key].append(row)
+            family_ref = (
+                str(row["knowledge_scope"] or "unknown"),
+                str(row["build_family_key"] or "unclassified"),
+            )
+            if family_ref not in queues:
+                queues[family_ref] = []
+                family_order.append(family_ref)
+            queues[family_ref].append(row)
 
         selected: list[sqlite3.Row] = []
-        seen_kinds: dict[str, set[str]] = {key: set() for key in family_order}
+        seen_kinds: dict[ScopedFamilyRef, set[str]] = {key: set() for key in family_order}
         while len(selected) < limit:
             made_progress = False
             for family_key in family_order:
@@ -4046,10 +5970,10 @@ class ResearchMemoryService:
         con: sqlite3.Connection,
         *,
         component_keys: list[str],
-        family_keys: list[str],
+        family_refs: list[ScopedFamilyRef],
         limit: int,
     ) -> list[dict[str, Any]]:
-        if not component_keys and not family_keys:
+        if not component_keys and not family_refs:
             return []
         base_where = """
             visibility = 'creator_visible'
@@ -4073,23 +5997,32 @@ class ResearchMemoryService:
             )
 
         lanes: list[tuple[list[sqlite3.Row], str]] = []
-        if family_keys:
+        refs_by_scope: dict[str, list[str]] = {}
+        for scope, family_key in family_refs:
+            refs_by_scope.setdefault(scope, []).append(family_key)
+        for scope, family_keys in sorted(refs_by_scope.items()):
             placeholders = ",".join("?" for _ in family_keys)
             origin_match = f"""
-                EXISTS (
+                knowledge_scope = ? AND EXISTS (
                     SELECT 1 FROM json_each(research_build_patterns.origin_family_keys)
                     WHERE json_each.value IN ({placeholders})
                 )
             """
             lanes.append(
                 (
-                    fetch_rows(f"transfer_scope = 'component' AND {origin_match}", family_keys),
+                    fetch_rows(
+                        f"transfer_scope = 'component' AND {origin_match}",
+                        [scope, *family_keys],
+                    ),
                     "origin_family",
                 )
             )
             lanes.append(
                 (
-                    fetch_rows(f"transfer_scope = 'family' AND {origin_match}", family_keys),
+                    fetch_rows(
+                        f"transfer_scope = 'family' AND {origin_match}",
+                        [scope, *family_keys],
+                    ),
                     "exact_family",
                 )
             )
@@ -4328,6 +6261,7 @@ class ResearchMemoryService:
             "researchGroupId": row["research_group_id"],
             "buildFamilyKey": row["build_family_key"],
             "knowledgeKey": row["knowledge_key"],
+            "knowledgeScope": row["knowledge_scope"],
             "evidenceCount": int(row["evidence_count"] or 0),
             "recordKind": row["record_kind"],
             "title": row["title"],
@@ -4344,6 +6278,11 @@ class ResearchMemoryService:
             "passiveTreeVersion": row["passive_tree_version"],
             "status": row["status"],
             "copySafetyState": row["copy_safety_state"],
+            "recordSchemaVersion": int(row["record_schema_version"] or 1),
+            "sourceStateScope": str(row["source_state_scope"] or "unknown"),
+            "availability": str(
+                (_loads(row["typed_payload"], {}) or {}).get("availability") or "standard"
+            ),
             "noRawMatureBuildMaterial": True,
         }
         if include_content:
@@ -5240,7 +7179,7 @@ def _historical_family_hints(
 
 
 def _sibling_family_hints(
-    con: sqlite3.Connection, build_family_keys: set[str]
+    con: sqlite3.Connection, build_family_refs: set[ScopedFamilyRef]
 ) -> list[dict[str, Any]]:
     """Advisory hints when a written family overlaps an existing family's identity.
 
@@ -5253,14 +7192,15 @@ def _sibling_family_hints(
     """
     hints: list[dict[str, Any]] = []
     idx = skill_equivalence.SkillEquivalenceIndex.shared()
-    for family_key in sorted(build_family_keys):
+    for knowledge_scope, family_key in sorted(build_family_refs):
         row = con.execute(
             """
-            SELECT build_family_key, ascendancy_key, primary_skill_key, primary_skill_keys
+            SELECT knowledge_scope, build_family_key, ascendancy_key,
+                   primary_skill_key, primary_skill_keys
             FROM research_build_families
-            WHERE build_family_key = ?
+            WHERE knowledge_scope = ? AND build_family_key = ?
             """,
-            (family_key,),
+            (knowledge_scope, family_key),
         ).fetchone()
         if row is None:
             continue
@@ -5274,12 +7214,12 @@ def _sibling_family_hints(
             """
             SELECT build_family_key, primary_skill_key, primary_skill_keys, secondary_skill_keys
             FROM research_build_families
-            WHERE ascendancy_key = ?
+            WHERE knowledge_scope = ? AND ascendancy_key = ?
               AND build_family_key != ?
             ORDER BY evidence_count DESC, build_family_key
             LIMIT 10
             """,
-            (row["ascendancy_key"], family_key),
+            (knowledge_scope, row["ascendancy_key"], family_key),
         ).fetchall()
         for sibling in siblings:
             sibling_keys = _loads(sibling["primary_skill_keys"], None)
@@ -5305,6 +7245,7 @@ def _sibling_family_hints(
             hints.append(
                 {
                     "familyKey": family_key,
+                    "knowledgeScope": knowledge_scope,
                     "ascendancyKey": row["ascendancy_key"],
                     "primarySkillKeys": new_keys,
                     "relation": relation,
@@ -5407,7 +7348,7 @@ def _loads(value: str, default: Any) -> Any:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _normalize_text(value: str) -> str:

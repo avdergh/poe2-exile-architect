@@ -13,6 +13,16 @@ class _StubEngine:
     def get_build(self):
         return self._build
 
+    def get_xml(self):
+        return """<PathOfBuilding>
+  <Build className="Mercenary" ascendClassName="Witchhunter" level="90" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1" /></Skills>
+  <Items activeItemSet="1"><ItemSet id="1" /></Items>
+</PathOfBuilding>"""
+
+    def list_jewel_sockets(self):
+        return {"sockets": []}
+
     def get_stats(self, keys=None):
         self.requested_keys = keys
         if "warning" in self._stats:
@@ -38,6 +48,25 @@ def _build(**overrides):
         "stats": {"TotalDPS": 500_000},
         "treeVersion": "0_5",
         "latestTreeVersion": "0_5",
+        "spiritAvailable": 100,
+        "spiritReservedCapped": 81,
+        "spiritUnreserved": 19,
+        "spiritRequested": 81,
+        "spiritOverBy": 0,
+        "spiritUsed": 81,
+        "activeWeaponSet": 1,
+        "unspentPoints": 0,
+        "gear": {
+            "Flask 1": {"name": "Fixture Unique Life Flask", "rarity": "unique"},
+            "Flask 2": {
+                "name": "Fixture Magic Mana Flask",
+                "rarity": "magic",
+                "itemLevel": 82,
+                "affixPrefixes": 1,
+                "affixSuffixes": 1,
+                "affixLegality": {"ok": True, "issues": []},
+            },
+        },
     }
     base.update(overrides)
     return base
@@ -120,6 +149,30 @@ def test_endgame_generated_candidate_accepts_exact_resistance_minimums():
 
     assert result["pass"] is True
     assert result["readinessGates"]["endgameResistances"]["status"] == "passed"
+
+
+def test_generated_candidate_evaluator_enforces_final_create_completion_gates():
+    engine = _StubEngine(
+        _build(
+            spiritReservedCapped=80,
+            spiritUnreserved=20,
+            spiritRequested=80,
+            spiritUsed=80,
+            unspentPoints=1,
+        ),
+        _stats(),
+        _defenses(),
+    )
+    engine.list_jewel_sockets = lambda: {
+        "sockets": [{"socket": 1, "allocated": True, "filled": False}]
+    }
+
+    result = evaluator.evaluate_active_build(engine, "incomplete-create")
+
+    assert "spirit_utilization_not_above_80_percent" not in result["hardFailures"]
+    assert "unspent_passive_points_remaining" in result["hardFailures"]
+    assert "allocated_passive_jewel_socket_empty" in result["hardFailures"]
+    assert result["pass"] is False
 
 
 def test_non_endgame_resistances_remain_diagnostic_only():
@@ -513,7 +566,14 @@ def test_evaluator_flags_attribute_requirement_shortfall():
 
 def test_evaluator_flags_spirit_over_budget():
     engine = _StubEngine(
-        _build(spiritUsed=120, spiritAvailable=100),
+        _build(
+            spiritUsed=120,
+            spiritRequested=120,
+            spiritAvailable=100,
+            spiritReservedCapped=100,
+            spiritUnreserved=-20,
+            spiritOverBy=20,
+        ),
         _stats(),
         _defenses(),
     )
@@ -814,10 +874,10 @@ def test_evaluator_flags_meta_trigger_core_blocker():
 
     result = evaluator.evaluate_active_build(engine, "meta-trigger")
 
-    assert result["modelability"]["coreBlocked"] is True
+    assert result["modelability"]["coreBlocked"] is False
     assert result["hardFailures"] == []
     assert result["pass"] is True
-    assert result["rewardEligible"] is False
+    assert result["rewardEligible"] == "limited"
 
 
 def test_evaluator_flags_tree_version_mismatch_caveat():
@@ -1130,10 +1190,10 @@ def test_evaluator_checks_selected_damage_group_modelability():
 
     result = evaluator.evaluate_active_build(engine, "selected-meta-trigger")
 
-    assert result["modelability"]["coreBlocked"] is True
+    assert result["modelability"]["coreBlocked"] is False
     assert "unmodelled_mechanic" not in result["hardFailures"]
     assert result["pass"] is True
-    assert result["rewardEligible"] is False
+    assert result["rewardEligible"] == "limited"
 
 
 def test_evaluator_flags_selected_skill_weapon_requirement_mismatch():

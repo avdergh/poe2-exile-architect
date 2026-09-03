@@ -705,9 +705,7 @@ def test_research_abandon_releases_only_owned_queued_ledger_rows(monkeypatch, tm
         source_hash="source-accepted",
         sample_id="case:accepted",
     )
-    research_intake_ledger.mark_accepted(
-        ledger, league="league-x", character_ref=accepted_ref
-    )
+    research_intake_ledger.mark_accepted(ledger, league="league-x", character_ref=accepted_ref)
     monkeypatch.setattr(
         research_mature_builds,
         "DEFAULT_OUTPUT_DIR",
@@ -736,9 +734,7 @@ def test_research_abandon_releases_only_owned_queued_ledger_rows(monkeypatch, tm
     assert research_intake_ledger.seen_character_refs(ledger, "league-x") == {accepted_ref}
 
 
-def test_research_abandon_rolls_back_ledger_when_directory_delete_fails(
-    monkeypatch, tmp_path
-):
+def test_research_abandon_rolls_back_ledger_when_directory_delete_fails(monkeypatch, tmp_path):
     from server.knowledge import research_intake_ledger
 
     run_id = "20260805-010203-abcd"

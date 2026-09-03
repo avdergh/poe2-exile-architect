@@ -31,12 +31,16 @@ git -C pob/PathOfBuilding-PoE2 checkout 860f4268299739ce9df87c4f373abe35824101cf
 
 vendored copy 被 git-ignore，因此任何不可避免的 PoB-core 改动都应作为 tracked `*.patch` 放
 在 `pob/patches/` 下，并在 clone 后重新应用（见上方），不要静默直接改 vendored 源码。
-这些 patch 是 upstream 候选；当某个 patch 被 upstream 接收后，应 bump pinned commit
-并删除该 patch。
+这些 patch 作为插件长期维护的本地兼容层，不由插件流程自动提交到外部仓库。若未来上游独立包含
+等价修复，再 bump pinned commit 并删除对应本地 patch。
 
 | Patch | 为什么不能放在 shim 里 |
 | --- | --- |
 | `0001-split-personality-alternate-class-starts.patch` | 一个 jewel 可以提供多个 alternate class starts（Split Personality 提供全部六个）。Upstream `Item.lua`/`PassiveSpec.lua` 只保留最后一个，导致 jewel pathing 到多个职业区域时错误。修复点在 PoB tree/item build path 中，shim 无法触达。 |
+| `0002-tree-source-skill-supports.patch` | 记录插件现有的 Tree 来源技能等级、辅助持久化和逐效果辅助审计支持，使 git-ignored vendored working copy 可以从固定 commit 重建；本补丁没有新增 Item 来源准入。 |
+| `0003-isolate-item-source-supports.patch` | 同一装备授予多个技能时，`CalcSetup.lua` 会把一个来源技能组的直属辅助传播到同槽的其他来源技能，导致辅助效果与 Spirit 重复计算。shim 无法改变 PoB 导入码在标准 PoB 中的计算语义；本补丁保持无来源同槽辅助组的既有共享语义，只隔离各来源技能自己的辅助。 |
+| `0004-coming-calamity-no-base-reservation.patch` | The Coming Calamity 的三种物品来源 Herald 不支付基础 Spirit，但辅助自身的 Spirit 费用仍需计算。该规则仅绑定此物品，不推广到其他授予技能的装备。 |
+| `0005-refresh-synthetic-no-supports.patch` | Explode、Thorns等PoB合成来源组从XML恢复后必须重新标记为不可安装辅助，避免质量检查把合法合成效果误判为缺少辅助审计。 |
 
 ## Runtime requirements（M0 spike 已验证）
 

@@ -15,6 +15,28 @@ import pytest
 from server.main import mcp
 
 
+class _LifecycleContext:
+    def __init__(self, skill_name: str) -> None:
+        self.skill_name = skill_name
+
+    def model_dump(self, **_kwargs):
+        return {
+            "groupIndex": 1,
+            "activeIndex": 1,
+            "skillName": self.skill_name,
+        }
+
+
+def _artifact_manifest(artifact_id: str, source_hash: str, skill_name: str):
+    return SimpleNamespace(
+        artifact_id=artifact_id,
+        source_hash=source_hash,
+        judge_report=SimpleNamespace(
+            calculation_context=_LifecycleContext(skill_name),
+        ),
+    )
+
+
 def test_instructions_are_delivered():
     instr = mcp.instructions or ""
     # Sourced from the bounded MCP bootstrap; must actually reach the client, not be empty.
@@ -47,7 +69,7 @@ def test_research_mature_build_case_prompt_is_tool_driven():
         "safeHash": "abc123",
         "safeMetadata": {"case_id": "case-lightning-arrow"},
         "rawContext": {"pobCode": "eNrt" + "A" * 180},
-        "requestedOutputSchema": "ResearcherOutput schema_version=5",
+        "requestedOutputSchema": "ResearcherOutput schema_version=6 / DeepResearchRecord schema 2",
     }
 
     text = main.research_mature_build_case(
@@ -78,7 +100,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 143
+    assert len(tools) == 160
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -94,12 +116,15 @@ def test_tool_surface_intact():
         "apply_combat_profile",
         "pinnacle_readiness",
         "start_generation_run",
+        "validate_generation_draft",
         "validate_generation_output",
         "complete_generation_review",
         "evaluate_generation_candidate",
         "save_final_build_artifact",
         "list_final_build_artifacts",
         "load_final_build_artifact",
+        "preview_final_artifact_spirit_revalidation",
+        "apply_final_artifact_spirit_revalidation",
         "export_final_pob_artifact",
         "export_final_build_package",
         "get_build_planner_converter_status",
@@ -113,6 +138,8 @@ def test_tool_surface_intact():
         "relevant_uniques",
         "optimize_build",
         "craft_item",
+        "optimize_item_sockets",
+        "optimize_flask",
         "get_freshness_report",
         "suggest_build_lifecycle",
         "analyze_build_lifecycle",
@@ -350,6 +377,7 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
             class_key=None,
             game_patch=None,
             passive_tree_version=None,
+            **new_contract,
         ):
             calls.append(
                 (
@@ -464,6 +492,66 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
         "0.5.4",
         "0_5",
     )
+
+
+@pytest.mark.parametrize("explicit_flag", [None, False])
+def test_blind_research_query_requires_claim_and_forces_global_scope(
+    monkeypatch, explicit_flag
+):
+    from server import main
+
+    missing = main.query_research_memory(
+        "",
+        response_profile="create_compact",
+        blind_global_only=True,
+    )
+    assert missing["errorCode"] == "blind_research_claim_required"
+    missing_run = main.query_research_memory(
+        "",
+        response_profile="create_compact",
+        claim_ref="claim:test",
+    )
+    assert missing_run["errorCode"] == "blind_research_claim_required"
+
+    captured: dict[str, object] = {}
+
+    class FakeResearchService:
+        def query_research_memory(self, query, **kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "known",
+                "detailLevel": "record",
+                "selectedKnowledgeScope": "global_seed",
+                "selectedSourceCaseRef": "case:public",
+                "deepResearchRecords": [],
+                "buildFamilies": [],
+                "noRawMatureBuildMaterial": True,
+            }
+
+        def start_retrieval_session(self, payload, **kwargs):
+            captured["sessionPayload"] = payload
+            captured["sessionArgs"] = kwargs
+            return {"status": "known", "blindClaimBound": payload["blindClaimBound"]}
+
+    monkeypatch.setattr(main, "_research_memory_service_with_graph", FakeResearchService)
+    monkeypatch.setattr(
+        main.learning_service,
+        "validate_blind_research_claim",
+        lambda **kwargs: {"status": "ok", "knowledgeScope": "global_seed"},
+    )
+    kwargs = {
+        "response_profile": "create_compact",
+        "knowledge_scope": "local_user",
+        "run_ref": "campaign:test",
+        "claim_ref": "claim:test",
+    }
+    if explicit_flag is not None:
+        kwargs["blind_global_only"] = explicit_flag
+    result = main.query_research_memory("", **kwargs)
+    assert result["blindClaimBound"] is True
+    assert captured["knowledge_scope"] == "global_seed"
+    assert captured["blind_global_only"] is True
+    assert captured["sessionArgs"]["effective_scope"] == "global_seed"
 
 
 def test_research_memory_fragment_tools_do_not_require_graph_snapshot(monkeypatch, tmp_path):
@@ -835,8 +923,13 @@ def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_
 
     class _Stub:
         def load_build_xml(self, xml, name=None):
-            assert xml == artifact_xml
-            assert name == artifact_id
+            if name == artifact_id:
+                assert xml == artifact_xml
+            else:
+                assert name in {
+                    "lifecycle-observation-target-restore",
+                    "artifact-lifecycle-active-state-restore",
+                }
             return {"loaded": True}
 
         def get_xml(self):
@@ -844,6 +937,16 @@ def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_
 
         def get_build(self):
             return {"gear": {}}
+
+        def select_judge_skill(self, **kwargs):
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": kwargs["offense_skill_group_index"],
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                },
+            }
 
         def get_stats(self, keys=None):
             return {
@@ -870,10 +973,7 @@ def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_
         "read_final_build_artifact_for_export",
         lambda requested_id: (
             (
-                SimpleNamespace(
-                    artifact_id=artifact_id,
-                    source_hash=artifact_source_hash,
-                ),
+                _artifact_manifest(artifact_id, artifact_source_hash, "Flicker Strike"),
                 artifact_xml,
             )
             if requested_id == artifact_id
@@ -912,6 +1012,143 @@ def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_
     assert recorded["result"]["evaluatedSourceHash"] == artifact_source_hash
 
 
+def test_current_lifecycle_observation_target_uses_real_skill_group_shape():
+    from server import main
+
+    class _Stub:
+        @staticmethod
+        def transaction_lock():
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        @staticmethod
+        def get_xml():
+            return "<PathOfBuilding/>"
+
+        @staticmethod
+        def call(method):
+            assert method == "list_skill_groups"
+            return {
+                "mainGroupIndex": 2,
+                "groups": [
+                    {
+                        "index": 2,
+                        "isMain": True,
+                        "mainActiveSkill": 1,
+                        "activeSkill": "Tempest Bell",
+                        "activeSkills": [{"index": 1, "name": "Tempest Bell"}],
+                        "gems": [],
+                    }
+                ],
+            }
+
+    assert main._current_lifecycle_observation_target(_Stub()) == {
+        "groupIndex": 2,
+        "activeIndex": 1,
+        "skillName": "Tempest Bell",
+    }
+
+
+def test_lifecycle_selector_restore_failure_is_bounded(monkeypatch):
+    from contextlib import nullcontext
+    from server import main
+
+    xml = """<PathOfBuilding><Build className="Monk" level="40" mainSocketGroup="1"/>
+    <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Tempest Bell" skillId="TempestBellPlayer"/>
+    </Skill></SkillSet></Skills></PathOfBuilding>"""
+
+    class _Stub:
+        def transaction_lock(self):
+            return nullcontext()
+
+        def get_xml(self):
+            return xml
+
+        def get_build(self):
+            return {"gear": {}, "level": 40}
+
+        def call(self, method):
+            assert method == "list_skill_groups"
+            return {
+                "mainGroupIndex": 1,
+                "groups": [
+                    {
+                        "index": 1,
+                        "isMain": True,
+                        "mainActiveSkill": 1,
+                        "activeSkill": "Tempest Bell",
+                        "activeSkills": [{"index": 1, "name": "Tempest Bell"}],
+                        "gems": [],
+                    }
+                ],
+            }
+
+        def select_judge_skill(self, **kwargs):
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": kwargs["offense_skill_group_index"],
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                    "sourceMetric": "TotalDPS",
+                },
+            }
+
+        def get_stats(self, keys=None):
+            return {"stats": {"ManaCost": 0, "Life": 1000, "Speed": 1}}
+
+        def get_defenses(self):
+            return {"totalEHP": 2000}
+
+        def load_build_xml(self, xml, name=None):
+            raise RuntimeError("restore failed")
+
+    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
+    result = main.verify_lifecycle_stage(
+        "campaign_mid",
+        offense_skill_group_index=1,
+        expected_skill_name="Tempest Bell",
+    )
+
+    assert result["errorCode"] == "lifecycle_observation_restore_failed"
+    assert result["recoveryRequired"] is True
+
+
+def test_artifact_lifecycle_rejects_caller_target_that_differs_from_judge(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-target-mismatch"
+
+    class Stub:
+        def get_xml(self):
+            return "<PathOfBuilding/>"
+
+        def load_build_xml(self, xml, name=None):
+            del xml, name
+            return {"loaded": True}
+
+    monkeypatch.setattr(main, "get_engine", lambda: Stub())
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda _artifact_id: (
+            _artifact_manifest(artifact_id, "source-hash", "Tempest Bell"),
+            "<PathOfBuilding/>",
+        ),
+    )
+
+    result = main.verify_lifecycle_stage(
+        "maps_entry",
+        artifact_id=artifact_id,
+        offense_skill_group_index=1,
+        expected_skill_name="Whirling Assault",
+    )
+
+    assert result["errorCode"] == "artifact_lifecycle_observation_target_mismatch"
+
+
 def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch):
     from server import main
 
@@ -939,8 +1176,13 @@ def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch)
         refreshed = False
 
         def load_build_xml(self, xml, name=None):
-            assert xml == artifact_xml
-            assert name == artifact_id
+            if name == artifact_id:
+                assert xml == artifact_xml
+            else:
+                assert name in {
+                    "lifecycle-observation-target-restore",
+                    "artifact-lifecycle-active-state-restore",
+                }
             return {"loaded": True}
 
         def get_xml(self):
@@ -949,6 +1191,16 @@ def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch)
         def get_build(self):
             self.refreshed = True
             return {"gear": {}}
+
+        def select_judge_skill(self, **kwargs):
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": kwargs["offense_skill_group_index"],
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                },
+            }
 
         def get_stats(self, keys=None):
             return {
@@ -975,10 +1227,7 @@ def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch)
         "read_final_build_artifact_for_export",
         lambda requested_id: (
             (
-                SimpleNamespace(
-                    artifact_id=artifact_id,
-                    source_hash=artifact_source_hash,
-                ),
+                _artifact_manifest(artifact_id, artifact_source_hash, "Storm Wave"),
                 artifact_xml,
             )
             if requested_id == artifact_id
@@ -1007,6 +1256,87 @@ def test_verify_artifact_lifecycle_ignores_derived_pob_output_churn(monkeypatch)
     assert result["restoredEngineSourceHash"].startswith("sha256:")
 
 
+def test_verify_artifact_lifecycle_restores_callers_active_build(monkeypatch):
+    from server import main
+
+    artifact_id = "final-build:artifact-active-state-restore"
+    active_xml = '<PathOfBuilding><Build className="Sorceress" level="77" /></PathOfBuilding>'
+    artifact_xml = """<PathOfBuilding>
+  <Build className="Monk" level="80" mainSocketGroup="1" />
+  <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Storm Wave" gemId="Metadata/Items/Gems/SkillGemStormWave"
+      skillId="StormWavePlayer" />
+  </Skill></SkillSet></Skills>
+</PathOfBuilding>"""
+
+    class Stub:
+        def __init__(self):
+            self.xml = active_xml
+
+        def load_build_xml(self, xml, name=None):
+            del name
+            self.xml = xml
+            return {"loaded": True}
+
+        def get_xml(self):
+            return self.xml
+
+        def get_build(self):
+            return {"level": 80, "gear": {}}
+
+        def select_judge_skill(self, **kwargs):
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": kwargs["offense_skill_group_index"],
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                },
+            }
+
+        def get_stats(self, keys=None):
+            del keys
+            return {
+                "stats": {
+                    "Life": 3000,
+                    "Mana": 500,
+                    "ManaCost": 0,
+                    "TotalDPS": 100000,
+                }
+            }
+
+        def get_defenses(self):
+            return {
+                "resistances": {"fire": 75, "cold": 75, "lightning": 75},
+                "totalEHP": 16000,
+            }
+
+    engine = Stub()
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    monkeypatch.setattr(
+        main.generation_artifacts,
+        "read_final_build_artifact_for_export",
+        lambda requested_id: (
+            (_artifact_manifest(artifact_id, "artifact-source", "Storm Wave"), artifact_xml)
+            if requested_id == artifact_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        main.generation_progression_lifecycle,
+        "save_artifact_lifecycle_receipt",
+        lambda **kwargs: {
+            "status": "recorded",
+            "verificationRef": "lifecycle-verification:0123456789abcdef",
+        },
+    )
+
+    result = main.verify_lifecycle_stage("maps_entry", artifact_id=artifact_id)
+
+    assert result["ok"] is True
+    assert engine.get_xml() == active_xml
+
+
 def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
     from server import main
 
@@ -1025,6 +1355,9 @@ def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
         mutated = False
 
         def load_build_xml(self, xml, name=None):
+            del xml
+            if name == "artifact-lifecycle-active-state-restore":
+                self.mutated = False
             return {"loaded": True}
 
         def get_xml(self):
@@ -1033,6 +1366,16 @@ def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
         def get_build(self):
             self.mutated = True
             return {"gear": {}}
+
+        def select_judge_skill(self, **kwargs):
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": kwargs["offense_skill_group_index"],
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                },
+            }
 
         def get_stats(self, keys=None):
             return {"stats": {}}
@@ -1046,10 +1389,7 @@ def test_verify_artifact_lifecycle_rejects_semantic_state_mutation(monkeypatch):
         "read_final_build_artifact_for_export",
         lambda requested_id: (
             (
-                SimpleNamespace(
-                    artifact_id=artifact_id,
-                    source_hash=artifact_source_hash,
-                ),
+                _artifact_manifest(artifact_id, artifact_source_hash, "Storm Wave"),
                 artifact_xml,
             )
             if requested_id == artifact_id
@@ -1177,6 +1517,101 @@ def test_verify_campaign_mid_matches_named_single_target_skill_to_same_xml(monke
     assert result["stateSnapshot"]["singleTargetDuty"]["verified"] is True
     assert result["stateSnapshot"]["singleTargetDuty"]["matchedSkillName"] == "Tempest Bell"
     assert result["evaluatedSourceHash"]
+
+
+def test_verify_lifecycle_stage_reads_and_restores_explicit_judge_group(monkeypatch):
+    from server import main
+
+    original = """<PathOfBuilding><Build className="Monk" ascendClassName="Martial Artist"
+      level="40" mainSocketGroup="1"/><Skills activeSkillSet="1"><SkillSet id="1">
+      <Skill enabled="true"><Gem nameSpec="Whirling Assault" skillId="WhirlingAssaultPlayer"/>
+      <Gem nameSpec="Close Combat" gemId="Metadata/Items/Gems/SupportGemCloseCombat"/></Skill>
+      <Skill enabled="true"><Gem nameSpec="Tempest Bell" skillId="TempestBellPlayer"/></Skill>
+      </SkillSet></Skills></PathOfBuilding>"""
+
+    class _Stub:
+        def __init__(self):
+            self.xml = original
+            self.selected = 1
+
+        def get_xml(self):
+            return self.xml
+
+        def load_build_xml(self, xml, name=None):
+            self.xml = xml
+            self.selected = 1
+            return {"ok": True, "name": name}
+
+        def get_build(self):
+            return {"gear": {}, "level": 40}
+
+        def call(self, method, **_kwargs):
+            assert method == "list_skill_groups"
+            return {
+                "mainGroupIndex": self.selected,
+                "groups": [
+                    {
+                        "index": 1,
+                        "activeSkill": "Whirling Assault",
+                        "mainActiveSkill": 1,
+                        "gems": [{"name": "Whirling Assault", "isSupport": False}],
+                    },
+                    {
+                        "index": 2,
+                        "activeSkill": "Tempest Bell",
+                        "mainActiveSkill": 1,
+                        "gems": [{"name": "Tempest Bell", "isSupport": False}],
+                    },
+                ],
+            }
+
+        def select_judge_skill(self, **kwargs):
+            self.selected = kwargs["offense_skill_group_index"]
+            self.xml = self.xml.replace('mainSocketGroup="1"', 'mainSocketGroup="2"')
+            return {
+                "status": "selected",
+                "calculationContext": {
+                    "groupIndex": 2,
+                    "activeIndex": 1,
+                    "skillName": kwargs["expected_skill_name"],
+                },
+            }
+
+        def get_stats(self, keys=None):
+            cost = 200 if self.selected == 2 else 0
+            return {
+                "stats": {
+                    "TotalDPS": 5000,
+                    "Life": 2000,
+                    "Mana": 500,
+                    "ManaUnreserved": 500,
+                    "ManaCost": cost,
+                    "Speed": 2,
+                    "NetManaRegen": 0,
+                }
+            }
+
+        def get_defenses(self):
+            return {"totalEHP": 8000}
+
+    engine = _Stub()
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+
+    result = main.verify_lifecycle_stage(
+        "campaign_mid",
+        state={
+            "singleTargetSkillName": "Tempest Bell",
+            "singleTargetEvidenceRefs": ["skill:TempestBellPlayer"],
+        },
+        offense_skill_group_index=2,
+        expected_skill_name="Tempest Bell",
+        detail="full",
+    )
+
+    assert result["observationTarget"]["groupIndex"] == 2
+    assert result["observations"]["manaCost"] == 200
+    assert "sustain_ok" in result["failedChecks"]
+    assert engine.get_xml() == original
 
 
 def test_verify_endgame_budget_matches_build_defining_skill_to_same_xml(monkeypatch):
@@ -1394,16 +1829,42 @@ def test_equip_item_flags_illegal_affixes(monkeypatch):
         "60% increased maximum Mana\n+40% to Fire Resistance"
     )
     res = main.equip_item(raw, slot="Body Armour")
-    assert res.get("illegalAffixes")
-    assert "Sacramental Robe" in (res.get("legalityWarning") or "")
+    assert res["ok"] is False
+    assert res["errorCode"] == "item_legality_check_failed"
+    assert res["itemLegality"]["issues"]
 
 
 def test_equip_item_clean_gear_has_no_warning(monkeypatch):
     from server import main
 
     class _Stub:
+        def __init__(self):
+            self.xml = (
+                '<PathOfBuilding><Items activeItemSet="1">'
+                '<ItemSet id="1" /></Items></PathOfBuilding>'
+            )
+
+        def get_xml(self):
+            return self.xml
+
+        def load_build_xml(self, xml, name=None):
+            self.xml = xml
+            return {"ok": True, "name": name}
+
         def add_item(self, raw, slot=None):
+            import xml.etree.ElementTree as ET
+
+            root = ET.fromstring(self.xml)
+            items = root.find("Items")
+            item_set = items.find("ItemSet")
+            item = ET.SubElement(items, "Item", {"id": "1"})
+            item.text = raw
+            ET.SubElement(item_set, "Slot", {"name": slot or "Ring 1", "itemId": "1"})
+            self.xml = ET.tostring(root, encoding="unicode")
             return {"ok": True, "slot": slot or "Ring 1", "stats": {}}
+
+        def unequip_item(self, slot):
+            return {"ok": True, "slot": slot}
 
     monkeypatch.setattr(main, "get_engine", lambda: _Stub())
     monkeypatch.setattr(

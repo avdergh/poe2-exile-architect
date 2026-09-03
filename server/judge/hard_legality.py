@@ -8,6 +8,7 @@ legal in one layer and illegal in another.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from server.compute import completeness
@@ -15,9 +16,13 @@ from server.compute import completeness
 from . import rules, scoring
 
 
-AUDIT_VERSION = "hard_legality_v1"
-
-
+AUDIT_VERSION = "hard_legality_v4"
+SUPPORTED_AUDIT_VERSIONS = frozenset(
+    {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", AUDIT_VERSION}
+)
+ARTIFACT_COMPATIBLE_AUDIT_VERSIONS = frozenset(
+    {"hard_legality_v2", "hard_legality_v3", AUDIT_VERSION}
+)
 def audit_active_build(
     engine: Any,
     *,
@@ -26,9 +31,19 @@ def audit_active_build(
 ) -> dict[str, Any]:
     xml = snapshot_xml if snapshot_xml is not None else engine.get_xml()
     build = engine.get_build()
+    if source_context == "generated_candidate":
+        try:
+            build = dict(build)
+            build["passiveJewels"] = completeness.inspect_build_completeness(
+                engine,
+                snapshot_xml=xml,
+            ).get("passiveJewels")
+        except Exception:  # noqa: BLE001 - the final Judge fails closed on missing evidence.
+            build = dict(build)
     return audit_build(
         augment_build_with_snapshot_gear(build, xml),
         source_context=source_context,
+        require_create_completion=source_context == "generated_candidate",
     )
 
 
@@ -36,6 +51,7 @@ def audit_build(
     build: dict[str, Any],
     *,
     source_context: str = "generated_candidate",
+    require_create_completion: bool = False,
 ) -> dict[str, Any]:
     """Evaluate only deterministic legality; no strength scoring or quality threshold."""
 
@@ -92,15 +108,15 @@ def audit_build(
     )
     failures.extend(generated_item_delivery["hardFailures"])
 
-    spirit_used = _num(build.get("spiritUsed")) if build.get("spiritUsed") is not None else None
-    spirit_available = (
-        _num(build.get("spiritAvailable")) if build.get("spiritAvailable") is not None else None
+    spirit_budget = spirit_budget_check(build)
+    if spirit_budget["failureCode"]:
+        failures.append(str(spirit_budget["failureCode"]))
+
+    create_completion = check_create_completion(
+        build,
+        required=require_create_completion,
     )
-    spirit_ok = (
-        True if spirit_used is None or spirit_available is None else spirit_used <= spirit_available
-    )
-    if not spirit_ok:
-        failures.append("spirit_budget_exceeded")
+    failures.extend(create_completion["hardFailures"])
 
     if source_context == "trusted_reference":
         relaxed = {
@@ -132,16 +148,8 @@ def audit_build(
             "equippedItemRequirements": item_requirements,
             "activeGemRequirements": active_gem_requirements,
             "weaponCompatibility": weapon_check,
-            "spiritBudget": {
-                "ok": spirit_ok,
-                "used": spirit_used,
-                "available": spirit_available,
-                "over": (
-                    max(0.0, spirit_used - spirit_available)
-                    if spirit_used is not None and spirit_available is not None
-                    else None
-                ),
-            },
+            "spiritBudget": spirit_budget,
+            "createCompletion": create_completion,
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
             "equippedItemAffixes": item_affixes,
@@ -173,11 +181,14 @@ def check_generated_item_delivery(
             "applicable": False,
             "scaffoldSlots": [],
             "missingItemLevelSlots": [],
+            "flaskIssues": [],
             "hardFailures": [],
         }
     gear = build.get("gear") if isinstance(build.get("gear"), dict) else {}
+    level = int(_num(build.get("level")))
     scaffold_slots: list[str] = []
     missing_item_level_slots: list[str] = []
+    flask_issues: list[dict[str, str]] = []
     for slot, item in gear.items():
         if not isinstance(item, dict):
             continue
@@ -186,16 +197,36 @@ def check_generated_item_delivery(
         rarity = str(item.get("rarity") or "").casefold()
         if rarity in {"rare", "magic"} and item.get("itemLevel") is None:
             missing_item_level_slots.append(str(slot))
+    if level >= 80:
+        for slot in ("Flask 1", "Flask 2"):
+            item = gear.get(slot)
+            if not isinstance(item, dict):
+                flask_issues.append({"slot": slot, "reason": "missing"})
+                continue
+            rarity = str(item.get("rarity") or "").casefold()
+            if rarity == "unique":
+                continue
+            if rarity != "magic":
+                flask_issues.append({"slot": slot, "reason": "rarity_not_allowed"})
+                continue
+            affix_count = int(item.get("affixPrefixes") or 0) + int(
+                item.get("affixSuffixes") or 0
+            )
+            if affix_count == 0:
+                flask_issues.append({"slot": slot, "reason": "unmodified"})
     failures: list[str] = []
     if scaffold_slots:
         failures.append("scaffold_gear_must_be_replaced")
     if missing_item_level_slots:
         failures.append("rare_or_magic_item_level_missing")
+    if flask_issues:
+        failures.append("endgame_flask_loadout_incomplete")
     return {
         "ok": not failures,
         "applicable": True,
         "scaffoldSlots": sorted(scaffold_slots),
         "missingItemLevelSlots": sorted(missing_item_level_slots),
+        "flaskIssues": flask_issues,
         "hardFailures": failures,
     }
 
@@ -570,6 +601,152 @@ def _num(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _finite_num(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def spirit_budget_check(build: dict[str, Any]) -> dict[str, Any]:
+    """Validate the uncapped PoB Spirit ledger without inventing missing values."""
+    available = _finite_num(build.get("spiritAvailable"))
+    reserved_capped = _finite_num(build.get("spiritReservedCapped"))
+    unreserved = _finite_num(build.get("spiritUnreserved"))
+    requested = _finite_num(build.get("spiritRequested"))
+    over_by = _finite_num(build.get("spiritOverBy"))
+    used = _finite_num(build.get("spiritUsed"))
+    active_weapon_set_raw = build.get("activeWeaponSet")
+    active_weapon_set = (
+        active_weapon_set_raw
+        if isinstance(active_weapon_set_raw, int)
+        and not isinstance(active_weapon_set_raw, bool)
+        and active_weapon_set_raw in {1, 2}
+        else None
+    )
+    values = (available, reserved_capped, unreserved, requested, over_by, used)
+    if any(value is None for value in values) or active_weapon_set is None:
+        return {
+            "ok": False,
+            "failureCode": "spirit_budget_unverified",
+            "available": available,
+            "reservedCapped": reserved_capped,
+            "unreserved": unreserved,
+            "requested": requested,
+            "overBy": over_by,
+            "used": used,
+            "activeWeaponSet": active_weapon_set,
+            "ledgerStatus": "unavailable",
+        }
+    assert available is not None
+    assert reserved_capped is not None
+    assert unreserved is not None
+    assert requested is not None
+    assert over_by is not None
+    assert used is not None
+    consistent = (
+        available >= 0
+        and reserved_capped >= 0
+        and requested >= 0
+        and over_by >= 0
+        and math.isclose(requested, available - unreserved, abs_tol=1e-6)
+        and math.isclose(over_by, max(0.0, -unreserved), abs_tol=1e-6)
+        and math.isclose(reserved_capped, min(requested, available), abs_tol=1e-6)
+        and math.isclose(used, requested, abs_tol=1e-6)
+    )
+    if not consistent:
+        failure = "spirit_budget_unverified"
+        ok = False
+        ledger_status = "inconsistent"
+    else:
+        exceeded = over_by > 1e-6 or requested > available + 1e-6
+        failure = "spirit_budget_exceeded" if exceeded else None
+        ok = not exceeded
+        ledger_status = "consistent"
+    return {
+        "ok": ok,
+        "failureCode": failure,
+        "available": available,
+        "reservedCapped": reserved_capped,
+        "unreserved": unreserved,
+        "requested": requested,
+        "overBy": over_by,
+        "used": used,
+        "activeWeaponSet": active_weapon_set,
+        "ledgerStatus": ledger_status,
+    }
+
+
+def check_create_completion(
+    build: dict[str, Any],
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    """Enforce objective final-Create closure without affecting intermediate item probes."""
+
+    if not required:
+        return {
+            "ok": True,
+            "applicable": False,
+            "hardFailures": [],
+        }
+
+    failures: list[str] = []
+    spirit_available = _finite_num(build.get("spiritAvailable"))
+    spirit_used = _finite_num(build.get("spiritUsed"))
+    spirit_utilization = (
+        spirit_used / spirit_available
+        if spirit_available is not None
+        and spirit_used is not None
+        and spirit_available > 0
+        else 0.0
+    )
+    spirit_opportunity_review_required = (
+        spirit_available is not None
+        and spirit_available > 0
+        and spirit_utilization <= rules.SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD
+    )
+
+    unspent_points = _finite_num(build.get("unspentPoints"))
+    if unspent_points is None:
+        failures.append("unspent_passive_points_unverified")
+    elif unspent_points > 1e-6:
+        failures.append("unspent_passive_points_remaining")
+
+    jewel_state = build.get("passiveJewels")
+    if not isinstance(jewel_state, dict):
+        failures.append("passive_jewel_socket_state_unverified")
+        allocated_sockets = None
+        filled_sockets = None
+    else:
+        allocated_sockets = _finite_num(jewel_state.get("allocatedSockets"))
+        filled_sockets = _finite_num(jewel_state.get("filledSockets"))
+        if allocated_sockets is None or filled_sockets is None:
+            failures.append("passive_jewel_socket_state_unverified")
+        elif filled_sockets + 1e-6 < allocated_sockets:
+            failures.append("allocated_passive_jewel_socket_empty")
+
+    return {
+        "ok": not failures,
+        "applicable": True,
+        "hardFailures": failures,
+        "spirit": {
+            "available": spirit_available,
+            "used": spirit_used,
+            "utilization": spirit_utilization,
+            "opportunityReviewThreshold": rules.SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD,
+            "opportunityReviewRequired": spirit_opportunity_review_required,
+        },
+        "passives": {
+            "unspentPoints": unspent_points,
+        },
+        "passiveJewels": {
+            "allocatedSockets": allocated_sockets,
+            "filledSockets": filled_sockets,
+        },
+    }
 
 
 def _dedupe(values: list[str]) -> list[str]:

@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from server import paths
+from server.judge import hard_legality
 
 from . import models
 
@@ -44,6 +45,43 @@ class BoundRun:
     @property
     def artifact_selection_path(self) -> Path:
         return self.run_dir / "artifact-selection.json"
+
+
+_MECHANISM_BINDING_KEYS = (
+    "mechanismBlueprintRef",
+    "mechanismBlueprintHash",
+    "researchExecutionContractRef",
+    "researchExecutionStructureHash",
+    "mechanismSignatureHash",
+)
+
+
+def current_mechanism_binding(bound_run: BoundRun) -> dict[str, Any] | None:
+    """Return the exact current Draft/Blueprint binding for one generation run."""
+
+    try:
+        draft = json.loads(
+            (bound_run.run_dir / "draft-validation.json").read_text(encoding="utf-8")
+        )
+        blueprint = json.loads(
+            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(draft, dict) or not isinstance(blueprint, dict):
+        return None
+    binding = {key: draft.get(key) for key in _MECHANISM_BINDING_KEYS}
+    if (
+        not isinstance(binding["mechanismBlueprintRef"], str)
+        or not isinstance(binding["mechanismBlueprintHash"], str)
+        or not isinstance(binding["mechanismSignatureHash"], str)
+        or binding["mechanismBlueprintRef"] != blueprint.get("blueprintRef")
+        or binding["mechanismBlueprintHash"] != blueprint.get("blueprintHash")
+    ):
+        return None
+    return binding
 
 
 def runs_dir() -> Path:
@@ -127,7 +165,7 @@ def read_trusted_evaluation(bound_run: BoundRun) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("schemaVersion") not in {1, 2} or payload.get("runId") != bound_run.run_id:
+    if payload.get("schemaVersion") not in {1, 2, 3} or payload.get("runId") != bound_run.run_id:
         return None
     if not isinstance(payload.get("candidateId"), str) or not payload["candidateId"]:
         return None
@@ -135,7 +173,9 @@ def read_trusted_evaluation(bound_run: BoundRun) -> dict[str, Any] | None:
         return None
     if not isinstance(payload.get("judgeAdvisoryReport"), dict):
         return None
-    if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
+    if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
+        return None
+    if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
         return None
     return payload
 
@@ -152,7 +192,7 @@ def read_trusted_evaluations(bound_run: BoundRun) -> list[dict[str, Any]]:
             return []
         if (
             not isinstance(payload, dict)
-            or payload.get("schemaVersion") not in {1, 2}
+            or payload.get("schemaVersion") not in {1, 2, 3}
             or payload.get("runId") != bound_run.run_id
             or payload.get("attemptIndex") != attempt_index
             or not isinstance(payload.get("candidateId"), str)
@@ -160,7 +200,9 @@ def read_trusted_evaluations(bound_run: BoundRun) -> list[dict[str, Any]]:
             or not isinstance(payload.get("judgeAdvisoryReport"), dict)
         ):
             return []
-        if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
+        if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
+            return []
+        if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
             return []
         receipts.append(payload)
     return receipts
@@ -192,7 +234,7 @@ def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]
             raise RunStoreError("trusted_evaluation_corrupt") from exc
         if (
             not isinstance(payload, dict)
-            or payload.get("schemaVersion") not in {1, 2}
+            or payload.get("schemaVersion") not in {1, 2, 3}
             or payload.get("runId") != bound_run.run_id
             or payload.get("attemptIndex") != attempt_index
             or not isinstance(payload.get("candidateId"), str)
@@ -204,7 +246,9 @@ def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]
             models.JudgeAdvisoryReport.model_validate(payload.get("judgeAdvisoryReport"))
         except ValidationError as exc:
             raise RunStoreError("trusted_evaluation_corrupt") from exc
-        if payload.get("schemaVersion") == 2 and not _valid_hard_legality_audit(payload):
+        if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
+            raise RunStoreError("trusted_evaluation_corrupt")
+        if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
             raise RunStoreError("trusted_evaluation_corrupt")
         receipts.append(payload)
 
@@ -227,7 +271,13 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
     attempt_index = len(existing)
     if attempt_index >= 3:
         raise RunStoreError("retry_limit_reached")
-    schema_version = 2 if isinstance(payload.get("hardLegalityAudit"), dict) else 1
+    schema_version = (
+        3
+        if isinstance(payload.get("createQualityChecklist"), dict)
+        else 2
+        if isinstance(payload.get("hardLegalityAudit"), dict)
+        else 1
+    )
     receipt = {
         "schemaVersion": schema_version,
         "runId": bound_run.run_id,
@@ -236,7 +286,22 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "transientBuildState": payload["transientBuildState"],
         "judgeAdvisoryReport": payload["judgeAdvisoryReport"],
-        **({"hardLegalityAudit": payload["hardLegalityAudit"]} if schema_version == 2 else {}),
+        **(
+            {"mechanismBinding": payload["mechanismBinding"]}
+            if isinstance(payload.get("mechanismBinding"), dict)
+            else {}
+        ),
+        **({"hardLegalityAudit": payload["hardLegalityAudit"]} if schema_version in {2, 3} else {}),
+        **(
+            {
+                "deliveryStatus": payload["deliveryStatus"],
+                "createQualityChecklist": payload["createQualityChecklist"],
+                "qualityRepairPlan": payload.get("qualityRepairPlan") or [],
+                "lifecycleVerification": payload.get("lifecycleVerification") or {},
+            }
+            if schema_version == 3
+            else {}
+        ),
     }
     attempt_path = bound_run.trusted_evaluations_dir / f"attempt-{attempt_index}.json"
     if attempt_path.exists() or not write_json_atomic(attempt_path, receipt):
@@ -255,7 +320,7 @@ def _valid_hard_legality_audit(receipt: dict[str, Any]) -> bool:
     failures = audit.get("hardFailures")
     state_hash = audit.get("stateHash")
     if (
-        audit.get("auditVersion") != "hard_legality_v1"
+        audit.get("auditVersion") not in hard_legality.SUPPORTED_AUDIT_VERSIONS
         or audit.get("status") not in {"passed", "blocked"}
         or not isinstance(audit.get("hardLegalityReady"), bool)
         or not isinstance(failures, list)
@@ -269,6 +334,52 @@ def _valid_hard_legality_audit(receipt: dict[str, Any]) -> bool:
     return audit["hardLegalityReady"] is (not failures) and audit["status"] == (
         "passed" if not failures else "blocked"
     )
+
+
+def _valid_quality_checkpoint(receipt: dict[str, Any]) -> bool:
+    checklist = receipt.get("createQualityChecklist")
+    delivery_status = receipt.get("deliveryStatus")
+    expected = {
+        "skillSupportAudit",
+        "mechanismDependencies",
+        "bootstrapItems",
+        "gearAttainability",
+        "charmLoadout",
+        "jewelDecision",
+        "itemSockets",
+        "sustain",
+    }
+    if not isinstance(checklist, dict) or set(checklist) != expected:
+        return False
+    if delivery_status not in {"blocked", "candidate", "recommended"}:
+        return False
+    for value in checklist.values():
+        if (
+            not isinstance(value, dict)
+            or value.get("status") not in {"passed", "failed", "not_applicable"}
+            or not isinstance(value.get("reasons"), list)
+            or any(not isinstance(reason, str) for reason in value["reasons"])
+        ):
+            return False
+    hard_ready = bool((receipt.get("hardLegalityAudit") or {}).get("hardLegalityReady"))
+    failed = any(value["status"] == "failed" for value in checklist.values())
+    lifecycle = receipt.get("lifecycleVerification")
+    if (
+        not isinstance(lifecycle, dict)
+        or lifecycle.get("status") not in {"passed", "failed", "unknown"}
+        or not isinstance(lifecycle.get("pass"), bool)
+        or not isinstance(lifecycle.get("requiredChecks"), list)
+        or not isinstance(lifecycle.get("advisoryChecks"), list)
+    ):
+        return False
+    expected_status = (
+        "blocked"
+        if not hard_ready
+        else "candidate"
+        if failed or not lifecycle["pass"]
+        else "recommended"
+    )
+    return delivery_status == expected_status
 
 
 def write_artifact_selection(bound_run: BoundRun, payload: dict[str, Any]) -> bool:

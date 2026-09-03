@@ -83,8 +83,14 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   key 身份不变），联网/模型知识仅补维度、结论不替换 Family 结论；`buildFamilies` 为空时如实记录
   `retrievalOutcome="no_matching_memory"` + `noMatchReason`，以图/机制/语料与模型知识设计，数值
   与合法性仍以 PoB 读回与 Judge 为准。
-- 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_output /
-  complete_generation_review` 管理 Phase 5 run。不得搜索仓库工作目录或要求用户安装/执行
+- 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_draft /
+  validate_generation_output / complete_generation_review` 管理 Phase 5 run。draft validator 在
+  Research 深读完成、最终候选摘要形成、首次正式 Judge 前对每个机制修订调用一次；相同 Blueprint、
+  implementation signature 与 state hash 不得重复刷新。核心输出、辅助、伤害类型或 Mana/Life
+  支付域改变后必须重验 Draft；只有 Blueprint 的机制意图也改变时才重验 Blueprint。Draft 调用必须
+  传与 Checkpoint/Judge 相同的 group index 和精确技能名，完整 implementation signature 由服务端
+  从最终 PoB 观察，不能要求 Agent 在构筑前猜最终组号或辅助；它不持久化、不消耗 run，
+  最终 validator 仍负责 Judge/artifact 可信绑定。不得搜索仓库工作目录或要求用户安装/执行
   `scripts/create_build.py`；CLI 只保留为仓库开发兼容入口。
 - 发布插件内的普通 Research 必须通过 `start_research_run / claim_research_case /
   inspect_research_case / read_research_case / search_research_case / get_research_review_contract /
@@ -108,6 +114,13 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   `versionContext.researchMemoryRef` 以及 `researchMemoryUse.dedupeQueryRefs` 引用的 receipt
   都必须在当前 Phase 5 run 创建之后查询过（发现/比较阶段的旧 receipt 不能用于本 run 的
   evaluate/review，应在 run 内重新做定向查询）。
+- `search_graph_components` 的候选必须返回可原样传给 resolver 的 `resolverPayload.componentKey`。
+  Research Family 继续以 `skill:` key 为身份权威；`validate_level_availability` 负责把显示名、
+  `gem:` 与 `skill:` 解析到同一 gem/active-skill 身份，存在多 granting gem 时必须返回歧义，
+  不得猜选。PoB mutation 继续只接受宝石显示名。
+- `set_skill`、`add_skill_group`、`replace_skill_group` 及 mutation batch 必须先解析全部请求宝石，
+  再比较请求与 PoB 实际落盘的 canonical multiset；未知宝石直接拒绝，任何静默丢弃都回滚修改前
+  XML、保持 state hash，并返回 `skill_group_incomplete`。
 - Judge 对新生成的 80 级及以上候选使用确定性终局抗性门槛：火/冰/电分别不得低于 60%，
   非 CI 构筑的混沌抗性不得低于 30%；CI 只豁免混沌抗性。该门槛由共享 preflight 与正式
   Judge 入口共同执行，预检失败返回 `attemptConsumed=false`。79 级及以下、可信第三方参考
@@ -127,6 +140,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 重复的 completeness、preflight、stats 和 defenses 检查使用
   `inspect_generation_checkpoint`，以语义 `build_state_hash` 合并；状态改变后必须生成新检查，
   正式 Judge 与 artifact-bound lifecycle verification 仍是独立可信步骤。
+- 最终 Support、Jewel、Socket 回执必须在装备、天赋、珠宝、Rune 和 config 锁定后生成。
+  Checkpoint 必须区分 `current/stale/missing`；正式 Judge 对适用检查的 stale/missing、明确失败和
+  未应用正收益非消耗式拒绝。已执行的 `inconclusive` 不是 missing，允许继续但交付保持 candidate。
 - `inspect_generation_checkpoint` 和 `evaluate_generation_candidate` 必须复用同一个无评分
   `HardLegalityAudit`。属性、装备/宝石等级、武器兼容、Spirit、普通与武器组天赋预算、黄装
   词缀、生成候选遗留的 `Scaffold ...` 装备和 rare/magic 装备缺少 `Item Level` 等确定性非法状态
@@ -142,6 +158,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   再用独立的普通词缀检查器覆盖结果。receipt 只保存版本、来源类别和语义指纹，不保存完整物品
   文本；物品、槽位或版本改变时失败关闭。第三方旧物品无 receipt 可保留诊断，但不能因此成为
   新生成 artifact 的可信特殊来源。
+- public `equip_item` 与 mutation batch 必须共用一次事务性写入：显式特殊来源必须原样传
+  `craftReceiptRef`，写入后从实际槽位读回完整语义物品并再次核对 receipt；异常或 Rune 同槽继承
+  必须恢复输入 XML，只有 `rolledBack=true` 才可继续。
 - Create 的组件、天赋、物品和词缀搜索应使用精确 query，选中候选后改用精确详情工具；不得设置
   固定候选条数上限，也不得把默认返回量当成搜索上限。同一未改变 Family 身份的 Research 不设
   固定摘要、维度或 record 深读额度；应继续查询到设计职责、关键条件、失败场景和验证任务得到
@@ -150,10 +169,36 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   familyPremiseCatalog`。选中 Family 的关键失败 premise 必须在 `ResearchMemoryUse` 中标记
   `resolved/caveated/not_applicable`；resolved 只能引用本轮 record-detail 回执实际深读的解决
   记录。caveated premise 不自动判 BD 失败，只降低采纳档位并把风险写入注意事项。
+- 联网页面、外部样本、普通图/语料查询只能补充 `toolReferences / rationaleSummary /
+  unresolvedCaveats / toolFeedbackEvents`，不能写入 premise `resolutionRefs`；缺少本轮 deep-read
+  解决记录时 premise 必须保持 `caveated` 或明确 `not_applicable`。
 - 机制完整且合法的基础版本形成后必须做一次符合当前
   等级的主动质量收尾，检查高影响武器、辅助、天赋路径、珠宝、符文/灵魂核心和配置。Judge 报警
   不是探索前提；只去重同一 state hash、同一目标和同一参数的机械调用，不缩小合理的优化搜索
   空间，也不拿终局数值阈值要求低等级阶段。
+- Family `gear_synergy` 中以 `unique_enabler` 声明、且职责不是 `optional_upgrade` 或
+  `budget_substitute` 的暗金/暗金珠宝，默认属于所选 source-case 变体；必须先于普通黄装实装并逐组件
+  记录 `adopted/caveated/rejected`。当前版本不可用时使用 `rejected`，并在 summary/application 中
+  明确记录 unavailable 原因。只有用户明确排除、当前版本不可用、机制前提被当前事实否定，
+  或一次配套重规划后仍存在无法修复的合法性/资源失败时才能拒绝。普通 `relevant_uniques` 候选放在
+  基础黄装后评估；radius/Time-Lost 继续位置化评估，普通黄珠宝最后优化。价格不得成为拒绝理由。
+- 90 级 Create 默认以三槽腰带和三个护符为质量目标，但 1/2 槽腰带仍是合法状态；缺少
+  `Charm Slots` 为 unknown，不得默认为 0。有效容量读取最终 PoB `CharmLimit` 并封顶 3，装备
+  护符超过容量必须回滚并作为硬合法性失败。
+- 所有可镶嵌装备都必须评估符文/灵魂核心；`optimize_item_sockets` 只在保留现有底材、物品等级、
+  隐式和显式的前提下增加 1–2 个 PoB crafting option，并继续用现有 receipt + `equip_item`
+  写回。无机制收益或机制不适用可以不用，但必须记录理由；价格和用户预算不参与采用决定。
+- 90 级 softcore Create 的装备优化默认在元素 60%、非 CI 混沌 30% 后停止继续主动购买普通抗性；
+  用户明确要求满抗时才覆盖为 75%。`plan_gear / optimize_item / craft_item /
+  optimize_item_sockets` 必须共用该饱和目标，并保留 `resistsCapped` 兼容字段与新的
+  `resistanceTargetMet` 语义。
+- Lifecycle 发现未建模资源恢复时只输出“需验证未建模恢复覆盖”，不得据静态缺口直接宣布会断蓝。
+  Agent 先用 PoB/corpus/Graph/Research，必要时联网复核，再针对辅助、天赋、技能、装备、护符、
+  镶嵌、药剂或轮转修复。每个 run 最多两次核心机制级重建；两次后硬合法但仍无法证明只能导出为
+  “待验证候选”，已确认真实失败且补救失败则停止交付。局部装备/辅助/天赋修正不计核心重建。
+- Lifecycle/Checkpoint 的持续资源审计只声明覆盖 Mana 与 Life，并读取两者的每次、百分比、每秒和
+  百分比每秒成本。`*LeechGainRate` 已含 On-Hit，不得再与 `*OnHitRate` 相加；后者只能作为缺失时的
+  回退。未建模 Mana 恢复不能覆盖确定性的 Life 失败。
 - 每个通过正式 Judge 且通过共享硬合法性审计的 attempt 都是可保护的 passing baseline。主动
   质量收尾必须在隔离的新状态上进行；后续候选更好且合法时可晋升，若仅质量增量导致回归，可用
   `save_final_build_artifact(..., attempt_index=baseline轮次)` 保存仍有效的精确 baseline。即使
@@ -163,6 +208,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   必须失败关闭。
 - lifecycle gate 使用默认 compact 响应，每个正式 Judge attempt 前最多一次；
   同一 state hash 不重复验证。artifact 保存后再独立且只执行一次 artifact-bound lifecycle。
+  活动 lifecycle 必须显式复用该 attempt 的 offense group/name；artifact lifecycle 强制继承
+  artifact Judge calculation context，不接受调用方改选其他技能。
   调参期间使用 `inspect_generation_checkpoint`，`detail=full` 只用于具名局部诊断。
 - Create 查询使用紧凑 response profile，
   选定的重要 evidence、条件、失败场景、验证任务和未解决项写入本地有界 working checkpoint。
@@ -348,7 +395,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   runtime 事实源。
 - `server/runtime/tool_telemetry.py`：只记录工具名、耗时、响应字节和安全关联 ID 的上下文成本
   遥测；禁止记录参数正文和响应内容。
-- 价格只作风险和获取难度说明。
+- 价格与用户预算只作风险和获取难度说明，不改变普通 Create 的 Family、暗金、黄装、符文或药剂
+  选择；`get_prices` 必须在装备和机制方案锁定后调用。
 
 ### Live / Freshness 层
 
@@ -389,6 +437,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `scripts/package_physical_graph_seed.py`：把最新验证物理图转换为不含绝对路径的发布种子。
 - `scripts/build_codex_plugin.py`：把服务、helper、依赖、语料、Research/graph 种子和 PoB 子集组装为
   自包含 Codex 插件；必要种子缺失时失败关闭。
+- 更新 Codex Desktop 插件时先用 `codex plugin list --json` 确认真实 local source，把已验证 stage 以 staging + 可恢复 backup 部署到该 source，再执行 `codex plugin add <plugin>@<marketplace>`。
+- WindowsApps 内 `codex.exe` 若被 ACL 拒绝，复制同一桌面端签名程序到任务临时目录，核对 SHA-256 与 Authenticode 后安装；确认无 PoB 子进程再停精确旧插件服务，完成后删除临时副本。
 - `scripts/adapt_skills_for_dsh.py`：把插件 skills 改写为 DSH 工具前缀与 DSH 说明头，生成
   `dsh/agent-presets/poe-bd/skills/`；幂等运行，`--check` 同时校验缺失/陈旧文件、裸工具名、
   旧前缀和重复前缀。

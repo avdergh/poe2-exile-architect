@@ -20,7 +20,7 @@ def _packet() -> dict:
         "copySafetyRules": [
             "Final output must not contain raw PoB code, raw XML, full gear, full passive path, or full gem links."
         ],
-        "requestedOutputSchema": "ResearcherOutput schema_version=5",
+        "requestedOutputSchema": "ResearcherOutput schema_version=6 / DeepResearchRecord schema 2",
     }
 
 
@@ -39,8 +39,8 @@ def test_researcher_prompt_is_tool_driven_not_plain_json_output():
     text = _prompt_text(package)
 
     assert package["ok"] is True
-    assert package["schemaVersion"] == 5
-    assert "ResearcherOutput schema_version=5" in text
+    assert package["schemaVersion"] == 6
+    assert "ResearcherOutput schema_version=6" in text
     assert "MUST NOT output the final JSON as regular text" in text
     assert "DO NOT output your final analysis as markdown JSON" in text
     assert "propose_research_fragments" in text
@@ -216,7 +216,7 @@ def test_researcher_prompt_requires_focused_deep_records_and_content_budget():
     assert "length_exception_reason" in text
     assert '"deep_research_records"' in text
     assert '"research_group_id"' in text
-    assert '"record_schema_version":1' in text
+    assert '"record_schema_version":2' in text
 
 
 def test_researcher_prompt_separates_caveats_from_family_and_requires_gear_responsibilities():

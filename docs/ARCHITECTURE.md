@@ -75,7 +75,7 @@ Endgame build request
   -> shared pre-Judge hard-legality audit; preserve every passing baseline
   -> FamilyTarget + identity stable-key set + immutable artifact/hash
   -> artifact-bound lifecycle receipt
-  -> delivery package (PoB XML / import code / `.build`)
+  -> delivery package (PoB XML / import code / `.build` / public poe.ninja PoB link)
 ```
 
 ## Core Runtime Modules
@@ -126,7 +126,7 @@ Planned modules should follow the same layering:
   create tasks or call models.
 - Research schemas own concrete build knowledge. Learning Memory accepts only cross-dimensional
   Create behavior lessons and their corrections.
-- Git and plugin releases carry sanitized Research (maintainer `global_seed/local_user`) and
+- Git and plugin releases carry only provenance-proven, creator-safe `global_seed` Research and
   Learning Memory seeds. First use copies them into user data; runtime stores remain separate and
   never write back into bundled seeds.
 - The external Architect Agent owns web research and build design when a Family is not recalled.
@@ -135,7 +135,8 @@ Planned modules should follow the same layering:
 - Ordinary Create keeps its single-stage semantics: exact-version Research returns up to ten mature
   Families, and the Agent compares every returned candidate (2-10); a uniquely user-locked Family
   skips discovery. Candidate comparison uses no full Judge/global optimization. Judge is
-  advisory; typed query receipts validate Family identity and every adopted Research item.
+  advisory. Create adopts only one `(knowledgeScope, sourceCaseRef)` lane; a complete bounded
+  retrieval-session receipt chain validates Family identity, provenance and every adopted item.
 - Community guides are candidate evidence and never write directly to Research or Learning Memory;
   current graph/corpus/mechanic evidence must revalidate their premises.
 - Phase benchmark reports own claims of progress.

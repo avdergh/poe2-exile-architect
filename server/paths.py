@@ -1,20 +1,39 @@
 """Runtime path resolution.
 
-The server ships a self-contained *seed* (bundled corpus + PoB engine) but auto-updates
-into a writable per-user data directory. Every runtime path prefers the updated user copy
-and falls back to the bundled seed, so a fresh install works offline and updates layer on top.
+The server ships a self-contained *seed* and can install validated updates into writable
+user-data.  Data files may be selected independently, but the PoB source tree and its headless
+bridge are one executable runtime and must always be selected as a pair.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import sqlite3
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 # Bundle/repo root (this file is <root>/server/paths.py).
 BUNDLE_ROOT = Path(__file__).resolve().parents[1]
 
 _PLATFORM_DIR = {"win32": "win-x64", "darwin": "mac-arm64", "linux": "linux-x64"}
+
+# Bump this only when bundled Python requires a newer headless bridge contract.  Validated
+# user-data engines advertise the same value in installed.json; an older or unlabelled engine is
+# deliberately ignored instead of being mixed with the new Python runtime.
+POB_RUNTIME_CONTRACT = 4
+
+
+@dataclass(frozen=True)
+class PobRuntimePair:
+    """One indivisible PoB source-tree + headless-bridge selection."""
+
+    root: Path
+    src_dir: Path
+    headless_script: Path
+    source: str
 
 
 def user_data_dir() -> Path:
@@ -36,8 +55,113 @@ def _prefer(updated: Path, seed: Path, *, is_dir: bool = False) -> Path:
     return updated if ok else seed
 
 
+def _version_key(version: object) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", str(version or ""))) or (0,)
+
+
+def bundle_app_version() -> str:
+    """Return the bundled MCP application version.
+
+    ``data/VERSION`` is the independently released corpus/data stamp.  Runtime-engine
+    compatibility is tied to the Python/MCP application instead, whose version lives in the
+    bundle manifest.
+    """
+
+    try:
+        manifest = json.loads((BUNDLE_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "0"
+    return str(manifest.get("version") or "0") if isinstance(manifest, dict) else "0"
+
+
+def _pob_runtime_at(root: Path, *, source: str) -> PobRuntimePair:
+    return PobRuntimePair(
+        root=root,
+        src_dir=root / "PathOfBuilding-PoE2" / "src",
+        headless_script=root / "pob_headless.lua",
+        source=source,
+    )
+
+
+def _runtime_pair_complete(pair: PobRuntimePair) -> bool:
+    return (
+        pair.src_dir.is_dir()
+        and pair.headless_script.is_file()
+        and (pair.root / "PathOfBuilding-PoE2" / "runtime" / "lua").is_dir()
+    )
+
+
+def _compatible_user_pob_runtime(pair: PobRuntimePair) -> bool:
+    if not _runtime_pair_complete(pair):
+        return False
+    try:
+        metadata = json.loads((user_data_dir() / "installed.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    engine_contract = metadata.get("engine_contract")
+    if isinstance(engine_contract, bool) or not isinstance(engine_contract, int):
+        return False
+    if engine_contract != POB_RUNTIME_CONTRACT:
+        return False
+    # engine_app_version is bound to the engine payload.  app_version remains a compatibility
+    # fallback for the first release that adds this field to existing validated installations.
+    engine_version = metadata.get("engine_app_version") or metadata.get("app_version")
+    bundled_version = bundle_app_version()
+    if _version_key(engine_version) == (0,) or _version_key(bundled_version) == (0,):
+        return False
+    return _version_key(engine_version) >= _version_key(bundled_version)
+
+
+def pob_runtime_pair() -> PobRuntimePair:
+    """Select a complete, compatible PoB runtime without mixing user and bundle paths."""
+
+    updated = _pob_runtime_at(user_data_dir() / "pob", source="user-data")
+    if _compatible_user_pob_runtime(updated):
+        return updated
+    return _pob_runtime_at(BUNDLE_ROOT / "pob", source="bundle")
+
+
+def _corpus_revision(path: Path) -> tuple[int, str] | None:
+    """Read the corpus-owned schema/build stamp without trusting external install metadata."""
+
+    if not path.is_file():
+        return None
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        rows = dict(
+            con.execute(
+                "SELECT key, value FROM meta WHERE key IN ('schema_version', 'built_at')"
+            ).fetchall()
+        )
+        return int(rows["schema_version"]), str(rows["built_at"])
+    except (KeyError, OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        if con is not None:
+            con.close()
+
+
 def corpus_path() -> Path:
-    return _prefer(user_data_dir() / "corpus.sqlite", BUNDLE_ROOT / "data" / "corpus.sqlite")
+    """Select the newest compatible corpus; an old user copy must not shadow a new bundle seed."""
+
+    updated = user_data_dir() / "corpus.sqlite"
+    seed = BUNDLE_ROOT / "data" / "corpus.sqlite"
+    if not updated.is_file():
+        return seed
+    if not seed.is_file():
+        return updated
+    updated_revision = _corpus_revision(updated)
+    seed_revision = _corpus_revision(seed)
+    if updated_revision is None or seed_revision is None:
+        return seed
+    # A different schema belongs to a different code/data contract. The current bundle seed is
+    # the only version known to match this code; same-schema user data may still be a newer update.
+    if updated_revision[0] != seed_revision[0]:
+        return seed
+    return updated if updated_revision[1] >= seed_revision[1] else seed
 
 
 def reference_builds_path() -> Path:
@@ -120,18 +244,11 @@ def mature_learning_seed_fixtures_path() -> Path:
 
 
 def pob_src_dir() -> Path:
-    return _prefer(
-        user_data_dir() / "pob" / "PathOfBuilding-PoE2" / "src",
-        BUNDLE_ROOT / "pob" / "PathOfBuilding-PoE2" / "src",
-        is_dir=True,
-    )
+    return pob_runtime_pair().src_dir
 
 
 def pob_headless_script() -> Path:
-    return _prefer(
-        user_data_dir() / "pob" / "pob_headless.lua",
-        BUNDLE_ROOT / "pob" / "pob_headless.lua",
-    )
+    return pob_runtime_pair().headless_script
 
 
 def bundled_luajit() -> Path | None:

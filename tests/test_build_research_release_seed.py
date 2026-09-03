@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from scripts import build_research_release_seed as release_seed
 from server.knowledge import mature_learning
+from server.knowledge import research_runtime
 
 
 def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
@@ -16,11 +17,11 @@ def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
         con.execute(
             """
             INSERT OR IGNORE INTO research_build_families(
-                build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
+                knowledge_scope, build_family_key, ascendancy_key, primary_skill_key, secondary_skill_keys,
                 evidence_count, created_at, last_seen_at
-            ) VALUES (?, 'ascendancy:test', 'skill:test', '[]', 1, ?, ?)
+            ) VALUES (?, ?, 'ascendancy:test', 'skill:test', '[]', 1, ?, ?)
             """,
-            (family_key, now, now),
+            (scope, family_key, now, now),
         )
         con.execute(
             """
@@ -35,7 +36,7 @@ def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
             ) VALUES (
                 ?, ?, ?, ?, 1, 'mechanic_chain', '安全标题', '安全摘要', '安全机制正文', 'zh-CN',
                 '["skill:test"]', '[]', '["case-ref:test"]', '["evidence-ref:test"]',
-                '[]', '[]', '{}', 'test-v1', 1, '0.5.4', '0_5', '0.22.0',
+                '[]', '[]', '{}', 'test-v1', 2, '0.5.4', '0_5', '0.22.0',
                 'creator_visible', 'train_context', ?, 'valid', 'passed', '{}', ?, ?
             )
             """,
@@ -48,6 +49,48 @@ def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
                 now,
                 now,
             ),
+        )
+        source_ref = f"case-ref:{suffix}"
+        con.execute(
+            "UPDATE deep_research_records SET source_case_refs = ? WHERE record_id = ?",
+            (json.dumps([source_ref]), f"record:{suffix}"),
+        )
+        con.execute(
+            "INSERT INTO research_source_provenance VALUES (?, ?, 'test', ?, ?)",
+            (source_ref, scope, now, now),
+        )
+        con.execute(
+            "INSERT INTO research_build_family_evidence VALUES (?, ?, ?, ?, ?)",
+            (scope, family_key, source_ref, now, now),
+        )
+        con.execute(
+            """
+            INSERT INTO deep_research_record_evidence(
+                knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
+                observed_component_keys, observed_component_mentions, conditions,
+                failure_conditions, game_patch, passive_tree_version, pob_version_or_commit,
+                accepted_projection_hash, source_state_scope, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, '["evidence-ref:test"]', '["skill:test"]', '[]', '[]', '[]',
+                      '0.5.4', '0_5', '0.22.0', NULL, 'unknown', ?, ?)
+            """,
+            (scope, f"knowledge:{suffix}", source_ref, now, now),
+        )
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id = ?", (f"record:{suffix}",)
+        ).fetchone()
+        projection = research_runtime.projection_hash(
+            {**dict(row), "source_state_scope": "state_agnostic"}
+        )
+        con.execute(
+            "UPDATE deep_research_records SET source_state_scope = 'state_agnostic', "
+            "projection_hash = ? WHERE record_id = ?",
+            (projection, f"record:{suffix}"),
+        )
+        con.execute(
+            "UPDATE deep_research_record_evidence SET source_state_scope = 'state_agnostic', "
+            "accepted_projection_hash = ? WHERE knowledge_scope = ? AND knowledge_key = ?",
+            (projection, scope, f"knowledge:{suffix}"),
         )
         con.commit()
 
@@ -118,22 +161,27 @@ def test_build_release_seed_is_copy_safe_and_does_not_mutate_source(tmp_path):
     )
 
     assert report["status"] == "built"
-    assert report["recordCount"] == 2
-    assert report["familyCount"] == 2
+    assert report["recordCount"] == 1
+    assert report["familyCount"] == 1
     assert report["edgeCount"] == 1
-    assert report["scopeCounts"] == {"global_seed": 1, "local_user": 1}
+    assert report["scopeCounts"] == {"global_seed": 1}
     assert output.is_file()
     with closing(sqlite3.connect(source)) as con:
         assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 2
     with closing(sqlite3.connect(output)) as con:
         assert con.execute(
             "SELECT knowledge_scope FROM deep_research_records ORDER BY knowledge_scope"
-        ).fetchall() == [("global_seed",), ("local_user",)]
+        ).fetchall() == [("global_seed",)]
         assert con.execute("SELECT build_family_key FROM research_build_families").fetchall() == [
-            ("family:private",),
             ("family:public",),
         ]
         assert con.execute("SELECT count(*) FROM research_dedupe_queries").fetchone()[0] == 0
+        assert {key for (key,) in con.execute("SELECT key FROM meta")} == {
+            "schema_version",
+            "release_seed_kind",
+            "release_seed_version",
+            "release_seed_created_at",
+        }
     mature_learning.validate_release_seed(output)
 
 

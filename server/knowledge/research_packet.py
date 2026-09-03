@@ -19,7 +19,25 @@ from .. import paths
 
 PACKET_PREFIX = "poe-bd-creator-research-packet-"
 MAX_TTL_SECONDS = 24 * 60 * 60
-RESEARCH_SECTIONS = ("skills", "gear", "jewels", "passives", "config", "build")
+RESEARCH_SECTIONS = (
+    "skills",
+    "gear",
+    "jewels",
+    "passives",
+    "config",
+    "build",
+    "pob-readback",
+)
+RESEARCH_READ_ORDER = (
+    "skills",
+    "skill-groups",
+    "gear",
+    "jewels",
+    "passives",
+    "config",
+    "build",
+    "pob-readback",
+)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 MAX_RESPONSE_CHARS = 12_000
@@ -59,12 +77,13 @@ def build_research_packet(
     packet_core = {
         "safeMetadata": safe_metadata,
         "rawContext": raw_context,
+        "pobReadback": dict(case.get("pobReadback") or {}),
         "copySafetyRules": [
             "Final output must not contain raw PoB code/XML, account identity, copied guide prose, or a third-party whole-character mirror.",
             "Complete core skill/support, local passive, and item interaction packages are allowed as focused knowledge records.",
             "Durable artifacts may contain only safe hashes and safe evidence refs.",
         ],
-        "requestedOutputSchema": "ResearcherOutput schema_version=5",
+        "requestedOutputSchema": "ResearcherOutput schema_version=6 / DeepResearchRecord schema 2",
     }
     safe_hash = _safe_hash(packet_core)
     packet = {
@@ -519,20 +538,25 @@ def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
         for key in SAFE_METADATA_KEYS
         if key in metadata and metadata[key] not in (None, "")
     }
+    skill_groups = build_skill_evidence_manifest(normalized).get("activeSkillGroups") or []
+    section_counts = {
+        **{name: len(sections[name]) for name in RESEARCH_SECTIONS},
+        "skill-groups": len(skill_groups),
+    }
     return {
         "status": "ok",
         "packetId": str(normalized.get("packetId") or ""),
         "packetSafeHash": str(normalized.get("safeHash") or ""),
         "safeMetadata": safe_metadata,
         "sections": {
-            name: {"itemCount": len(sections[name]), "available": bool(sections[name])}
-            for name in RESEARCH_SECTIONS
+            name: {"itemCount": section_counts[name], "available": bool(section_counts[name])}
+            for name in RESEARCH_READ_ORDER
         },
         "activeSets": _active_sets(normalized),
         "jewelCounts": jewel_counts(packet, sections=sections),
         "jewelAdvisories": jewel_advisories(packet, sections=sections),
         **_unslotted_summary(normalized),
-        "recommendedReadOrder": list(RESEARCH_SECTIONS),
+        "recommendedReadOrder": list(RESEARCH_READ_ORDER),
         "requiredCoverage": [
             "supports",
             "rotation",
@@ -545,41 +569,94 @@ def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
-    """Return active skill-group identities for acceptance diagnostics."""
+    """Return each root skill gem and the items physically socketed into it.
+
+    PoB calls the container a ``socketGroup`` and serializes its gems as a flat list, but the
+    character import builds that list from one root ``skillData`` followed by its
+    ``socketedItems``.  Preserve that physical hierarchy instead of treating sibling active
+    effects as competing support owners.
+    """
+    normalized = _unwrap_packet(packet)
     groups: list[dict[str, Any]] = []
-    for item in _packet_sections(_unwrap_packet(packet))["skills"]:
+    for item in _packet_sections(normalized)["skills"]:
         if not item.get("activeSkillSet") or not item.get("enabled"):
             continue
-        enabled_gems = [gem for gem in item.get("gems") or [] if gem.get("enabled")]
-        active_skills = [
+        skill_set_id = str(item.get("skillSetId") or "")
+        group_index = int(item.get("groupIndex") or 0)
+        group_ref = f"skill-set:{skill_set_id}:group:{group_index}"
+        all_gems: list[tuple[int, dict[str, Any]]] = [
+            (gem_index, gem)
+            for gem_index, gem in enumerate(item.get("gems") or [], start=1)
+        ]
+        if not all_gems:
+            continue
+        root_gem_index, root_gem = all_gems[0]
+        if root_gem.get("isSupport") or not str(root_gem.get("name") or ""):
+            continue
+        root_skill_ref = f"{group_ref}:root:{root_gem_index}"
+        root_skill = {
+            **_skill_manifest_entry(
+                root_gem,
+                gem_index=root_gem_index,
+                active_skill_ref=f"{group_ref}:active:{root_gem_index}",
+            ),
+            "rootSkillRef": root_skill_ref,
+            "physicalRole": "root_skill",
+        }
+        socketed_items = [
             {
                 "name": str(gem.get("name") or ""),
                 "skillId": str(gem.get("skillId") or ""),
+                "gemId": str(gem.get("gemId") or ""),
+                "gemIndex": gem_index,
+                "socketedItemRef": f"{group_ref}:socketed:{gem_index}",
+                "socketedUnderSkillRef": root_skill_ref,
+                "itemKind": "support" if gem.get("isSupport") else "skill",
+                "enabled": bool(gem.get("enabled")),
                 "nameSource": str(gem.get("nameSource") or "gem_name"),
                 "enableGlobal1": bool(gem.get("enableGlobal1")),
                 "enableGlobal2": bool(gem.get("enableGlobal2")),
             }
-            for gem in enabled_gems
-            if not gem.get("isSupport") and str(gem.get("name") or "")
+            for gem_index, gem in all_gems[1:]
+            if str(gem.get("name") or "")
+        ]
+        active_skills = [
+            {
+                **_skill_manifest_entry(
+                    gem,
+                    gem_index=gem_index,
+                    active_skill_ref=f"{group_ref}:active:{gem_index}",
+                ),
+                "physicalRole": "root_skill" if gem_index == root_gem_index else "socketed_skill",
+                **(
+                    {}
+                    if gem_index == root_gem_index
+                    else {"socketedUnderSkillRef": root_skill_ref}
+                ),
+            }
+            for gem_index, gem in all_gems
+            if gem.get("enabled") and not gem.get("isSupport") and str(gem.get("name") or "")
         ]
         supports = [
             {
                 "name": str(gem.get("name") or ""),
                 "gemId": str(gem.get("gemId") or ""),
+                "gemIndex": gem_index,
+                "socketedItemRef": f"{group_ref}:socketed:{gem_index}",
+                "socketedUnderSkillRef": root_skill_ref,
                 "nameSource": str(gem.get("nameSource") or "gem_name"),
                 "enableGlobal1": bool(gem.get("enableGlobal1")),
                 "enableGlobal2": bool(gem.get("enableGlobal2")),
             }
-            for gem in enabled_gems
-            if gem.get("isSupport") and str(gem.get("name") or "")
+            for gem_index, gem in all_gems[1:]
+            if gem.get("enabled") and gem.get("isSupport") and str(gem.get("name") or "")
         ]
-        if not active_skills:
-            continue
-        skill_set_id = str(item.get("skillSetId") or "")
-        group_index = int(item.get("groupIndex") or 0)
         groups.append(
             {
-                "groupRef": f"skill-set:{skill_set_id}:group:{group_index}",
+                "groupRef": group_ref,
+                "rootSkillRef": root_skill_ref,
+                "rootSkill": root_skill,
+                "socketedItems": socketed_items,
                 "slot": str(item.get("slot") or ""),
                 "weaponSetScope": str(item.get("weaponSetScope") or "global"),
                 "mainActiveSkill": str(item.get("mainActiveSkill") or ""),
@@ -590,7 +667,50 @@ def build_skill_evidence_manifest(packet: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "activeSkillGroups": groups,
+        "socketHierarchyPolicyVersion": 1,
         "noRawMatureBuildMaterial": True,
+    }
+
+
+def _skill_manifest_entry(
+    gem: dict[str, Any], *, gem_index: int, active_skill_ref: str
+) -> dict[str, Any]:
+    return {
+        "name": str(gem.get("name") or ""),
+        "skillId": str(gem.get("skillId") or ""),
+        "gemId": str(gem.get("gemId") or ""),
+        "gemIndex": gem_index,
+        "activeSkillRef": active_skill_ref,
+        "nameSource": str(gem.get("nameSource") or "gem_name"),
+        "enableGlobal1": bool(gem.get("enableGlobal1")),
+        "enableGlobal2": bool(gem.get("enableGlobal2")),
+        "enabled": bool(gem.get("enabled")),
+    }
+
+
+def _public_skill_group(group: dict[str, Any]) -> dict[str, Any]:
+    """Project one socket group into the non-duplicated Researcher-facing hierarchy.
+
+    ``activeSkills`` and ``supports`` are internal derived indexes over the same gems.  They
+    remain available to acceptance diagnostics, but returning them beside ``rootSkill`` and
+    ``socketedItems`` makes every gem appear twice and obscures the physical socket layout.
+    """
+
+    root = group.get("rootSkill")
+    root = dict(root) if isinstance(root, dict) else {}
+    root.pop("activeSkillRef", None)
+    root.pop("physicalRole", None)
+    root["itemKind"] = "skill"
+    socketed_items = [
+        dict(item) for item in group.get("socketedItems") or [] if isinstance(item, dict)
+    ]
+    return {
+        "groupRef": str(group.get("groupRef") or ""),
+        "rootSkillRef": str(group.get("rootSkillRef") or ""),
+        "rootSkill": root,
+        "socketedItems": socketed_items,
+        "slot": str(group.get("slot") or ""),
+        "weaponSetScope": str(group.get("weaponSetScope") or "global"),
     }
 
 
@@ -613,12 +733,16 @@ def read_packet_section(
     """
     normalized_section = str(section or "").strip().lower()
     if normalized_section not in RESEARCH_SECTIONS and normalized_section != "skill-groups":
-        raise ValueError("section must be one of: " + ", ".join(RESEARCH_SECTIONS))
+        raise ValueError("section must be one of: " + ", ".join(RESEARCH_READ_ORDER))
     start = max(0, int(cursor or 0))
     page_size = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     if normalized_section == "skill-groups":
         manifest = build_skill_evidence_manifest(packet)
-        groups = manifest.get("activeSkillGroups") or []
+        groups = [
+            _public_skill_group(group)
+            for group in manifest.get("activeSkillGroups") or []
+            if isinstance(group, dict)
+        ]
         page, next_cursor = _bounded_page(groups, start=start, limit=page_size)
         result: dict[str, Any] = {
             "status": "ok",
@@ -789,8 +913,13 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     raw_context = packet.get("rawContext")
     raw_context = raw_context if isinstance(raw_context, dict) else {}
     xml = str(raw_context.get("rawXml") or "")
+    readback = packet.get("pobReadback")
+    readback_items = [dict(readback)] if isinstance(readback, dict) and readback else []
     if not xml:
-        return {name: [] for name in RESEARCH_SECTIONS}
+        return {
+            **{name: [] for name in RESEARCH_SECTIONS},
+            "pob-readback": readback_items,
+        }
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
@@ -803,6 +932,7 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         "config": _config_items(root),
         "build": _build_items(root),
         "jewels": _tree_socket_jewels(gear_items),
+        "pob-readback": readback_items,
     }
 
 

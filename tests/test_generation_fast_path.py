@@ -75,11 +75,19 @@ class FakeMutationEngine:
         root = ET.fromstring(self.xml)
         items = root.find("Items")
         if items is None:
-            items = ET.SubElement(root, "Items")
-        for item in list(items):
-            if item.get("slot") == slot:
-                items.remove(item)
-        ET.SubElement(items, "Item", {"slot": slot, "name": raw[:80]})
+            items = ET.SubElement(root, "Items", {"activeItemSet": "1"})
+        item_set = items.find("ItemSet")
+        if item_set is None:
+            item_set = ET.SubElement(items, "ItemSet", {"id": "1"})
+        for old_slot in list(item_set.findall("Slot")):
+            if old_slot.get("name") == slot:
+                item_set.remove(old_slot)
+        next_id = max(
+            [int(item.get("id") or 0) for item in items.findall("Item")] or [0]
+        ) + 1
+        item = ET.SubElement(items, "Item", {"id": str(next_id)})
+        item.text = raw
+        ET.SubElement(item_set, "Slot", {"name": slot, "itemId": str(next_id)})
         self.xml = ET.tostring(root, encoding="unicode")
         if "Wrong Wand" in raw:
             self._set_build_attributes(weaponCompatible="false")
@@ -89,9 +97,11 @@ class FakeMutationEngine:
         root = ET.fromstring(self.xml)
         items = root.find("Items")
         if items is not None:
-            for item in list(items):
-                if item.get("slot") == slot:
-                    items.remove(item)
+            item_set = items.find("ItemSet")
+            if item_set is not None:
+                for old_slot in list(item_set.findall("Slot")):
+                    if old_slot.get("name") == slot:
+                        item_set.remove(old_slot)
         self.xml = ET.tostring(root, encoding="unicode")
         return {"ok": True, "slot": slot}
 
@@ -156,13 +166,20 @@ class FakeMutationEngine:
         assert method == "list_skill_groups"
         root = ET.fromstring(self.xml)
         main_skill = self._build().get("mainSkill")
-        groups = []
+        names = []
         if main_skill:
-            groups.append({"activeSkill": main_skill})
-        groups.extend(
-            {"activeSkill": group.get("name")} for group in root.findall("./SkillGroups/SkillGroup")
-        )
-        return {"groups": groups}
+            names.append(main_skill)
+        names.extend(group.get("name") for group in root.findall("./SkillGroups/SkillGroup"))
+        groups = [
+            {
+                "index": index,
+                "activeSkill": name,
+                "gems": [{"name": name}],
+            }
+            for index, name in enumerate(names, start=1)
+            if name
+        ]
+        return {"mainGroupIndex": 1 if groups else 0, "groups": groups}
 
     def _set_build_attributes(self, **attributes: str) -> None:
         root = ET.fromstring(self.xml)
@@ -326,11 +343,11 @@ def test_mechanism_shell_rolls_back_when_weapon_postcondition_fails():
                 operation="set_main_skill",
                 skill="Storm Wave",
             ),
-            mutation_batch.BuildMutationOperation(
-                operation="equip_item",
-                raw="Wrong Wand",
-                slot="Weapon 1",
-            ),
+                mutation_batch.BuildMutationOperation(
+                    operation="equip_item",
+                    raw="Rarity: Rare\nWrong Wand\nWithered Wand\nItem Level: 80",
+                    slot="Weapon 1",
+                ),
         ],
         expected_state_hash=build_state_hash(before),
     )
@@ -580,3 +597,406 @@ def test_generation_checkpoint_reuses_validation_for_the_same_semantic_hash(monk
     assert third["cacheHit"] is False
     assert third["validationRef"] != first["validationRef"]
     assert completeness_calls["count"] == 2
+
+
+def test_endgame_quality_checklist_keeps_unassessed_systems_at_candidate(monkeypatch):
+    monkeypatch.setattr(
+        validation_checkpoint.supportopt,
+        "support_audit_for_state",
+        lambda _engine, _state_hash, _group_index: None,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.itemopt,
+        "next_jewel_decision_for_state",
+        lambda _engine, _state_hash: None,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.craftopt,
+        "socket_batch_decisions_for_state",
+        lambda _engine, _state_hash: {},
+    )
+    checklist = validation_checkpoint._create_quality_checklist(
+        engine=object(),
+        xml='<PathOfBuilding><Build className="Mercenary" level="95"/></PathOfBuilding>',
+        state_hash="sha256:test",
+        build={
+            "level": 95,
+            "gear": {
+                "Weapon 1": {"rarity": "Normal", "base": "Makeshift Crossbow"},
+                "Flask 1": {"rarity": "Normal", "name": "Life Flask"},
+                "Charm 1": {"rarity": "Normal", "name": "Amethyst Charm"},
+            },
+        },
+        stats={"ManaCost": 10, "Speed": 2, "ManaRegenRecovery": 0, "Mana": 100},
+        completeness_result={
+            "scaffoldSlots": [],
+            "unverifiedSpecialSourceSlots": [],
+            "runes": {"decisionRequiredSlots": ["Weapon 1"]},
+            "passiveJewels": {
+                "availableSockets": 3,
+                "allocatedSockets": 2,
+                "filledSockets": 2,
+            },
+            "flasks": {
+                "expectedSlots": ["Flask 1", "Flask 2"],
+                "equippedSlots": ["Flask 1"],
+                "details": [
+                    {
+                        "slot": "Flask 1",
+                        "rarity": "normal",
+                        "prefixes": 0,
+                        "suffixes": 0,
+                    }
+                ],
+            },
+            "charms": {"beltCapacity": 3, "equippedSlots": ["Charm 1"]},
+        },
+        preflight_result={
+            "skillGroups": [
+                {
+                    "groupIndex": 1,
+                    "role": "pob_main_group",
+                    "activeSkills": ["Stormblast Bolts"],
+                    "supports": [],
+                    "source": None,
+                }
+            ]
+        },
+    )
+
+    assert checklist["skillSupportAudit"]["status"] == "failed"
+    assert checklist["bootstrapItems"]["status"] == "failed"
+    assert checklist["charmLoadout"]["status"] == "failed"
+    assert checklist["jewelDecision"]["status"] == "failed"
+    assert checklist["itemSockets"]["status"] == "failed"
+    assert checklist["sustain"]["status"] == "failed"
+    repair = validation_checkpoint._quality_repair_plan(checklist)
+    assert {entry["check"] for entry in repair} >= {
+        "skillSupportAudit",
+        "charmLoadout",
+        "jewelDecision",
+        "itemSockets",
+        "sustain",
+    }
+
+
+def test_checkpoint_cache_refreshes_session_local_quality_audits(monkeypatch):
+    engine = FakeCheckpointEngine()
+    engine.xml = """<PathOfBuilding><Build className="Mercenary" level="95" mainSocketGroup="1"/>
+    <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
+    <Gem nameSpec="Stormblast Bolts" gemId="Metadata/Items/Gem/SkillGemStormblastBolts"
+    skillId="StormblastBoltsPlayer"/></Skill></SkillSet></Skills></PathOfBuilding>"""
+    engine.get_build = lambda: {
+        "class": "Mercenary",
+        "ascendancy": "Tactician",
+        "level": 95,
+        "mainSkill": "Stormblast Bolts",
+        "gear": {},
+    }
+    engine.get_stats = lambda _keys: {
+        "stats": {
+            "ManaCost": 0,
+            "Speed": 1,
+            "Life": 1000,
+            "TotalEHP": 1000,
+        }
+    }
+    engine.get_defenses = lambda: {"totalEHP": 1000, "resistances": {}}
+    complete = {
+        "hardFailures": [],
+        "advisories": [],
+        "scaffoldSlots": [],
+        "unverifiedSpecialSourceSlots": [],
+        "runes": {"decisionRequiredSlots": []},
+        "passiveJewels": {"availableSockets": 0, "allocatedSockets": 0, "filledSockets": 0},
+        "flasks": {"expectedSlots": [], "equippedSlots": [], "details": []},
+        "charms": {"beltCapacity": 0, "equippedSlots": []},
+    }
+    preflight_result = {
+        "readyForJudge": True,
+        "hardLegalityReady": True,
+        "mechanismReady": True,
+        "readinessReady": True,
+        "skillGroups": [
+            {
+                "groupIndex": 1,
+                "role": "pob_main_group",
+                "activeSkills": ["Stormblast Bolts"],
+                "supports": [],
+                "source": None,
+            }
+        ],
+        "hardLegality": {"status": "passed", "hardLegalityReady": True},
+    }
+    audit = {"value": None}
+    monkeypatch.setattr(
+        validation_checkpoint.completeness,
+        "inspect_build_completeness",
+        lambda *_args, **_kwargs: complete,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.preflight,
+        "inspect_generation_snapshot",
+        lambda *_args, **_kwargs: preflight_result,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.supportopt,
+        "support_audit_for_state",
+        lambda _engine, _state_hash, _group_index: audit["value"],
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.supportopt,
+        "support_audit_freshness",
+        lambda _engine, _state_hash, _group_index: (
+            "current" if audit["value"] is not None else "missing"
+        ),
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.itemopt,
+        "next_jewel_decision_for_state",
+        lambda _engine, _state_hash: None,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.craftopt,
+        "socket_batch_decisions_for_state",
+        lambda _engine, _state_hash: {},
+    )
+    validation_checkpoint.clear_validation_checkpoint_cache()
+
+    before = validation_checkpoint.inspect_generation_checkpoint(engine)
+    audit["value"] = {
+        "status": "passed",
+        "positiveGainSupportsMissing": [],
+        "measurement": {
+            "status": "complete",
+            "checkpointEligible": True,
+            "coverageComplete": True,
+            "classificationComplete": True,
+            "measuredCandidates": 1,
+            "classifiedCandidates": 1,
+            "screenedCandidates": 1,
+            "failedCandidates": 0,
+            "failedCombinations": 0,
+            "finalConstraintsSatisfied": True,
+        },
+    }
+    after = validation_checkpoint.inspect_generation_checkpoint(engine)
+
+    assert before["createQualityChecklist"]["skillSupportAudit"]["status"] == "failed"
+    assert after["cacheHit"] is True
+    assert after["createQualityChecklist"]["skillSupportAudit"]["status"] == "passed"
+
+
+class _TargetGroupCheckpointEngine:
+    def __init__(self) -> None:
+        self.selected_group = 1
+        self.xml = """<PathOfBuilding><Build className="Mercenary" level="95" mainSocketGroup="1"/>
+        <Skills activeSkillSet="1"><SkillSet id="1">
+        <Skill enabled="true"><Gem nameSpec="Galvanic Shards"
+        gemId="Metadata/Items/Gem/SkillGemGalvanicShards" skillId="GalvanicShardsPlayer"/></Skill>
+        <Skill enabled="true"><Gem nameSpec="Stormblast Bolts"
+        gemId="Metadata/Items/Gem/SkillGemStormblastBolts" skillId="StormblastBoltsPlayer"/></Skill>
+        </SkillSet></Skills></PathOfBuilding>"""
+
+    @contextmanager
+    def transaction_lock(self):
+        yield
+
+    def get_xml(self):
+        return self.xml
+
+    def get_build(self):
+        return {
+            "class": "Mercenary",
+            "ascendancy": "Tactician",
+            "level": 95,
+            "mainSkill": "Galvanic Shards",
+            "gear": {},
+        }
+
+    def get_stats(self, _keys):
+        return {
+            "stats": {
+                "ManaCost": 5 if self.selected_group == 1 else 50,
+                "Speed": 1,
+                "ManaRegenRecovery": 10,
+                "Mana": 100,
+                "Life": 1000,
+                "TotalEHP": 1000,
+            }
+        }
+
+    def get_defenses(self):
+        return {"totalEHP": 1000, "resistances": {}}
+
+    def call(self, method, **params):
+        assert method == "set_skill_group_state"
+        self.selected_group = int(params["index"])
+        return {"ok": True}
+
+    def load_build_xml(self, xml, name=""):
+        del name
+        self.xml = xml
+        self.selected_group = 1
+        return {"ok": True}
+
+
+def test_checkpoint_sustain_stats_follow_explicit_boss_skill_group(monkeypatch):
+    engine = _TargetGroupCheckpointEngine()
+    complete = {
+        "hardFailures": [],
+        "advisories": [],
+        "scaffoldSlots": [],
+        "unverifiedSpecialSourceSlots": [],
+        "runes": {"decisionRequiredSlots": []},
+        "passiveJewels": {"availableSockets": 0, "allocatedSockets": 0, "filledSockets": 0},
+        "flasks": {"expectedSlots": [], "equippedSlots": [], "details": []},
+        "charms": {"beltCapacity": 0, "equippedSlots": []},
+    }
+    groups = [
+        {
+            "groupIndex": 1,
+            "role": "pob_main_group",
+            "activeSkills": ["Galvanic Shards"],
+            "supports": [],
+            "source": None,
+        },
+        {
+            "groupIndex": 2,
+            "role": "additional_skill_group",
+            "activeSkills": ["Stormblast Bolts"],
+            "supports": [],
+            "source": None,
+        },
+    ]
+    monkeypatch.setattr(
+        validation_checkpoint.completeness,
+        "inspect_build_completeness",
+        lambda *_args, **_kwargs: complete,
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.preflight,
+        "inspect_generation_snapshot",
+        lambda *_args, **_kwargs: {
+            "readyForJudge": True,
+            "hardLegalityReady": True,
+            "mechanismReady": True,
+            "readinessReady": True,
+            "skillGroups": groups,
+            "hardLegality": {"status": "passed", "hardLegalityReady": True},
+        },
+    )
+    monkeypatch.setattr(
+        validation_checkpoint.supportopt,
+        "support_audit_for_state",
+        lambda *_args: {"status": "passed", "positiveGainSupportsMissing": []},
+    )
+    validation_checkpoint.clear_validation_checkpoint_cache()
+
+    boss = validation_checkpoint.inspect_generation_checkpoint(
+        engine,
+        offense_skill_group_index=2,
+        expected_skill_name="Stormblast Bolts",
+    )
+    clear = validation_checkpoint.inspect_generation_checkpoint(
+        engine,
+        offense_skill_group_index=1,
+        expected_skill_name="Galvanic Shards",
+    )
+
+    assert boss["stats"]["ManaCost"] == 50
+    assert boss["calculationContext"]["groupIndex"] == 2
+    assert clear["stats"]["ManaCost"] == 5
+    assert engine.selected_group == 1
+
+
+def test_checkpoint_selects_explicit_active_skill_inside_current_main_group():
+    class SameGroupEngine:
+        def __init__(self):
+            self.active_index = 1
+            self.xml = '<PathOfBuilding><Build className="Mercenary" level="95"/></PathOfBuilding>'
+
+        def get_xml(self):
+            return self.xml
+
+        def get_stats(self, _keys):
+            return {"stats": {"ManaCost": 5 if self.active_index == 1 else 50}}
+
+        def call(self, method, **params):
+            assert method == "set_skill_group_state"
+            self.active_index = int(params["activeSkillIndex"])
+            return {"ok": True}
+
+        def load_build_xml(self, xml, name=""):
+            del name
+            self.xml = xml
+            self.active_index = 1
+            return {"ok": True}
+
+    engine = SameGroupEngine()
+    stats, context = validation_checkpoint._read_target_skill_stats(
+        engine,
+        xml=engine.get_xml(),
+        preflight_result={
+            "skillGroups": [
+                {
+                    "groupIndex": 1,
+                    "role": "pob_main_group",
+                    "activeSkills": ["Clear Skill", "Boss Skill"],
+                }
+            ]
+        },
+        offense_skill_group_index=1,
+        expected_skill_name="Boss Skill",
+    )
+
+    assert context["activeIndex"] == 2
+    assert stats["stats"]["ManaCost"] == 50
+    assert engine.active_index == 1
+
+
+def test_checkpoint_selector_restore_failure_sets_recovery_gate():
+    class RestoreFailureEngine:
+        def __init__(self):
+            self.xml = (
+                '<PathOfBuilding><Build className="Mercenary" level="95" '
+                'mainSocketGroup="1"/></PathOfBuilding>'
+            )
+
+        def get_xml(self):
+            return self.xml
+
+        def call(self, method, **params):
+            assert method == "set_skill_group_state"
+            assert params["activeSkillIndex"] == 2
+            self.xml = self.xml.replace('mainSocketGroup="1"', 'mainSocketGroup="2"')
+            return {"ok": True}
+
+        def get_stats(self, _keys):
+            return {"stats": {"ManaCost": 50}}
+
+        def load_build_xml(self, xml, name=""):
+            del xml, name
+            raise RuntimeError("restore failed")
+
+    engine = RestoreFailureEngine()
+    result, context = validation_checkpoint._read_target_skill_stats(
+        engine,
+        xml=engine.get_xml(),
+        preflight_result={
+            "skillGroups": [
+                {
+                    "groupIndex": 1,
+                    "role": "pob_main_group",
+                    "activeSkills": ["Clear Skill", "Boss Skill"],
+                }
+            ]
+        },
+        offense_skill_group_index=1,
+        expected_skill_name="Boss Skill",
+    )
+
+    assert context == {}
+    assert result["errorCode"] == "generation_checkpoint_restore_failed"
+    assert result["recoveryRequired"] is True
+    assert engine._poe2_mutation_batch_recovery_required is True

@@ -16,7 +16,15 @@ research. No PoB engine here.
 5. Mechanic full-text results are candidates only. Read a selected exact page and let the Agent
    judge supports/contradicts/silent; title, redirect, page ID and ranking never authorize a claim.
 6. Preserve Research `conditions`, `failureConditions`, exclusions and verification tasks when
-   adopting a record; receipts are typed and run-bound (progressive, exact version).
+   adopting a record. Create receipts are typed, run-bound, memory-revision-bound and paginated;
+   only a complete single-session chain from one scope/sourceCase lane authorizes Create.
+   Create discovers Family by class/ascendancy before choosing a main skill; an explicitly requested
+   skill is only a primary/secondary `related_skill_key`. Distinguish `no_family` from
+   `known_family_not_authorized`, then deep-read every returned `requiredDeepReadRecordIds` entry.
+   After authoritative and comparison lanes are complete, use
+   `construct_research_execution_contract` to compare case profiles and create reason-required
+   packages. Cross-case adoption is legal only through a full companion/compatibility/
+   implementation/verification/exit plan; the contract never auto-assembles a build.
 7. `query_public_learning_memory` returns only the copy-safe release/local lesson projection.
 
 Full workflow lives in the poe-bd-create / poe-bd-research skills.

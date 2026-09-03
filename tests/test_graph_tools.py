@@ -386,7 +386,11 @@ def test_search_graph_components_discovers_candidates_without_resolving_endpoint
 
     assert result["status"] == "found"
     assert result["resolvedSubject"] is None
-    assert result["facts"]["candidates"][0]["stableKey"] == "skill:LightningArrowPlayer"
+    candidate = result["facts"]["candidates"][0]
+    assert candidate["stableKey"] == "skill:LightningArrowPlayer"
+    assert candidate["resolverPayload"] == {"componentKey": "skill:LightningArrowPlayer"}
+    resolved = _service().run_tool("resolve_graph_component", candidate["resolverPayload"])
+    assert resolved["status"] == "resolved"
     assert "candidate_discovery_only" in result["caveats"]
 
 

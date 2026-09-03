@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from server.generation import canonicalize, prototype, retry, run_store
+from server.judge import hard_legality
 from tests.test_phase5_prototype_models import agent_submission_payload
 
 
@@ -121,6 +122,7 @@ def _retry_payload(
     version = _version("disabled:no_memory_baseline" if memory_mode == "no_memory" else query_ref)
     payload["agentRefinedBuildPrompt"]["version_context"] = version
     base_candidate = payload["prototypeBuildCandidate"]
+    base_execution_plan = copy.deepcopy(base_candidate["research_execution_plan"])
     base_candidate["prompt_ref"] = payload["agentRefinedBuildPrompt"]["prompt_id"]
     base_candidate["tool_references"] = [
         {
@@ -129,8 +131,16 @@ def _retry_payload(
             "summary": "Freshness checked.",
         }
     ]
+    base_candidate["tool_references"].append(
+        {
+            "tool_name": "validate_generation_blueprint",
+            "query_ref": base_candidate["mechanism_blueprint_ref"],
+            "summary": "The mechanism blueprint was validated for this retry fixture.",
+        }
+    )
     base_candidate["memory_references"] = []
     base_candidate["research_memory_use"] = None
+    base_candidate["research_execution_plan"] = None
     if memory_mode == "memory_assisted":
         base_candidate["tool_references"].append(
             {
@@ -159,6 +169,14 @@ def _retry_payload(
             ],
             "no_match_reason": None,
         }
+        base_candidate["research_execution_plan"] = base_execution_plan
+        base_candidate["tool_references"].append(
+            {
+                "tool_name": "construct_research_execution_contract",
+                "query_ref": base_candidate["research_execution_plan"]["contractRef"],
+                "summary": "The Research execution contract was reconstructed for this retry.",
+            }
+        )
 
     attempts = [
         _attempt(base_candidate, version, index=0, passed=False, score=0.2),
@@ -443,6 +461,7 @@ def test_memory_assisted_mode_accepts_explicit_no_match():
             "insight_decisions": [],
             "no_match_reason": "定向 summary 查询未返回同升华或同核心技能知识。",
         }
+        candidate["research_execution_plan"] = None
     payload["prototypeBuildCandidate"] = payload["generationAttempts"][-1][
         "prototypeBuildCandidate"
     ]
@@ -497,6 +516,7 @@ def test_memory_assisted_mode_rejects_tool_only_memory_evidence():
     payload, receipts = _retry_payload("memory_assisted")
     for attempt in payload["generationAttempts"]:
         attempt["prototypeBuildCandidate"]["research_memory_use"] = None
+        attempt["prototypeBuildCandidate"]["research_execution_plan"] = None
     payload["prototypeBuildCandidate"] = payload["generationAttempts"][-1][
         "prototypeBuildCandidate"
     ]
@@ -574,6 +594,69 @@ def test_run_store_keeps_three_immutable_attempt_receipts(tmp_path: Path):
     )
     with pytest.raises(run_store.RunStoreError, match="retry_limit_reached"):
         run_store.write_trusted_evaluation(bound, receipt)
+
+
+def test_run_store_round_trips_current_schema3_hard_legality_receipt(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    bound = run_store.BoundRun(
+        run_id="00000000-0000-0000-0000-000000000003",
+        run_dir=run_dir,
+        manifest={},
+    )
+    version = _version("memory:test")
+    snapshot = "generation:schema3:0"
+    source_hash = "schema3-source"
+    semantic_hash = "sha256:" + "3" * 64
+    state = _state(snapshot, source_hash, version)
+    state["semanticStateHash"] = semantic_hash
+    checklist = {
+        key: {"status": "passed", "reasons": []}
+        for key in (
+            "skillSupportAudit",
+            "mechanismDependencies",
+            "bootstrapItems",
+            "gearAttainability",
+            "charmLoadout",
+            "jewelDecision",
+            "itemSockets",
+            "sustain",
+        )
+    }
+    payload = {
+        "candidateId": "candidate:schema3",
+        "transientBuildState": state,
+        "judgeAdvisoryReport": _judge(
+            snapshot,
+            source_hash,
+            version,
+            passed=True,
+            score=0.7,
+        ),
+        "hardLegalityAudit": {
+            "auditVersion": hard_legality.AUDIT_VERSION,
+            "status": "passed",
+            "hardLegalityReady": True,
+            "hardFailures": [],
+            "stateHash": semantic_hash,
+            "validationRef": f"hard-legality:{semantic_hash[:23]}",
+        },
+        "deliveryStatus": "recommended",
+        "createQualityChecklist": checklist,
+        "qualityRepairPlan": [],
+        "lifecycleVerification": {
+            "status": "passed",
+            "pass": True,
+            "requiredChecks": [],
+            "advisoryChecks": [],
+        },
+    }
+
+    assert run_store.write_trusted_evaluation(bound, payload) == 0
+    receipts = run_store.read_trusted_evaluations_strict(bound)
+    assert len(receipts) == 1
+    assert receipts[0]["schemaVersion"] == 3
+    assert receipts[0]["hardLegalityAudit"]["auditVersion"] == hard_legality.AUDIT_VERSION
 
 
 def test_strict_receipt_reader_rejects_index_gap_and_latest_mismatch(tmp_path: Path):
@@ -717,20 +800,13 @@ def test_no_memory_retry_cli_validates_all_attempt_receipts(tmp_path: Path):
             run["runContext"]["runToken"],
         ],
         cwd=REPO_ROOT,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         env=env,
     )
-    result = json.loads(reviewed.stdout)
 
-    assert result["status"] == "accepted"
-    assert result["experimentContext"]["memoryMode"] == "no_memory"
-    assert result["retryComparisonReport"]["resolvedHardFailures"] == [
-        "attribute_requirement_unmet"
-    ]
-    assert result["humanReviewPacket"]["selectedAttemptIndex"] == 1
-    assert (
-        result["humanReviewPacket"]["artifactSelectionOutcome"] == "latest_passing_attempt_selected"
-    )
-    assert result["retryComparisonReport"]["selectedAttemptIndex"] == 1
+    assert reviewed.returncode == 1
+    rejected = json.loads(reviewed.stdout)
+    assert rejected["status"] == "rejected"
+    assert rejected["errorCode"] == "generation_blueprint_validation_required"

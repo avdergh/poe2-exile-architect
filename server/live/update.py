@@ -1,9 +1,9 @@
 """Self-update from our validated GitHub releases.
 
 A release publishes ``update-manifest.json`` plus ``corpus.sqlite`` and ``pob-engine.zip``
-(a golden-test-gated PoB snapshot). Updates install into the user-data dir, which is preferred
-over the bundled seed (see paths.py). Per project policy, the engine only ever updates from
-these pre-tested releases — never live upstream.
+(a golden-test-gated PoB snapshot). Compatible engine updates install as one source-tree + bridge
+pair; an older user-data engine never shadows only part of the bundled runtime. Per project policy,
+the engine only ever updates from these pre-tested releases — never live upstream.
 """
 
 from __future__ import annotations
@@ -47,8 +47,16 @@ def _http(url: str, timeout: float = 60.0) -> bytes:
 
 
 def _bundle_version() -> str:
+    """Return the bundled data/corpus release stamp."""
+
     f = paths.BUNDLE_ROOT / "data" / "VERSION"
     return f.read_text().strip() if f.exists() else "0"
+
+
+def _bundle_app_version() -> str:
+    """Return the MCP application version used by engine compatibility checks."""
+
+    return paths.bundle_app_version()
 
 
 def installed_meta() -> dict:
@@ -86,8 +94,8 @@ def check_for_updates() -> dict[str, Any]:
     latest = str(manifest.get("version", "0"))
     # app_version is the .mcpb/code version, decoupled from the data version so a data-only
     # refresh (same app_version, bumped version) doesn't masquerade as a new bundle to install.
-    app_latest = str(manifest.get("app_version") or latest)
-    app_current = _bundle_version()
+    app_latest = str(manifest.get("app_version") or "0")
+    app_current = _bundle_app_version()
     return {
         # data (corpus/engine) update — applies automatically via apply_updates/auto_update
         "available": _vkey(latest) > _vkey(current),
@@ -129,9 +137,24 @@ def apply_updates(
     engine = manifest.get("engine") or {}
     engine_sha = engine.get("sha256")
     replace_engine = bool(engine.get("url") and (force or engine_sha != prev.get("engine_sha256")))
+    manifest_app_version = manifest.get("app_version")
+    app_version = manifest_app_version or prev.get("app_version") or _bundle_app_version()
+    engine_contract = manifest.get("engine_contract")
+    if replace_engine and engine_contract != paths.POB_RUNTIME_CONTRACT:
+        return {"updated": False, "error": "engine runtime contract missing or incompatible"}
+    if replace_engine and not manifest_app_version:
+        return {"updated": False, "error": "engine app version missing"}
     metadata = {
         "version": latest,
-        "app_version": manifest.get("app_version") or latest,
+        "app_version": app_version,
+        "engine_app_version": (
+            app_version
+            if replace_engine
+            else prev.get("engine_app_version") or prev.get("app_version")
+        ),
+        "engine_contract": (
+            engine_contract if replace_engine else prev.get("engine_contract")
+        ),
         "pob_commit": manifest.get("pob_commit") or prev.get("pob_commit"),
         "pob_version": manifest.get("pob_version") or prev.get("pob_version"),
         # Data-only refreshes must preserve the compatibility claims certified with the unchanged

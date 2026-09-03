@@ -6,15 +6,30 @@ The headless engine is expensive to start, so it's session-scoped and reused. Th
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("POE2_RESEARCH_POB_READBACK", "0")
+_MANAGED_TEST_USER_DATA = "POE2_MCP_DATA" not in os.environ
+if _MANAGED_TEST_USER_DATA:
+    os.environ["POE2_MCP_DATA"] = tempfile.mkdtemp(prefix="poe2-build-mcp-tests-")
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from server.compute.engine import PobEngine  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_user_data():
+    yield
+    if _MANAGED_TEST_USER_DATA:
+        shutil.rmtree(os.environ["POE2_MCP_DATA"], ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

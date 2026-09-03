@@ -79,6 +79,7 @@ jobs:
           manifest = {
               "version": f"{app}.{run}",        # data version: monotonic, > app_version, < next app release
               "app_version": app,               # unchanged → no "new .mcpb" nag
+              "engine_contract": cur.get("engine_contract"),
               "pob_commit": cur.get("pob_commit"),
               "pob_version": cur.get("pob_version"),
               "game_patch": cur.get("game_patch"),

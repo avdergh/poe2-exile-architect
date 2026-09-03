@@ -170,7 +170,9 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "allow_implicit_invocation: false" in worker_metadata
     assert "default_prompt" not in worker_metadata
     assert "gearResponsibilities" in worker
-    assert 'response_profile="create_compact"' in worker
+    assert 'response_profile="full"' in worker
+    assert "sourceSkillGroupReviews" in worker
+    assert "rootSkillRef" in worker
     assert "claimScopeReview" in worker
     assert "relevanceReason" in worker
     assert "validate_research_review" in worker
@@ -293,7 +295,7 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "sampleId + safe outcome" in worker
     assert "accepted 时附 safe acceptance 摘要" in worker
     assert "`build_family_keys` 只接收查询已返回的 `bf-...`" in worker
-    assert '`detail_level="record" + response_profile="create_compact"`' in worker
+    assert '`detail_level="record" + response_profile="full"`' in worker
     assert "retry_research_review" in worker
     assert (
         "accept_research_review(run_ref=<runRef>, lease_token=<leaseToken>, review=<review>)"
@@ -341,7 +343,7 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
     ):
         payload = json.loads((REPO_ROOT / manifest).read_text(encoding="utf-8"))
         assert payload["name"] == "poe-bd-creator"
-        assert payload["version"].startswith("0.4.5")
+        assert payload["version"].startswith("0.5.0")
         assert payload["skills"] == "./poe-bd-creator-plugin/skills/"
         assert "agents" not in payload
         assert "TODO" not in json.dumps(payload)
@@ -392,7 +394,7 @@ def test_plugin_manifests_are_valid_json_and_point_to_skill_tree():
         )
     )
     assert codex_bundle["name"] == "poe-bd-creator"
-    assert codex_bundle["version"].startswith("0.4.5")
+    assert codex_bundle["version"].startswith("0.5.0")
     assert codex_bundle["skills"] == "./skills/"
     assert all(
         "poe-bd-research-worker" not in prompt

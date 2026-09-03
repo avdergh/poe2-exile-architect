@@ -7,10 +7,18 @@ import sys
 
 import pytest
 
+from server import paths
 from scripts import install_local_validated_runtime as installer
 
 
 CERTIFIED_COMMIT = "7d1aa43c8c938d7be150d197ed9cdec8a4c1c620"
+
+
+def test_local_runtime_defaults_track_current_source_app_version():
+    manifest = json.loads((installer.ROOT / "manifest.json").read_text(encoding="utf-8"))
+
+    assert installer.DEFAULT_APP_VERSION == manifest["version"]
+    assert installer.DEFAULT_VERSION == f"{manifest['version']}-local"
 
 
 def make_runtime_source(root: Path, *, commit: str = CERTIFIED_COMMIT) -> None:
@@ -61,6 +69,8 @@ def test_install_local_runtime_copies_certified_engine_and_claims(tmp_path):
     assert result["updated"] is True
     assert installed["version"] == "0.1.39.1-local.20260626"
     assert installed["app_version"] == "0.1.39"
+    assert installed["engine_app_version"] == "0.1.39"
+    assert installed["engine_contract"] == paths.POB_RUNTIME_CONTRACT
     assert installed["pob_commit"] == CERTIFIED_COMMIT
     assert installed["pob_version"] == "0.21.1-dev.20260625"
     assert installed["game_patch"] == "0.5.4"

@@ -50,9 +50,10 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
 9. **Route user-triggered Create through `/poe-bd-create`.** Follow its single-stage workflow
    before freshness, Research, generation, lifecycle, or PoB calls. Do not start an open-ended build
    with `suggest_build_lifecycle`; use the current single-stage contract selected by the user.
-10. **Price is advisory, not the transition clock.** Use live unique prices and craft effort to
-    label acquisition risk. Switch only when the target mechanic's skill, ascendancy, passive,
-    Spirit, resource, defense and required-item gates are actually ready.
+10. **Price is disclosure-only for Create.** Lock the Research Family, required items, ordinary
+    gear, runes and flasks from mechanics and current PoB legality first; only then query live
+    prices to label acquisition risk. Never replace a Family item or another selected component
+    because it is expensive or because the user supplied a budget.
 
 ## Three kinds of facts
 
@@ -81,6 +82,7 @@ caveat; every `blocked_*` result requires reporting its blockers instead of gues
   `validate_research_review`, `accept_research_review`, `retry_research_review`,
   `get_research_run_status`, `cleanup_research_run`,
   `build_research_packet`, `validate_researcher_output`, `query_research_memory`,
+  `get_research_write_receipt`,
   `propose_deep_research_records`, `propose_research_fragments`, `append_evidence_to_fragment`, `propose_semantic_edges`,
   `propose_build_patterns`, `submit_revalidation_result`,
   `inspect_rejected_research_proposals`). Static facts to *find* options; the engine *values* them.
@@ -105,7 +107,8 @@ files. This guide keeps only the always-injected contract.
 - `claim_research_case` / `inspect_research_case` / `read_research_case` /
   `search_research_case`: lease one case and expose bounded structured evidence.
 - `query_research_memory`: compare the independently reconstructed case with accepted memory.
-  Query summaries first with `response_profile=create_compact`, inspect Family coverage/index/
+  Research workers use `response_profile=full` so comparison is not narrowed to one Create lane.
+  Query summaries first, inspect Family coverage/index/
   premise catalog, then deep-read only selected record IDs until the critical premises close.
 - `graph_tool_query(tool_name="search_graph_components")`: discover concrete graph candidates by
   name and type. Candidate similarity is not endpoint authority.
@@ -117,13 +120,15 @@ files. This guide keeps only the always-injected contract.
 - `append_evidence_to_fragment`: add safe evidence to an already accepted equivalent fragment
   instead of creating a duplicate.
 - `submit_revalidation_result`: renew, narrow or supersede accepted knowledge after version review.
-- `get_research_review_contract` / `initialize_research_review`: return the exact v2 contract and
+- `get_research_review_contract` / `initialize_research_review`: return the exact v3 contract and
   an in-memory safe review object; no Agent filesystem edit is required.
 - `validate_research_review`: save and validate the complete safe object without durable writes.
   Inspect `durableWritePreflight`; `permission_required` stops formal accept and
   `write_handle_ready` remains advisory rather than a SQLite transaction guarantee.
 - `accept_research_review`: formally validates and accepts the complete safe object supplied under
-  the same lease. `retry_research_review` owns the rejected-case repair path. Compact output is only
+  the same lease in one Memory transaction and returns a final `writeReceiptRef`.
+  `get_research_write_receipt` is audit-only and never authorizes Create. `retry_research_review`
+  owns the rejected-case repair path. Compact output is only
   used for clean results; failures, deferred candidates, unresolved components and coverage gaps
   retain full diagnostics.
 - `review_contract_upgrade_required` is raised before queue CAS: the case remains claimed and must
@@ -189,8 +194,9 @@ on a documented tool-count cap.
   `boss_skill`, and `triggered_payload` are inferred Family-core secondary metadata and must not
   be repeated in `typedPayload.familyCoreSkillKeys`; a Family-core `trigger_host` must be declared
   there explicitly. These secondary keys do not alter the Family key. Inventory every enabled
-  source skill group, but require exact support ownership only for Family core/high-impact groups
-  or conclusions that depend on it; preserve other unresolved groups as explicit caveats.
+  source skill container. Preserve its root skill and socketed items; a socketed active payload is
+  part of that root package, and PoB effect applicability must not redefine physical placement.
+  Minion payload types are endpoint-specific and must never be unioned into Summon/Command types.
 - `passiveAscendancy` coverage requires an ascendancy shell plus concrete resolved ascendancy
   responsibilities. Mutated random item instances are case-only evidence, excluded from normal
   creator retrieval and planner patterns.
@@ -206,6 +212,22 @@ on a documented tool-count cap.
   `fullyResolvedForAccept=true` / `acceptanceMode=clean`; for `partial_with_deferred`, repair
   type/role/query/key mistakes before accepting and retain only genuine source or bounded ambiguity
   gaps.
+- `partial_with_deferred` does not disable the whole case: accepted records/edges remain durable and
+  retrievable, invalid proposals are deferred, and safe open questions/gap records may remain.
+- PoB `SpiritReserved` is capped at available Spirit. Use `spiritRequested` and `spiritOverBy` for
+  legality; `spiritReservedCapped` is diagnostic only, and `spiritUsed` is a deprecated alias of
+  requested demand.
+- A schema-1 final artifact is `legacy_spirit_unverified` for new delivery selection until a
+  read-only `preview_final_artifact_spirit_revalidation` is explicitly approved and applied. A
+  pass, over-budget result, or unavailable readback is appended as a sidecar event; old XML,
+  manifest and Judge receipts remain immutable.
+- A schema-1 evaluation receipt that has not yet produced an artifact is rejected with
+  `legacy_evaluation_requires_rejudge`; run the current Judge again instead of reporting a saved
+  artifact that the current reader cannot trust.
+- Deep-record semantic merges are model-authored and independently reviewed. Preview first; apply
+  only the exact revision/hash-bound plan after user approval. Reviewers must browse GGG, pinned PoB
+  or fixed-revision Wiki evidence when a PoE2 mechanic is unfamiliar, patch-sensitive or disputed;
+  missing/conflicting authority rejects the merge or keeps records distinct.
 - One sample can establish only a `case_observation`, not a common or usual pattern. Patterns and
   semantic edges remain advisory planning context, never hard legality.
 - Mark a pattern `transferScope=component` only when it expresses a causal module with explicit
@@ -231,9 +253,11 @@ does not take over build completion.
 - Treat `/poe-bd-create` as a chat-level skill invocation, not a shell command for the user to run.
   The host agent should execute the internal script with its tools and summarize the safe result.
 - Ordinary `/poe-bd-create` directly generates the requested target-level endgame build (typically
-  80+); there is no blocking leveling-progression question. Internal
-  `referenceBlind=true` Create packets remain non-interactive. If invoked with no arguments, combine
-  the goal question with the normal goal/constraint question.
+  80+); there is no blocking leveling-progression question. At interactive start, ask only for local
+  versus local-plus-poe.ninja delivery when the user has not already specified it. Even with no build
+  arguments, infer one default single-stage endgame direction and disclose assumptions instead of
+  asking another goal/constraint question. Internal `referenceBlind=true` packets remain fully
+  non-interactive and do not produce user delivery exports.
 - Generation run flow: call the plugin MCP tool
   `start_generation_run(memory_mode="memory_assisted")` (or `memory_mode="no_memory"` when the
   user explicitly invokes `/poe-bd-create --no-memory`). Do not search for a repository checkout,
@@ -247,9 +271,19 @@ does not take over build completion.
   back only the current one; continue only when `rolledBack=true`. If
   `recoveryRequired=true`, later functional batches are blocked until an explicit bootstrap from
   `new_build` recovers the session.
-  Then call
-  `inspect_generation_checkpoint()` and repair completeness/preflight blocking issues before calling
-  `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`. Perform at
+  For the bounded next-jewel review, apply a positive `evaluate_next_jewel_socket` result only via
+  `apply_next_jewel_socket_decision(decision_ref, expected_state_hash)`. Round two is valid only on
+  the output state of an applied round one; manual passive/jewel edits make the decision stale.
+  Freeze final gear, passives, jewels, Runes, supports and config first, then run the state-bound
+  support/jewel/socket audits and `inspect_generation_checkpoint()`. Repair stale, missing and
+  deterministic failures before calling the formal Judge. Once run-fresh Research deep reads and
+  the final prompt/candidate summary are complete, fill the camelCase skeleton returned by
+  `start_generation_run` and call `validate_generation_draft(...,
+  offense_skill_group_index=<final Judge group>, expected_skill_name=<exact active skill>)` once for
+  that mechanism revision. The server observes the final support set, dominant hit types and
+  Mana/Life payment domains from PoB and binds them to the Draft state. A later mechanism change
+  requires another Draft validation; an unchanged Draft cannot be refreshed.
+  Then call `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context)`. Perform at
   most two Agent-led retries in the same conversation and same run. Each compact attempt needs only
   its index, candidate, and failure audit; trusted state and Judge fields are hydrated from the
   run-bound receipts. Submit the safe object to
@@ -265,6 +299,14 @@ does not take over build completion.
   below) and trusted reference builds are only read back for diagnostics and produce no hard
   failure from this gate. Elemental Max Hit and
   other defense evidence remain evaluated.
+- Evaluate Family-required uniques and unique jewels before planning ordinary rares, record each as
+  adopted/caveated/rejected, and build the rare gear around adopted mechanism pieces. If a component
+  is unavailable in the current version, use `rejected` and state that unavailable reason in the
+  decision summary/application. Evaluate
+  ordinary `relevant_uniques` only after the base rare set; allow at most one supporting rare-gear
+  replan for an otherwise useful unique. At level 90, three charm slots and three charms are a
+  quality target, not universal legality: missing `Charm Slots` is unknown, effective capacity comes
+  from final PoB `CharmLimit`, and only equipped charms beyond that capacity are a hard failure.
 - Lifecycle verification has a separate level-aware elemental resistance floor, using
   the evaluated PoB level rather than the lifecycle label or caller hint: 30% at levels 45-64, 50%
   at 65-79, and 60% at 80-89. It adds no percentage floor below 45 or at 90+, and never requires
@@ -275,24 +317,47 @@ does not take over build completion.
   cross-check the supplied version context against this run's freshness result before making a
   current-season verified claim.
 - Normal create mode uses progressive research recall. Normally pass
-  `response_profile="create_compact"` on Create queries so the response lifts conditions, failure
-  conditions and verification tasks into `criticalPremiseDigest` without repeating retrieval
-  plumbing; durable typed receipts are unchanged and compact mode does not truncate result lists.
-  Use `response_profile="full"` when a concrete ambiguity depends on an omitted field. Resolve the
-  intended ascendancy and primary
-  skill to stable graph keys. The first exact-Family query sets `ascendancy_key` and
-  `primary_skill_key`, while `component_keys` contains only those two identities; ordinary supports,
-  utility skills, and secondary skills must not become mandatory AND filters. Natural-language
-  `query` expresses planning intent and ranking preference, not Family identity.
-  `query_research_memory` treats graph-backed gem/active-skill keys as the same physical component.
-  Inspect `buildFamilies`, including `secondarySkillKeys` and `recordKindCounts`, plus
-  `deepResearchRecords`, `buildPatterns`, and `semanticEdges`. After selecting a Family, use
-  `build_family_keys` and `record_kinds` to fetch dimension-specific summaries, then
-  `detail_level=record` with every `record_id` needed to close the design. Apply `supportPackages`
+  `response_profile="create_compact"` on Create queries. Every first query creates a unique bounded
+  retrieval session on one `(knowledgeScope, sourceCaseRef)` authoritative lane. Follow its single
+  `continuation_cursor` in order until `complete=true`; every UTF-8 JSON page is at most 65,536
+  bytes, and the full `0..terminal` receipt chain is required for Create. Compact lane authority is
+  limited to eligible deep records plus their index/premise/digest. Full Research responses and
+  pattern/edge/fragment facts may be ToolReferences but do not authorize lane-specific Create.
+  After the exact Family query, inspect `sourceCaseLane.familyAvailable`: treat the highest-coverage
+  lane as an initial lane, then explicitly query up to two other available cases (all cases when only
+  two exist), consume every page, and register those pages in
+  `researchMemoryUse.comparisonDedupeQueryRefs`. Comparison lanes remain ToolReferences and cannot
+  resolve authoritative premises, but draft validation rejects an incomplete required comparison.
+  Call `construct_research_execution_contract` after those reads. Compare its case profiles and
+  explicitly select the design case that fits the user's stage, defense, resource, operation and
+  evidence/verification goals. PoB modelability changes the verification method and numeric claim
+  scope, never which game-valid case wins; if the selected case is not the initial lane, re-query it as the authoritative lane and
+  rebuild the contract. Every contract package needs a substantive reasoned decision. Adopting a
+  comparison package requires a complete cross-case plan with authoritative companions,
+  compatibility and trade-off rationales, implementation/conflict steps, verification evidence and
+  failure exit conditions. Cross-case mechanisms are allowed; isolated modifier cherry-picking is
+  not.
+  Resolve class/ascendancy first and pass a search candidate's `resolverPayload` to the resolver
+  unchanged. Start with the user's original localized name. If resolution is missing/ambiguous or the first
+  Family result is `no_family`, look up the official English class/ascendancy name once from GGG
+  official data/pages, resolve it, and retry Family discovery once. Do not maintain a local language
+  alias table or loop over translations. Discover Family with `detail_level=family`, class/ascendancy and current version before
+  choosing a main skill. A user-named skill is only `related_skill_key`; discovery matches both
+  primary and secondary sets. `known_family_not_authorized` means known-but-needing-revalidation,
+  not no match. Bind the terminal page's `dedupeQueryRef` (where `retrieval.complete=true`) with
+  `record_generation_family_discovery`; a first or intermediate page is not a valid binding. After selection,
+  use `build_family_keys=[selectedFamilyKey]`; never relocate the
+  Family with an Agent-guessed main skill. Inspect `primarySkillKeys`, `secondarySkillKeys`,
+  `createEligibility`, and `recordKindCounts`. Preserve the returned
+  `selectedKnowledgeScope` and `selectedSourceCaseRef`; use those with `build_family_keys` and
+  first deep-read every `familyRecordCoverage.requiredDeepReadRecordIds`, then query only concrete
+  remaining gaps. Missing a required support/gear/resource/failure record makes draft validation
+  fail with `research_required_records_not_read`. Apply `supportPackages`
   as verified
   support candidates, `gearResponsibilities` as gear roles rather than copied items,
   `ascendancyResponsibilities` as node-selection evidence, and `resourceMechanisms` plus rotation
-  records as resource/failure-state checks. Record the real `dedupeQueryRef` values, recalled item IDs,
+  records as resource/failure-state checks. Record every page's real `dedupeQueryRef`, the selected
+  scope/case lane, recalled item IDs,
   and adopted/caveated/rejected applications in `researchMemoryUse`. A `case_observation` is a
   candidate hypothesis, not a general rule. Before adopting a claim about an item, passive, trigger,
   conversion, or resource interaction, verify its premise against current static/mechanic evidence;
@@ -312,6 +377,12 @@ does not take over build completion.
   omits `researchMemoryUse`, and sets `researchMemoryRef=disabled:no_memory_baseline`. The product
   does not automatically compare or choose between these modes; the user may run the same request
   both ways.
+- Live meta/prices normalize provider league display names, hyphenated slugs, poe.ninja slugs, and
+  URL basenames internally. If build-level meta is unavailable, do not treat an empty aggregate as
+  evidence that an archetype does not exist. Check current PoB/corpus/Graph/Research first, then
+  official patch/data/Wiki sources, then current-season poe.ninja/pobb.in samples verified through
+  `import_build`. Network evidence may support tool references and caveats but never a premise
+  `resolutionRef`; only a deep-read receipt from the current run can resolve a premise.
 - If a retry changes the trusted ascendancy or primary skill, resolve the new identity and call
   `query_research_memory` again. The new attempt must use a fresh `dedupeQueryRef`; support, gear,
   passive-path, or configuration-only repairs do not require another memory query.
@@ -338,6 +409,9 @@ does not take over build completion.
   credentials, and a second review of an already accepted run.
 - `evaluate_generation_candidate` is the only formal Phase 1 Judge entry for generated candidates.
   `evaluate_build` and `pinnacle_readiness` are local numeric gates, not substitutes for Judge.
+- Pass `offense_skill_group_index` and `expected_skill_name`: clear-only goals score the clear group;
+  boss/balanced goals score the single-target group. A mismatch or internal Load/Reload form returns
+  `selected_skill_conflict` without consuming an attempt.
 - Its `version_context` must include `league`, `ruleset`, `gamePatch`, `passiveTreeVersion`,
   `pobVersionOrCommit`, `graphSnapshotId`, and `researchMemoryRef` in one call, using values from
   the current freshness, graph, and memory queries.
@@ -358,6 +432,20 @@ does not take over build completion.
   attempt. A run rejects mode changes after its first attempt without consuming a retry.
 - Preflight and Judge use the same captured XML. A deterministic preflight blocker returns
   `generation_preflight_failed` without creating a Judge engine, receipt, or retry attempt.
+- `inspect_generation_checkpoint` always returns the factual `createQualityChecklist` and one
+  `deliveryStatus`, even in hard-only mode. Every editable skill group needs an engine-measured
+  support audit; Normal endgame Charms, incomplete Flask/Charm affixes, unfilled/unevaluated jewels,
+  unresolved item sockets, bootstrap/theoretical gear, and genuinely unproven sustain keep the
+  result at `candidate`. A known, identified source-skill or trigger modeling limitation remains an
+  evidence advisory; unverified source provenance is different and keeps delivery at `candidate`.
+  Apply the repair plan at most twice. Only `recommended`
+  may be described as a finished recommendation.
+- Final Create preflight and Judge keep two objective completion hard gates: every allocated
+  passive-tree jewel socket must be filled and PoB `unspentPoints` must be zero. Spirit legality is
+  handled separately by the uncapped reservation ledger. Utilization at or below 80% triggers an
+  opportunity review: test coherent output/defense/resource/rotation uses for the remainder, adopt
+  real gains, and explain intentional slack when no valuable option fits. Never add unrelated
+  mechanics merely to satisfy a percentage.
 - Treat `rewardLimitReasons` and the sanitized `offenseEvidence` separately from legality. Positive
   strong-evidence DPS below a stage floor is an established measurement that missed the floor, not
   a delivery-evidence gap. Limited evidence must never become a strong reward. A non-endgame level
@@ -404,7 +492,8 @@ does not take over build completion.
   targets, and `modelability` for what PoB can support. `passed=true` means legality passed only. A
   `barely_playable` candidate, any playability failure, a goal-critical zero score (for example
   offense or recovery in a starter request), or an unresolved support conflict should be repaired
-  when retries remain. If
+  when retries remain, except when that dimension is zero only because
+  `scoreApplicability="unavailable"`; then preserve the game-valid design and verify outside PoB. If
   retries are exhausted, present it only as a weak prototype with explicit gaps, not a recommended
   smooth starter. In default hard-only mode these fields do not exist and must not be reconstructed
   from hidden Judge output. Starter review still covers clear speed, boss/single-target duty and
@@ -416,9 +505,19 @@ does not take over build completion.
   limitation in the user-facing result when strict mode was explicitly requested; exportability is
   not a quality endorsement. In hard-only mode report that subjective Judge feedback was suppressed,
   not an invented quality grade.
+  A hard-legal `candidate` may be exported for technical inspection, but trusted artifact/export
+  metadata retains `deliveryStatus=candidate`; this never authorizes finished-build language.
+- A visible lifecycle `unmodelled_mana_recovery_requires_verification` result is not proof of mana
+  failure and does not block the stage when a game-real recovery layer is present. Verify it through
+  corpus/Graph/Research, current game-mechanic evidence or in-game testing; PoB only exposes the
+  static deficit and must not veto the build. Repair the resource package when a real gap is confirmed. Allow at most two core
+  mechanism rebuilds in one run while preserving user-locked choices. After that, a hard-legal but
+  unproven build is only a “pending verification candidate”; a confirmed unrepaired mechanism
+  failure stops delivery. Local gear/support/passive fixes do not count as core rebuilds.
 - In explicit strict mode, `scoreApplicability="unavailable"` means the core mechanic cannot be scored reliably. Do not quote
-  aggregate/DPS strength, call the build illegal, or silently replace the requested archetype merely
-  to make it modelable; preserve it as a legal candidate requiring reference or in-game validation.
+  aggregate/DPS strength, call the build illegal or weak, lower `deliveryStatus`, or silently replace
+  the requested archetype merely to make it modelable. Preserve the game-valid structure and use
+  reference/mechanic/in-game evidence for the unmodelled portion.
 - If legality fails, modify the active build without starting
   a new generation run, then evaluate again. Keep each returned evaluation as a separate immutable
   `generationAttempts` row. There may be at most three attempts total (initial plus two retries).
@@ -437,12 +536,18 @@ does not take over build completion.
   review packet. If a process restart discarded that exact transient snapshot and raw serialization
   has changed, `trusted_evaluation_snapshot_unavailable` requires a fresh evaluation when retries
   remain; never substitute a different XML or hand-edit a hash.
-- After saving, call `export_final_build_package` once. It always inventories the expected PoB XML,
-  import-code text, and official `.build` deliverables. Report every inventory row: successful rows
-  with paths, failed rows with error codes. Never silently omit a format or paste raw file contents.
-  For a non-blind single-stage Create, call
-  `cleanup_completed_task_runtime(task_kind="generation", task_id=artifact_id)` only after all
-  outputs succeeded and `runtimeCleanupReady=true`. Completed Research and Learning
+- At ordinary interactive Create start, ask only for delivery when unspecified: local files, or local
+  files plus a poe.ninja share. Local delivery calls `export_final_pob_artifact(format="both")` and
+  `export_final_build_artifact`; it never calls the package/publish path. Share delivery calls
+  `export_final_build_package` once and reports all four rows. Blind/automatic Create skips user
+  export entirely and keeps the internal artifact for Compare.
+  Save performs one PoB load/save round-trip over skill/support groups, equipment count, item
+  sockets/Runes, and passive jewels. `.build` is guidance-only for Rare/Magic gear, sockets/Runes,
+  and passive jewels; its description and response disclose this while PoB stays authoritative.
+  For a non-blind share delivery, call `cleanup_completed_task_runtime(task_kind="generation",
+  task_id=artifact_id)` only after all four outputs succeeded and `runtimeCleanupReady=true`.
+  Local delivery retains runtime because the separate local tools return no package cleanup receipt.
+  Completed Research and Learning
   workflows use the same cleanup tool with their own task kind; memories and exported files are
   preserved. Partial delivery and active tasks remain recoverable. Only an explicit user decision
   to discard an unfinished Research run authorizes `abandon_incomplete=true`; that mode releases
@@ -466,6 +571,11 @@ does not take over build completion.
   persists only a safe query receipt, and returns a new campaign revision. The final
   `learningMemoryUse` must match that receipt and record an adopted/caveated/rejected decision for
   every recalled lesson.
+- Every Blind `query_research_memory` first query carries the active campaign `run_ref` and Create
+  `claim_ref`; the server validates that binding and forces Global Research regardless of the
+  compatibility `blind_global_only` flag. The final submit includes the complete claim-bound
+  `researchMemoryUse` as well as `learningMemoryUse`. A Global no-match keeps its selected lane
+  empty while the receipt's effective scope remains `global_seed`.
 - Never include reference gear, passives, skill groups, mechanism summaries, configuration, Judge
   results, source URLs, PoB code, or XML in a blind Create packet. Ambiguous Family or level evidence
   fails closed.
@@ -502,6 +612,9 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   `set_skill_group_state`, `set_config`, `equip_item`, `unequip_item`,
   `alloc_passive`/`dealloc_passive` **mutate** in place. Read `list_skill_groups` first and pass its
   fingerprint/state hash to precise group edits; stale selectors fail without touching the build.
+  Skill-group writes are all-or-nothing: unknown gems are rejected before mutation, and a mismatch
+  between requested and persisted canonical gems restores the prior XML with
+  `skill_group_incomplete`.
 - `get_build` = full read-back; `export_build` = a PoB import code for the user.
 
 ## Which tool when
@@ -509,7 +622,9 @@ new compute session fails clearly when the cap is occupied instead of reusing an
 - Max a gear slot → `optimize_item` (pass `goals={…}` for a damage+defense **blend**, not a
   one-axis craft). The BEST possible piece (beyond a plain rare — runes + Perfect essences + a
   corruption, each engine-valued) → `craft_item`; it returns the `craftSteps` to make it. Which slot
-  to upgrade next → `rank_upgrades`.
+  to upgrade next → `rank_upgrades`. To preserve an existing item and optimize only its supported
+  1–2 rune/soul-core sockets, use `optimize_item_sockets`, then submit the returned receipt through
+  `equip_item`.
 - Best support-gem set → `optimize_supports` (engine-measured — supports have no corpus magnitudes).
   Craft a jewel → `optimize_jewel` (then `equip_jewel`). Gear a whole set at once (damage-max with
   elemental resists capped and a stage-aware chaos target) → `plan_gear(stage=...)`, then refine top
@@ -540,16 +655,22 @@ new compute session fails clearly when the cap is occupied instead of reusing an
 - Is the active state a playable loadout rather than a scoring skeleton →
   `inspect_build_completeness` (active-gem/base requirements, rare/magic ilvl, scaffold placeholders,
   runes, jewels, flasks, and charms). Every remaining advisory must have a typed deferred or
-  intentionally-unused decision with a reason; `complete_generation_review` returns these as
-  `requiredUserDisclosures`, which must be included in the final user response.
-- For mana sustain, compare `ManaCost × Speed` with regen, leech, and on-hit recovery. Report
-  `flask_assisted_required` as mana-flask dependency with long-boss risk; do not soften a measured
-  deficit into a generic “test it in game” note.
+  intentionally-unused decision with a reason. `spirit_opportunity_review_required` is stricter:
+  adopt a valuable reservation so the advisory disappears, or use `intentionally_unused` after
+  recording why the measured options had no positive value; it cannot remain deferred.
+  `complete_generation_review` returns these as `requiredUserDisclosures`, which must be included
+  in the final user response.
+- For sustain, inspect Mana and Life flat/percent costs per use and per second. Compare the combined
+  demand with net regeneration plus PoB's combined `*LeechGainRate`; use `*OnHitRate` only when the
+  combined value is absent. A deterministic Life failure remains blocking even when an unmodelled
+  Mana mechanism exists. An unmodelled Mana recovery pass must retain `verificationRequired=true`.
 
 ## Known limitations & gotchas
 
 - **Fresh characters show deeply negative resists — expected.** PoB applies the endgame resist
-  penalty; bring them to the 75% cap via gear/tree. `get_defenses` reports over-cap (a buffer).
+  penalty. For ordinary level-90 softcore Create optimization, stop buying generic resistance after
+  60% elemental and 30% non-CI chaos unless the user explicitly requests 75%; `get_defenses` still
+  reports the actual cap/over-cap state.
 - **Read PoB damage fields by their actual definitions.** `AverageDamage` is an average hit.
   `TotalDPS` is Hit DPS: average hit multiplied by use rate and engine-modelled quantity. `CombinedDPS`
   adds the selected skill's modelled DoT/secondary components. `FullDPS` rolls up the skill actors and
@@ -593,6 +714,9 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   Emerald=dex, Ruby=str, Sapphire=int, Diamond=all); hand-written jewels aren't legality-checked, so
   ground their mods in real rolls (`search_mods`). Weapon-swap + jewel sockets are normal slots —
   `equip_item slot="Weapon 1 Swap"` works for a curse-on-swap weapon.
+- **Flasks:** Family-declared Unique Flasks stay locked unless their current mechanics or legality
+  fail. For an ordinary life/mana Flask, use `optimize_flask` to create a legal Magic target from
+  the Flask-domain pool; `optimize_item` deliberately refuses Flask bases.
 - **Imported PoBs are often aspirational.** `import_build` returns `importCaveats` when the build
   carries author-added custom mods, an over-budget tree, or uncapped resists — factor those in
   before trusting its raw numbers (a shared "millions" PoB may assume gear/points it doesn't show).
@@ -610,7 +734,8 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   **ascendancy distribution only**. `get_meta_archetype_trends` is the safer build-level trend seam:
   use its aggregate rows only when it returns `ok:true`; if it returns unavailable, say so and do
   not infer skill/item/build popularity from ascendancy-only stats. For a concrete build-level
-  comparison, web-search a build's `pobb.in`/pastebin link, `import_build` it, and compare on the
+  comparison, use current-season external samples only as supplementary evidence, `import_build`
+  them, and compare on the
   engine. Direct link import supports pobb.in + pastebin; for maxroll/pobarchives/poe.ninja pages,
   paste the build's PoB export code.
 

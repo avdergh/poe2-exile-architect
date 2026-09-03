@@ -4,6 +4,7 @@ from typing import Any
 
 from server.generation import leveled_build
 from server.knowledge import db
+from server.knowledge.skill_equivalence import SkillEquivalenceIndex
 
 
 class _FakeEngine:
@@ -96,8 +97,10 @@ def test_validate_level_availability_resolves_name_gem_key_and_skill_key():
     assert by_skill["Ice Shot"]["status"] == "partial"
     assert by_skill["Ice Shot"]["attributeCompatible"] is True
     assert by_skill["gem:Metadata/Items/Gem/SkillGemIceShot"]["status"] == "partial"
-    assert by_skill["skill:IceShotPlayer"]["status"] == "unavailable"
-    assert by_skill["skill:IceShotPlayer"]["reason"] == "unresolvable_skill_identity"
+    assert by_skill["skill:IceShotPlayer"]["status"] == "partial"
+    assert by_skill["skill:IceShotPlayer"]["gemName"] == "Ice Shot"
+    assert by_skill["skill:IceShotPlayer"]["gemKey"].startswith("gem:")
+    assert "skill:IceShotPlayer" in by_skill["skill:IceShotPlayer"]["activeSkillKeys"]
     assert by_skill["No Such Gem"]["status"] == "unavailable"
     assert by_skill["No Such Gem"]["reason"] == "gem_not_found_in_corpus"
 
@@ -127,6 +130,27 @@ def test_validate_level_availability_attribute_compatibility():
     by_skill_r = {item["skill"]: item for item in ranger["results"]}
     assert by_skill_r["Ice Shot"]["attributeCompatible"] is True
     assert by_skill_r["Fireball"]["attributeCompatible"] is False  # int-only vs Ranger dex
+
+
+def test_validate_level_availability_rejects_multi_grant_ambiguity():
+    result = leveled_build.validate_level_availability(
+        _FakeEngine({}),
+        skill_keys=["skill:UnleashPlayer"],
+        level=90,
+    )["results"][0]
+
+    assert result["status"] == "ambiguous"
+    assert result["reason"] == "active_skill_granted_by_multiple_gems"
+    assert len(result["candidateGemKeys"]) >= 2
+
+
+def test_skill_equivalence_falls_back_to_packaged_corpus_without_raw_files(tmp_path):
+    index = SkillEquivalenceIndex(raw_dir=tmp_path)
+
+    gem_ids = index.gem_ids_for_skill_key("skill:LightningArrowPlayer")
+
+    assert gem_ids == ("Metadata/Items/Gems/SkillGemLightningArrow",)
+    assert index.gem_ids("Lightning Arrow") == gem_ids
 
 
 def test_leveled_skill_pool_filters_by_engine_curve():

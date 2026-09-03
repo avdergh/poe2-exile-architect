@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 _RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 _SKILLS_FILE = _RAW_DIR / "skills.min.json"
@@ -68,6 +68,28 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
+def _load_gems_from_corpus() -> dict[str, dict[str, Any]]:
+    """Rebuild the identity subset from the packaged corpus when raw RePoE files are absent."""
+
+    try:
+        from . import db
+
+        rows = db._conn().execute("SELECT id, name, grants FROM gems").fetchall()
+    except Exception:
+        return {}
+    payload: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            grants = json.loads(row["grants"] or "[]")
+        except (TypeError, ValueError):
+            grants = []
+        payload[str(row["id"])] = {
+            "base_item": {"display_name": str(row["name"] or "")},
+            "grants_skills": grants if isinstance(grants, list) else [],
+        }
+    return payload
+
+
 class SkillEquivalenceIndex:
     """Deterministic display-name -> skill-id index over bundled gem data."""
 
@@ -78,7 +100,9 @@ class SkillEquivalenceIndex:
         self._skills: dict[str, dict] | None = None
         self._gems: dict[str, dict] | None = None
         self._skill_to_gem_name: dict[str, str] | None = None
+        self._skill_to_gem_ids: dict[str, list[str]] | None = None
         self._gem_grants: dict[str, list[str]] | None = None
+        self._gem_ids_by_name: dict[str, list[str]] | None = None
         self._display_by_skill: dict[str, str] | None = None
 
     @classmethod
@@ -92,20 +116,45 @@ class SkillEquivalenceIndex:
             return
         self._skills = _load_json(self._raw_dir / "skills.min.json")
         self._gems = _load_json(self._raw_dir / "skill_gems.min.json")
+        if not self._gems:
+            self._gems = _load_gems_from_corpus()
         skill_to_gem: dict[str, str] = {}
+        skill_to_gem_ids: dict[str, list[str]] = {}
         gem_grants: dict[str, list[str]] = {}
-        for gem in self._gems.values():
+        gem_ids_by_name: dict[str, list[str]] = {}
+        for gem_id, gem in self._gems.items():
             display = str((gem.get("base_item") or {}).get("display_name") or "").strip()
             if not display:
                 continue
+            gem_ids_by_name.setdefault(normalize_name(display), []).append(str(gem_id))
             grants = [str(item) for item in (gem.get("grants_skills") or []) if str(item)]
             if not grants:
                 continue
             gem_grants.setdefault(display, []).extend(grants)
             for skill_id in grants:
                 skill_to_gem.setdefault(skill_id, display)
+                skill_to_gem_ids.setdefault(skill_id, []).append(str(gem_id))
         self._skill_to_gem_name = skill_to_gem
+        self._skill_to_gem_ids = {
+            name: sorted(set(items)) for name, items in skill_to_gem_ids.items()
+        }
         self._gem_grants = {name: sorted(set(items)) for name, items in gem_grants.items()}
+        self._gem_ids_by_name = {
+            name: sorted(set(items)) for name, items in gem_ids_by_name.items()
+        }
+
+    def gem_ids(self, gem_name: str) -> tuple[str, ...]:
+        """Return metadata ids for one exact normalized gem display name."""
+
+        self._ensure_index()
+        return tuple((self._gem_ids_by_name or {}).get(normalize_name(gem_name), ()))
+
+    def gem_ids_for_skill_key(self, skill_key: str) -> tuple[str, ...]:
+        """Return metadata ids of gems that grant one active-skill key."""
+
+        self._ensure_index()
+        skill_id = self._strip_prefix(skill_key)
+        return tuple((self._skill_to_gem_ids or {}).get(skill_id, ()))
 
     def display_name(self, skill_key: str) -> str:
         self._ensure_index()
@@ -181,6 +230,44 @@ class SkillEquivalenceIndex:
     @staticmethod
     def _strip_prefix(skill_key: str) -> str:
         return skill_key.split(":", 1)[-1] if skill_key.startswith("skill:") else skill_key
+
+
+def canonical_identity_set(
+    con: Any,
+    skill_keys: Iterable[str],
+    *,
+    index: SkillEquivalenceIndex | None = None,
+) -> frozenset[str]:
+    """Apply the existing deterministic and accepted model equivalences to one skill set."""
+
+    idx = index or SkillEquivalenceIndex.shared()
+    canon = idx.canonical_set(skill_keys)
+    if not canon:
+        return canon
+    rows = con.execute(
+        "SELECT key_a, key_b FROM skill_equivalence WHERE status = 'valid'"
+    ).fetchall()
+    if not rows:
+        return canon
+    parent: dict[str, str] = {}
+
+    def find(token: str) -> str:
+        while parent.get(token, token) != token:
+            token = parent[token]
+        return token
+
+    def union(a: str, b: str) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:
+            parent[max(root_a, root_b)] = min(root_a, root_b)
+
+    for key_a, key_b in rows:
+        token_a = idx.canonical_key(str(key_a))
+        token_b = idx.canonical_key(str(key_b))
+        if token_a.startswith("key:") or token_b.startswith("key:"):
+            continue
+        union(token_a, token_b)
+    return frozenset({find(token) for token in canon})
 
 
 class ModelEquivalenceStore:

@@ -72,16 +72,17 @@ def compute_failed_evaluation(snapshot_id: str, error_kind: str) -> dict[str, An
         "snapshotId": snapshot_id,
         "pass": False,
         "rewardEligible": False,
-        "hardFailures": ["pob_compute_failed"],
+        # This is a tool/evidence failure, not evidence that the build is illegal.
+        "hardFailures": [],
         "physicalInvalidFailures": [],
         "playabilityFailures": [],
         "qualityWarnings": [],
         "scoreApplicability": {"status": "unavailable", "reason": "pob_compute_failed"},
-        "caveats": ["engine_respawn_required"],
+        "caveats": ["engine_respawn_required", "pob_compute_failed_evidence_gap"],
         "modelability": {
             "status": "not_modelable",
-            "coreBlocked": True,
-            "failureCodes": ["pob_compute_failed"],
+            "coreBlocked": False,
+            "failureCodes": [],
             "caveats": [],
         },
         "scoreVector": {
@@ -93,7 +94,7 @@ def compute_failed_evaluation(snapshot_id: str, error_kind: str) -> dict[str, An
         "scoreBreakdown": {},
         "scoreScale": "0_to_1",
         "scenarioFit": {"mappingFit": 0.0, "bossingFit": 0.0, "hybridFit": 0.0},
-        "qualityBand": "invalid",
+        "qualityBand": "unassessed",
         "aggregateScore": {
             "value": 0.0,
             "weightProfile": models.WEIGHT_PROFILE,

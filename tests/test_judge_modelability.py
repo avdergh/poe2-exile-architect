@@ -14,7 +14,7 @@ def test_main_socket_group_meta_trigger_is_core_blocker():
     result = modelability.evaluate_modelability(build)
 
     assert result["status"] == "not_modelable"
-    assert result["coreBlocked"] is True
+    assert result["coreBlocked"] is False
     assert result["failureCodes"] == []
     assert result["unmodelledMechanics"] == ["Cast on Critical"]
     assert "trigger_rate_unmodelled_caveat" in result["caveats"]
