@@ -640,6 +640,7 @@ def equip_item(
             }
     return res
 
+
 def _decorate_batch_mutation_result(
     operation: mutation_batch.BuildMutationOperation,
     result: dict[str, Any],
@@ -785,20 +786,23 @@ def evaluate_jewel_socket(
 def evaluate_next_jewel_socket(
     raw: str,
     goals: dict[str, float],
-    round_index: Literal[1, 2] = 1,
+    round_index: int | None = None,
+    protected_node_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Compare the current tree with the nearest reachable additional jewel socket.
+    """Compare one Agent-selected jewel across every reachable additional tree socket.
 
-    The real path plus candidate jewel are measured together and the build is restored. On a full
-    tree, up to 12 removable leaf nodes are individually measured and the lowest-loss equal-point
-    swap is included in the comparison. Apply a positive first result, then run at most one second
-    round; this is a marginal decision, not a full jewel-socket combination search.
+    The real path plus candidate jewel are measured together and the build is restored. Pass exact
+    ids for mechanism-critical and important support passives in ``protected_node_ids``; ``None``
+    means protection was not declared, while ``[]`` is an explicit no-protection decision. Only
+    current safe one-point leaves may be exchanged. Apply a positive result atomically, then review
+    the new state again. ``round_index`` remains a compatibility label and does not cap the review.
     """
 
     return itemopt.evaluate_next_jewel_socket(
         get_engine(),
         raw=raw,
         goals=goals,
+        protected_node_ids=protected_node_ids,
         round_index=round_index,
     )
 
@@ -1979,17 +1983,26 @@ def optimize_jewel(
     base: str = "Emerald",
     goals: dict[str, float] | None = None,
     rolls: str = "realistic",
+    selected_mod_ids: list[str] | None = None,
+    item_level: int | None = None,
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare JEWEL for the active build (one metric or a weighted goals blend).
 
-    A jewel's explicit mods apply globally, so each candidate is measured as a real modifier on the
-    build and ranked by marginal gain (jewel mods are ~independent, so the top picks ≈ the best
-    jewel). Pick a `base` matching the socket's attribute — Emerald=dex, Ruby=str, Sapphire=int,
-    Diamond=all. Returns a jewel to socket with equip_jewel into an ALLOCATED tree socket
-    (list_jewel_sockets); verify the base's affix limit. Radius/Time-Lost jewels aren't modelled
-    here (their effect is positional). Read-only: the build is restored.
+    Ordinary jewels keep the existing global marginal ranking. Radius/Time-Lost bases require exact
+    ``selected_mod_ids`` returned by ``search_mods``; this validates and formats the Agent-selected
+    modifiers without pretending their effect is global. Position those candidates with
+    ``evaluate_next_jewel_socket``. Generated rare jewels include an Item Level, defaulting to the
+    current character level. Read-only: the build is restored.
     """
-    return itemopt.optimize_jewel(get_engine(), metric=metric, base=base, goals=goals, rolls=rolls)
+    return itemopt.optimize_jewel(
+        get_engine(),
+        metric=metric,
+        base=base,
+        goals=goals,
+        rolls=rolls,
+        selected_mod_ids=selected_mod_ids,
+        item_level=item_level,
+    )
 
 
 @mcp.tool()
@@ -2837,12 +2850,8 @@ def _verify_lifecycle_stage_locked(
             ):
                 observation_error = "artifact_lifecycle_observation_target_mismatch"
                 raise ValueError(observation_error)
-            selected_main_evidence = generation_preflight.inspect_main_skill_socketed(
-                eng.get_xml()
-            )
-            effective_state["mainSkillSocketed"] = bool(
-                selected_main_evidence.get("socketed")
-            )
+            selected_main_evidence = generation_preflight.inspect_main_skill_socketed(eng.get_xml())
+            effective_state["mainSkillSocketed"] = bool(selected_main_evidence.get("socketed"))
             effective_state["mainSkillSocketEvidence"] = selected_main_evidence
         stats_result = eng.get_stats(stat_keys)
         stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
@@ -3021,9 +3030,7 @@ def _compact_lifecycle_verification_response(result: dict[str, Any]) -> dict[str
         "checkStatuses": {
             str(row.get("check")): row.get("status") for row in checks if row.get("check")
         },
-        "blockingChecks": [
-            row for row in checks if str(row.get("check") or "") in blocking_names
-        ],
+        "blockingChecks": [row for row in checks if str(row.get("check") or "") in blocking_names],
         "stateSummary": {
             key: state_snapshot[key] for key in identity_keys if key in state_snapshot
         },
@@ -3064,10 +3071,7 @@ def _current_lifecycle_observation_target(engine: Any) -> dict[str, Any]:
             value
             for value in groups or []
             if isinstance(value, dict)
-            and (
-                bool(value.get("isMain"))
-                or int(value.get("index") or 0) == main_index
-            )
+            and (bool(value.get("isMain")) or int(value.get("index") or 0) == main_index)
         ),
         None,
     )

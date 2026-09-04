@@ -180,7 +180,9 @@ class PobEngine:
         if not ready.get("ready"):
             raise PobEngineError(f"engine failed to initialise: {ready}")
         if ready.get("runtimeContract") != paths.POB_RUNTIME_CONTRACT:
-            raise PobEngineError("headless engine runtime contract is incompatible with this server")
+            raise PobEngineError(
+                "headless engine runtime contract is incompatible with this server"
+            )
         self.info: dict[str, Any] = ready
 
     # -- low-level I/O -------------------------------------------------------
@@ -384,7 +386,9 @@ class PobEngine:
     def dealloc_passive(self, node: str | int) -> dict[str, Any]:
         return self.call("dealloc_passive", node=node)
 
-    def list_reallocation_candidates(self, limit: int = 12) -> dict[str, Any]:
+    def list_reallocation_candidates(self, limit: int | None = 12) -> dict[str, Any]:
+        if limit is None:
+            return self.call("list_reallocation_candidates")
         return self.call("list_reallocation_candidates", limit=limit)
 
     def optimize_passives(

@@ -179,6 +179,13 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
             if not matched and display_ranges and _roll_in(display_ranges, nums):
                 matched_ranges = display_ranges
                 matched = True
+            # Fixed display affixes can encode an internal numeric value while rendering no
+            # number at all (for example "Upgrades Radius to Large").  The exact normalized
+            # text match above is sufficient for these lines; requiring the hidden value to be
+            # present in clipboard text incorrectly marks the known affix as out of range.
+            if not matched and not nums and not display_ranges:
+                matched_ranges = []
+                matched = True
             if matched:
                 return {
                     "type": m["type"],
@@ -530,9 +537,7 @@ def audit_item_legality(
     elif provenance is not None and structure.get("corrupted"):
         source_issues.append("craft_receipt_corruption_missing")
 
-    has_structural_special = bool(
-        rune_hashes or actual_rune_names or structure.get("corrupted")
-    )
+    has_structural_special = bool(rune_hashes or actual_rune_names or structure.get("corrupted"))
     if provenance is None and require_special_provenance and has_structural_special:
         source_issues.append("special_source_provenance_required")
 

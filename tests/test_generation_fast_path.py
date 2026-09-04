@@ -82,9 +82,7 @@ class FakeMutationEngine:
         for old_slot in list(item_set.findall("Slot")):
             if old_slot.get("name") == slot:
                 item_set.remove(old_slot)
-        next_id = max(
-            [int(item.get("id") or 0) for item in items.findall("Item")] or [0]
-        ) + 1
+        next_id = max([int(item.get("id") or 0) for item in items.findall("Item")] or [0]) + 1
         item = ET.SubElement(items, "Item", {"id": str(next_id)})
         item.text = raw
         ET.SubElement(item_set, "Slot", {"name": slot, "itemId": str(next_id)})
@@ -343,11 +341,11 @@ def test_mechanism_shell_rolls_back_when_weapon_postcondition_fails():
                 operation="set_main_skill",
                 skill="Storm Wave",
             ),
-                mutation_batch.BuildMutationOperation(
-                    operation="equip_item",
-                    raw="Rarity: Rare\nWrong Wand\nWithered Wand\nItem Level: 80",
-                    slot="Weapon 1",
-                ),
+            mutation_batch.BuildMutationOperation(
+                operation="equip_item",
+                raw="Rarity: Rare\nWrong Wand\nWithered Wand\nItem Level: 80",
+                slot="Weapon 1",
+            ),
         ],
         expected_state_hash=build_state_hash(before),
     )
@@ -785,6 +783,35 @@ def test_checkpoint_cache_refreshes_session_local_quality_audits(monkeypatch):
     assert before["createQualityChecklist"]["skillSupportAudit"]["status"] == "failed"
     assert after["cacheHit"] is True
     assert after["createQualityChecklist"]["skillSupportAudit"]["status"] == "passed"
+
+
+def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
+    monkeypatch.setattr(
+        validation_checkpoint,
+        "_create_quality_checklist",
+        lambda **_kwargs: {
+            "jewelDecision": {
+                "status": "unknown",
+                "reasons": ["selected_candidate_socket_policy_limited"],
+            }
+        },
+    )
+    result = {
+        "readyForJudge": True,
+        "lifecycleVerification": {"pass": True},
+        "completeness": {},
+        "preflight": {},
+        "_checkpointInputs": {"build": {}, "stats": {}},
+    }
+
+    validation_checkpoint._refresh_dynamic_quality(
+        result,
+        engine=object(),
+        xml="<PathOfBuilding />",
+        state_hash="sha256:test",
+    )
+
+    assert result["deliveryStatus"] == "candidate"
 
 
 class _TargetGroupCheckpointEngine:

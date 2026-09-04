@@ -143,6 +143,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 最终 Support、Jewel、Socket 回执必须在装备、天赋、珠宝、Rune 和 config 锁定后生成。
   Checkpoint 必须区分 `current/stale/missing`；正式 Judge 对适用检查的 stale/missing、明确失败和
   未应用正收益非消耗式拒绝。已执行的 `inconclusive` 不是 missing，允许继续但交付保持 candidate。
+- 90 级以上的额外天赋珠宝槽审计保持核心天赋优先：Agent 先完成核心机制与重要支撑节点，再把这些
+  精确节点 ID 作为 `protected_node_ids`，用 `evaluate_next_jewel_socket` 比较一颗已选珠宝在全部当前
+  可达槽位的等点边际收益。工具只可替换当前安全单点叶节点，不向内拆分支、不重排树，也不以成熟
+  案例槽数、固定轮数或最低槽数作为目标。正收益只能经 `apply_next_jewel_socket_decision` 原子应用，
+  并在新 state 重做审计；`policy_limited/inconclusive` 可 Judge 但只能交付 candidate。
 - `inspect_generation_checkpoint` 和 `evaluate_generation_candidate` 必须复用同一个无评分
   `HardLegalityAudit`。属性、装备/宝石等级、武器兼容、Spirit、普通与武器组天赋预算、黄装
   词缀、生成候选遗留的 `Scaffold ...` 装备和 rare/magic 装备缺少 `Item Level` 等确定性非法状态

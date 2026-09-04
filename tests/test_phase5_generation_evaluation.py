@@ -406,24 +406,69 @@ def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monk
 
     assert result["errorCode"] == "generation_final_checks_incomplete"
     assert result["attemptConsumed"] is False
-    assert result["finalCheckBlockers"] == [
-        "skillSupportAudit:support_audit_stale:1"
-    ]
+    assert result["finalCheckBlockers"] == ["skillSupportAudit:support_audit_stale:1"]
     assert not (run_dir / "trusted-evaluations").exists()
 
 
 def test_current_inconclusive_support_audit_is_not_treated_as_missing():
-    assert evaluation._final_check_blockers(
+    assert (
+        evaluation._final_check_blockers(
+            {
+                "skillSupportAudit": {
+                    "status": "failed",
+                    "reasons": ["support_audit_inconclusive:2"],
+                },
+                "jewelDecision": {"status": "passed", "reasons": []},
+                "itemSockets": {"status": "passed", "reasons": []},
+                "sustain": {"status": "passed", "reasons": []},
+            }
+        )
+        == []
+    )
+
+
+def test_current_inconclusive_jewel_review_can_reach_judge_but_is_not_missing():
+    assert (
+        evaluation._final_check_blockers(
+            {
+                "skillSupportAudit": {"status": "passed", "reasons": []},
+                "jewelDecision": {
+                    "status": "unknown",
+                    "reasons": ["selected_candidate_socket_policy_limited"],
+                    "evidenceFreshness": "current",
+                    "reviewPolicyVersion": "jewel_socket_review_v2",
+                    "protectionDeclared": True,
+                    "evaluatedSocketCount": 1,
+                    "limitedSocketCount": 1,
+                    "inconclusiveSocketCount": 0,
+                },
+                "itemSockets": {"status": "passed", "reasons": []},
+                "sustain": {"status": "passed", "reasons": []},
+            }
+        )
+        == []
+    )
+
+
+def test_inconclusive_jewel_review_without_protection_still_blocks_judge():
+    blockers = evaluation._final_check_blockers(
         {
-            "skillSupportAudit": {
-                "status": "failed",
-                "reasons": ["support_audit_inconclusive:2"],
+            "skillSupportAudit": {"status": "passed", "reasons": []},
+            "jewelDecision": {
+                "status": "unknown",
+                "reasons": ["jewel_protection_not_declared"],
+                "evidenceFreshness": "current",
+                "reviewPolicyVersion": "jewel_socket_review_v2",
+                "protectionDeclared": False,
+                "evaluatedSocketCount": 1,
+                "limitedSocketCount": 0,
+                "inconclusiveSocketCount": 0,
             },
-            "jewelDecision": {"status": "passed", "reasons": []},
             "itemSockets": {"status": "passed", "reasons": []},
             "sustain": {"status": "passed", "reasons": []},
         }
-    ) == []
+    )
+    assert blockers == ["jewelDecision:jewel_protection_not_declared"]
 
 
 def test_missing_final_checklist_fails_closed():

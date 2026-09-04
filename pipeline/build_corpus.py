@@ -32,8 +32,10 @@ SOURCE_FILES = [
 ]
 # Uniques (with full readable mods) come from the vendored PoB data, not RePoE.
 UNIQUES_DIR = REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src" / "Data" / "Uniques"
-GENERATED_UNIQUES_FILE = (
-    REPO_ROOT / "data" / "physical_graph" / "uniques" / "generated_uniques.lua"
+GENERATED_UNIQUES_FILE = REPO_ROOT / "data" / "physical_graph" / "uniques" / "generated_uniques.lua"
+POB_JEWEL_MOD_FILES = (
+    REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src" / "Data" / "ModJewel.lua",
+    REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src" / "Data" / "ModVeiled.lua",
 )
 # Build-relevant mod domains (skip monster/area/heist/etc.).
 MOD_DOMAINS = {"item", "flask"}
@@ -82,6 +84,9 @@ BLOCK_RE = re.compile(r"\[\[(.*?)\]\]", re.DOTALL)
 # is a drop-location line that, unfiltered, was mistaken for the base on items whose base follows it
 # (e.g. Hand of Wisdom and Action -> its real base "Furtive Wraps" sits after the Source line).
 UNIQUE_META_RE = re.compile(r"^(Variant:|Selected Variant:|Implicits:|Has Alt Variant|Source:)")
+JEWEL_NODE_TYPE_RE = re.compile(
+    r'^\s*\["(?P<id>[^"]+)"\]\s*=\s*\{.*?\bnodeType\s*=\s*(?P<node_type>[12])\b'
+)
 
 
 def clean_text(t: str) -> str:
@@ -135,6 +140,35 @@ def parse_uniques() -> list[dict]:
     return out
 
 
+def parse_radius_jewel_node_types() -> dict[str, int]:
+    """Read the exact Small/Notable scope that pinned PoB applies to radius-jewel mods."""
+
+    result: dict[str, int] = {}
+    for path in POB_JEWEL_MOD_FILES:
+        if not path.exists():
+            raise FileNotFoundError(f"pinned PoB jewel modifier source is missing: {path}")
+        for line in path.read_text("utf-8").splitlines():
+            match = JEWEL_NODE_TYPE_RE.match(line)
+            if not match:
+                continue
+            mod_id = match.group("id")
+            if not mod_id.startswith(("JewelRadius", "AbyssModRadiusJewel")):
+                continue
+            result[mod_id] = int(match.group("node_type"))
+    return result
+
+
+def apply_radius_jewel_scope(mod_id: str, text: str, node_types: dict[str, int]) -> str:
+    """Mirror Modules/Data.lua's exact-id nodeType expansion for readable corpus text."""
+
+    node_type = node_types.get(mod_id)
+    if node_type == 1:
+        return "Small Passive Skills in Radius also grant " + text
+    if node_type == 2:
+        return "Notable Passive Skills in Radius also grant " + text
+    return text
+
+
 def fetch_all(refresh: bool = False) -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     for name in SOURCE_FILES:
@@ -159,6 +193,7 @@ def build() -> dict[str, int]:
     skills = _load("skills.min.json")
     ascendancies = _load("ascendancies.min.json")
     mods_data = _load("mods.min.json")
+    radius_jewel_node_types = parse_radius_jewel_node_types()
 
     # Resolve recommended_supports metadata ids -> human display names (ids vary Gem/Gems).
     gem_name_by_seg = {_seg(k): g["base_item"]["display_name"] for k, g in skill_gems.items()}
@@ -269,6 +304,7 @@ def build() -> dict[str, int]:
         text = clean_text(m.get("text") or "")
         if not text:
             continue
+        text = apply_radius_jewel_scope(mid, text, radius_jewel_node_types)
         tags = sorted(
             {w["tag"] for w in (m.get("spawn_weights") or []) if w.get("weight") and w.get("tag")}
         )

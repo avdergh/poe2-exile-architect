@@ -2513,6 +2513,7 @@ local function nodeSummary(n)
 		stats = n.sd,
 		alloc = n.alloc or false,
 		pathDist = n.pathDist,
+		reachable = n.path ~= nil,
 		ascendancy = n.ascendancyName,
 		pathNodeIds = pathNodeIds,
 	}
@@ -2633,7 +2634,8 @@ end
 -- jewel-socket swap; this is intentionally not a global passive-tree optimizer.
 function methods.list_reallocation_candidates(p)
 	p = p or {}
-	local limit = math.max(1, math.min(32, tonumber(p.limit) or 12))
+	local requestedLimit = tonumber(p.limit)
+	local limit = requestedLimit and math.max(1, math.min(32, requestedLimit)) or nil
 	local out = {}
 	for _, node in pairs(build.spec.allocNodes or {}) do
 		local nodeType = node.type
@@ -2652,8 +2654,17 @@ function methods.list_reallocation_candidates(p)
 		if a.type ~= b.type then return a.type == "Normal" end
 		return (a.id or 0) < (b.id or 0)
 	end)
-	while #out > limit do table.remove(out) end
-	return { candidates = out, boundedLimit = limit }
+	local candidateCount = #out
+	if limit then
+		while #out > limit do table.remove(out) end
+	end
+	return {
+		candidates = out,
+		candidateCount = candidateCount,
+		returnedCount = #out,
+		truncated = limit and #out < candidateCount or false,
+		boundedLimit = limit,
+	}
 end
 
 function methods.alloc_passive(p)

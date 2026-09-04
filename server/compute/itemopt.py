@@ -28,7 +28,7 @@ from ..judge import hard_legality
 from ..runtime import craft_receipts
 from . import pob_structure
 from .engine import PobEngine
-from .state import build_state_hash
+from .state import build_state_hash, canonical_payload_hash
 
 _RANGE = re.compile(r"\((\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\)")
 _RES_KEYS = ("fire", "cold", "lightning")
@@ -43,6 +43,8 @@ _JEWEL_DECISION_LOCK = threading.RLock()
 _JEWEL_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, Any]]] = WeakKeyDictionary()
 _JEWEL_APPLY_DECISIONS: WeakKeyDictionary[Any, dict[str, dict[str, Any]]] = WeakKeyDictionary()
 _JEWEL_DECISION_LIMIT_PER_ENGINE = 64
+_JEWEL_REVIEW_POLICY_VERSION = "jewel_socket_review_v2"
+_JEWEL_REVIEW_SCOPE = "selected_candidate_x_reachable_sockets_with_current_safe_leaves"
 
 
 def next_jewel_decision_for_state(engine: Any, state_hash: str) -> dict[str, Any] | None:
@@ -76,21 +78,45 @@ def _record_next_jewel_decision(
 
 def _record_jewel_apply_decision(engine: Any, payload: dict[str, Any]) -> str:
     stable = {
+        "reviewPolicyVersion": payload["reviewPolicyVersion"],
         "stateHash": payload["stateHash"],
-        "roundIndex": payload["roundIndex"],
+        "candidateJewelFingerprint": payload["candidateJewelFingerprint"],
+        "goalsFingerprint": payload["goalsFingerprint"],
+        "protectedNodeIds": payload["protectedNodeIds"],
         "socket": payload["socket"],
+        "pathPointCost": payload["pathPointCost"],
         "nodesToRemove": payload["nodesToRemove"],
-        "jewelFingerprint": payload["jewelFingerprint"],
     }
-    decision_ref = "jewel-decision:" + hashlib.sha256(
-        json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:16]
+    decision_ref = (
+        "jewel-decision:"
+        + hashlib.sha256(
+            json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+    )
     with _JEWEL_DECISION_LOCK:
         decisions = _JEWEL_APPLY_DECISIONS.setdefault(engine, {})
         decisions[decision_ref] = deepcopy(payload)
         while len(decisions) > _JEWEL_DECISION_LIMIT_PER_ENGINE:
             decisions.pop(next(iter(decisions)))
     return decision_ref
+
+
+def _jewel_recovery_required(engine: Any) -> bool:
+    return bool(getattr(engine, "_poe2_mutation_batch_recovery_required", False))
+
+
+def _passive_allocated(engine: Any, node_id: int) -> bool:
+    value = engine.get_passive(int(node_id))
+    if not isinstance(value, dict) or value.get("found") is False:
+        return False
+    node = value.get("node") if isinstance(value.get("node"), dict) else value
+    return bool(node.get("alloc")) if isinstance(node, dict) else False
+
+
+def _whole_build_legality(engine: Any, xml: str) -> dict[str, Any]:
+    return hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(engine.get_build(), xml)
+    )
 
 
 def apply_next_jewel_socket_decision(
@@ -101,6 +127,12 @@ def apply_next_jewel_socket_decision(
 ) -> dict[str, Any]:
     """Atomically apply one previously measured positive jewel-socket decision."""
 
+    if _jewel_recovery_required(engine):
+        return {
+            "ok": False,
+            "errorCode": "build_state_recovery_required",
+            "recoveryRequired": True,
+        }
     with engine.transaction_lock():
         snapshot = engine.get_xml()
         state_hash = build_state_hash(snapshot)
@@ -112,19 +144,18 @@ def apply_next_jewel_socket_decision(
                 "actualStateHash": state_hash,
             }
         with _JEWEL_DECISION_LOCK:
-            decision = deepcopy(
-                (_JEWEL_APPLY_DECISIONS.get(engine) or {}).get(decision_ref)
-            )
+            decision = deepcopy((_JEWEL_APPLY_DECISIONS.get(engine) or {}).get(decision_ref))
         if not isinstance(decision, dict):
             return {"ok": False, "errorCode": "jewel_socket_decision_not_found"}
         if decision.get("stateHash") != state_hash:
             return {"ok": False, "errorCode": "jewel_socket_decision_stale"}
         if decision.get("positiveNetBenefit") is not True:
             return {"ok": False, "errorCode": "jewel_socket_decision_not_positive"}
-        prior_rounds = int(decision.get("priorRoundsCompleted") or 0)
-        round_index = int(decision.get("roundIndex") or 0)
-        if round_index != prior_rounds + 1 or round_index not in {1, 2}:
-            return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
+        if not str(decision.get("candidateJewelFingerprint") or ""):
+            return {"ok": False, "errorCode": "jewel_socket_decision_fingerprint_missing"}
+        if decision.get("protectionDeclared") is not True:
+            return {"ok": False, "errorCode": "jewel_protection_not_declared"}
+        before_legality = _whole_build_legality(engine, snapshot)
         try:
             for node_id in decision.get("nodesToRemove") or []:
                 removed = engine.dealloc_passive(int(node_id))
@@ -146,6 +177,18 @@ def apply_next_jewel_socket_decision(
             output_state_hash = build_state_hash(engine.get_xml())
             if output_state_hash == state_hash:
                 raise ValueError("jewel_socket_decision_not_applied")
+            if not _passive_allocated(engine, int(decision["socket"])):
+                raise ValueError("jewel_socket_readback_mismatch")
+            if any(
+                _passive_allocated(engine, int(node_id))
+                for node_id in decision.get("nodesToRemove") or []
+            ):
+                raise ValueError("jewel_reallocation_readback_mismatch")
+            if any(
+                not _passive_allocated(engine, int(node_id))
+                for node_id in decision.get("protectedNodeIds") or []
+            ):
+                raise ValueError("protected_passive_regression")
             try:
                 root = ET.fromstring(engine.get_xml())
             except (ET.ParseError, TypeError, ValueError) as exc:
@@ -153,26 +196,42 @@ def apply_next_jewel_socket_decision(
             assignments = pob_structure.active_spec_passive_jewels(root)
             expected_assignment = (
                 str(decision["socket"]),
-                str(decision["jewelFingerprint"]),
+                str(decision["candidateJewelFingerprint"]),
             )
             if assignments is None or expected_assignment not in assignments:
                 raise ValueError("jewel_socket_readback_mismatch")
+            after_legality = _whole_build_legality(engine, engine.get_xml())
+            legality_regression = hard_legality.compare_audits_for_regression(
+                before_legality,
+                after_legality,
+            )
+            if legality_regression.get("reasons"):
+                raise ValueError("jewel_socket_legality_regression")
         except Exception as exc:  # noqa: BLE001 - restore first, return stable error only.
             restored = _restore_jewel_state(engine, snapshot, state_hash)
             setattr(engine, "_poe2_mutation_batch_recovery_required", not restored)
             return {
                 "ok": False,
-                "errorCode": str(exc) if isinstance(exc, ValueError) else "jewel_socket_apply_failed",
+                "errorCode": str(exc)
+                if isinstance(exc, ValueError)
+                else "jewel_socket_apply_failed",
                 "rolledBack": restored,
                 "recoveryRequired": not restored,
             }
         applied = {
             "status": "applied",
-            "roundIndex": round_index,
-            "roundsCompleted": prior_rounds + 1,
+            "reviewPolicyVersion": _JEWEL_REVIEW_POLICY_VERSION,
+            "reviewScope": _JEWEL_REVIEW_SCOPE,
+            "roundIndex": decision.get("roundIndex"),
             "socket": int(decision["socket"]),
             "positiveNetBenefit": True,
             "decisionRef": decision_ref,
+            "candidateJewelFingerprint": decision["candidateJewelFingerprint"],
+            "goalsFingerprint": decision["goalsFingerprint"],
+            "reviewContextFingerprint": decision["reviewContextFingerprint"],
+            "protectionDeclared": decision["protectionDeclared"],
+            "protectedNodeIds": list(decision["protectedNodeIds"]),
+            "reviewRequired": True,
             "inputStateHash": state_hash,
             "stateHash": output_state_hash,
         }
@@ -377,6 +436,13 @@ def _generated_item_implicit_lines(base: str, *, ilvl: int | None) -> list[str]:
     return [f"Has {charm_slots} Charm {noun}"]
 
 
+def _generated_item_radius_line(base: str) -> str:
+    item = db.get_item(base)
+    if isinstance(item, dict) and "radius_jewel" in set(item.get("tags") or []):
+        return "Radius: Small\n"
+    return ""
+
+
 def _craft_profile(base: str) -> dict[str, Any]:
     return db.craft_profile(base) or {
         "domain": "item",
@@ -402,6 +468,7 @@ def _item_text(
     profile = profile or _craft_profile(base)
     body = "\n".join(lines)
     level_line = f"Item Level: {int(ilvl)}\n" if ilvl is not None else ""
+    radius_line = _generated_item_radius_line(base)
     property_lines = _generated_item_property_lines(base, ilvl=ilvl)
     property_text = "".join(f"{line}\n" for line in property_lines)
     implicit_lines = _generated_item_implicit_lines(base, ilvl=ilvl)
@@ -416,7 +483,7 @@ def _item_text(
         if rarity.casefold() == "magic"
         else f"Rarity: Rare\nOptimized {slot}\n{base}\n"
     )
-    return f"{header}{level_line}{property_text}{implicit_text}{body}"
+    return f"{header}{level_line}{radius_line}{property_text}{implicit_text}{body}"
 
 
 def _generated_item_legality(
@@ -1259,15 +1326,16 @@ def optimize_jewel(
     base: str = "Emerald",
     goals: dict[str, float] | None = None,
     rolls: str = "realistic",
+    selected_mod_ids: list[str] | None = None,
+    item_level: int | None = None,
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare JEWEL for the active build (marginal-ranked).
 
-    A jewel's explicit mods apply globally, so each candidate mod is measured as a custom modifier
-    on the REAL build (merged with existing custom mods) and ranked by marginal gain — jewel mods are
-    largely independent, so the top picks ≈ the best jewel, far cheaper than a full re-search. Pick a
-    `base` matching the socket's attribute (Emerald=dex, Ruby=str, Sapphire=int, Diamond=all).
-    Returns a jewel to socket with equip_jewel into an ALLOCATED socket. Radius/Time-Lost jewels
-    aren't modelled this way (their effect is positional).
+    Ordinary jewel modifiers are measured as custom modifiers on the real build and ranked by
+    marginal gain. Radius/Time-Lost bases instead require Agent-selected exact modifier ids; this
+    function validates and formats that static selection without pretending its effect is global.
+    Every generated rare jewel carries an Item Level. Position radius candidates with
+    evaluate_next_jewel_socket before equipping them.
     """
     bi = db.get_item(base)
     if not bi or "jewel" not in (bi.get("tags") or []):
@@ -1275,7 +1343,150 @@ def optimize_jewel(
             "ok": False,
             "error": f"'{base}' is not a jewel base — use Emerald/Ruby/Sapphire/Diamond.",
         }
-    pool = db.affix_pool(base)
+    character_level = max(1, int(engine.get_build().get("level") or 1))
+    ilvl = max(1, min(100, int(item_level if item_level is not None else character_level)))
+    is_radius_jewel = "radius_jewel" in set(bi.get("tags") or [])
+    if is_radius_jewel and selected_mod_ids is None:
+        return {
+            "ok": False,
+            "errorCode": "radius_jewel_requires_agent_selection",
+            "error": (
+                "Radius/Time-Lost jewel modifiers are positional. Select exact current-corpus "
+                "modifier ids, then evaluate the constructed jewel in every relevant tree socket."
+            ),
+            "base": base,
+            "requiredTools": ["search_mods", "optimize_jewel", "evaluate_next_jewel_socket"],
+            "stateChanged": False,
+        }
+
+    if selected_mod_ids is not None:
+        requested_ids = [str(value).strip() for value in selected_mod_ids if str(value).strip()]
+        if not requested_ids:
+            return {
+                "ok": False,
+                "errorCode": "jewel_mod_not_found",
+                "error": "selected_mod_ids must contain at least one exact modifier id",
+                "stateChanged": False,
+            }
+        if len(requested_ids) != len(set(requested_ids)):
+            return {
+                "ok": False,
+                "errorCode": "jewel_mod_group_conflict",
+                "error": "selected_mod_ids must not repeat a modifier",
+                "stateChanged": False,
+            }
+        selected_records = db.get_mods_by_ids(requested_ids)
+        found_ids = {str(item["id"]) for item in selected_records}
+        missing_ids = [value for value in requested_ids if value not in found_ids]
+        if missing_ids:
+            return {
+                "ok": False,
+                "errorCode": "jewel_mod_not_found",
+                "error": "one or more selected modifier ids are absent from the current corpus",
+                "missingModIds": missing_ids,
+                "stateChanged": False,
+            }
+        unavailable = [
+            str(item["id"])
+            for item in selected_records
+            if item.get("type") not in {"prefix", "suffix"}
+            or not db.mod_tags_match_base(
+                base,
+                set(item.get("rolls_on") or []),
+                mod_domain=str(item.get("domain") or ""),
+            )
+        ]
+        if unavailable:
+            return {
+                "ok": False,
+                "errorCode": "jewel_mod_not_available_for_base",
+                "error": "one or more selected modifiers cannot roll on this jewel base",
+                "unavailableModIds": unavailable,
+                "stateChanged": False,
+            }
+        underlevelled = [
+            str(item["id"])
+            for item in selected_records
+            if int(item.get("required_level") or 0) > ilvl
+        ]
+        if underlevelled:
+            return {
+                "ok": False,
+                "errorCode": "jewel_mod_level_unavailable",
+                "error": "one or more selected modifiers require a higher item level",
+                "unavailableModIds": underlevelled,
+                "itemLevel": ilvl,
+                "stateChanged": False,
+            }
+        chosen: list[dict[str, Any]] = []
+        used_groups: set[str] = set()
+        for item in selected_records:
+            groups = [str(value) for value in item.get("groups") or [] if str(value)]
+            group = groups[0] if groups else str(item["id"])
+            if group in used_groups:
+                return {
+                    "ok": False,
+                    "errorCode": "jewel_mod_group_conflict",
+                    "error": "selected modifiers contain mutually exclusive modifier groups",
+                    "conflictingGroup": group,
+                    "stateChanged": False,
+                }
+            used_groups.add(group)
+            chosen.append(
+                {
+                    "id": str(item["id"]),
+                    "line": _roll(str(item.get("text") or ""), rolls),
+                    "group": group,
+                    "type": str(item["type"]),
+                    "tiers": 1,
+                    "ilvl": int(item.get("required_level") or 0),
+                }
+            )
+        profile = _craft_profile(base)
+        prefix_count = sum(item["type"] == "prefix" for item in chosen)
+        suffix_count = sum(item["type"] == "suffix" for item in chosen)
+        if prefix_count > int(profile.get("prefixLimit") or 0) or suffix_count > int(
+            profile.get("suffixLimit") or 0
+        ):
+            return {
+                "ok": False,
+                "errorCode": "jewel_affix_limit_exceeded",
+                "error": "selected modifiers exceed this jewel base's prefix/suffix limit",
+                "prefixCount": prefix_count,
+                "suffixCount": suffix_count,
+                "stateChanged": False,
+            }
+        selected_lines = [str(item["line"]) for item in chosen]
+        selected_item = _item_text(base, selected_lines, "Jewel", ilvl=ilvl, profile=profile)
+        legality = _generated_item_legality(selected_item)
+        if not legality.get("ok"):
+            return {
+                "ok": False,
+                "errorCode": "generated_jewel_legality_check_failed",
+                "error": "the selected jewel modifiers failed the shared generated-item audit",
+                "legalityCheck": legality,
+                "stateChanged": False,
+            }
+        fingerprint = str(
+            itemparse.semantic_item_structure(selected_item).get("itemFingerprint") or ""
+        )
+        return {
+            "ok": True,
+            "base": base,
+            "itemLevel": ilvl,
+            "item": selected_item,
+            "itemFingerprint": fingerprint,
+            "modIds": requested_ids,
+            "affixes": selected_lines,
+            "selectionMode": (
+                "agent_selected_positional" if is_radius_jewel else "agent_selected_static"
+            ),
+            "requiresPositionalEvaluation": is_radius_jewel,
+            "stateChanged": False,
+            "legalityCheck": legality,
+        }
+
+    pool = db.affix_pool(base, ilvl=ilvl)
     pre, suf = pool["prefixes"], pool["suffixes"]
     if not pre and not suf:
         return {"ok": False, "error": f"No craftable jewel affixes for base '{base}'."}
@@ -1346,15 +1557,33 @@ def optimize_jewel(
     finally:
         engine.load_build_xml(snapshot)
 
+    item = _item_text(base, final_lines, "Jewel", ilvl=ilvl)
+    legality = _generated_item_legality(item)
+    if not legality.get("ok"):
+        return {
+            "ok": False,
+            "errorCode": "generated_jewel_legality_check_failed",
+            "error": "the optimized jewel failed the shared generated-item audit",
+            "legalityCheck": legality,
+            "stateChanged": False,
+        }
     out: dict[str, Any] = {
         "ok": True,
         "base": base,
-        "item": f"Rarity: Rare\nOptimized Jewel\n{base}\n--------\n" + "\n".join(final_lines),
+        "itemLevel": ilvl,
+        "item": item,
+        "itemFingerprint": str(
+            itemparse.semantic_item_structure(item).get("itemFingerprint") or ""
+        ),
         "affixes": final_lines,
         "attainability": [
             {"affix": c["line"], "ilvl": c["ilvl"], "tiers": c["tiers"]} for c in chosen
         ],
         "craft": _craft_summary(chosen, len(pre), len(suf)),
+        "selectionMode": "automatic_global_marginal",
+        "requiresPositionalEvaluation": False,
+        "stateChanged": False,
+        "legalityCheck": legality,
         "note": (
             "Best jewel by marginal gain (jewel mods are ~independent). Socket it with equip_jewel "
             "into an ALLOCATED tree socket (list_jewel_sockets). Verify your jewel base's affix limit "
@@ -1891,10 +2120,17 @@ def evaluate_next_jewel_socket(
     *,
     raw: str,
     goals: dict[str, float],
-    round_index: int = 1,
+    protected_node_ids: list[int] | None = None,
+    round_index: int | None = None,
 ) -> dict[str, Any]:
-    """Run the bounded jewel review under one re-entrant engine transaction."""
+    """Compare one Agent-selected jewel across every currently reachable empty tree socket."""
 
+    if _jewel_recovery_required(engine):
+        return {
+            "ok": False,
+            "errorCode": "build_state_recovery_required",
+            "recoveryRequired": True,
+        }
     with engine.transaction_lock():
         try:
             snapshot = engine.get_xml()
@@ -1902,10 +2138,13 @@ def evaluate_next_jewel_socket(
         except Exception:  # noqa: BLE001
             return {"ok": False, "errorCode": "jewel_socket_probe_snapshot_failed"}
         try:
-            result = _evaluate_next_jewel_socket_locked(
+            result, apply_payload = _evaluate_next_jewel_socket_locked(
                 engine,
+                snapshot=snapshot,
+                state_hash=state_hash,
                 raw=raw,
                 goals=goals,
+                protected_node_ids=protected_node_ids,
                 round_index=round_index,
             )
         except Exception as exc:  # noqa: BLE001 - restore before returning a stable error.
@@ -1930,227 +2169,448 @@ def evaluate_next_jewel_socket(
                 "rolledBack": False,
                 "recoveryRequired": True,
             }
+        if result.get("ok") is False:
+            return result
+        if apply_payload is not None:
+            result["decisionRef"] = _record_jewel_apply_decision(engine, apply_payload)
+        _record_next_jewel_decision(engine, state_hash, result)
         return result
+
+
+def _protected_jewel_nodes(
+    engine: Any,
+    protected_node_ids: list[int] | None,
+) -> tuple[list[int], bool, dict[str, Any] | None]:
+    if protected_node_ids is None:
+        return [], False, None
+    protected = sorted({int(value) for value in protected_node_ids})
+    missing: list[int] = []
+    unallocated: list[int] = []
+    for node_id in protected:
+        value = engine.get_passive(node_id)
+        if not isinstance(value, dict) or value.get("found") is False:
+            missing.append(node_id)
+            continue
+        node = value.get("node") if isinstance(value.get("node"), dict) else value
+        if not isinstance(node, dict) or not node.get("alloc"):
+            unallocated.append(node_id)
+    if missing:
+        return (
+            protected,
+            True,
+            {
+                "ok": False,
+                "errorCode": "protected_passive_not_found",
+                "missingProtectedNodeIds": missing,
+            },
+        )
+    if unallocated:
+        return (
+            protected,
+            True,
+            {
+                "ok": False,
+                "errorCode": "protected_passive_not_allocated",
+                "unallocatedProtectedNodeIds": unallocated,
+            },
+        )
+    return protected, True, None
+
+
+def _jewel_review_context_fingerprint(
+    *,
+    state_hash: str,
+    jewel_fingerprint: str,
+    goals_fingerprint: str,
+    protected_node_ids: list[int],
+    protection_declared: bool,
+) -> str:
+    return canonical_payload_hash(
+        {
+            "stateHash": state_hash,
+            "candidateJewelFingerprint": jewel_fingerprint,
+            "goalsFingerprint": goals_fingerprint,
+            "protectedNodeIds": protected_node_ids,
+            "protectionDeclared": protection_declared,
+        },
+        prefix="jewel-review",
+    )
+
+
+def _jewel_review_pending_result(
+    current: dict[str, Any] | None,
+    review_context_fingerprint: str,
+) -> dict[str, Any] | None:
+    if not isinstance(current, dict) or current.get("status") == "applied":
+        return None
+    same_context = current.get("reviewContextFingerprint") == review_context_fingerprint
+    if current.get("positiveNetBenefit") is True:
+        if same_context:
+            return {**deepcopy(current), "reused": True}
+        if current.get("decisionRef"):
+            return {
+                "ok": False,
+                "errorCode": "jewel_socket_positive_decision_pending",
+                "decisionRef": current.get("decisionRef"),
+                "stateHash": current.get("stateHash"),
+            }
+        return None
+    if current.get("status") == "inconclusive" and not same_context:
+        return {
+            "ok": False,
+            "errorCode": "jewel_socket_inconclusive_review_pending",
+            "stateHash": current.get("stateHash"),
+        }
+    return None
+
+
+def _restore_jewel_probe_or_raise(engine: Any, snapshot: str, state_hash: str) -> None:
+    if not _restore_jewel_state(engine, snapshot, state_hash):
+        raise RuntimeError("jewel_socket_probe_restore_failed")
 
 
 def _evaluate_next_jewel_socket_locked(
     engine: PobEngine,
     *,
+    snapshot: str,
+    state_hash: str,
     raw: str,
     goals: dict[str, float],
-    round_index: int = 1,
-) -> dict[str, Any]:
-    """Compare the current tree with its nearest reachable additional jewel socket.
+    protected_node_ids: list[int] | None,
+    round_index: int | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Build an unregistered review draft; the caller registers it only after final restore."""
 
-    The probe allocates the real PoB path, equips the supplied jewel, measures the weighted
-    marginal gain, then restores the exact input XML. Create intentionally permits at most two
-    rounds so this never expands into a full jewel-socket combination search.
-    """
-
-    if round_index not in {1, 2}:
-        return {"ok": False, "errorCode": "jewel_socket_round_out_of_range"}
     weights = {
         str(key): float(value) for key, value in goals.items() if _num(value) and float(value) > 0
     }
     if not weights:
-        return {"ok": False, "error": "goals must map stat names to positive weights"}
-    snapshot = engine.get_xml()
-    state_hash = build_state_hash(snapshot)
-    current_decision = next_jewel_decision_for_state(engine, state_hash)
-    prior_rounds = int((current_decision or {}).get("roundsCompleted") or 0)
-    if round_index == 2 and not (
-        (current_decision or {}).get("status") == "applied" and prior_rounds == 1
-    ):
-        return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
-    if round_index == 1 and (current_decision or {}).get("status") == "applied":
-        return {"ok": False, "errorCode": "jewel_socket_round_sequence_invalid"}
-    sockets = [
-        dict(entry)
-        for entry in engine.list_jewel_sockets().get("sockets") or []
-        if isinstance(entry, dict) and not entry.get("allocated") and not entry.get("filled")
-    ]
-    candidates: list[dict[str, Any]] = []
-    for entry in sockets:
-        passive = engine.get_passive(int(entry["socket"]))
+        return ({"ok": False, "error": "goals must map stat names to positive weights"}, None)
+    jewel_fingerprint = str(itemparse.semantic_item_structure(raw).get("itemFingerprint") or "")
+    if not jewel_fingerprint:
+        return ({"ok": False, "errorCode": "candidate_jewel_fingerprint_missing"}, None)
+    protected, protection_declared, protected_error = _protected_jewel_nodes(
+        engine, protected_node_ids
+    )
+    if protected_error is not None:
+        return (protected_error, None)
+    goals_fingerprint = canonical_payload_hash(weights, prefix="jewel-goals")
+    review_context_fingerprint = _jewel_review_context_fingerprint(
+        state_hash=state_hash,
+        jewel_fingerprint=jewel_fingerprint,
+        goals_fingerprint=goals_fingerprint,
+        protected_node_ids=protected,
+        protection_declared=protection_declared,
+    )
+    pending = _jewel_review_pending_result(
+        next_jewel_decision_for_state(engine, state_hash),
+        review_context_fingerprint,
+    )
+    if pending is not None:
+        return (pending, None)
+
+    reachable: list[dict[str, Any]] = []
+    for entry in engine.list_jewel_sockets().get("sockets") or []:
+        if not isinstance(entry, dict) or entry.get("allocated") or entry.get("filled"):
+            continue
+        socket_id = entry.get("socket")
+        if not isinstance(socket_id, (int, float)):
+            continue
+        passive = engine.get_passive(int(socket_id))
         path_cost = passive.get("pathDist") if isinstance(passive, dict) else None
-        if isinstance(path_cost, (int, float)) and path_cost > 0:
-            candidates.append({**entry, "pathPointCost": int(path_cost)})
-    if not candidates:
-        decision = {
-            "status": "not_applicable",
-            "roundIndex": round_index,
-            "priorRoundsCompleted": prior_rounds,
-            "roundsCompleted": round_index,
-            "positiveNetBenefit": False,
-            "reason": "no_reachable_unallocated_jewel_socket",
-            "stateHash": state_hash,
-        }
-        _record_next_jewel_decision(engine, state_hash, decision)
-        return {"ok": True, **decision, "maxRounds": 2}
-    chosen = min(candidates, key=lambda entry: (entry["pathPointCost"], int(entry["socket"])))
+        if (
+            not isinstance(path_cost, (int, float))
+            or path_cost <= 0
+            or passive.get("reachable") is False
+        ):
+            continue
+        reachable.append(
+            {
+                **entry,
+                "socket": int(socket_id),
+                "pathPointCost": int(path_cost),
+                "pathNodeIds": sorted(
+                    int(value)
+                    for value in (passive.get("pathNodeIds") or [])
+                    if isinstance(value, (int, float))
+                ),
+            }
+        )
+
+    common = {
+        "ok": True,
+        "reviewPolicyVersion": _JEWEL_REVIEW_POLICY_VERSION,
+        "reviewScope": _JEWEL_REVIEW_SCOPE,
+        "stateHash": state_hash,
+        "candidateJewelFingerprint": jewel_fingerprint,
+        "goalsFingerprint": goals_fingerprint,
+        "reviewContextFingerprint": review_context_fingerprint,
+        "protectionDeclared": protection_declared,
+        "protectedNodeIds": protected,
+        "roundIndex": round_index,
+        "maxRounds": None,
+        "goals": weights,
+        "readOnly": True,
+    }
+    if not reachable:
+        return (
+            {
+                **common,
+                "status": "not_applicable",
+                "positiveNetBenefit": False,
+                "reason": "no_reachable_unallocated_jewel_socket",
+                "decision": "not_applicable",
+                "reachableSocketCount": 0,
+                "evaluatedSocketCount": 0,
+                "limitedSocketCount": 0,
+                "inconclusiveSocketCount": 0,
+                "socketFrontierComplete": True,
+                "socketEvaluations": [],
+            },
+            None,
+        )
+
     build = engine.get_build()
     unspent = int(build.get("unspentPoints") or 0)
     keys = list(weights)
     before = engine.get_stats(keys).get("stats") or {}
     denom = {key: max(abs(float(before.get(key) or 0.0)), 1.0) for key in keys}
-    points_to_reallocate = max(0, int(chosen["pathPointCost"]) - unspent)
-    selected_reallocations: list[dict[str, Any]] = []
+    before_legality = _whole_build_legality(engine, snapshot)
+
+    candidate_result = engine.list_reallocation_candidates(limit=None)
+    protected_set = set(protected)
+    leaf_candidates = [
+        dict(entry)
+        for entry in candidate_result.get("candidates") or []
+        if isinstance(entry, dict)
+        and isinstance(entry.get("id"), (int, float))
+        and int(entry["id"]) not in protected_set
+    ]
     reallocation_probes: list[dict[str, Any]] = []
-    if points_to_reallocate:
-        passive = engine.get_passive(int(chosen["socket"]))
-        route_node_ids = {
-            int(value)
-            for value in (passive.get("pathNodeIds") or [])
-            if isinstance(value, (int, float))
-        }
-        route_node_ids.add(int(chosen["socket"]))
-        candidate_result = engine.list_reallocation_candidates(limit=12)
-        leaf_candidates = [
-            dict(entry)
-            for entry in (candidate_result.get("candidates") or [])
-            if isinstance(entry, dict)
-            and isinstance(entry.get("id"), (int, float))
-            and int(entry["id"]) not in route_node_ids
+    for entry in leaf_candidates:
+        try:
+            removed = engine.dealloc_passive(int(entry["id"]))
+            if not isinstance(removed, dict) or not removed.get("ok"):
+                continue
+            points_freed = int(removed.get("pointsFreed") or 0)
+            if points_freed != 1:
+                continue
+            without = engine.get_stats(keys).get("stats") or {}
+            loss = sum(
+                weight
+                * ((float(before.get(key) or 0.0) - float(without.get(key) or 0.0)) / denom[key])
+                for key, weight in weights.items()
+            )
+            reallocation_probes.append(
+                {
+                    "nodeId": int(entry["id"]),
+                    "name": str(entry.get("name") or ""),
+                    "type": str(entry.get("type") or ""),
+                    "pointsFreed": 1,
+                    "weightedRelativeLoss": round(loss, 6),
+                    "metricDeltas": {
+                        key: round(
+                            float(without.get(key) or 0.0) - float(before.get(key) or 0.0),
+                            6,
+                        )
+                        for key in keys
+                    },
+                }
+            )
+        finally:
+            _restore_jewel_probe_or_raise(engine, snapshot, state_hash)
+    reallocation_probes.sort(
+        key=lambda entry: (float(entry["weightedRelativeLoss"]), int(entry["nodeId"]))
+    )
+
+    socket_evaluations: list[dict[str, Any]] = []
+    for socket_entry in sorted(reachable, key=lambda item: int(item["socket"])):
+        socket_id = int(socket_entry["socket"])
+        path_cost = int(socket_entry["pathPointCost"])
+        points_to_reallocate = max(0, path_cost - unspent)
+        route_ids = set(socket_entry.get("pathNodeIds") or [])
+        available_reallocations = [
+            entry for entry in reallocation_probes if int(entry["nodeId"]) not in route_ids
         ]
-        for entry in leaf_candidates:
-            try:
-                removed = engine.dealloc_passive(int(entry["id"]))
+        selected_reallocations = available_reallocations[:points_to_reallocate]
+        base_evaluation = {
+            "socket": socket_id,
+            "pathPointCost": path_cost,
+            "pointsToReallocate": points_to_reallocate,
+            "pointsReallocated": len(selected_reallocations),
+            "nodesToRemove": [int(entry["nodeId"]) for entry in selected_reallocations],
+        }
+        if len(selected_reallocations) < points_to_reallocate:
+            socket_evaluations.append(
+                {
+                    **base_evaluation,
+                    "status": "policy_limited",
+                    "reason": "current_safe_leaf_points_insufficient",
+                }
+            )
+            continue
+        try:
+            for entry in selected_reallocations:
+                removed = engine.dealloc_passive(int(entry["nodeId"]))
                 if not isinstance(removed, dict) or not removed.get("ok"):
-                    continue
-                points_freed = int(removed.get("pointsFreed") or 0)
-                if points_freed <= 0:
-                    continue
-                without = engine.get_stats(keys).get("stats") or {}
-                loss = sum(
-                    weight
-                    * (
-                        (float(before.get(key) or 0.0) - float(without.get(key) or 0.0))
-                        / denom[key]
-                    )
-                    for key, weight in weights.items()
-                )
-                reallocation_probes.append(
+                    raise ValueError("jewel_reallocation_failed")
+            refreshed = engine.get_passive(socket_id)
+            refreshed_cost = refreshed.get("pathDist") if isinstance(refreshed, dict) else None
+            refreshed_path = sorted(
+                int(value)
+                for value in (refreshed.get("pathNodeIds") or [])
+                if isinstance(value, (int, float))
+            )
+            if int(refreshed_cost or -1) != path_cost or refreshed_path != list(
+                socket_entry.get("pathNodeIds") or []
+            ):
+                socket_evaluations.append(
                     {
-                        "nodeId": int(entry["id"]),
-                        "name": str(entry.get("name") or ""),
-                        "type": str(entry.get("type") or ""),
-                        "pointsFreed": points_freed,
-                        "weightedRelativeLoss": round(loss, 6),
-                        "metricDeltas": {
-                            key: round(
-                                float(without.get(key) or 0.0)
-                                - float(before.get(key) or 0.0),
-                                6,
-                            )
-                            for key in keys
-                        },
+                        **base_evaluation,
+                        "status": "policy_limited",
+                        "reason": "socket_path_changed_after_reallocation",
                     }
                 )
-            finally:
-                if not _restore_jewel_state(engine, snapshot, state_hash):
-                    raise RuntimeError("jewel_socket_probe_restore_failed")
-        reallocation_probes.sort(
-            key=lambda entry: (
-                float(entry["weightedRelativeLoss"]) / max(int(entry["pointsFreed"]), 1),
-                int(entry["nodeId"]),
+                continue
+            allocated = engine.alloc_passive(socket_id)
+            if (
+                not isinstance(allocated, dict)
+                or not allocated.get("ok")
+                or allocated.get("warning")
+            ):
+                raise ValueError("jewel_socket_path_allocation_failed")
+            actual_points = int(allocated.get("pointsSpent") or 0)
+            if actual_points != path_cost:
+                socket_evaluations.append(
+                    {
+                        **base_evaluation,
+                        "status": "policy_limited",
+                        "reason": "socket_path_cost_changed_after_reallocation",
+                        "actualPointsSpent": actual_points,
+                    }
+                )
+                continue
+            equipped = engine.equip_jewel(raw, socket=socket_id)
+            if not isinstance(equipped, dict) or not equipped.get("ok"):
+                raise ValueError("candidate_jewel_equip_failed")
+            if any(not _passive_allocated(engine, node_id) for node_id in protected):
+                socket_evaluations.append(
+                    {
+                        **base_evaluation,
+                        "status": "rejected_illegal",
+                        "reason": "protected_passive_regression",
+                        "actualPointsSpent": actual_points,
+                        "legalityRegressionCodes": ["protected_passive_regression"],
+                    }
+                )
+                continue
+            candidate_xml = engine.get_xml()
+            after_legality = _whole_build_legality(engine, candidate_xml)
+            legality_regression = hard_legality.compare_audits_for_regression(
+                before_legality,
+                after_legality,
             )
-        )
-        points_selected = 0
-        for entry in reallocation_probes:
-            selected_reallocations.append(entry)
-            points_selected += int(entry["pointsFreed"])
-            if points_selected >= points_to_reallocate:
-                break
-        if points_selected < points_to_reallocate:
-            decision = {
-                "status": "requires_reallocation",
-                "roundIndex": round_index,
-                "priorRoundsCompleted": prior_rounds,
-                "socket": int(chosen["socket"]),
-                "pathPointCost": chosen["pathPointCost"],
-                "pointsToReallocate": points_to_reallocate,
-                "positiveNetBenefit": None,
-                "reason": "bounded_reallocation_candidates_insufficient",
-                "reallocationCandidates": reallocation_probes,
-                "stateHash": state_hash,
-            }
-            _record_next_jewel_decision(engine, state_hash, decision)
-            return {"ok": True, **decision, "maxRounds": 2, "readOnly": True}
-    try:
-        for entry in selected_reallocations:
-            removed = engine.dealloc_passive(int(entry["nodeId"]))
-            if not isinstance(removed, dict) or not removed.get("ok"):
-                return {
-                    "ok": False,
-                    "errorCode": "jewel_reallocation_failed",
-                    "nodeId": int(entry["nodeId"]),
+            regression_codes = sorted(
+                {
+                    str(item.get("code") or "unknown")
+                    for item in legality_regression.get("reasons") or []
                 }
-        allocated = engine.alloc_passive(int(chosen["socket"]))
-        if not isinstance(allocated, dict) or not allocated.get("ok") or allocated.get("warning"):
-            return {
-                "ok": False,
-                "errorCode": "jewel_socket_path_allocation_failed",
-                "socket": int(chosen["socket"]),
-            }
-        equipped = engine.equip_jewel(raw, socket=int(chosen["socket"]))
-        if not isinstance(equipped, dict) or not equipped.get("ok"):
-            return {
-                "ok": False,
-                "errorCode": "candidate_jewel_equip_failed",
-                "socket": int(chosen["socket"]),
-            }
-        after = engine.get_stats(keys).get("stats") or {}
-    finally:
-        if not _restore_jewel_state(engine, snapshot, state_hash):
-            raise RuntimeError("jewel_socket_probe_restore_failed")
-    score = sum(
-        weight * ((float(after.get(key) or 0.0) - float(before.get(key) or 0.0)) / denom[key])
-        for key, weight in weights.items()
+            )
+            if regression_codes:
+                socket_evaluations.append(
+                    {
+                        **base_evaluation,
+                        "status": "rejected_illegal",
+                        "reason": "whole_build_legality_regression",
+                        "actualPointsSpent": actual_points,
+                        "legalityRegressionCodes": regression_codes,
+                    }
+                )
+                continue
+            after = engine.get_stats(keys).get("stats") or {}
+            score = sum(
+                weight
+                * ((float(after.get(key) or 0.0) - float(before.get(key) or 0.0)) / denom[key])
+                for key, weight in weights.items()
+            )
+            socket_evaluations.append(
+                {
+                    **base_evaluation,
+                    "status": "evaluated",
+                    "reason": None,
+                    "actualPointsSpent": actual_points,
+                    "weightedRelativeGain": round(score, 6),
+                    "metricDeltas": {
+                        key: round(
+                            float(after.get(key) or 0.0) - float(before.get(key) or 0.0),
+                            6,
+                        )
+                        for key in keys
+                    },
+                    "metricsAfter": {key: after.get(key) for key in keys},
+                    "legalityRegressionCodes": [],
+                }
+            )
+        except ValueError as exc:
+            socket_evaluations.append(
+                {
+                    **base_evaluation,
+                    "status": "inconclusive",
+                    "reason": str(exc),
+                }
+            )
+        finally:
+            _restore_jewel_probe_or_raise(engine, snapshot, state_hash)
+
+    evaluated = [item for item in socket_evaluations if item.get("status") == "evaluated"]
+    evaluated.sort(
+        key=lambda item: (
+            -float(item.get("weightedRelativeGain") or 0.0),
+            int(item.get("pathPointCost") or 0),
+            int(item["socket"]),
+        )
     )
-    positive = score > 1e-9
-    decision = {
-        "status": "evaluated",
-        "roundIndex": round_index,
-        "priorRoundsCompleted": prior_rounds,
-        "socket": int(chosen["socket"]),
-        "pathPointCost": chosen["pathPointCost"],
-        "pointsReallocated": sum(
-            int(entry["pointsFreed"]) for entry in selected_reallocations
-        ),
-        "nodesToRemove": [int(entry["nodeId"]) for entry in selected_reallocations],
+    best = evaluated[0] if evaluated else None
+    limited_count = sum(item.get("status") == "policy_limited" for item in socket_evaluations)
+    inconclusive_count = sum(item.get("status") == "inconclusive" for item in socket_evaluations)
+    frontier_complete = limited_count == 0 and inconclusive_count == 0
+    positive = bool(best and float(best.get("weightedRelativeGain") or 0.0) > 1e-9)
+    status = "evaluated" if positive or frontier_complete else "inconclusive"
+    positive_result: bool | None = positive if positive or frontier_complete else None
+    result: dict[str, Any] = {
+        **common,
+        "status": status,
+        "reachableSocketCount": len(reachable),
+        "evaluatedSocketCount": len(evaluated),
+        "limitedSocketCount": limited_count,
+        "inconclusiveSocketCount": inconclusive_count,
+        "socketFrontierComplete": frontier_complete,
+        "socketEvaluations": socket_evaluations,
         "reallocationCandidates": reallocation_probes,
-        "positiveNetBenefit": positive,
-        "weightedRelativeGain": round(score, 6),
+        "positiveNetBenefit": positive_result,
         "decision": (
-            "apply_then_run_second_round"
-            if positive and round_index == 1
-            else "positive_second_round_remains_candidate"
-            if positive and round_index == 2
-            else "stop_after_second_round"
-            if round_index == 2
+            "declare_protection_before_apply"
+            if positive and not protection_declared
+            else "apply_best_socket"
+            if positive
             else "keep_current_tree"
+            if frontier_complete
+            else "review_inconclusive"
         ),
-        "stateHash": state_hash,
-    }
-    if positive:
-        jewel_fingerprint = str(
-            itemparse.semantic_item_structure(raw).get("itemFingerprint") or ""
-        )
-        decision["jewelFingerprint"] = jewel_fingerprint
-        decision["decisionRef"] = _record_jewel_apply_decision(
-            engine,
-            {
-                **decision,
-                "raw": raw,
-            },
-        )
-    _record_next_jewel_decision(engine, state_hash, decision)
-    return {
-        "ok": True,
-        **decision,
-        "maxRounds": 2,
-        "goals": weights,
         "metricsBefore": {key: before.get(key) for key in keys},
-        "metricsAfter": {key: after.get(key) for key in keys},
-        "readOnly": True,
     }
+    apply_payload: dict[str, Any] | None = None
+    if best is not None:
+        result.update(
+            {
+                "socket": int(best["socket"]),
+                "pathPointCost": int(best["pathPointCost"]),
+                "pointsReallocated": int(best["pointsReallocated"]),
+                "nodesToRemove": list(best["nodesToRemove"]),
+                "weightedRelativeGain": float(best["weightedRelativeGain"]),
+                "metricsAfter": dict(best.get("metricsAfter") or {}),
+            }
+        )
+    if positive and best is not None and protection_declared:
+        apply_payload = {**result, "raw": raw}
+    return result, apply_payload

@@ -323,10 +323,10 @@ Create 不询问，也不执行用户交付导出。
     `search_uniques`/`get_unique` 读全文核对机制；对确有机制收益的候选用 `equip_item` /
     `equip_jewel` 实测 delta，数值以引擎为准。只有装备方案和实测结果锁定后才调用 `get_prices`，
     价格只写入 ToolReference、注意事项和最终用户价格表，不参与暗金、黄装、符文、药剂或 Family
-    的选择。对 unique/radius jewel（含 Time-Lost 系列）候选必须做位置化评估：先
-    `alloc_passive` 分配候选 socket（`list_jewel_sockets` 查看），再用 `evaluate_jewel_socket`
-    遍历各空 socket 比较 radius 增益（radius 内已分配天赋决定效果），选最佳位置后再
-    `equip_jewel` 提交；普通 rare jewel 只在 Family 暗金珠宝完成评估后用 `optimize_jewel` 填充。
+    的选择。unique/radius jewel（含 Time-Lost）必须位置化评估。Time-Lost 词缀先用
+    `search_mods` 取得精确 mod ID，再由 `optimize_jewel(selected_mod_ids=[...])` 合法构造；不得手写
+    未验证词缀。已分配槽中的替换用 `evaluate_jewel_socket`，尚未开启的槽统一走下述受保护全槽
+    审计；普通 rare jewel 只在 Family 暗金珠宝完成评估后用 `optimize_jewel` 生成。
     Family 必需件全部实测；普通暗金先静态排除武器/机制不兼容项，再最多实测 3 个最高相关候选。
     普通候选暗金换装破坏属性/抗性时，最多围绕该暗金重规划一次配套黄装后决定采用或拒绝，不展开
     分支树。暗金不是稀有装的替代品而是机制件：不要只因为"当前装备稀有装"就跳过评估，也不要
@@ -388,11 +388,13 @@ Create 不询问，也不执行用户交付导出。
      90 级 Create 默认把三槽腰带和三个护符作为质量目标；用 `optimize_charm` 生成合法 Magic
      1 前缀/1 后缀方案。Normal Charm 只能进入 `candidate`，不能进入推荐成品；
    - 调用 `list_jewel_sockets`；分配了珠宝孔就必须用 `optimize_jewel` / `equip_jewel` 填入真实珠宝。
-     终局至少调用一次 `evaluate_next_jewel_socket` 比较当前树与最近额外孔；正收益结果必须把
-     `decisionRef` 和输入 state hash 交给 `apply_next_jewel_socket_decision` 原子应用。第二轮只能在
-     第一轮 apply 的输出状态上执行，最多两轮，不得手工拆点/装珠宝后沿用旧回执。满树时工具会实测最多 12 个可拆叶节点，返回
-     `nodesToRemove` 并把拆点损失、路径和珠宝作为等点方案整体比较；只有有界候选不足时才返回
-     `requires_reallocation`，它不是“无收益/不适用”；
+     仅目标等级 ≥90 强制执行额外珠宝槽审计；低于 90 级不作为质量门禁，只在机制需要时评估。
+     核心与重要支撑天赋完成后，先把不得为珠宝牺牲的精确节点 ID 列为
+     `protected_node_ids`，再为下一颗真实候选调用 `evaluate_next_jewel_socket`。该工具比较这颗珠宝的
+     全部当前可达槽，只允许当前安全单点叶节点参与等点替换；它不替 Agent 选择珠宝，也不重排天赋
+     树。正收益只能用 `apply_next_jewel_socket_decision` 原子应用，随后必须在输出 state 上重新审计，
+     直到当前候选无正收益或没有可达槽。`policy_limited/inconclusive` 可继续 Judge，但交付保持
+     candidate；不得用成熟案例槽数、固定轮数或最低槽数代替当前 state 回执；
    - 用一次 `plan_item_sockets_batch(slot_socket_counts, goals)` 评估全部可镶嵌装备；`socketed` 结果
      的 item/craftReceiptRef 必须实际 `equip_item`；`partial_no_positive` 表示保留原孔容量、已装入正收益
      Rune 且其余孔无正收益，`no_positive/not_applicable` 才能全部留空。检查以孔容量对比带可信

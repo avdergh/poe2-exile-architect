@@ -353,13 +353,9 @@ def _create_quality_checklist(
             source.startswith("Item:") and source_kind == "item"
         )
         trusted_other_source = (
-            bool(source)
-            and source_kind == "other"
-            and not source.startswith(("Tree:", "Item:"))
+            bool(source) and source_kind == "other" and not source.startswith(("Tree:", "Item:"))
         )
-        if group.get("noSupports") and (
-            trusted_source or trusted_other_source
-        ):
+        if group.get("noSupports") and (trusted_source or trusted_other_source):
             continue
         if source and not trusted_source:
             mechanism_advisories.append(
@@ -389,9 +385,10 @@ def _create_quality_checklist(
             or (audit.get("measurement") or {}).get("finalConstraintsSatisfied") is not True
         ):
             missing = ",".join(audit.get("positiveGainSupportsMissing") or []) or "unknown"
-            if audit.get("status") == "inconclusive" or (
-                audit.get("measurement") or {}
-            ).get("status") != "complete":
+            if (
+                audit.get("status") == "inconclusive"
+                or (audit.get("measurement") or {}).get("status") != "complete"
+            ):
                 support_reasons.append(f"support_audit_inconclusive:{group_index}")
             else:
                 support_reasons.append(f"positive_gain_supports_missing:{group_index}:{missing}")
@@ -460,22 +457,31 @@ def _create_quality_checklist(
     allocated = int(jewel_state.get("allocatedSockets") or 0)
     filled = int(jewel_state.get("filledSockets") or 0)
     jewel_reasons = [] if filled >= allocated else [f"unfilled_jewel_sockets:{allocated - filled}"]
-    jewel_freshness = "current"
-    if level >= 90 and int(jewel_state.get("availableSockets") or 0) > allocated:
+    jewel_freshness: str | None = None
+    jewel_decision: dict[str, Any] | None = None
+    jewel_review_applicable = (
+        level >= 90 and int(jewel_state.get("availableSockets") or 0) > allocated
+    )
+    if jewel_review_applicable:
         jewel_freshness = itemopt.next_jewel_decision_freshness(engine, state_hash)
-        decision = itemopt.next_jewel_decision_for_state(engine, state_hash)
-        if decision is None:
+        jewel_decision = itemopt.next_jewel_decision_for_state(engine, state_hash)
+        if jewel_decision is None:
             jewel_reasons.append(f"next_jewel_socket_{jewel_freshness}")
-        elif decision.get("status") == "requires_reallocation":
-            jewel_reasons.append("next_jewel_socket_reallocation_required")
-        elif decision.get("status") == "applied" and int(decision.get("roundIndex") or 0) == 1:
-            jewel_reasons.append("next_jewel_socket_second_round_required")
-        elif decision.get("status") == "applied" and int(
-            decision.get("roundsCompleted") or 0
-        ) >= 2:
-            pass
-        elif decision.get("positiveNetBenefit"):
+        elif jewel_decision.get("reviewPolicyVersion") != "jewel_socket_review_v2":
+            jewel_reasons.append("next_jewel_socket_review_policy_outdated")
+        elif not jewel_decision.get("protectionDeclared"):
+            jewel_reasons.append("jewel_protection_not_declared")
+        elif jewel_decision.get("status") == "applied":
+            jewel_reasons.append("next_jewel_socket_review_required_after_apply")
+        elif jewel_decision.get("positiveNetBenefit") is True:
             jewel_reasons.append("positive_next_jewel_socket_not_applied")
+        elif jewel_decision.get("status") == "inconclusive":
+            if int(jewel_decision.get("limitedSocketCount") or 0):
+                jewel_reasons.append("selected_candidate_socket_policy_limited")
+            if int(jewel_decision.get("inconclusiveSocketCount") or 0):
+                jewel_reasons.append("selected_candidate_socket_probe_inconclusive")
+            if not jewel_reasons:
+                jewel_reasons.append("selected_candidate_socket_probe_inconclusive")
     socket_state = completeness_result.get("runes") or {}
     batch_decisions = craftopt.socket_batch_decisions_for_state(engine, state_hash)
     socket_reasons: list[str] = []
@@ -507,11 +513,7 @@ def _create_quality_checklist(
     )
     sustain_classification = str(sustain_result.get("classification") or "sustain_unknown")
     sustain_status = str(sustain_result.get("status") or "unknown")
-    sustain_reasons = (
-        []
-        if sustain_status == "passed"
-        else [sustain_classification]
-    )
+    sustain_reasons = [] if sustain_status == "passed" else [sustain_classification]
 
     def item(reasons: list[str], *, applicable: bool = True) -> dict[str, Any]:
         return {
@@ -533,8 +535,48 @@ def _create_quality_checklist(
         "gearAttainability": item(sorted(set(attainability_reasons))),
         "charmLoadout": item(sorted(set(charm_reasons)) if level >= 80 else []),
         "jewelDecision": {
-            **item(jewel_reasons),
+            "status": (
+                "failed"
+                if filled < allocated
+                or (
+                    jewel_review_applicable
+                    and jewel_reasons
+                    and not (
+                        jewel_decision
+                        and jewel_decision.get("status") == "inconclusive"
+                        and jewel_decision.get("protectionDeclared")
+                    )
+                )
+                else "unknown"
+                if jewel_review_applicable
+                and jewel_decision
+                and jewel_decision.get("status") == "inconclusive"
+                else "not_applicable"
+                if not jewel_review_applicable
+                else "passed"
+            ),
+            "reasons": jewel_reasons,
             "evidenceFreshness": jewel_freshness,
+            "reviewPolicyVersion": (
+                jewel_decision.get("reviewPolicyVersion") if jewel_decision else None
+            ),
+            "candidateJewelFingerprint": (
+                jewel_decision.get("candidateJewelFingerprint") if jewel_decision else None
+            ),
+            "protectionDeclared": (
+                jewel_decision.get("protectionDeclared") if jewel_decision else None
+            ),
+            "socketFrontierComplete": (
+                jewel_decision.get("socketFrontierComplete") if jewel_decision else None
+            ),
+            "evaluatedSocketCount": int((jewel_decision or {}).get("evaluatedSocketCount") or 0),
+            "limitedSocketCount": int((jewel_decision or {}).get("limitedSocketCount") or 0),
+            "inconclusiveSocketCount": int(
+                (jewel_decision or {}).get("inconclusiveSocketCount") or 0
+            ),
+            "verificationRequired": bool(
+                jewel_decision and jewel_decision.get("status") == "inconclusive"
+            ),
         },
         "itemSockets": {
             **item(socket_reasons),
@@ -575,13 +617,15 @@ def _refresh_dynamic_quality(
         preflight_result=preflight_result,
     )
     result["createQualityChecklist"] = checklist
-    quality_failed = any(value.get("status") == "failed" for value in checklist.values())
+    quality_unresolved = any(
+        value.get("status") in {"failed", "unknown"} for value in checklist.values()
+    )
     lifecycle_passed = bool((result.get("lifecycleVerification") or {}).get("pass"))
     result["deliveryStatus"] = (
         "blocked"
         if not result.get("readyForJudge")
         else "candidate"
-        if quality_failed or not lifecycle_passed
+        if quality_unresolved or not lifecycle_passed
         else "recommended"
     )
     result["qualityRepairPlan"] = _quality_repair_plan(checklist)

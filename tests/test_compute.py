@@ -643,8 +643,58 @@ def test_optimize_jewel_crafts_damage_jewel(engine):
     assert r["ok"] and r["affixes"]
     assert r["metricAfter"] > r["metricBefore"]  # the jewel raises DPS
     assert r["item"].startswith("Rarity: Rare") and "Emerald" in r["item"]
+    assert "Item Level: 95" in r["item"]
+    assert r["selectionMode"] == "automatic_global_marginal"
     assert itemopt.optimize_jewel(engine, base="Grand Spear")["ok"] is False  # not a jewel base
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only
+
+
+def test_optimize_radius_jewel_requires_and_validates_agent_selected_mods(engine):
+    from server.compute import itemopt
+
+    engine.new_build()
+    engine.set_class("Witch", "Blood Mage")
+    engine.set_level(90)
+    engine.paste_skill("Spark 20/0 1")
+
+    rejected = itemopt.optimize_jewel(engine, base="Time-Lost Sapphire")
+    selected = itemopt.optimize_jewel(
+        engine,
+        base="Time-Lost Sapphire",
+        selected_mod_ids=[
+            "JewelRadiusLargeSize",
+            "JewelRadiusColdDamage",
+            "JewelRadiusCastSpeed",
+        ],
+        item_level=90,
+    )
+    unavailable = itemopt.optimize_jewel(
+        engine,
+        base="Time-Lost Sapphire",
+        selected_mod_ids=["JewelRadiusAttackSpeed"],
+        item_level=90,
+    )
+
+    assert rejected["errorCode"] == "radius_jewel_requires_agent_selection"
+    assert unavailable["errorCode"] == "jewel_mod_not_available_for_base"
+    assert selected["ok"] is True
+    assert selected["selectionMode"] == "agent_selected_positional"
+    assert selected["requiresPositionalEvaluation"] is True
+    assert selected["modIds"] == [
+        "JewelRadiusLargeSize",
+        "JewelRadiusColdDamage",
+        "JewelRadiusCastSpeed",
+    ]
+    assert "Item Level: 90" in selected["item"]
+    assert "Radius: Small" in selected["item"]
+    assert "Small Passive Skills in Radius also grant" in selected["item"]
+    assert "Notable Passive Skills in Radius also grant" in selected["item"]
+
+    engine.alloc_passive(2491)
+    engine.alloc_passive(18157)
+    before = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
+    measured = engine.eval_items("Jewel 2491", [selected["item"]], keys=["TotalDPS"])["results"][0]
+    assert measured["TotalDPS"] > before
 
 
 def test_plan_gear_meets_stage_resists_while_keeping_damage(engine):
@@ -1027,21 +1077,34 @@ class _JewelMarginalEngine:
         self.mutation_count += 1
         while f"mutation{self.mutation_count}=" in self.xml:
             self.mutation_count += 1
-        self.xml = self.xml.replace(
-            "/>", f' mutation{self.mutation_count}="true"/>', 1
-        )
+        self.xml = self.xml.replace("/>", f' mutation{self.mutation_count}="true"/>', 1)
 
     def list_jewel_sockets(self):
         root = ET.fromstring(self.xml)
+        filled = {int(value.get("nodeId")) for value in root.findall("./Tree/Spec/Sockets/Socket")}
+        return {
+            "sockets": [
+                {
+                    "socket": socket,
+                    "allocated": socket in filled,
+                    "filled": socket in filled,
+                }
+                for socket in (101, 102, 103)
+            ]
+        }
+
+    def get_passive(self, node):
+        node = int(node)
         filled = {
             int(value.get("nodeId"))
-            for value in root.findall("./Tree/Spec/Sockets/Socket")
+            for value in ET.fromstring(self.xml).findall("./Tree/Spec/Sockets/Socket")
         }
-        socket = 102 if 101 in filled else 101
-        return {"sockets": [{"socket": socket, "allocated": False, "filled": False}]}
-
-    def get_passive(self, _node):
-        return {"found": True, "pathDist": 2, "pathNodeIds": [301]}
+        return {
+            "found": True,
+            "alloc": node in filled or (node in {201, 202} and node not in self.removed),
+            "pathDist": 2,
+            "pathNodeIds": [301],
+        }
 
     def get_build(self):
         return {"unspentPoints": self.unspent_points}
@@ -1052,7 +1115,7 @@ class _JewelMarginalEngine:
         return {"stats": {"Life": value}}
 
     def list_reallocation_candidates(self, limit=12):
-        assert limit == 12
+        assert limit is None
         return {
             "candidates": [
                 {"id": 201, "name": "Small Life", "type": "Normal", "pointsFreed": 1},
@@ -1071,7 +1134,7 @@ class _JewelMarginalEngine:
         return {"ok": True, "pointsSpent": 2}
 
     def equip_jewel(self, _raw, socket=None):
-        assert socket in {101, 102}
+        assert socket in {101, 102, 103}
         self.equipped = True
         root = ET.fromstring(self.xml)
         items = root.find("Items")
@@ -1100,8 +1163,9 @@ def test_evaluate_next_jewel_socket_is_marginal_bounded_and_read_only():
 
     result = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
+        protected_node_ids=[],
         round_index=1,
     )
 
@@ -1110,10 +1174,119 @@ def test_evaluate_next_jewel_socket_is_marginal_bounded_and_read_only():
     assert result["pathPointCost"] == 2
     assert result["positiveNetBenefit"] is True
     assert result["decisionRef"].startswith("jewel-decision:")
-    assert result["decision"] == "apply_then_run_second_round"
-    assert result["maxRounds"] == 2
+    assert result["decision"] == "apply_best_socket"
+    assert result["maxRounds"] is None
+    assert result["socketFrontierComplete"] is True
+    assert result["evaluatedSocketCount"] == 3
     assert engine.get_xml() == before
     assert engine.allocated is False and engine.equipped is False
+
+
+def test_evaluate_next_jewel_socket_checks_all_sockets_and_selects_best():
+    class PositionAwareEngine(_JewelMarginalEngine):
+        def get_stats(self, _keys):
+            root = ET.fromstring(self.xml)
+            filled = {
+                int(value.get("nodeId")) for value in root.findall("./Tree/Spec/Sockets/Socket")
+            }
+            gains = {101: 5, 102: 35, 103: 15}
+            value = 100 - 5 * len(self.removed) + sum(gains.get(node, 0) for node in filled)
+            return {"stats": {"Life": value}}
+
+    engine = PositionAwareEngine()
+    result = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[],
+    )
+
+    assert result["socket"] == 102
+    assert [entry["socket"] for entry in result["socketEvaluations"]] == [101, 102, 103]
+    assert result["evaluatedSocketCount"] == 3
+
+
+def test_evaluate_next_jewel_socket_protects_agent_selected_nodes():
+    engine = _JewelMarginalEngine()
+    engine.unspent_points = 0
+
+    result = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[201],
+    )
+
+    assert result["status"] == "inconclusive"
+    assert result["positiveNetBenefit"] is None
+    assert result["limitedSocketCount"] == 3
+    assert all(entry["status"] == "policy_limited" for entry in result["socketEvaluations"])
+
+
+def test_positive_jewel_decision_cannot_be_overwritten_by_another_candidate():
+    engine = _JewelMarginalEngine()
+    first = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nFirst Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[],
+    )
+    second = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nSecond Jewel\nRuby\nItem Level: 95\n+10 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[],
+    )
+
+    assert first["positiveNetBenefit"] is True
+    assert second["errorCode"] == "jewel_socket_positive_decision_pending"
+    current = itemopt.next_jewel_decision_for_state(engine, first["stateHash"])
+    assert current is not None and current["decisionRef"] == first["decisionRef"]
+
+
+def test_undeclared_jewel_protection_is_diagnostic_only():
+    engine = _JewelMarginalEngine()
+    diagnostic = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+    )
+
+    assert diagnostic["positiveNetBenefit"] is True
+    assert diagnostic["protectionDeclared"] is False
+    assert diagnostic["decision"] == "declare_protection_before_apply"
+    assert "decisionRef" not in diagnostic
+
+    actionable = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[],
+    )
+    assert actionable["protectionDeclared"] is True
+    assert actionable["decisionRef"].startswith("jewel-decision:")
+
+
+def test_apply_rejects_a_decision_without_declared_protection():
+    engine = _JewelMarginalEngine()
+    evaluated = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[],
+    )
+    with itemopt._JEWEL_DECISION_LOCK:
+        itemopt._JEWEL_APPLY_DECISIONS[engine][evaluated["decisionRef"]]["protectionDeclared"] = (
+            False
+        )
+
+    rejected = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=evaluated["decisionRef"],
+        expected_state_hash=evaluated["stateHash"],
+    )
+
+    assert rejected["errorCode"] == "jewel_protection_not_declared"
 
 
 def test_evaluate_next_jewel_socket_reports_restore_failure():
@@ -1125,8 +1298,9 @@ def test_evaluate_next_jewel_socket_reports_restore_failure():
     engine = RestoreFailureEngine()
     result = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
+        protected_node_ids=[],
         round_index=1,
     )
 
@@ -1134,6 +1308,7 @@ def test_evaluate_next_jewel_socket_reports_restore_failure():
     assert result["errorCode"] == "jewel_socket_probe_restore_failed"
     assert result["rolledBack"] is False
     assert result["recoveryRequired"] is True
+    assert itemopt.next_jewel_decision_for_state(engine, build_state_hash(engine.get_xml())) is None
 
 
 def test_evaluate_next_jewel_socket_full_tree_measures_equal_point_reallocation():
@@ -1142,8 +1317,9 @@ def test_evaluate_next_jewel_socket_full_tree_measures_equal_point_reallocation(
 
     result = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
+        protected_node_ids=[],
         round_index=1,
     )
 
@@ -1161,8 +1337,9 @@ def test_apply_next_jewel_socket_decision_is_atomic_and_marks_round_progress():
     engine = _JewelMarginalEngine()
     evaluated = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
+        protected_node_ids=[],
         round_index=1,
     )
 
@@ -1173,18 +1350,40 @@ def test_apply_next_jewel_socket_decision_is_atomic_and_marks_round_progress():
     )
 
     assert applied["ok"] is True
-    assert applied["roundsCompleted"] == 1
+    assert applied["reviewRequired"] is True
     assert applied["outputStateHash"] != evaluated["stateHash"]
     current = itemopt.next_jewel_decision_for_state(engine, applied["outputStateHash"])
     assert current is not None and current["status"] == "applied"
+
+
+def test_apply_next_jewel_socket_decision_preserves_protected_nodes():
+    engine = _JewelMarginalEngine()
+    engine.unspent_points = 1
+    evaluated = itemopt.evaluate_next_jewel_socket(
+        engine,
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
+        goals={"Life": 1.0},
+        protected_node_ids=[201],
+    )
+
+    applied = itemopt.apply_next_jewel_socket_decision(
+        engine,
+        decision_ref=evaluated["decisionRef"],
+        expected_state_hash=evaluated["stateHash"],
+    )
+
+    assert applied["ok"] is True
+    assert applied["protectedNodeIds"] == [201]
+    assert engine.get_passive(201)["alloc"] is True
 
 
 def test_apply_next_jewel_socket_decision_rejects_stale_state_without_mutation():
     engine = _JewelMarginalEngine()
     evaluated = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
+        protected_node_ids=[],
         round_index=1,
     )
     before = engine.get_xml()
@@ -1199,52 +1398,48 @@ def test_apply_next_jewel_socket_decision_rejects_stale_state_without_mutation()
     assert engine.get_xml() == before
 
 
-def test_second_jewel_round_requires_applied_first_round():
+def test_round_index_is_compatibility_only():
     engine = _JewelMarginalEngine()
 
-    rejected = itemopt.evaluate_next_jewel_socket(
+    evaluated = itemopt.evaluate_next_jewel_socket(
         engine,
-        raw="Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life",
+        raw="Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life",
         goals={"Life": 1.0},
-        round_index=2,
+        protected_node_ids=[],
+        round_index=7,
     )
 
-    assert rejected["errorCode"] == "jewel_socket_round_sequence_invalid"
+    assert evaluated["ok"] is True
+    assert evaluated["roundIndex"] == 7
 
 
-def test_second_jewel_round_apply_records_bounded_review_complete():
+def test_jewel_review_can_apply_more_than_two_positive_sockets():
     engine = _JewelMarginalEngine()
-    raw = "Rarity: Rare\nTest Jewel\nRuby\n+20 to maximum Life"
-    first = itemopt.evaluate_next_jewel_socket(
+    raw = "Rarity: Rare\nTest Jewel\nRuby\nItem Level: 95\n+20 to maximum Life"
+    applied = None
+    for index in range(1, 4):
+        evaluated = itemopt.evaluate_next_jewel_socket(
+            engine,
+            raw=raw,
+            goals={"Life": 1.0},
+            protected_node_ids=[],
+            round_index=index,
+        )
+        applied = itemopt.apply_next_jewel_socket_decision(
+            engine,
+            decision_ref=evaluated["decisionRef"],
+            expected_state_hash=evaluated["stateHash"],
+        )
+        assert applied["ok"] is True
+
+    assert applied is not None and applied["reviewRequired"] is True
+    terminal = itemopt.evaluate_next_jewel_socket(
         engine,
         raw=raw,
         goals={"Life": 1.0},
-        round_index=1,
+        protected_node_ids=[],
     )
-    first_applied = itemopt.apply_next_jewel_socket_decision(
-        engine,
-        decision_ref=first["decisionRef"],
-        expected_state_hash=first["stateHash"],
-    )
-    second = itemopt.evaluate_next_jewel_socket(
-        engine,
-        raw=raw,
-        goals={"Life": 1.0},
-        round_index=2,
-    )
-    second_applied = itemopt.apply_next_jewel_socket_decision(
-        engine,
-        decision_ref=second["decisionRef"],
-        expected_state_hash=second["stateHash"],
-    )
-
-    assert first_applied["roundsCompleted"] == 1
-    assert second_applied["roundsCompleted"] == 2
-    current = itemopt.next_jewel_decision_for_state(
-        engine, second_applied["outputStateHash"]
-    )
-    assert current["status"] == "applied"
-    assert current["roundsCompleted"] == 2
+    assert terminal["status"] == "not_applicable"
 
 
 def test_tactician_95_real_engine_selects_declared_boss_group(engine):

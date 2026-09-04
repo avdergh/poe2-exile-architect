@@ -62,6 +62,11 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "价格不能成为拒绝理由" in skill
     assert "价格不能成为拒绝理由" in skill
     assert "apply_next_jewel_socket_decision" in skill
+    assert "protected_node_ids" in skill
+    assert "selected_mod_ids" in skill
+    assert "全部当前可达槽" in skill
+    assert "最近额外孔" not in skill
+    assert "最多两轮" not in skill
     assert "offense_skill_group_index=<最终Judge目标组>" in skill
     assert "当前版本不可用时写 `rejected`" in skill
     assert "adopted / rejected / unavailable" not in skill
@@ -191,6 +196,9 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "recoveryRequired=true" in guide
     assert "`rolledBack=true`" in guide
     assert "inspect_generation_checkpoint" in guide
+    assert "protected_node_ids" in guide
+    assert "every currently reachable empty socket" in guide
+    assert "Do not stop on a fixed round or jewel count" in guide
     assert "read back for diagnostics" in guide
     assert "validate_generation_output" in guide
     assert "lifecycleEvidenceCoverage" in guide

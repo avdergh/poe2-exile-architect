@@ -47,6 +47,33 @@ def test_unique_parse_skips_source_line_for_base():
     assert not UNIQUE_META_RE.match("Furtive Wraps")  # a real base must pass through
 
 
+def test_radius_jewel_mod_text_matches_pinned_pob_node_scope():
+    from pipeline.build_corpus import apply_radius_jewel_scope, parse_radius_jewel_node_types
+
+    node_types = parse_radius_jewel_node_types()
+    assert node_types["JewelRadiusColdDamage"] == 1
+    assert node_types["JewelRadiusAttackSpeed"] == 2
+    assert node_types["AbyssModRadiusJewelPrefixDamageTakenRecoupLife"] == 2
+    assert apply_radius_jewel_scope(
+        "JewelRadiusColdDamage",
+        "(1-2)% increased Cold Damage",
+        node_types,
+    ).startswith("Small Passive Skills in Radius also grant")
+    assert apply_radius_jewel_scope(
+        "JewelRadiusAttackSpeed",
+        "(1-2)% increased Attack Speed",
+        node_types,
+    ).startswith("Notable Passive Skills in Radius also grant")
+    assert (
+        apply_radius_jewel_scope(
+            "JewelRadiusLargeSize",
+            "Upgrades Radius to Large",
+            node_types,
+        )
+        == "Upgrades Radius to Large"
+    )
+
+
 def test_generated_unique_blocks_are_included_in_corpus_input():
     from pipeline.build_corpus import DB_PATH, parse_uniques
 
@@ -80,7 +107,24 @@ def test_search_mods_life_on_ring():
     mods = db.search_mods("maximum life", item_tag="ring", mod_type="prefix", limit=5)
     assert mods
     assert all(m["type"] == "prefix" for m in mods)
+    assert all(m["id"] for m in mods)
     assert any("life" in m["text"].lower() for m in mods)
+
+
+def test_radius_jewel_mods_are_stored_with_small_and_notable_scope():
+    small = next(
+        mod
+        for mod in db.search_mods("cold damage", item_tag="int_radius_jewel", limit=200)
+        if mod["id"] == "JewelRadiusColdDamage"
+    )
+    notable = next(
+        mod
+        for mod in db.search_mods("attack speed", item_tag="dex_radius_jewel", limit=200)
+        if mod["id"] == "JewelRadiusAttackSpeed"
+    )
+
+    assert small["text"].startswith("Small Passive Skills in Radius also grant")
+    assert notable["text"].startswith("Notable Passive Skills in Radius also grant")
 
 
 def test_reverse_lookup():
@@ -137,6 +181,17 @@ def test_classify_affix_phys_damage():
 
     r = ip.classify_affix("118% increased Physical Damage")
     assert r and r["type"] == "prefix" and r["tierRange"] == "110-134"
+
+
+def test_classify_fixed_display_affix_with_hidden_internal_value():
+    from server.knowledge import itemparse as ip
+
+    result = ip.classify_affix("Upgrades Radius to Large", base_name="Time-Lost Sapphire")
+
+    assert result is not None
+    assert result["type"] == "prefix"
+    assert result["tier"] is not None
+    assert result["group"] == "JewelRadiusLargerRadius"
 
 
 def test_corpus_filters_dev_and_special():

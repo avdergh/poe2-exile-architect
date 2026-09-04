@@ -271,9 +271,13 @@ does not take over build completion.
   back only the current one; continue only when `rolledBack=true`. If
   `recoveryRequired=true`, later functional batches are blocked until an explicit bootstrap from
   `new_build` recovers the session.
-  For the bounded next-jewel review, apply a positive `evaluate_next_jewel_socket` result only via
-  `apply_next_jewel_socket_decision(decision_ref, expected_state_hash)`. Round two is valid only on
-  the output state of an applied round one; manual passive/jewel edits make the decision stale.
+  For the level-90+ next-jewel review, finish the core and important support passives first, pass
+  their exact ids as `protected_node_ids`, and use `evaluate_next_jewel_socket` to compare one
+  Agent-selected jewel across every currently reachable empty socket. The review may exchange only
+  current safe one-point leaves; it does not re-plan the tree. Apply a positive result only via
+  `apply_next_jewel_socket_decision(decision_ref, expected_state_hash)`, then review the output state
+  again. Do not stop on a fixed round or jewel count. A current policy-limited/inconclusive review
+  may reach Judge but keeps delivery at candidate; manual passive/jewel edits make the receipt stale.
   Freeze final gear, passives, jewels, Runes, supports and config first, then run the state-bound
   support/jewel/socket audits and `inspect_generation_checkpoint()`. Repair stale, missing and
   deterministic failures before calling the formal Judge. Once run-fresh Research deep reads and
@@ -643,8 +647,10 @@ new compute session fails clearly when the cap is occupied instead of reusing an
 - Calibrate a build vs real high-end builds → `benchmark_build`; browse references by archetype →
   `list_reference_builds`. **Calibration ONLY — never copy/recommend a reference; build to the goal.**
 - Realistic boss DPS (not the bare default) → `apply_combat_profile`. Add tree jewels →
-  `equip_jewel` (+ `list_jewel_sockets`); rank unique/radius jewel candidates per socket with
-  `evaluate_jewel_socket` (allocate the socket first, then compare). Curses/second damage skill →
+  `equip_jewel` (+ `list_jewel_sockets`). Use `evaluate_jewel_socket` for replacements in an
+  already allocated socket; use the protected `evaluate_next_jewel_socket` review for unopened
+  sockets. Build Time-Lost candidates from exact `search_mods` ids with
+  `optimize_jewel(selected_mod_ids=[...])`, never from unverified handwritten affixes. Curses/second damage skill →
   `add_skill_group`
   (`in_full_dps=True` for a second damage skill so FullDPS aggregates).
 - Repair one existing skill group → `list_skill_groups`, then `replace_skill_group`,

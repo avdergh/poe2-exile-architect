@@ -159,11 +159,15 @@ Agent 负责：
    质量目标，有效容量读取最终 PoB `CharmLimit`；缺属性为 unknown，只有超容量是硬失败。
    所有可镶嵌装备都要评估 `optimize_item_sockets`，但无机制收益或机制不适用可以明确不用；价格
    不是拒绝理由。默认装备优化
-   终局额外珠宝孔最多评估两轮：`evaluate_next_jewel_socket` 返回正收益 `decisionRef` 后只能用
-   `apply_next_jewel_socket_decision` 原子应用；第二轮必须串联第一轮的输出 state hash，不能手工
-   拆点/装珠宝后沿用旧回执。
+   目标等级 ≥90 的终局额外珠宝孔采用受保护的单候选全槽审计；低于 90 级不作为质量门禁，只在
+   机制确有需要时自愿评估。Agent 先完成核心机制和重要支撑天赋，把不可交换的精确节点 ID 传为
+   `protected_node_ids`，再用 `evaluate_next_jewel_socket` 比较一颗已选珠宝在全部当前可达槽位的
+   真实等点收益。工具只允许当前安全单点叶节点参与替换，不向内拆分支或重排树。
+   正收益 `decisionRef` 只能用 `apply_next_jewel_socket_decision` 原子应用，随后必须在输出 state
+   重新审计；不再按固定轮数或成熟案例槽数停止。`policy_limited/inconclusive` 可进入 Judge，但
+   交付保持 candidate。
    在元素 60%、非 CI 混沌 30% 后停止继续购买普通抗性，用户明确要求时可覆盖为 75%。
-6. Agent 先调用 `inspect_generation_checkpoint` v3。该工具按语义 build-state hash 合并
+6. Agent 先调用 `inspect_generation_checkpoint` v4。该工具按语义 build-state hash 合并
    completeness、preflight、有界 stats 和 defenses，并分别返回
    `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
    `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/

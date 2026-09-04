@@ -187,7 +187,9 @@ def evaluate_generation_candidate(
                     "attemptConsumed": False,
                     "attemptCount": len(existing_receipts),
                 }
-            if not existing_receipts and draft_marker.get("buildStateHash") != build_state_hash(xml):
+            if not existing_receipts and draft_marker.get("buildStateHash") != build_state_hash(
+                xml
+            ):
                 return {
                     **_rejected("generation_draft_state_changed"),
                     "attemptConsumed": False,
@@ -372,11 +374,7 @@ def evaluate_generation_candidate(
         )
         receipt = {
             "candidateId": candidate_id,
-            **(
-                {"mechanismBinding": mechanism_binding}
-                if mechanism_binding is not None
-                else {}
-            ),
+            **({"mechanismBinding": mechanism_binding} if mechanism_binding is not None else {}),
             "transientBuildState": state,
             "judgeAdvisoryReport": judge_report,
             "hardLegalityAudit": {
@@ -563,6 +561,29 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
         if status not in {"failed", "unknown"}:
             blockers.append(f"{name}:invalid_status")
             continue
+        if name == "jewelDecision" and status == "unknown":
+            jewel_reasons = {str(value) for value in item.get("reasons") or []}
+            allowed_reasons = {
+                "selected_candidate_socket_policy_limited",
+                "selected_candidate_socket_probe_inconclusive",
+            }
+            executed = sum(
+                int(item.get(key) or 0)
+                for key in (
+                    "evaluatedSocketCount",
+                    "limitedSocketCount",
+                    "inconclusiveSocketCount",
+                )
+            )
+            if (
+                item.get("evidenceFreshness") == "current"
+                and item.get("reviewPolicyVersion") == "jewel_socket_review_v2"
+                and item.get("protectionDeclared") is True
+                and bool(jewel_reasons)
+                and jewel_reasons <= allowed_reasons
+                and executed > 0
+            ):
+                continue
         reasons = [str(value) for value in item.get("reasons") or []]
         if name == "skillSupportAudit":
             reasons = [
@@ -608,9 +629,7 @@ def _draft_validation_matches(
     )
     try:
         blueprint = json.loads(
-            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(
-                encoding="utf-8"
-            )
+            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(encoding="utf-8")
         )
     except (UnicodeDecodeError, OSError, json.JSONDecodeError):
         blueprint = None

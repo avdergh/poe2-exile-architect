@@ -499,6 +499,7 @@ def search_mods(
     params.append(limit)
     return [
         {
+            "id": r["id"],
             "name": r["name"],
             "text": r["text"],
             "type": r["type"],
@@ -507,6 +508,44 @@ def search_mods(
         }
         for r in con.execute(sql, params)
     ]
+
+
+def get_mods_by_ids(mod_ids: list[str]) -> list[dict[str, Any]]:
+    """Return exact craftable modifier records in caller order.
+
+    This is the typed/static lookup used when an Agent selects concrete jewel modifiers.  It does
+    not fuzzy-match names or text, and therefore cannot silently substitute a different modifier.
+    Missing ids are omitted so the caller can fail closed against the requested id set.
+    """
+
+    requested = [str(value) for value in mod_ids if str(value).strip()]
+    if not requested:
+        return []
+    placeholders = ",".join("?" for _ in requested)
+    rows = (
+        _conn()
+        .execute(
+            "SELECT id, name, text, type, domain, required_level, tags, groups, ranges "
+            f"FROM mods WHERE id IN ({placeholders})",
+            requested,
+        )
+        .fetchall()
+    )
+    by_id = {
+        str(row["id"]): {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "text": row["text"],
+            "type": row["type"],
+            "domain": row["domain"],
+            "required_level": row["required_level"],
+            "rolls_on": json.loads(row["tags"] or "[]"),
+            "groups": json.loads(row["groups"] or "[]"),
+            "ranges": json.loads(row["ranges"] or "[]"),
+        }
+        for row in rows
+    }
+    return [by_id[value] for value in requested if value in by_id]
 
 
 def mods_for_text(query: str, limit: int = 80) -> list[dict]:
