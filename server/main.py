@@ -2070,7 +2070,10 @@ def optimize_supports(
     helps. Pass `goals` (weighted, e.g. {"TotalDPS":0.7,"TotalEHP":0.3}) to blend objectives; omit
     for a single `metric`. Read-only (the build is restored); raise `candidates` for a wider greedy
     search. Apply ordinary-group results with ``set_skill``; apply Tree/Item source-group results
-    with ``configure_source_skill_supports`` and a fresh fingerprint. Greedy, not a global optimum.
+    with ``configure_source_skill_supports`` and a fresh fingerprint. For a rate-dependent target,
+    a PoB-runtime-confirmed unmodelled trigger rate short-circuits before candidate enumeration and
+    records a candidate-only capability gap; evidence, measurement, and actionable gaps remain
+    blockers. Greedy, not a global optimum.
     """
     return supportopt.optimize_supports(
         get_engine(),

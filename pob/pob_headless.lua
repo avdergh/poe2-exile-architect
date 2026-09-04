@@ -1159,22 +1159,24 @@ local function supportApplicationForGroup(group)
 	for gemIndex = 2, #(group.gemList or {}) do
 		local gem = group.gemList[gemIndex]
 		local gemEffect = gem and ((gem.gemData and gem.gemData.grantedEffect) or gem.grantedEffect)
-		local names = {}
-		for activeIndex, active in ipairs(group.displaySkillList or {}) do
-			local grantedEffect = active and active.activeEffect and active.activeEffect.grantedEffect
-			for _, effect in ipairs((active and active.supportList) or {}) do
-				if grantedEffect and gemEffect and effect.grantedEffect and effect.grantedEffect.id == gemEffect.id then
-					local supported = effect.supportedActiveEffectIds
-						and effect.supportedActiveEffectIds[grantedEffect.id] and true or false
-					if supported then names[#names + 1] = grantedEffect.name end
-					break
+		if gemEffect and gemEffect.support then
+			local names = {}
+			for activeIndex, active in ipairs(group.displaySkillList or {}) do
+				local grantedEffect = active and active.activeEffect and active.activeEffect.grantedEffect
+				for _, effect in ipairs((active and active.supportList) or {}) do
+					if grantedEffect and effect.grantedEffect and effect.grantedEffect.id == gemEffect.id then
+						local supported = effect.supportedActiveEffectIds
+							and effect.supportedActiveEffectIds[grantedEffect.id] and true or false
+						if supported then names[#names + 1] = grantedEffect.name end
+						break
+					end
 				end
 			end
+			application[#application + 1] = {
+				name = gem and gem.nameSpec or "",
+				activeSkills = names,
+			}
 		end
-		application[#application + 1] = {
-			name = gem and gem.nameSpec or "",
-			activeSkills = names,
-		}
 	end
 	return application
 end
@@ -1420,6 +1422,119 @@ end
 
 function methods.list_skill_groups()
 	return skillGroupState()
+end
+
+local RATE_DEPENDENT_SUPPORT_OBJECTIVES = {
+	TotalDPS = true,
+	FullDPS = true,
+	CombinedDPS = true,
+	Speed = true,
+	MinionCombinedDPS = true,
+	MinionTotalDPS = true,
+}
+
+-- Internal support-optimizer preflight for one exact group/active effect. This reports runtime
+-- facts only; Python owns the audit and delivery policy.
+function methods.inspect_support_evaluation_capability(p)
+	p = p or {}
+	local index = math.floor(tonumber(p.index) or 0)
+	local activeIndex = math.floor(tonumber(p.activeIndex) or 0)
+	local group = (build.skillsTab.socketGroupList or {})[index]
+	local active = group and group.displaySkillList and group.displaySkillList[activeIndex]
+	if not group or not active then
+		return {
+			ok = false,
+			errorCode = "support_capability_target_missing",
+			capabilitySource = "pob_runtime",
+		}
+	end
+	if (build.mainSocketGroup or 1) ~= index
+		or (group.mainActiveSkillCalcs or group.mainActiveSkill or 1) ~= activeIndex then
+		return {
+			ok = false,
+			errorCode = "support_capability_target_not_selected",
+			capabilitySource = "pob_runtime",
+		}
+	end
+
+	local reasons = {}
+	local selectedName = skillNameAt(index, activeIndex)
+	local application = supportApplicationForGroup(group)
+	local supportCount = math.max(0, #(group.gemList or {}) - 1)
+	local applicationCheck = "verified"
+	if group.noSupports or (group.gemList and group.gemList[1] and group.gemList[1].noSupports) then
+		applicationCheck = "not_applicable"
+	elseif supportCount > 0 then
+		for _, applied in ipairs(application) do
+			local selectedSupported = false
+			for _, activeName in ipairs(applied.activeSkills or {}) do
+				if activeName == selectedName then selectedSupported = true end
+			end
+			if not selectedSupported then applicationCheck = "failed" end
+		end
+	end
+	if applicationCheck == "failed" then reasons[#reasons + 1] = "current_support_not_applied" end
+
+	local ge = active.activeEffect and active.activeEffect.grantedEffect
+	local selectedTriggered = hasType(ge, "Triggered") or hasType(ge, "InbuiltTrigger")
+		or (active.skillData and active.skillData.triggered) and true or false
+	local hasMetaHost = false
+	for _, candidate in ipairs(group.displaySkillList or {}) do
+		local candidateGe = candidate.activeEffect and candidate.activeEffect.grantedEffect
+		if hasType(candidateGe, "Meta") and hasType(candidateGe, "Triggers") then
+			hasMetaHost = true
+			break
+		end
+	end
+	local rateDependent = false
+	for _, key in ipairs(p.objectiveKeys or {}) do
+		if RATE_DEPENDENT_SUPPORT_OBJECTIVES[tostring(key)] then rateDependent = true end
+	end
+
+	local triggerRate = "not_applicable"
+	local numericRanking = applicationCheck == "failed" and "unsupported" or "supported"
+	if rateDependent and (selectedTriggered or hasMetaHost) then
+		local output = (build.calcsTab and build.calcsTab.mainOutput) or {}
+		local candidates = {}
+		local function addRate(value)
+			value = asOptionalNumber(value)
+			if value ~= nil then candidates[#candidates + 1] = value end
+		end
+		addRate(output.SkillTriggerRate)
+		addRate(active.skillData and active.skillData.triggerRate)
+		if active.skillData and asOptionalNumber(active.skillData.triggerTime) ~= nil
+			and asOptionalNumber(output.Speed) ~= nil then
+			addRate(output.Speed)
+		end
+		local rateSeen = false
+		local positiveRate = false
+		for _, value in ipairs(candidates) do
+			if value ~= nil then
+				rateSeen = true
+				if value > 0 then positiveRate = true end
+			end
+		end
+		if positiveRate then
+			triggerRate = "modelled"
+		elseif rateSeen then
+			triggerRate = "zero_or_inactive"
+			numericRanking = "unsupported"
+			reasons[#reasons + 1] = "trigger_rate_zero_or_inactive"
+		else
+			triggerRate = "unmodelled"
+			numericRanking = "unsupported"
+			reasons[#reasons + 1] = "trigger_rate_unmodelled"
+		end
+	end
+	return {
+		ok = true,
+		applicationCheck = applicationCheck,
+		numericRanking = numericRanking,
+		triggerRate = triggerRate,
+		reasonCodes = reasons,
+		capabilitySource = "pob_runtime",
+		supportApplication = application,
+	}
 end
 
 function methods.configure_source_skill_supports(p)

@@ -158,6 +158,29 @@ class _TriggerAuditEngine(_AuditProbeEngine):
         raise AssertionError(method)
 
 
+class _RuntimeTriggerAuditEngine(_TriggerAuditEngine):
+    def __init__(self, trigger_rate: str = "unmodelled") -> None:
+        super().__init__()
+        self.trigger_rate = trigger_rate
+
+    def call(self, method: str, **kwargs: object) -> dict:
+        if method == "inspect_support_evaluation_capability":
+            reason = (
+                "trigger_rate_unmodelled"
+                if self.trigger_rate == "unmodelled"
+                else "trigger_rate_zero_or_inactive"
+            )
+            return {
+                "ok": True,
+                "applicationCheck": "verified",
+                "numericRanking": "unsupported",
+                "triggerRate": self.trigger_rate,
+                "reasonCodes": [reason],
+                "capabilitySource": "pob_runtime",
+            }
+        return super().call(method, **kwargs)
+
+
 class TreeSourceSupportIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -494,7 +517,9 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self.assertTrue(weapon["ok"], weapon)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 10)
         groups = skillgroups.list_skill_groups(self.engine)["groups"]
-        self.assertEqual([gem["name"] for gem in groups[0]["gems"]], ["Herald of Ash", "Precision I"])
+        self.assertEqual(
+            [gem["name"] for gem in groups[0]["gems"]], ["Herald of Ash", "Precision I"]
+        )
 
     def test_no_reservation_rule_requires_the_exact_unique_and_base(self) -> None:
         self.engine.new_build()
@@ -733,11 +758,14 @@ Grants Skill: Level 20 Herald of Ash""",
                         return {"ok": False, "errorCode": error_code}
                     return original_call(method, **params)
 
-                with mock.patch.object(
-                    self.engine,
-                    "call",
-                    side_effect=fail_nonempty_configuration,
-                ), mock.patch.object(supportopt, "_screen_set", return_value=["Precision I"]):
+                with (
+                    mock.patch.object(
+                        self.engine,
+                        "call",
+                        side_effect=fail_nonempty_configuration,
+                    ),
+                    mock.patch.object(supportopt, "_screen_set", return_value=["Precision I"]),
+                ):
                     result = supportopt.optimize_supports(
                         self.engine,
                         metric="SpiritReserved",
@@ -769,20 +797,23 @@ Grants Skill: Level 20 Herald of Ash""",
         rejected_id = str(db.get_gem("Precision I")["id"])
 
         def fail_one_configuration(method: str, **params: object) -> dict:
-            if method == "configure_source_skill_supports" and params.get(
-                "supportGemIds"
-            ) == [rejected_id]:
+            if method == "configure_source_skill_supports" and params.get("supportGemIds") == [
+                rejected_id
+            ]:
                 return {"ok": False, "errorCode": "source_support_capacity_exceeded"}
             return original_call(method, **params)
 
-        with mock.patch.object(
-            self.engine,
-            "call",
-            side_effect=fail_one_configuration,
-        ), mock.patch.object(
-            supportopt,
-            "_screen_set",
-            return_value=["Precision I", "Precision II"],
+        with (
+            mock.patch.object(
+                self.engine,
+                "call",
+                side_effect=fail_one_configuration,
+            ),
+            mock.patch.object(
+                supportopt,
+                "_screen_set",
+                return_value=["Precision I", "Precision II"],
+            ),
         ):
             result = supportopt.optimize_supports(
                 self.engine,
@@ -814,17 +845,18 @@ Grants Skill: Level 20 Herald of Ash""",
         original_call = self.engine.call
 
         def fail_empty_configuration(method: str, **params: object) -> dict:
-            if method == "configure_source_skill_supports" and params.get(
-                "supportGemIds"
-            ) == []:
+            if method == "configure_source_skill_supports" and params.get("supportGemIds") == []:
                 return {"ok": False, "errorCode": "source_support_not_applied"}
             return original_call(method, **params)
 
-        with mock.patch.object(
-            self.engine,
-            "call",
-            side_effect=fail_empty_configuration,
-        ), mock.patch.object(supportopt, "_screen_set", return_value=["Precision I"]):
+        with (
+            mock.patch.object(
+                self.engine,
+                "call",
+                side_effect=fail_empty_configuration,
+            ),
+            mock.patch.object(supportopt, "_screen_set", return_value=["Precision I"]),
+        ):
             result = supportopt.optimize_supports(
                 self.engine,
                 metric="SpiritReserved",
@@ -997,7 +1029,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             "invalid_spirit_limit",
         )
 
-    def test_trigger_host_returns_cached_inconclusive_without_precise_ranking(self) -> None:
+    def test_legacy_trigger_hint_cannot_claim_verified_capability_gap(self) -> None:
         engine = _TriggerAuditEngine()
 
         result = supportopt.optimize_supports(engine, metric="FullDPS")
@@ -1005,8 +1037,32 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         assert result["ok"] is False
         assert result["reasonCode"] == "trigger_rate_unmodelled"
         assert result["supportAudit"]["status"] == "inconclusive"
+        assert result["supportAudit"]["reasonClass"] == "evidence_gap"
         assert "supports" not in result
         assert "progression" not in result
+
+    def test_runtime_trigger_gap_short_circuits_as_candidate_only_capability(self) -> None:
+        result = supportopt.optimize_supports(
+            _RuntimeTriggerAuditEngine(),
+            metric="FullDPS",
+        )
+
+        assert result["ok"] is False
+        assert result["reasonCode"] == "trigger_rate_unmodelled"
+        assert result["supportAudit"]["auditVersion"] == "support_audit_v2"
+        assert result["supportAudit"]["reasonClass"] == "capability_gap"
+        assert result["supportAudit"]["verificationRequired"] is True
+        assert result["measurement"]["screenedCandidates"] == 0
+
+    def test_zero_trigger_rate_is_actionable_not_a_model_gap(self) -> None:
+        result = supportopt.optimize_supports(
+            _RuntimeTriggerAuditEngine("zero_or_inactive"),
+            metric="FullDPS",
+        )
+
+        assert result["supportAudit"]["status"] == "failed"
+        assert result["supportAudit"]["reasonClass"] == "actionable_gap"
+        assert result["reasonCode"] == "trigger_rate_zero_or_inactive"
 
     def test_unmeasurable_metric_is_inconclusive_and_is_cached(self) -> None:
         listed = self._listed()
@@ -1027,6 +1083,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             "inconclusive",
         )
         self.assertEqual(listed["stateHash"], build_state_hash(self.engine.get_xml()))
+
     def test_partial_candidate_measurement_cannot_write_passed_audit(self) -> None:
         engine = _AuditProbeEngine(
             {
@@ -1042,9 +1099,9 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         self.assertEqual(result["measurement"]["failedCandidates"], 1)
         self.assertFalse(result["measurement"]["checkpointEligible"])
         self.assertEqual(
-            supportopt.support_audit_for_state(
-                engine, build_state_hash(engine.get_xml()), 1
-            )["status"],
+            supportopt.support_audit_for_state(engine, build_state_hash(engine.get_xml()), 1)[
+                "status"
+            ],
             "inconclusive",
         )
 
@@ -1102,9 +1159,9 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             self.assertEqual(result["supportAudit"]["status"], "inconclusive")
             self.assertFalse(result["measurement"]["finalConstraintsSatisfied"])
             self.assertEqual(
-                supportopt.support_audit_for_state(
-                    engine, build_state_hash(engine.get_xml()), 1
-                )["status"],
+                supportopt.support_audit_for_state(engine, build_state_hash(engine.get_xml()), 1)[
+                    "status"
+                ],
                 "inconclusive",
             )
 
@@ -1331,10 +1388,13 @@ class SourceSupportBoundaryTests(unittest.TestCase):
             ]
         }
         parsed = evaluation._parse_build_snapshot(xml, runtime_skill_groups=runtime)
-        self.assertEqual(parsed["testedSkillGroups"][0]["activeSkills"], [
-            "Ruzhan, the Blazing Sword",
-            "Command",
-        ])
+        self.assertEqual(
+            parsed["testedSkillGroups"][0]["activeSkills"],
+            [
+                "Ruzhan, the Blazing Sword",
+                "Command",
+            ],
+        )
         state = self._validate_transient_groups(parsed["testedSkillGroups"])
         self.assertEqual(state.tested_skill_groups[0].active_skill, "Command")
         selected = evaluation._resolve_offense_selection(

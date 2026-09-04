@@ -561,6 +561,28 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
         if status not in {"failed", "unknown"}:
             blockers.append(f"{name}:invalid_status")
             continue
+        if name == "skillSupportAudit" and status == "unknown":
+            groups = item.get("groupResults") or []
+            if groups and all(
+                isinstance(group, dict)
+                and (
+                    group.get("status") == "passed"
+                    or (
+                        group.get("status") == "unknown"
+                        and group.get("freshness") == "current"
+                        and group.get("auditVersion") == "support_audit_v2"
+                        and group.get("reasonClass") == "capability_gap"
+                        and group.get("verificationRequired") is True
+                        and (group.get("capability") or {}).get("capabilitySource") == "pob_runtime"
+                        and (group.get("capability") or {}).get("applicationCheck")
+                        in {"verified", "not_applicable"}
+                        and (group.get("capability") or {}).get("numericRanking") == "unsupported"
+                        and (group.get("capability") or {}).get("triggerRate") == "unmodelled"
+                    )
+                )
+                for group in groups
+            ):
+                continue
         if name == "jewelDecision" and status == "unknown":
             jewel_reasons = {str(value) for value in item.get("reasons") or []}
             allowed_reasons = {
@@ -585,17 +607,7 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
             ):
                 continue
         reasons = [str(value) for value in item.get("reasons") or []]
-        if name == "skillSupportAudit":
-            reasons = [
-                value for value in reasons if not value.startswith("support_audit_inconclusive:")
-            ]
-        if not reasons and not (
-            name == "skillSupportAudit"
-            and any(
-                str(value).startswith("support_audit_inconclusive:")
-                for value in item.get("reasons") or []
-            )
-        ):
+        if not reasons:
             reasons = ["failed_without_reason"]
         blockers.extend(f"{name}:{value}" for value in reasons)
     sustain_item = checklist.get("sustain") if isinstance(checklist, dict) else None

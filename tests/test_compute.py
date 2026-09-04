@@ -625,6 +625,30 @@ def test_optimize_supports_can_target_secondary_group_and_restore(engine):
     assert skillgroups.list_skill_groups(engine)["groups"] == groups_before["groups"]
 
 
+def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_metric(engine):
+    from server.compute import supportopt
+
+    engine.new_build()
+    engine.set_class("Sorceress")
+    engine.set_level(95)
+    engine.paste_skill("Cast on Critical 20/20 1\nComet 20/20 1")
+
+    rate_dependent = supportopt.optimize_supports(engine, metric="FullDPS")
+    assert rate_dependent["ok"] is False
+    assert rate_dependent["reasonClass"] == "capability_gap"
+    assert rate_dependent["measurement"]["screenedCandidates"] == 0
+    assert rate_dependent["capability"]["applicationCheck"] == "verified"
+
+    per_hit = engine.call(
+        "inspect_support_evaluation_capability",
+        index=1,
+        activeIndex=1,
+        objectiveKeys=["AverageDamage"],
+    )
+    assert per_hit["numericRanking"] == "supported"
+    assert per_hit["triggerRate"] == "not_applicable"
+
+
 def test_support_pool_surfaces_on_element_levers():
     # Root-cause guard (corpus only, no engine): on-element supports like penetration must be flagged
     # and survive into the optimizer's screening set despite sharing only the element tag.

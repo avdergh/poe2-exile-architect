@@ -410,13 +410,30 @@ def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monk
     assert not (run_dir / "trusted-evaluations").exists()
 
 
-def test_current_inconclusive_support_audit_is_not_treated_as_missing():
+def test_current_runtime_verified_support_capability_gap_can_reach_judge():
     assert (
         evaluation._final_check_blockers(
             {
                 "skillSupportAudit": {
-                    "status": "failed",
-                    "reasons": ["support_audit_inconclusive:2"],
+                    "status": "unknown",
+                    "reasons": ["support_audit_capability_gap:2:trigger_rate_unmodelled"],
+                    "groupResults": [
+                        {
+                            "groupIndex": 2,
+                            "activeSkillIndex": 1,
+                            "freshness": "current",
+                            "auditVersion": "support_audit_v2",
+                            "status": "unknown",
+                            "reasonClass": "capability_gap",
+                            "verificationRequired": True,
+                            "capability": {
+                                "capabilitySource": "pob_runtime",
+                                "applicationCheck": "verified",
+                                "numericRanking": "unsupported",
+                                "triggerRate": "unmodelled",
+                            },
+                        }
+                    ],
                 },
                 "jewelDecision": {"status": "passed", "reasons": []},
                 "itemSockets": {"status": "passed", "reasons": []},

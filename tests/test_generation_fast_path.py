@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from server.compute import mutation_batch
+from server.compute import mutation_batch, supportopt
 from server.compute.state import build_state_hash
 from server.generation import validation_checkpoint
 
@@ -812,6 +812,73 @@ def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
     )
 
     assert result["deliveryStatus"] == "candidate"
+
+
+def test_support_capability_gap_is_unknown_with_group_evidence():
+    engine = FakeCheckpointEngine()
+    state_hash = build_state_hash(engine.get_xml())
+    supportopt._record_support_audit(
+        engine=engine,
+        state_hash=state_hash,
+        group_index=1,
+        skill="Cast on Critical",
+        current_supports=[],
+        recommended_supports=[],
+        constraints={},
+        active_skill_index=1,
+        capability={
+            "capabilitySource": "pob_runtime",
+            "applicationCheck": "verified",
+            "numericRanking": "unsupported",
+            "triggerRate": "unmodelled",
+            "reasonCodes": ["trigger_rate_unmodelled"],
+        },
+        measurement={
+            "status": "inconclusive",
+            "checkpointEligible": False,
+            "reasonClass": "capability_gap",
+            "reasonCodes": ["trigger_rate_unmodelled"],
+            "coverageComplete": True,
+            "classificationComplete": True,
+            "failedCandidates": 0,
+            "failedCombinations": 0,
+            "finalConstraintsSatisfied": True,
+        },
+    )
+
+    checklist = validation_checkpoint._create_quality_checklist(
+        engine=engine,
+        xml=engine.get_xml(),
+        state_hash=state_hash,
+        build={"level": 95, "gear": {}},
+        stats={},
+        completeness_result={
+            "passiveJewels": {
+                "availableSockets": 0,
+                "allocatedSockets": 0,
+                "filledSockets": 0,
+            },
+            "runes": {"decisionRequiredSlots": []},
+            "flasks": {"expectedSlots": [], "equippedSlots": [], "details": []},
+            "charms": {"beltCapacity": None, "equippedSlots": []},
+        },
+        preflight_result={
+            "skillGroups": [
+                {
+                    "groupIndex": 1,
+                    "mainActiveSkillCalcs": 1,
+                    "source": None,
+                    "sourceKind": None,
+                    "noSupports": False,
+                }
+            ]
+        },
+    )
+
+    support = checklist["skillSupportAudit"]
+    assert support["status"] == "unknown"
+    assert support["verificationRequired"] is True
+    assert support["groupResults"][0]["reasonClass"] == "capability_gap"
 
 
 class _TargetGroupCheckpointEngine:

@@ -23,6 +23,7 @@ from .state import build_state_hash
 _AUDIT_LOCK = threading.RLock()
 _SUPPORT_AUDITS: WeakKeyDictionary[Any, dict[tuple[str, int], dict[str, Any]]] = WeakKeyDictionary()
 _AUDIT_LIMIT_PER_ENGINE = 96
+_SUPPORT_AUDIT_VERSION = "support_audit_v2"
 
 _CHECKPOINT_AUDIT_METRIC_DIRECTIONS = {
     "TotalDPS": "higher",
@@ -54,9 +55,9 @@ _EXPECTED_SOURCE_REJECTION_CODES = frozenset(
         "spirit_over_reserved",
     }
 )
-_EXPECTED_SOURCE_COMBINATION_REJECTION_CODES = (
-    _EXPECTED_SOURCE_REJECTION_CODES | {"duplicate_support_family"}
-)
+_EXPECTED_SOURCE_COMBINATION_REJECTION_CODES = _EXPECTED_SOURCE_REJECTION_CODES | {
+    "duplicate_support_family"
+}
 
 
 def support_audit_for_state(
@@ -96,6 +97,8 @@ def _record_support_audit(
     recommended_supports: list[str],
     constraints: dict[str, Any],
     measurement: dict[str, Any],
+    active_skill_index: int = 1,
+    capability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = sorted(set(current_supports))
     recommended = sorted(set(recommended_supports))
@@ -114,21 +117,69 @@ def _record_support_audit(
         and int(measurement_copy.get("failedCombinations") or 0) == 0
         and measurement_copy.get("finalConstraintsSatisfied") is True
     )
+    reason_codes = sorted(
+        {
+            str(value)
+            for value in [
+                *(measurement_copy.get("reasonCodes") or []),
+                measurement_copy.get("reasonCode"),
+                *(measurement_copy.get("candidateFailureCodes") or {}).keys(),
+                *(measurement_copy.get("combinationFailureCodes") or {}).keys(),
+            ]
+            if value
+        }
+    )
+    if measurement_complete:
+        reason_class = "actionable_gap" if missing else "none"
+        if missing:
+            reason_codes.append("positive_gain_supports_missing")
+    elif measurement_copy.get("reasonClass") in {
+        "capability_gap",
+        "evidence_gap",
+        "measurement_error",
+        "actionable_gap",
+    }:
+        reason_class = str(measurement_copy["reasonClass"])
+    elif (
+        int(measurement_copy.get("failedCandidates") or 0) > 0
+        or int(measurement_copy.get("failedCombinations") or 0) > 0
+        or measurement_copy.get("baseFailureCode")
+    ):
+        reason_class = "measurement_error"
+    else:
+        reason_class = "evidence_gap"
+    status = (
+        "passed"
+        if reason_class == "none"
+        else "failed"
+        if reason_class == "actionable_gap"
+        else "inconclusive"
+    )
     audit = {
-        "status": "inconclusive" if not measurement_complete else "passed" if not missing else "failed",
+        "auditVersion": _SUPPORT_AUDIT_VERSION,
+        "status": status,
+        "reasonClass": reason_class,
+        "reasonCodes": sorted(set(reason_codes)),
+        "verificationRequired": reason_class == "capability_gap",
         "skill": skill,
         "groupIndex": int(group_index),
+        "activeSkillIndex": int(active_skill_index),
         "currentSupports": current,
         "recommendedSupports": recommended,
         "positiveGainSupportsMissing": missing,
         "constraints": deepcopy(constraints),
         "measurement": measurement_copy,
+        "capability": deepcopy(capability or {}),
         "stateHash": state_hash,
     }
     with _AUDIT_LOCK:
         engine_audits = _SUPPORT_AUDITS.setdefault(engine, {})
         existing = engine_audits.get((state_hash, int(group_index)))
-        if existing is not None and existing.get("status") == "failed" and audit["status"] != "failed":
+        if (
+            existing is not None
+            and existing.get("status") == "failed"
+            and audit["status"] != "failed"
+        ):
             return audit
         engine_audits[(state_hash, int(group_index))] = deepcopy(audit)
         while len(engine_audits) > _AUDIT_LIMIT_PER_ENGINE:
@@ -152,9 +203,7 @@ def carry_support_audit_to_configured_state(
         or previous.get("status") not in {"passed", "failed"}
         or (previous.get("measurement") or {}).get("status") != "complete"
         or (previous.get("measurement") or {}).get("checkpointEligible") is not True
-        or sorted(set(applied_supports)) != sorted(
-        set(previous.get("recommendedSupports") or [])
-        )
+        or sorted(set(applied_supports)) != sorted(set(previous.get("recommendedSupports") or []))
     ):
         return None
     return _record_support_audit(
@@ -166,7 +215,60 @@ def carry_support_audit_to_configured_state(
         recommended_supports=list(previous.get("recommendedSupports") or []),
         constraints=dict(previous.get("constraints") or {}),
         measurement=dict(previous.get("measurement") or {}),
+        active_skill_index=int(previous.get("activeSkillIndex") or 1),
+        capability=dict(previous.get("capability") or {}),
     )
+
+
+def _support_evaluation_capability(
+    engine: Any,
+    *,
+    group_index: int,
+    active_skill_index: int,
+    objective_keys: list[str],
+    selected_group: dict[str, Any],
+) -> dict[str, Any]:
+    """Read target-bound PoB capability, using names only as a fail-closed legacy hint."""
+
+    try:
+        result = engine.call(
+            "inspect_support_evaluation_capability",
+            index=int(group_index),
+            activeIndex=int(active_skill_index),
+            objectiveKeys=list(objective_keys),
+        )
+    except Exception:  # noqa: BLE001 - an old bridge may not expose the internal method.
+        result = None
+    if isinstance(result, dict) and result.get("ok") is True:
+        return dict(result)
+    trigger_names = sorted(
+        {
+            str(gem.get("name") or "")
+            for gem in selected_group.get("gems") or []
+            if isinstance(gem, dict)
+            and str(gem.get("name") or "") in modelability.CORE_META_TRIGGERS
+        }
+    )
+    if trigger_names:
+        return {
+            "ok": True,
+            "applicationCheck": "unknown",
+            "numericRanking": "unsupported",
+            "triggerRate": "unmodelled",
+            "reasonCodes": ["trigger_rate_unmodelled", "support_application_unverified"],
+            "capabilitySource": "legacy_name_fallback",
+            "unmodelledMechanics": trigger_names,
+        }
+    return {
+        "ok": False,
+        "applicationCheck": "unknown",
+        "numericRanking": "supported",
+        "triggerRate": "unknown",
+        "reasonCodes": [
+            str((result or {}).get("errorCode") or "support_capability_inspection_failed")
+        ],
+        "capabilitySource": "pob_runtime",
+    }
 
 
 def _num(x: Any) -> bool:
@@ -302,30 +404,69 @@ def _optimize_supports_locked(
         else source_skill
     )
     source_active_index = int(
-        selected_group.get("mainActiveSkillCalcs")
-        or selected_group.get("mainActiveSkill")
-        or 1
+        selected_group.get("mainActiveSkillCalcs") or selected_group.get("mainActiveSkill") or 1
     )
     current_supports = [
         str(gem.get("name"))
         for gem in selected_group.get("gems") or []
         if isinstance(gem, dict) and gem.get("isSupport") and gem.get("name")
     ]
-    trigger_hosts = sorted(
-        {
-            str(gem.get("name") or "")
-            for gem in selected_group.get("gems") or []
-            if isinstance(gem, dict)
-            and str(gem.get("name") or "") in modelability.CORE_META_TRIGGERS
-        }
+    weights: dict[str, float] = {}
+    if goals is not None:
+        if not goals or any(
+            not _finite_num(value) or float(value) <= 0 for value in goals.values()
+        ):
+            engine.load_build_xml(snapshot)
+            return {
+                "ok": False,
+                "errorCode": "invalid_goals",
+                "error": "goals must map stat names to finite positive weights",
+            }
+        weights = {str(key): float(value) for key, value in goals.items()}
+    keys = list(weights) if weights else [metric]
+    metric_directions = {key: _CHECKPOINT_AUDIT_METRIC_DIRECTIONS.get(key) for key in keys}
+    checkpoint_objective_eligible = (
+        all(direction == "higher" for direction in metric_directions.values())
+        if weights
+        else metric_directions.get(metric) in {"higher", "lower"}
     )
-    if trigger_hosts:
-        engine.load_build_xml(snapshot, name="support-trigger-modelability-restore")
+    single_metric_direction = metric_directions.get(metric) or "higher"
+    measurement_keys = list(keys)
+    if max_mana_cost is not None and "ManaCost" not in measurement_keys:
+        measurement_keys.append("ManaCost")
+    if spirit_limit is not None and "SpiritReserved" not in measurement_keys:
+        measurement_keys.append("SpiritReserved")
+
+    capability = _support_evaluation_capability(
+        engine,
+        group_index=selected_group_index,
+        active_skill_index=source_active_index,
+        objective_keys=keys,
+        selected_group=selected_group,
+    )
+    if capability.get("numericRanking") in {"unsupported", "unknown"}:
+        reason_codes = [str(value) for value in capability.get("reasonCodes") or [] if value]
+        application_check = str(capability.get("applicationCheck") or "unknown")
+        if application_check == "failed" or "trigger_rate_zero_or_inactive" in reason_codes:
+            reason_class = "actionable_gap"
+        elif (
+            capability.get("numericRanking") == "unsupported"
+            and capability.get("triggerRate") == "unmodelled"
+            and application_check in {"verified", "not_applicable"}
+            and capability.get("capabilitySource") == "pob_runtime"
+        ):
+            reason_class = "capability_gap"
+        elif capability.get("numericRanking") == "unknown":
+            reason_class = "measurement_error"
+        else:
+            reason_class = "evidence_gap"
         measurement = {
             "status": "inconclusive",
             "checkpointEligible": False,
-            "policyReason": "trigger_rate_unmodelled",
-            "reasonCode": "trigger_rate_unmodelled",
+            "policyReason": reason_codes[0] if reason_codes else "support_capability_incomplete",
+            "reasonCode": reason_codes[0] if reason_codes else "support_capability_incomplete",
+            "reasonCodes": reason_codes,
+            "reasonClass": reason_class,
             "baseMeasurable": False,
             "coverageComplete": True,
             "classificationComplete": True,
@@ -341,58 +482,46 @@ def _optimize_supports_locked(
             "rejectedCombinations": 0,
             "failedCombinations": 0,
             "changedCandidates": 0,
-            "finalConstraintsSatisfied": True,
-            "objectiveKeys": list(goals or [metric]),
-            "objectiveDirections": {},
-            "measurementKeys": [],
-            "unmodelledMechanics": trigger_hosts,
+            "finalConstraintsSatisfied": application_check != "failed",
+            "objectiveKeys": list(keys),
+            "objectiveDirections": metric_directions,
+            "measurementKeys": list(measurement_keys),
         }
+        engine.load_build_xml(snapshot, name="support-capability-restore")
+        restored_state_hash = build_state_hash(engine.get_xml())
+        if restored_state_hash != state_hash:
+            return {
+                "ok": False,
+                "errorCode": "support_optimizer_state_restore_failed",
+                "expectedStateHash": state_hash,
+                "actualStateHash": restored_state_hash,
+            }
         audit = _record_support_audit(
             engine=engine,
-            state_hash=state_hash,
+            state_hash=restored_state_hash,
             group_index=selected_group_index,
             skill=str(skill),
             current_supports=current_supports,
             recommended_supports=current_supports,
             constraints={"maxManaCost": max_mana_cost, "spiritLimit": spirit_limit},
             measurement=measurement,
+            active_skill_index=source_active_index,
+            capability=capability,
         )
         return {
             "ok": False,
             "errorCode": "support_optimization_inconclusive",
-            "reasonCode": "trigger_rate_unmodelled",
+            "reasonCode": measurement["reasonCode"],
+            "reasonClass": reason_class,
             "skill": skill,
             "source": selected_group.get("source"),
             "groupIndex": selected_group_index,
-            "stateHash": state_hash,
+            "activeSkillIndex": source_active_index,
+            "stateHash": restored_state_hash,
+            "capability": capability,
             "measurement": measurement,
             "supportAudit": audit,
         }
-
-    weights: dict[str, float] = {}
-    if goals is not None:
-        if not goals or any(not _finite_num(value) or float(value) <= 0 for value in goals.values()):
-            engine.load_build_xml(snapshot)
-            return {
-                "ok": False,
-                "errorCode": "invalid_goals",
-                "error": "goals must map stat names to finite positive weights",
-            }
-        weights = {str(key): float(value) for key, value in goals.items()}
-    keys = list(weights) if weights else [metric]
-    metric_directions = {
-        key: _CHECKPOINT_AUDIT_METRIC_DIRECTIONS.get(key)
-        for key in keys
-    }
-    checkpoint_objective_eligible = all(
-        direction == "higher" for direction in metric_directions.values()
-    ) if weights else metric_directions.get(metric) in {"higher", "lower"}
-    single_metric_direction = metric_directions.get(metric) or "higher"
-    measurement_keys = list(keys)
-    if max_mana_cost is not None and "ManaCost" not in measurement_keys:
-        measurement_keys.append("ManaCost")
-    if spirit_limit is not None and "SpiritReserved" not in measurement_keys:
-        measurement_keys.append("SpiritReserved")
 
     all_screen_names = _screen_set(source_skill if configurable_source else skill, 999999)
     screen_names = all_screen_names[:screen]
@@ -439,13 +568,14 @@ def _optimize_supports_locked(
                         if isinstance(configured, dict)
                         else "invalid_source_support_configuration_result"
                     )
-                    unavailable_solo_candidate = len(supports) == 1 and code == "invalid_support_gem"
+                    unavailable_solo_candidate = (
+                        len(supports) == 1 and code == "invalid_support_gem"
+                    )
                     known_topology_candidate = (
                         len(supports) == 1
                         and code == "source_group_count_changed"
                         and any(
-                            "grants_active_skill" in (gem.get("tags") or [])
-                            for gem in support_gems
+                            "grants_active_skill" in (gem.get("tags") or []) for gem in support_gems
                         )
                     )
                     expected_codes = (
@@ -484,6 +614,7 @@ def _optimize_supports_locked(
             return st, "measured", None
 
         base_stats, base_outcome, base_error = measure([])  # skill alone = the baseline
+
         def measurement_valid(stats: dict[str, Any]) -> bool:
             return any(_finite_num(stats.get(key)) for key in keys)
 
@@ -511,10 +642,14 @@ def _optimize_supports_locked(
             if not measurement_valid(st):
                 return float("-inf")
             if max_mana_cost is not None:
-                if not _finite_num(st.get("ManaCost")) or float(st["ManaCost"]) > float(max_mana_cost):
+                if not _finite_num(st.get("ManaCost")) or float(st["ManaCost"]) > float(
+                    max_mana_cost
+                ):
                     return float("-inf")
             if spirit_limit is not None:
-                if not _finite_num(st.get("SpiritReserved")) or float(st["SpiritReserved"]) > float(spirit_limit):
+                if not _finite_num(st.get("SpiritReserved")) or float(st["SpiritReserved"]) > float(
+                    spirit_limit
+                ):
                     return float("-inf")
             if weights:
                 return sum(
@@ -540,9 +675,7 @@ def _optimize_supports_locked(
         changed_candidate_count = 0
         candidate_rejection_codes: dict[str, int] = {}
         candidate_failure_codes: dict[str, int] = {}
-        observed_objective_keys = {
-            key for key in keys if _finite_num(base_stats.get(key))
-        }
+        observed_objective_keys = {key for key in keys if _finite_num(base_stats.get(key))}
 
         def count_code(counts: dict[str, int], code: str | None, fallback: str) -> None:
             key = str(code or fallback)
@@ -566,8 +699,7 @@ def _optimize_supports_locked(
             if audit_measurement_valid(measured_stats):
                 fully_measured_candidate_count += 1
                 if audit_measurement_valid(base_stats) and any(
-                    abs(float(measured_stats[key]) - float(base_stats[key])) > 1e-9
-                    for key in keys
+                    abs(float(measured_stats[key]) - float(base_stats[key])) > 1e-9 for key in keys
                 ):
                     changed_candidate_count += 1
             else:
@@ -705,6 +837,8 @@ def _optimize_supports_locked(
             recommended_supports=chosen,
             constraints={"maxManaCost": max_mana_cost, "spiritLimit": spirit_limit},
             measurement=measurement,
+            active_skill_index=source_active_index,
+            capability=capability,
         )
         return {
             "ok": False,
@@ -713,6 +847,7 @@ def _optimize_supports_locked(
             "source": selected_group.get("source"),
             "groupIndex": selected_group_index,
             "stateHash": restored_state_hash,
+            "capability": capability,
             "measurement": measurement,
             "supportAudit": audit,
         }
@@ -727,6 +862,7 @@ def _optimize_supports_locked(
         "candidatesTried": len(pool),
         "groupIndex": selected_group_index,
         "stateHash": restored_state_hash,
+        "capability": capability,
         "constraints": {
             "maxManaCost": max_mana_cost,
             "spiritLimit": spirit_limit,
@@ -768,6 +904,8 @@ def _optimize_supports_locked(
         recommended_supports=chosen,
         constraints=out["constraints"],
         measurement=measurement,
+        active_skill_index=source_active_index,
+        capability=capability,
     )
     return out
 
@@ -786,7 +924,11 @@ def optimize_supports(
 ) -> dict[str, Any]:
     """Run one read-only support search under a build-wide transaction and restore guard."""
 
-    if isinstance(max_supports, bool) or not isinstance(max_supports, int) or not 1 <= max_supports <= 5:
+    if (
+        isinstance(max_supports, bool)
+        or not isinstance(max_supports, int)
+        or not 1 <= max_supports <= 5
+    ):
         return {
             "ok": False,
             "errorCode": "invalid_max_supports",
@@ -800,9 +942,7 @@ def optimize_supports(
                 "error": f"{name} must be at least 1",
             }
     for name, value in (("max_mana_cost", max_mana_cost), ("spirit_limit", spirit_limit)):
-        if value is not None and (
-            not _finite_num(value) or float(value) < 0
-        ):
+        if value is not None and (not _finite_num(value) or float(value) < 0):
             return {
                 "ok": False,
                 "errorCode": f"invalid_{name}",

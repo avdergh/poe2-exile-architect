@@ -15,7 +15,7 @@ from server.knowledge import lifecycle_verification
 from . import preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v4"
+CHECKPOINT_VERSION = "generation_checkpoint_v5"
 _CACHE_LIMIT = 48
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCK = threading.RLock()
@@ -344,6 +344,7 @@ def _create_quality_checklist(
     level = int(build.get("level") or 0)
     support_reasons: list[str] = []
     support_freshness: dict[str, str] = {}
+    support_group_results: list[dict[str, Any]] = []
     support_audit_applicable = False
     mechanism_advisories: list[str] = []
     for group in preflight_result.get("skillGroups") or []:
@@ -370,28 +371,86 @@ def _create_quality_checklist(
         support_freshness[str(group_index)] = freshness
         audit = supportopt.support_audit_for_state(engine, state_hash, group_index)
         if audit is None:
-            support_reasons.append(f"support_audit_{freshness}:{group_index}")
+            reason = f"support_audit_{freshness}:{group_index}"
+            support_reasons.append(reason)
+            support_group_results.append(
+                {
+                    "groupIndex": group_index,
+                    "activeSkillIndex": int(group.get("mainActiveSkillCalcs") or 1),
+                    "freshness": freshness,
+                    "status": "failed",
+                    "reasonClass": "evidence_gap",
+                    "reasonCodes": [reason],
+                    "verificationRequired": False,
+                }
+            )
+            continue
+
+        measurement = audit.get("measurement") or {}
+        complete = (
+            audit.get("status") == "passed"
+            and measurement.get("status") == "complete"
+            and measurement.get("checkpointEligible") is True
+            and measurement.get("coverageComplete") is True
+            and measurement.get("classificationComplete") is True
+            and int(measurement.get("measuredCandidates") or 0) >= 1
+            and int(measurement.get("classifiedCandidates") or 0)
+            == int(measurement.get("screenedCandidates") or 0)
+            and int(measurement.get("failedCandidates") or 0) == 0
+            and int(measurement.get("failedCombinations") or 0) == 0
+            and measurement.get("finalConstraintsSatisfied") is True
+        )
+        capability = audit.get("capability") or {}
+        pure_capability_gap = (
+            audit.get("auditVersion") == "support_audit_v2"
+            and audit.get("status") == "inconclusive"
+            and audit.get("reasonClass") == "capability_gap"
+            and capability.get("capabilitySource") == "pob_runtime"
+            and capability.get("applicationCheck") in {"verified", "not_applicable"}
+            and capability.get("numericRanking") == "unsupported"
+            and capability.get("triggerRate") == "unmodelled"
+            and measurement.get("coverageComplete") is True
+            and measurement.get("classificationComplete") is True
+            and int(measurement.get("failedCandidates") or 0) == 0
+            and int(measurement.get("failedCombinations") or 0) == 0
+            and measurement.get("finalConstraintsSatisfied") is True
+            and not audit.get("positiveGainSupportsMissing")
+        )
+        if complete:
+            group_status = "passed"
+            group_reasons: list[str] = []
+        elif pure_capability_gap:
+            group_status = "unknown"
+            detail = ",".join(str(value) for value in audit.get("reasonCodes") or [])
+            group_reasons = [f"support_audit_capability_gap:{group_index}:{detail or 'unmodelled'}"]
         elif (
             audit.get("status") != "passed"
-            or (audit.get("measurement") or {}).get("status") != "complete"
-            or (audit.get("measurement") or {}).get("checkpointEligible") is not True
-            or (audit.get("measurement") or {}).get("coverageComplete") is not True
-            or (audit.get("measurement") or {}).get("classificationComplete") is not True
-            or int((audit.get("measurement") or {}).get("measuredCandidates") or 0) < 1
-            or int((audit.get("measurement") or {}).get("classifiedCandidates") or 0)
-            != int((audit.get("measurement") or {}).get("screenedCandidates") or 0)
-            or int((audit.get("measurement") or {}).get("failedCandidates") or 0) > 0
-            or int((audit.get("measurement") or {}).get("failedCombinations") or 0) > 0
-            or (audit.get("measurement") or {}).get("finalConstraintsSatisfied") is not True
+            or measurement.get("status") != "complete"
+            or measurement.get("checkpointEligible") is not True
         ):
             missing = ",".join(audit.get("positiveGainSupportsMissing") or []) or "unknown"
-            if (
-                audit.get("status") == "inconclusive"
-                or (audit.get("measurement") or {}).get("status") != "complete"
-            ):
-                support_reasons.append(f"support_audit_inconclusive:{group_index}")
+            if audit.get("status") == "inconclusive" or measurement.get("status") != "complete":
+                group_reasons = [f"support_audit_inconclusive:{group_index}"]
             else:
-                support_reasons.append(f"positive_gain_supports_missing:{group_index}:{missing}")
+                group_reasons = [f"positive_gain_supports_missing:{group_index}:{missing}"]
+            group_status = "failed"
+        else:
+            group_status = "failed"
+            group_reasons = [f"support_audit_invalid:{group_index}"]
+        support_reasons.extend(group_reasons)
+        support_group_results.append(
+            {
+                "groupIndex": group_index,
+                "activeSkillIndex": int(audit.get("activeSkillIndex") or 1),
+                "freshness": freshness,
+                "auditVersion": audit.get("auditVersion"),
+                "status": group_status,
+                "reasonClass": str(audit.get("reasonClass") or "evidence_gap"),
+                "reasonCodes": list(audit.get("reasonCodes") or []),
+                "verificationRequired": bool(group_status == "unknown"),
+                "capability": deepcopy(capability),
+            }
+        )
 
     gear = completeness.equipped_item_metadata(xml)
     if not gear:
@@ -523,8 +582,21 @@ def _create_quality_checklist(
 
     return {
         "skillSupportAudit": {
-            **item(support_reasons, applicable=support_audit_applicable),
+            "status": (
+                "not_applicable"
+                if not support_audit_applicable
+                else "failed"
+                if any(value["status"] == "failed" for value in support_group_results)
+                else "unknown"
+                if any(value["status"] == "unknown" for value in support_group_results)
+                else "passed"
+            ),
+            "reasons": support_reasons,
             "evidenceFreshness": support_freshness,
+            "groupResults": support_group_results,
+            "verificationRequired": any(
+                bool(value.get("verificationRequired")) for value in support_group_results
+            ),
         },
         "mechanismDependencies": {
             "status": "failed" if mechanism_advisories else "passed",
