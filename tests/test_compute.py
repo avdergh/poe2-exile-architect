@@ -78,6 +78,48 @@ def test_custom_mod_increases_dps(fireball):
     assert after > before
 
 
+def test_public_combat_profile_true_then_false_restores_semantic_state(engine, monkeypatch):
+    from server import main
+    from server.compute.state import build_state_hash
+
+    engine.new_build()
+    engine.paste_skill("Fireball 20/0  1")
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    baseline = main.apply_combat_profile(
+        tier="Pinnacle",
+        shocked=False,
+        cursed=False,
+        power_charges=False,
+        frenzy_charges=False,
+        full_es=False,
+        full_life=False,
+    )
+    enabled = main.apply_combat_profile(
+        tier="Pinnacle",
+        shocked=True,
+        cursed=True,
+        power_charges=True,
+        frenzy_charges=True,
+        full_es=True,
+        full_life=True,
+        expected_state_hash=baseline["stateHash"],
+    )
+    disabled = main.apply_combat_profile(
+        tier="Pinnacle",
+        shocked=False,
+        cursed=False,
+        power_charges=False,
+        frenzy_charges=False,
+        full_es=False,
+        full_life=False,
+        expected_state_hash=enabled["stateHash"],
+    )
+
+    assert disabled["stateHash"] == baseline["stateHash"]
+    assert disabled["stateHash"] == build_state_hash(engine.get_xml())
+    assert disabled["appliedProfile"]["cursed"] is False
+
+
 def test_equip_item_returns_stats(fireball):
     res = fireball.add_item("New Item\nElementalist Robe")
     assert "TotalDPS" in res["stats"]

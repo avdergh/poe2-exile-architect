@@ -509,9 +509,7 @@ def test_research_memory_tool_adapters_forward_to_service(monkeypatch):
 
 
 @pytest.mark.parametrize("explicit_flag", [None, False])
-def test_blind_research_query_requires_claim_and_forces_global_scope(
-    monkeypatch, explicit_flag
-):
+def test_blind_research_query_requires_claim_and_forces_global_scope(monkeypatch, explicit_flag):
     from server import main
 
     missing = main.query_research_memory(

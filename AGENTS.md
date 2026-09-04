@@ -142,7 +142,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   正式 Judge 与 artifact-bound lifecycle verification 仍是独立可信步骤。
 - 最终 Support、Jewel、Socket 回执必须在装备、天赋、珠宝、Rune 和 config 锁定后生成。
   Checkpoint 必须区分 `current/stale/missing`；正式 Judge 对适用检查的 stale/missing、明确失败和
-  未应用正收益非消耗式拒绝。已执行的 `inconclusive` 不是 missing，允许继续但交付保持 candidate。
+  未应用正收益非消耗式拒绝。Support 只有当前 PoB 已验证辅助实际作用、结构检查完整且唯一缺口为
+  速率数值不可建模的 `capability_gap` 才能以 `unknown` 继续 Judge，交付仍保持 candidate；测量错误、
+  证据不全和可修复问题继续阻止 Judge。Jewel 的受保护 `policy_limited/inconclusive` 规则不变。
 - 90 级以上的额外天赋珠宝槽审计保持核心天赋优先：Agent 先完成核心机制与重要支撑节点，再把这些
   精确节点 ID 作为 `protected_node_ids`，用 `evaluate_next_jewel_socket` 比较一颗已选珠宝在全部当前
   可达槽位的等点边际收益。工具只可替换当前安全单点叶节点，不向内拆分支、不重排树，也不以成熟
@@ -197,6 +199,16 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   用户明确要求满抗时才覆盖为 75%。`plan_gear / optimize_item / craft_item /
   optimize_item_sockets` 必须共用该饱和目标，并保留 `resistsCapped` 兼容字段与新的
   `resistanceTargetMet` 语义。
+- 普通黄装候选的可获得性与游戏合法性分离。`plan_gear / optimize_item / craft_item /
+  rank_upgrades` 默认使用共享 `realistic_trade` 策略（每件最多五条显式词缀、最多两条深 T1）；
+  `theoretical` 只能显式请求并作为升级目标。Checkpoint 使用同一可获得性审计；装备写入、暗金、
+  Flask、Charm、Jewel、Rune、Soul Core、implicit 与 corruption 不套用普通黄装策略。
+- `apply_combat_profile` 对自己拥有的 Boss tier 与六个战斗布尔条件使用完整替换语义，false 必须清除
+  旧值；公共 `set_config` 仍是只修改调用方字段的 PATCH。两者都返回最新语义 state hash，并可用
+  `expected_state_hash` 在写入前拒绝陈旧状态；不得改变内部 optimizer 对底层 `engine.set_config` 的用法。
+- Research Execution Contract v2 只把 authoritative lane 的 canonical `unique_enabler` 展开为
+  `requiredInsightDecisionSubjects`。新 Create 的 `insightDecisions.subjectRef` 必须逐项精确覆盖，最多
+  24 项；package、premise、comparison/cross-case 决策仍由原合同负责，不能被 subject 决定替代。
 - Lifecycle 发现未建模资源恢复时只输出“需验证未建模恢复覆盖”，不得据静态缺口直接宣布会断蓝。
   Agent 先用 PoB/corpus/Graph/Research，必要时联网复核，再针对辅助、天赋、技能、装备、护符、
   镶嵌、药剂或轮转修复。每个 run 最多两次核心机制级重建；两次后硬合法但仍无法证明只能导出为
@@ -305,6 +317,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - `server/compute/mutation_batch.py`：Agent 已决定的机械变更按职能分型的小事务执行器；每种
   scope 有独立白名单、数量上限和轻量后置条件，不执行搜索或优化器。
 - `server/compute/itemopt.py`：rare item、jewel、gear-plan 和 upgrade optimization。
+- `server/compute/attainability.py`：生成黄装候选与 Create checkpoint 共用的可获得性质量策略；不属于
+  物品合法性或价格系统。
 - `server/compute/craftopt.py`：crafting-system optimization。
 - `server/compute/supportopt.py`：engine-measured support selection。
 - `server/compute/solver.py`：stat lever ranking 和 target solving。

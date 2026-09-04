@@ -128,6 +128,123 @@ class ResearchExecutionPlanTests(unittest.TestCase):
         self.assertEqual(caveats, [])
         self.assertEqual((summary or {})["adoptedCrossCasePackageCount"], 1)
 
+
+class ResearchInsightDecisionSubjectTests(unittest.TestCase):
+    @staticmethod
+    def _subject_contract(count: int = 13) -> dict:
+        return {
+            "contractVersion": 2,
+            "requiredInsightDecisionSubjects": [
+                {
+                    "subjectRef": f"unique:pob:fixture_{index}",
+                    "subjectType": "component",
+                    "sourceRecordIds": [f"drr-source-{index}"],
+                }
+                for index in range(count)
+            ],
+        }
+
+    @staticmethod
+    def _research_use(count: int = 13) -> dict:
+        return {
+            "insightDecisions": [
+                {
+                    "subjectRef": f"unique:pob:fixture_{index}",
+                    "sourceRefs": [f"drr-source-{index}"],
+                    "decision": "adopted",
+                    "summary": "Keep the exact Family unique component.",
+                    "application": "Equip and verify the component before ordinary rare gear.",
+                }
+                for index in range(count)
+            ]
+        }
+
+    def test_thirteen_component_decisions_fit_the_generation_model(self) -> None:
+        decisions = self._research_use()["insightDecisions"]
+        validated = models.ResearchMemoryUse.model_validate(
+            {
+                "retrievalOutcome": "matched",
+                "dedupeQueryRefs": ["dq-0123456789abcdef"],
+                "deepRecordIds": [f"drr-source-{index}" for index in range(13)],
+                "insightDecisions": decisions,
+            }
+        )
+        self.assertEqual(len(validated.insight_decisions), 13)
+
+        too_many = self._research_use(25)["insightDecisions"]
+        with self.assertRaises(ValidationError):
+            models.ResearchMemoryUse.model_validate(
+                {
+                    "retrievalOutcome": "matched",
+                    "dedupeQueryRefs": ["dq-0123456789abcdef"],
+                    "deepRecordIds": [f"drr-source-{index}" for index in range(25)],
+                    "insightDecisions": too_many,
+                }
+            )
+
+    def test_subject_coverage_requires_exact_unique_component_decisions(self) -> None:
+        contract = self._subject_contract()
+        usage = self._research_use()
+        self.assertEqual(
+            research_execution.validate_insight_decision_subjects(usage, contract),
+            (None, []),
+        )
+
+        missing = deepcopy(usage)
+        missing["insightDecisions"].pop()
+        error, caveats = research_execution.validate_insight_decision_subjects(missing, contract)
+        self.assertEqual(error, "research_execution_insight_subjects_incomplete")
+        self.assertEqual(caveats, ["unique:pob:fixture_12"])
+
+        duplicate = deepcopy(usage)
+        duplicate["insightDecisions"].append(deepcopy(duplicate["insightDecisions"][0]))
+        self.assertEqual(
+            research_execution.validate_insight_decision_subjects(duplicate, contract)[0],
+            "research_execution_insight_subject_duplicate",
+        )
+
+        unrelated = deepcopy(usage)
+        unrelated["insightDecisions"][0]["sourceRefs"] = ["drr-unrelated"]
+        self.assertEqual(
+            research_execution.validate_insight_decision_subjects(unrelated, contract)[0],
+            "research_execution_insight_subject_source_mismatch",
+        )
+
+    def test_required_subjects_only_use_authoritative_unique_enablers(self) -> None:
+        packages = [
+            {
+                "authority": "authoritative",
+                "recordId": "drr-auth",
+                "sourceCaseRefs": ["case:authoritative"],
+                "componentResponsibilities": [
+                    {"componentKey": "unique:pob:required", "role": "unique_enabler"},
+                    {"componentKey": "skill:ignored", "role": "primary_damage"},
+                ],
+            },
+            {
+                "authority": "comparison",
+                "recordId": "drr-compare",
+                "sourceCaseRefs": ["case:comparison"],
+                "componentResponsibilities": [
+                    {"componentKey": "unique:pob:comparison", "role": "unique_enabler"}
+                ],
+            },
+        ]
+        subjects = research_execution._required_insight_decision_subjects(
+            packages,
+            selected_source_case_ref="case:authoritative",
+        )
+        self.assertEqual(
+            subjects,
+            [
+                {
+                    "subjectRef": "unique:pob:required",
+                    "subjectType": "component",
+                    "sourceRecordIds": ["drr-auth"],
+                }
+            ],
+        )
+
     def test_cross_case_adoption_without_plan_is_rejected(self) -> None:
         payload = {
             "contractRef": CONTRACT_REF,
@@ -220,7 +337,9 @@ class ResearchExecutionPlanTests(unittest.TestCase):
         snake = validated.model_dump(mode="json", by_alias=False)
         revised = deepcopy(camel)
         revised["selectedVariantRationale"] = "Judge evidence refined this rationale. " * 4
-        revised["coherenceSummary"] = "The final implementation now reflects the verified state. " * 3
+        revised["coherenceSummary"] = (
+            "The final implementation now reflects the verified state. " * 3
+        )
         for decision in revised["packageDecisions"]:
             decision["mechanismRationale"] = "Updated mechanism explanation after Judge. " * 3
             decision["buildApplication"] = "Apply the corrected supports, gear, and passives. " * 2
@@ -272,9 +391,9 @@ class ResearchExecutionPlanTests(unittest.TestCase):
         decision_changed = deepcopy(baseline)
         decision_changed["packageDecisions"][0]["decision"] = "tested_and_rejected"
         dependency_changed = deepcopy(baseline)
-        dependency_changed["crossCaseMechanismPlans"][0][
-            "targetCompanionPackageIds"
-        ] = ["rep-9999999999999999"]
+        dependency_changed["crossCaseMechanismPlans"][0]["targetCompanionPackageIds"] = [
+            "rep-9999999999999999"
+        ]
 
         expected = research_execution.stable_plan_structure_hash(baseline)
         self.assertNotEqual(

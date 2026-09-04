@@ -52,6 +52,11 @@ def evaluate_generation_candidate(
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
         return _rejected(exc.code)
+    if run_store.generation_contract_upgrade_required(bound_run.manifest):
+        return {
+            **_rejected("generation_contract_upgrade_requires_restart"),
+            "attemptConsumed": False,
+        }
     memory_mode = str(
         ((bound_run.manifest or {}).get("experimentContext") or {}).get("memoryMode") or ""
     )

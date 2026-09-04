@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from server.knowledge import copy_safety
+from server.knowledge import copy_safety, research_contracts
 
 
 FIELD_SOURCE = Literal["user_explicit", "agent_inferred", "defaulted", "unknown"]
@@ -183,6 +183,10 @@ class ToolReference(StrictModel):
 
 
 class ResearchMemoryInsightDecision(StrictModel):
+    subject_ref: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_.:/\-]{3,240}$",
+    )
     source_refs: list[str] = Field(min_length=1, max_length=12)
     decision: Literal["adopted", "caveated", "rejected"]
     summary: str = Field(min_length=1, max_length=320)
@@ -229,7 +233,7 @@ class ResearchMemoryUse(StrictModel):
     memory_item_ids: list[str] = Field(default_factory=list, max_length=24)
     insight_decisions: list[ResearchMemoryInsightDecision] = Field(
         default_factory=list,
-        max_length=12,
+        max_length=research_contracts.MAX_CREATE_INSIGHT_DECISIONS,
     )
     premise_audit_version: Literal[1] | None = None
     premise_decisions: list[ResearchPremiseDecision] = Field(
@@ -499,8 +503,7 @@ class MechanismBlueprint(StrictModel):
             unknown = sorted(set(item.claim_refs) - set(claims_by_id))
             if unknown:
                 raise ValueError(
-                    "mechanism blueprint coverage references unknown claims: "
-                    + ", ".join(unknown)
+                    "mechanism blueprint coverage references unknown claims: " + ", ".join(unknown)
                 )
             if item.status == "covered" and all(
                 claims_by_id[ref].status == "unknown" for ref in item.claim_refs
@@ -779,8 +782,7 @@ def _require_completeness_advisory_decisions(
 ) -> None:
     required = set(state.completeness_advisories)
     decisions = {
-        decision.advisory_code: decision
-        for decision in candidate.completeness_advisory_decisions
+        decision.advisory_code: decision for decision in candidate.completeness_advisory_decisions
     }
     recorded = set(decisions)
     missing = sorted(required - recorded)

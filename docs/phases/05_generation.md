@@ -137,6 +137,9 @@ Agent 负责：
    职责建立处理表。存在未解决失败 premise 时，继续按 Family、组件、record kind、record ID
    或失败文本定向查询，直到采用原方案、采用替代方案、判定不适用或明确保留 caveat；不设固定
    查询或深读额度。
+   Research Execution Contract v2 只把授权 lane 中的 canonical `unique_enabler` 展开为最多
+   24 个 `requiredInsightDecisionSubjects`；每项由 `insightDecisions.subjectRef` 精确覆盖并引用真实
+   source record。package、premise 和 comparison/cross-case 决策继续由各自合同负责，不重复展开。
    Graph 搜索结果提供可原样回传 resolver 的 `resolverPayload.componentKey`；Family 身份继续使用
    `skill:` key，等级验证在边界处统一解析显示名、`gem:` 和 `skill:`。Meta aggregate unavailable
    时不阻塞 Create：先查 PoB/corpus/Graph/Research，再查官方补丁/数据/Wiki，最后用当前赛季
@@ -155,7 +158,10 @@ Agent 负责：
    Family `gear_synergy` 中非 `optional_upgrade` / `budget_substitute` 的 `unique_enabler` 暗金先于
    普通黄装实装并逐组件记录 `adopted/caveated/rejected`；当前版本不可用写为 `rejected`，并在
    summary/application 记录 unavailable 原因。价格只在方案锁定后披露，不参与采用。
-   普通暗金候选放在基础黄装之后。90 级默认以三槽腰带和三护符为
+   普通暗金候选放在基础黄装之后。`plan_gear / optimize_item / craft_item / rank_upgrades` 的黄装
+   候选默认共用 `realistic_trade`（每件最多五条显式词缀、最多两条深 T1），显式
+   `theoretical` 仅作升级上限；该质量策略不限制装备写入、暗金、药剂、护符、珠宝或镶嵌。
+   90 级默认以三槽腰带和三护符为
    质量目标，有效容量读取最终 PoB `CharmLimit`；缺属性为 unknown，只有超容量是硬失败。
    所有可镶嵌装备都要评估 `optimize_item_sockets`，但无机制收益或机制不适用可以明确不用；价格
    不是拒绝理由。默认装备优化
@@ -167,7 +173,7 @@ Agent 负责：
    重新审计；不再按固定轮数或成熟案例槽数停止。`policy_limited/inconclusive` 可进入 Judge，但
    交付保持 candidate。
    在元素 60%、非 CI 混沌 30% 后停止继续购买普通抗性，用户明确要求时可覆盖为 75%。
-6. Agent 先调用 `inspect_generation_checkpoint` v4。该工具按语义 build-state hash 合并
+6. Agent 先调用 `inspect_generation_checkpoint` v5。该工具按语义 build-state hash 合并
    completeness、preflight、有界 stats 和 defenses，并分别返回
    `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
    `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/
@@ -176,6 +182,9 @@ Agent 负责：
    同一物品审计，普通前后缀、Perfect Essence、符文和腐化不会再由两套检查器分别判断。同一状态
    不重复执行，状态修改后自动形成新检查。主动宝石
    检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
+   Support 逐组记录 `reasonClass`；只有 PoB runtime 已验证辅助作用到精确 active effect、结构检查
+   完整且唯一缺口为触发率不可建模的 `capability_gap` 可作为 unknown 进入 Judge，并保持 candidate。
+   `evidence_gap / measurement_error / actionable_gap` 继续在 Judge 前阻断且不消耗 attempt。
    Research 深读和最终候选摘要完成，且装备、天赋、珠宝、Rune、辅助与 config 冻结后，Agent 先
    完成 state-bound Support/Jewel/Socket 检查与 checkpoint，再调用
    `validate_generation_draft(..., offense_skill_group_index, expected_skill_name)`。服务端从该最终 PoB

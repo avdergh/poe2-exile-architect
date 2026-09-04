@@ -78,6 +78,7 @@ def _bound_run(tmp_path: Path, monkeypatch) -> tuple[str, str, Path]:
         "requestRef": f"request:{run_id}",
         "promptId": f"prompt:{run_id}",
         "packetId": f"human-review:{run_id}",
+        "agentOutputContractVersion": run_store.CURRENT_AGENT_OUTPUT_CONTRACT_VERSION,
         "agentOutputFile": str(output_path),
     }
     (run_dir / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -442,6 +443,42 @@ def test_current_runtime_verified_support_capability_gap_can_reach_judge():
         )
         == []
     )
+
+
+def test_generic_inconclusive_support_audit_blocks_judge():
+    blockers = evaluation._final_check_blockers(
+        {
+            "skillSupportAudit": {
+                "status": "failed",
+                "reasons": ["support_audit_inconclusive:2"],
+            },
+            "jewelDecision": {"status": "passed", "reasons": []},
+            "itemSockets": {"status": "passed", "reasons": []},
+            "sustain": {"status": "passed", "reasons": []},
+        }
+    )
+    assert blockers == ["skillSupportAudit:support_audit_inconclusive:2"]
+
+
+def test_legacy_memory_assisted_run_requires_explicit_restart(tmp_path, monkeypatch):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    manifest_path = run_dir / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("agentOutputContractVersion")
+    manifest["experimentContext"] = {"memoryMode": "memory_assisted"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = evaluation.evaluate_generation_candidate(
+        _ActiveEngine(),
+        run_id=run_id,
+        run_token=token,
+        candidate_id="candidate:test:legacy-contract",
+        version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+
+    assert result["errorCode"] == "generation_contract_upgrade_requires_restart"
+    assert result["attemptConsumed"] is False
 
 
 def test_current_inconclusive_jewel_review_can_reach_judge_but_is_not_missing():

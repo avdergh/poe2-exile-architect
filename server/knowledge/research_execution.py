@@ -17,10 +17,10 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from server.knowledge import copy_safety, mature_learning, research_memory
+from server.knowledge import copy_safety, mature_learning, research_contracts, research_memory
 
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 MAX_CONTRACT_PACKAGES = 96
 _SAFE_REF = re.compile(r"^[A-Za-z0-9_.:/\-]{3,240}$")
 _COMPONENT_ROLES = {
@@ -191,8 +191,7 @@ def validate_research_execution_plan(
                 )
             if (
                 external_evidence_refs is not None
-                and str(decision.get("decision") or "")
-                in {"adopted", "tested_and_rejected"}
+                and str(decision.get("decision") or "") in {"adopted", "tested_and_rejected"}
                 and not evidence_refs & external_evidence_refs
             ):
                 return (
@@ -234,7 +233,11 @@ def validate_research_execution_plan(
             if value == "retained_as_alternative":
                 return "research_execution_authoritative_package_deferred", [package_id], None
             if plan_ref:
-                return "research_execution_authoritative_package_has_cross_case_plan", [package_id], None
+                return (
+                    "research_execution_authoritative_package_has_cross_case_plan",
+                    [package_id],
+                    None,
+                )
             continue
         if package_id not in comparison_only_ids:
             return "research_execution_package_authority_unknown", [package_id], None
@@ -255,25 +258,18 @@ def validate_research_execution_plan(
             _pick(item, "targetCompanionPackageIds", "target_companion_package_ids") or []
         )
         additional_ids = set(
-            _pick(item, "additionalCompanionPackageIds", "additional_companion_package_ids")
-            or []
+            _pick(item, "additionalCompanionPackageIds", "additional_companion_package_ids") or []
         )
         if allowed_evidence_refs is not None:
             plan_evidence = set(_pick(item, "evidenceRefs", "evidence_refs") or [])
-            unknown_evidence = sorted(
-                plan_evidence
-                - allowed_evidence_refs
-            )
+            unknown_evidence = sorted(plan_evidence - allowed_evidence_refs)
             if unknown_evidence:
                 return (
                     "research_execution_cross_case_evidence_unknown",
                     [plan_id + ": " + ", ".join(unknown_evidence[:5])],
                     None,
                 )
-            if (
-                external_evidence_refs is not None
-                and not plan_evidence & external_evidence_refs
-            ):
+            if external_evidence_refs is not None and not plan_evidence & external_evidence_refs:
                 return (
                     "research_execution_cross_case_external_evidence_required",
                     [plan_id],
@@ -294,9 +290,10 @@ def validate_research_execution_plan(
             if not package_cases & source_cases:
                 return "research_execution_cross_case_source_package_unbound", [package_id], None
             decision = decision_map.get(package_id) or {}
-            if decision.get("decision") != "adopted" or str(
-                _pick(decision, "crossCasePlanRef", "cross_case_plan_ref") or ""
-            ) != plan_id:
+            if (
+                decision.get("decision") != "adopted"
+                or str(_pick(decision, "crossCasePlanRef", "cross_case_plan_ref") or "") != plan_id
+            ):
                 return "research_execution_cross_case_decision_mismatch", [package_id], None
         planned_source_ids.update(source_ids)
 
@@ -341,9 +338,7 @@ def stable_plan_structure_hash(plan: dict[str, Any]) -> str:
         {
             "packageId": str(_pick(item, "packageId", "package_id") or ""),
             "decision": str(item.get("decision") or ""),
-            "crossCasePlanRef": str(
-                _pick(item, "crossCasePlanRef", "cross_case_plan_ref") or ""
-            ),
+            "crossCasePlanRef": str(_pick(item, "crossCasePlanRef", "cross_case_plan_ref") or ""),
         }
         for item in list(_pick(plan, "packageDecisions", "package_decisions") or [])
         if isinstance(item, dict)
@@ -374,9 +369,7 @@ def stable_plan_structure_hash(plan: dict[str, Any]) -> str:
                 "additional_companion_package_ids",
             ),
         }
-        for item in list(
-            _pick(plan, "crossCaseMechanismPlans", "cross_case_mechanism_plans") or []
-        )
+        for item in list(_pick(plan, "crossCaseMechanismPlans", "cross_case_mechanism_plans") or [])
         if isinstance(item, dict)
     ]
     cross_case_plans.sort(key=lambda item: item["planId"])
@@ -426,7 +419,9 @@ def _construct(
     if error:
         return error
     if not auth_receipts:
-        return _error("research_execution_authoritative_receipts_required", "Read the selected lane first.")
+        return _error(
+            "research_execution_authoritative_receipts_required", "Read the selected lane first."
+        )
 
     auth_lanes = {_receipt_lane(item) for item in auth_receipts}
     if auth_lanes != {(selected_knowledge_scope, selected_source_case_ref)}:
@@ -547,7 +542,10 @@ def _construct(
                 package["authority"] = "authoritative"
             elif package["authority"] == "authoritative":
                 package["authority"] = "authoritative_and_comparison"
-    packages = sorted(package_rows.values(), key=lambda item: (item["authority"], item["recordKind"], item["packageId"]))
+    packages = sorted(
+        package_rows.values(),
+        key=lambda item: (item["authority"], item["recordKind"], item["packageId"]),
+    )
     if len(packages) > MAX_CONTRACT_PACKAGES:
         return _error(
             "research_execution_contract_too_large",
@@ -555,6 +553,17 @@ def _construct(
         )
     for package in packages:
         package["sourceCaseRefs"] = sorted(package["sourceCaseRefs"])
+    required_subjects = _required_insight_decision_subjects(
+        packages,
+        selected_source_case_ref=selected_source_case_ref,
+    )
+    if len(required_subjects) > research_contracts.MAX_CREATE_INSIGHT_DECISIONS:
+        return _error(
+            "research_execution_insight_subjects_too_large",
+            "The authoritative lane requires "
+            f"{len(required_subjects)} component decisions; the safe Create limit is "
+            f"{research_contracts.MAX_CREATE_INSIGHT_DECISIONS}.",
+        )
     review_ids = [package["packageId"] for package in packages]
     revision = next(iter(revisions))
     contract_core = {
@@ -569,8 +578,11 @@ def _construct(
         "caseProfiles": case_profiles,
         "packages": packages,
         "reviewRequiredPackageIds": review_ids,
+        "requiredInsightDecisionSubjects": required_subjects,
     }
-    contract_ref = "rec-" + hashlib.sha256(_stable_json(contract_core).encode("utf-8")).hexdigest()[:16]
+    contract_ref = (
+        "rec-" + hashlib.sha256(_stable_json(contract_core).encode("utf-8")).hexdigest()[:16]
+    )
     authoritative_deep_reads = sorted(
         {
             str(record_id)
@@ -599,6 +611,7 @@ def _construct(
             "crossCasePlanRequiresTargetCompanions": True,
             "sourceAuthorityMustBePreserved": True,
             "contractDoesNotAuthorizeAutomaticBuildAssembly": True,
+            "uniqueEnablerSubjectsRequireExactDecisionCoverage": True,
         },
         "noRawQuery": True,
         "noRawMatureBuildMaterial": True,
@@ -609,6 +622,85 @@ def _construct(
             "The execution contract failed copy-safety validation.",
         )
     return output
+
+
+def _required_insight_decision_subjects(
+    packages: list[dict[str, Any]],
+    *,
+    selected_source_case_ref: str,
+) -> list[dict[str, Any]]:
+    """Derive one compact decision subject per authoritative unique enabler."""
+
+    sources: dict[str, set[str]] = defaultdict(set)
+    for package in packages:
+        if package.get("authority") not in {"authoritative", "authoritative_and_comparison"}:
+            continue
+        if selected_source_case_ref not in set(package.get("sourceCaseRefs") or []):
+            continue
+        record_id = str(package.get("recordId") or "")
+        for responsibility in package.get("componentResponsibilities") or []:
+            if not isinstance(responsibility, dict):
+                continue
+            component_key = str(responsibility.get("componentKey") or "")
+            if responsibility.get("role") != "unique_enabler" or not component_key.startswith(
+                "unique:"
+            ):
+                continue
+            if record_id:
+                sources[component_key].add(record_id)
+    return [
+        {
+            "subjectRef": component_key,
+            "subjectType": "component",
+            "sourceRecordIds": sorted(record_ids),
+        }
+        for component_key, record_ids in sorted(sources.items())
+    ]
+
+
+def validate_insight_decision_subjects(
+    research_memory_use: dict[str, Any],
+    contract: dict[str, Any],
+) -> tuple[str | None, list[str]]:
+    """Require exact v2 subject coverage without replacing record/package/premise decisions."""
+
+    required_rows = [
+        value
+        for value in contract.get("requiredInsightDecisionSubjects") or []
+        if isinstance(value, dict) and value.get("subjectRef")
+    ]
+    required = {str(value["subjectRef"]): value for value in required_rows}
+    decisions = list(_pick(research_memory_use, "insightDecisions", "insight_decisions") or [])
+    by_subject: dict[str, dict[str, Any]] = {}
+    duplicates: list[str] = []
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        subject_ref = str(_pick(decision, "subjectRef", "subject_ref") or "")
+        if not subject_ref:
+            continue
+        if subject_ref in by_subject:
+            duplicates.append(subject_ref)
+        else:
+            by_subject[subject_ref] = decision
+    if duplicates:
+        return "research_execution_insight_subject_duplicate", sorted(set(duplicates))
+    unknown = sorted(set(by_subject) - set(required))
+    if unknown:
+        return "research_execution_insight_subject_unknown", unknown
+    missing = sorted(set(required) - set(by_subject))
+    if missing:
+        return "research_execution_insight_subjects_incomplete", missing
+    for subject_ref, decision in by_subject.items():
+        source_refs = {
+            str(value) for value in _pick(decision, "sourceRefs", "source_refs") or [] if value
+        }
+        allowed_sources = {
+            str(value) for value in required[subject_ref].get("sourceRecordIds") or [] if value
+        }
+        if not source_refs.intersection(allowed_sources):
+            return "research_execution_insight_subject_source_mismatch", [subject_ref]
+    return None, []
 
 
 def _load_receipts(
@@ -623,7 +715,9 @@ def _load_receipts(
             return [], _error("research_execution_receipt_invalid", "Use typed dq- receipt refs.")
         receipt = reader(ref)
         if receipt is None:
-            return [], _error("research_execution_receipt_missing", f"Receipt {ref} is unavailable.")
+            return [], _error(
+                "research_execution_receipt_missing", f"Receipt {ref} is unavailable."
+            )
         receipts.append(receipt)
     return receipts, None
 
@@ -648,7 +742,9 @@ def _validate_receipt_sessions(receipts: list[dict[str, Any]]) -> dict[str, Any]
                 "Receipt pages disagree on page count or manifest hash.",
             )
         page_count = next(iter(page_counts))
-        if indexes != set(range(page_count)) or not any(item.get("retrievalComplete") for item in values):
+        if indexes != set(range(page_count)) or not any(
+            item.get("retrievalComplete") for item in values
+        ):
             return _error(
                 "research_execution_retrieval_incomplete",
                 "Provide every page from zero through the terminal receipt.",
@@ -808,7 +904,8 @@ def _case_profile(
         "failureConditionCount": failure_count,
     }
     return {
-        "caseProfileRef": "rcp-" + hashlib.sha256(_stable_json(core).encode("utf-8")).hexdigest()[:16],
+        "caseProfileRef": "rcp-"
+        + hashlib.sha256(_stable_json(core).encode("utf-8")).hexdigest()[:16],
         **core,
     }
 
@@ -821,11 +918,7 @@ def _record_package(
 ) -> dict[str, Any]:
     record_id = str(row["record_id"])
     typed = _loads(row["typed_payload"], {})
-    selected_typed = {
-        key: deepcopy(typed[key])
-        for key in _TYPED_PACKAGE_KEYS
-        if key in typed
-    }
+    selected_typed = {key: deepcopy(typed[key]) for key in _TYPED_PACKAGE_KEYS if key in typed}
     jewel_states = Counter(
         str(item.get("state"))
         for item in typed.get("jewelSocketStates") or []
@@ -841,9 +934,9 @@ def _record_package(
         and item.get("component_key")
         and item.get("role") in _COMPONENT_ROLES
     ]
-    package_id = "rep-" + hashlib.sha256(
-        f"{build_family_key}|{record_id}".encode("utf-8")
-    ).hexdigest()[:16]
+    package_id = (
+        "rep-" + hashlib.sha256(f"{build_family_key}|{record_id}".encode("utf-8")).hexdigest()[:16]
+    )
     return {
         "packageId": package_id,
         "recordId": record_id,

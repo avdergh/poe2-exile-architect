@@ -278,6 +278,10 @@ does not take over build completion.
   `apply_next_jewel_socket_decision(decision_ref, expected_state_hash)`, then review the output state
   again. Do not stop on a fixed round or jewel count. A current policy-limited/inconclusive review
   may reach Judge but keeps delivery at candidate; manual passive/jewel edits make the receipt stale.
+  Support audits are stricter: only a current PoB-runtime capability gap with support application
+  verified for the exact active effect may reach Judge as unknown, and it still keeps delivery at
+  candidate. Evidence gaps, measurement errors, zero/inactive trigger rates, and unapplied
+  improvements block Judge without consuming an attempt.
   Freeze final gear, passives, jewels, Runes and supports, apply the realistic combat profile, then
   run the state-bound support/jewel/socket audits and `inspect_generation_checkpoint()`. Repair stale, missing and
   deterministic failures before calling the formal Judge. Once run-fresh Research deep reads and
@@ -341,6 +345,10 @@ does not take over build completion.
   compatibility and trade-off rationales, implementation/conflict steps, verification evidence and
   failure exit conditions. Cross-case mechanisms are allowed; isolated modifier cherry-picking is
   not.
+  Contract v2 also returns at most 24 `requiredInsightDecisionSubjects`, limited to canonical
+  `unique_enabler` components from the authoritative lane. Copy each stable `subjectRef` into
+  exactly one `researchMemoryUse.insightDecision` and cite one of that subject's source record IDs.
+  These component decisions do not replace package, premise, or comparison/cross-case decisions.
   Resolve class/ascendancy first and pass a search candidate's `resolverPayload` to the resolver
   unchanged. Start with the user's original localized name. If resolution is missing/ambiguous or the first
   Family result is `no_family`, look up the official English class/ascendancy name once from GGG
@@ -646,7 +654,10 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   raw EHP). It is not a campaign or starter gate.
 - Calibrate a build vs real high-end builds → `benchmark_build`; browse references by archetype →
   `list_reference_builds`. **Calibration ONLY — never copy/recommend a reference; build to the goal.**
-- Realistic boss DPS (not the bare default) → `apply_combat_profile`. Add tree jewels →
+- Realistic boss DPS (not the bare default) → `apply_combat_profile`. It replaces its own Boss tier
+  and six boolean assumptions, including false, and returns the new semantic `stateHash`;
+  `set_config` remains a partial patch. Pass `expected_state_hash` when chaining final mutations.
+  Add tree jewels →
   `equip_jewel` (+ `list_jewel_sockets`). Use `evaluate_jewel_socket` for replacements in an
   already allocated socket; use the protected `evaluate_next_jewel_socket` review for unopened
   sockets. Build Time-Lost candidates from exact `search_mods` ids with
@@ -714,6 +725,10 @@ new compute session fails clearly when the cap is occupied instead of reusing an
   (trivial→very high) — a tier-depth heuristic (the data has no spawn-weights, and there's no live
   rare-gear pricing). Read it as a realism check ("high effort = a chase craft"), not a drop-chance
   or divine cost; price the result with `get_prices`.
+  `plan_gear`, `optimize_item`, `craft_item`, and `rank_upgrades` default to the shared
+  `acquisition_profile="realistic_trade"` policy for generated rares (at most five explicit affixes
+  and two deep T1 affixes per item). Use explicit `theoretical` only for upgrade ceilings; it does
+  not make an equipped item recommendation-ready.
 - **Jewels:** allocate a Socket node (`alloc_passive`), then `equip_jewel` into it
   (`list_jewel_sockets` shows sockets + which are allocated). A jewel in an UN-allocated socket
   does nothing (the result warns). Craft jewels with `optimize_jewel` (real jewel mod pool —

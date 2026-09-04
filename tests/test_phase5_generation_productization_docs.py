@@ -58,7 +58,8 @@ def test_poe_bd_create_skill_documents_current_p5_boundary():
     assert "role=unique_enabler" in skill
     assert "optional_upgrade" in skill
     assert "budget_substitute" in skill
-    assert "按 stable key 为每个" in skill
+    assert "requiredInsightDecisionSubjects" in skill
+    assert "subjectRef" in skill
     assert "价格不能成为拒绝理由" in skill
     assert "价格不能成为拒绝理由" in skill
     assert "apply_next_jewel_socket_decision" in skill

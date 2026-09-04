@@ -125,6 +125,10 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `detail_level="record"` 回执实际出现的 DeepResearchRecord；caveated 必须保存具体风险；
   not_applicable 必须说明当前候选为何不受影响。普通单阶段 Create 使用
   同一 receipt 审计器。
+  Research Execution Contract v2 另从 authoritative packages 派生最多 24 个
+  `requiredInsightDecisionSubjects`，只包含 canonical `unique_enabler`。新 Agent Output v4 的对应
+  `insightDecisions` 必须用 `subjectRef` 精确覆盖并引用真实 source record；旧最终 artifact 不要求
+  回填。package、premise 与 comparison/cross-case 决策仍由原结构独立负责。
 - `GenerationDraft`：首次正式 Judge 前的一次性轻量校验对象，只包含已绑定的
   `runContext / packetId / agentRefinedBuildPrompt / prototypeBuildCandidate`，不要求 Judge receipt、
   attempt 或 artifact selection。`start_generation_run` 用 Pydantic alias 返回完整 camelCase
@@ -168,11 +172,18 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `auditVersion / hardLegalityReady / hardFailures / checks / sourceContext`；checks 分别记录
   职业/升华、属性差额、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/武器组天赋预算、
   已装备词缀合法性、生成候选遗留的 `Scaffold ...` 装备，以及 rare/magic 装备缺失 `Item Level`。
-  `inspect_generation_checkpoint` v2 另外把
+  `inspect_generation_checkpoint` v5 另外把
   `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge` 分开返回。预检失败
   必须带 `attemptConsumed=false`，不能写 Judge attempt receipt。装备候选比较同时保留换装前后
   两份审计：新增或加重确定性错误的候选必须拒绝；诊断用基础构筑本来就存在且未被候选加重的
   错误继续披露，但不能被错误归因为本次换装。
+  v5 的 `skillSupportAudit.groupResults` 逐组记录 active skill、freshness、`reasonClass`、reason codes
+  与 PoB runtime capability。只有当前辅助应用已验证且唯一缺口为触发率不可建模的
+  `capability_gap` 映射为 `unknown`；其他 evidence/measurement/actionable gap 均阻止 Judge。
+- `GearAttainabilityPolicy`：只约束生成黄装候选的质量，不属于物品合法性。默认
+  `realistic_trade` 每件最多五条显式词缀与两条深 T1；显式 `theoretical` 允许六词缀上限。
+  `plan_gear / optimize_item / craft_item / rank_upgrades` 与 Checkpoint 使用同一 policy 及 tier 阶梯，
+  装备写入、暗金、药剂、护符、珠宝、Rune、Soul Core、implicit 和 corruption 不受该策略限制。
 - `CraftLegalityReceipt`：由服务端根据当前 PoB `crafting_options` 签发的本地、raw-free、
   content-addressed 制作来源凭据。它绑定底材、槽位类型、物品等级、PoB/数据版本、原始与 PoB
   round-trip 语义指纹，以及 Perfect Essence、符文和腐化选项的安全哈希；不保存完整物品文本。

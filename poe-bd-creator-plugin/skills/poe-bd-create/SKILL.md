@@ -158,6 +158,11 @@ Create 不询问，也不执行用户交付导出。
      只引用来源 package 不能证明它适合当前构筑。每个跨案例计划也必须满足同一外部证据要求。
      `adopted` 只表示完整保留 build-defining skill/support package；只复用其中组件时，package 使用
      `tested_and_rejected`，保留组件另以 Blueprint claim 和 insight `caveated` 记录，不得夸大为整包采用。
+   - Research Execution Contract v2 的 `requiredInsightDecisionSubjects` 只列授权 lane 中需要逐件
+     决定的 canonical `unique_enabler`。在 `researchMemoryUse.insightDecisions` 为每个 subject 原样填写
+     唯一 `subjectRef`，并至少引用该 subject 的一个 `sourceRecordIds`；缺失、重复、未知、额外或引用
+     无关记录都会被拒绝。普通记录级 insight 可不填 `subjectRef`。subject 最多 24 项，合同超限时必须
+     重新检查 Research 数据范围，不能截断或合并成模糊决定。
    - 对照案例的 package 若 `adopted`，必须绑定一个 `crossCaseMechanismPlan`。计划至少包含来源
      case/package、最终设计案例中的配套 package、机制闭环理由、兼容性理由、机会成本、具体实现
      步骤、冲突处理、至少两项验证、失败退出条件与证据引用。允许把确实兼容的机制跨案例组合成
@@ -190,8 +195,8 @@ Create 不询问，也不执行用户交付导出。
      默认保留。只有用户明确排除、当前版本不可用、当前静态事实否定其机制，或围绕该组件做一次
      配套重规划后仍无法修复合法性/资源闭环失败时才能拒绝。`optional_upgrade`、
      `budget_substitute` 及普通 scaling/defense/utility 候选只要求评估；价格不能成为拒绝理由。
-     一个记录包含多个暗金时，在现有 `researchMemoryUse.insightDecisions` 中按 stable key 为每个
-     组件分别记录决定，不创建合并决定。family 未提及暗金不代表"不需要"，只能说明该 family
+     一个记录包含多个暗金时，在现有 `researchMemoryUse.insightDecisions` 中按合同返回的 `subjectRef`
+     为每个组件分别记录决定，不创建合并决定。family 未提及暗金不代表"不需要"，只能说明该 family
      没有把暗金作为关键组件；仍应主动评估一次（见第 5 步的 unique 评估轮）。
    - `case_observation` 只可作为当前候选的待验证假设；只有更高证据等级才能支持跨案例的一般性
      结论。采用涉及暗金、天赋、触发、转换或资源交互的结论前，必须用当前静态事实或机制工具
@@ -255,8 +260,9 @@ Create 不询问，也不执行用户交付导出。
    独立 compute/equip 工具（`equip_item`、`remove_skill_group`、`replace_skill_group`、
    `set_config`、`apply_combat_profile` 等）与批次共享同一活动构筑、同样会改变 state hash，
    之后第一批次必须用该工具返回的最新 hash（`build_state_conflict` 提示 actualStateHash）；
-   `apply_combat_profile` 等 config 变更会改变 semantic hash，必须在最终状态绑定的审计、checkpoint
-   与 Draft 之前完成，读取前始终以工具返回的最新 hash 为准。
+   `set_config` 仍只修改显式传入字段，`apply_combat_profile` 则完整覆盖自己的 Boss tier 与六个布尔
+   战斗条件（false 会清除旧值）；两者都返回最新 `stateHash`，可传 `expected_state_hash` 拒绝陈旧写入。
+   config 变更会改变 semantic hash，必须在最终状态绑定的审计、checkpoint 与 Draft 之前完成。
    **任何 `skill_loadout` 之前必须完成一次技能来源核对**：
    - 先装备组件级 `researchMemoryUse.insightDecisions` 与最终蓝图都确认 `adopted` 的非可选
      `unique_enabler`，并分配会授予技能的必要升华/被动；不能把 adopted package 中的每个组件都
@@ -314,7 +320,10 @@ Create 不询问，也不执行用户交付导出。
    对每个用户可编辑技能组以及 `noSupports=false` 的核心 `Tree:*`/`Item:*` 来源组，都调用一次带 `group_index` 和
    新鲜 fingerprint 的 `optimize_supports`；
    清图/单体、combo、utility、persistent 都以引擎边际结果决定，不要求机械五辅。只有返回的
-   `supportAudit.status=passed` 才说明不存在未经处理的正收益空位。真实来源组的最终辅助必须用
+   `supportAudit.status=passed` 才说明不存在未经处理的正收益空位。若工具在扫描候选前返回
+   `reasonClass=capability_gap`，只有 PoB 已验证当前辅助作用到精确 active effect 且唯一缺口是触发率
+   不可建模时才可继续 Judge，并保持 `deliveryStatus=candidate`；`evidence_gap`、`measurement_error`、
+   `actionable_gap` 均须先修复。真实来源组的最终辅助必须用
    `configure_source_skill_supports(source_group_index, supports, expected_fingerprint,
    expected_state_hash?)` 写入；写入失败、辅助未作用到目标 active effect，或缺少通过的 support audit
    时，`deliveryStatus` 只能是 `candidate`。`noSupports=true` 表示辅助不适用，无需制造审计；其他底层
@@ -340,9 +349,10 @@ Create 不询问，也不执行用户交付导出。
    `scaffold_gear` 只能让中途骨架可计算，所有 `Scaffold ...` 占位物品必须在最终评估前替换。
    最终黄装必须带当前阶段合理的 `Item Level`，底材需求等级不能超过角色等级，词缀必须来自该
    物品等级可用池。不要为了面板分数把剧情角色穿上终局底材或默认 ilvl 82 黄装。
-   未给预算时只生成一套 `acquisition_profile="realistic_trade"` 主方案：先锁定机制件
-   `locked_slots`，其余槽位最多 5 条关键词缀；提供关键槽低配替代和毕业升级优先级，不生成三套
-   独立 PoB。六词缀理论黄装只能写在升级建议中，不能进入推荐主方案。
+   未给预算时 `plan_gear`、`optimize_item`、`craft_item` 与 `rank_upgrades` 都使用默认
+   `acquisition_profile="realistic_trade"`：先锁定机制件 `locked_slots`，其余每件黄装最多 5 条显式
+   词缀、最多 2 条深 T1；提供关键槽低配替代和毕业升级优先级，不生成三套独立 PoB。显式
+   `theoretical` 的六词缀理论黄装只能写在升级建议中，不能进入推荐主方案。
    未显式写等级的主动宝石会自动使用当前角色可合法装备的最高基础等级；显式等级超过角色需求时
    工具会回滚。最终仍要复读宝石等级。合法性只检查基础宝石等级，装备或天赋的 `+levels` 可以把
    计算等级继续提高，不应为此降低基础宝石等级。
@@ -402,7 +412,8 @@ Create 不询问，也不执行用户交付导出。
      craft receipt 的实际 Rune 数；只有 `Rune:` 声明而没有匹配效果/receipt 不算已镶嵌。不要为
      镶嵌重做整件装备，也不要机械套用带 Perfect Essence 和腐化的终局 `craft_item` 结果。
 7. 正式最终检查前先固化战斗假设：对终局/Boss 目标调用一次
-   `apply_combat_profile(tier=<与用户目标一致>，...开关...)`（或用 `set_config` 传相同 key）
+   `apply_combat_profile(tier=<与用户目标一致>，...开关...,
+   expected_state_hash=<最新stateHash>)`（或用 `set_config` 传相同 key）
    设置敌方条件并读取返回的 assumed 清单。默认值全开，**只保留构筑实际能产生的假设**：
    `shocked` 需要构筑能施加感电、`cursed` 需要实际配置的诅咒技能、power/frenzy charges 需要
    生成手段、`full_es` 需要 ES 构建——无法产生的就关闭，否则 DPS 会被不可能维持的效果抬高；
@@ -789,8 +800,8 @@ Agent 提交的顶层字段：
 `comparisonDedupeQueryRefs`、
 `componentKeys`、`buildFamilyKeys`、`selectedKnowledgeScope`、`selectedSourceCaseRef`、
 `deepRecordIds`、`patternIds`、`semanticEdgeIds`、
-`memoryItemIds`、`insightDecisions` 和可选的 `noMatchReason`。`insightDecisions` 每项使用
-`sourceRefs`、`decision`（`adopted` / `caveated` / `rejected`）、`summary` 和 `application`；
+`memoryItemIds`、`insightDecisions` 和可选的 `noMatchReason`。`insightDecisions` 每项使用可选
+`subjectRef`、`sourceRefs`、`decision`（`adopted` / `caveated` / `rejected`）、`summary` 和 `application`；
 `sourceRefs` 必须来自本次命中的安全记忆项。`memoryReferences` 保留兼容，但不必手工复制；
 helper 会加入全部授权/对照查询引用和实际使用的记忆项 ID；`versionContext.researchMemoryRef`
 使用其中一个真实 `dedupeQueryRef`。匹配 v2 lane 时必须填写两个 selected 字段，且

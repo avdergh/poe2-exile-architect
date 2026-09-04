@@ -20,12 +20,23 @@ from . import models
 
 
 RUN_TTL = timedelta(hours=4)
+CURRENT_AGENT_OUTPUT_CONTRACT_VERSION = "generation-agent-output-v4"
 
 
 class RunStoreError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def generation_contract_upgrade_required(manifest: dict[str, Any]) -> bool:
+    """Old memory-assisted runs restart instead of silently changing Research obligations."""
+
+    memory_mode = str((manifest.get("experimentContext") or {}).get("memoryMode") or "")
+    return (
+        memory_mode == "memory_assisted"
+        and manifest.get("agentOutputContractVersion") != CURRENT_AGENT_OUTPUT_CONTRACT_VERSION
+    )
 
 
 @dataclass(frozen=True)
@@ -64,9 +75,7 @@ def current_mechanism_binding(bound_run: BoundRun) -> dict[str, Any] | None:
             (bound_run.run_dir / "draft-validation.json").read_text(encoding="utf-8")
         )
         blueprint = json.loads(
-            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(
-                encoding="utf-8"
-            )
+            (bound_run.run_dir / "mechanism-blueprint-validation.json").read_text(encoding="utf-8")
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
@@ -365,16 +374,13 @@ def _valid_quality_checkpoint(receipt: dict[str, Any]) -> bool:
     for value in checklist.values():
         if (
             not isinstance(value, dict)
-            or value.get("status")
-            not in {"passed", "failed", "unknown", "not_applicable"}
+            or value.get("status") not in {"passed", "failed", "unknown", "not_applicable"}
             or not isinstance(value.get("reasons"), list)
             or any(not isinstance(reason, str) for reason in value["reasons"])
         ):
             return False
     hard_ready = bool((receipt.get("hardLegalityAudit") or {}).get("hardLegalityReady"))
-    unresolved = any(
-        value["status"] in {"failed", "unknown"} for value in checklist.values()
-    )
+    unresolved = any(value["status"] in {"failed", "unknown"} for value in checklist.values())
     lifecycle = receipt.get("lifecycleVerification")
     if (
         not isinstance(lifecycle, dict)

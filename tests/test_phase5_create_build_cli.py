@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts import create_build
+from server.generation import run_store
 from tests.test_generation_blueprint import EVIDENCE_REF, _blueprint
 from tests.test_phase5_prototype_models import agent_submission_payload
 
@@ -59,6 +60,7 @@ def test_start_run_defaults_to_memory_assisted(tmp_path: Path):
     assert result["experimentContext"]["globalOptimizerAllowed"] is False
     assert result["experimentContext"]["passiveTreeOptimizationMode"] == "manual_targeted"
     assert result["experimentContext"]["mutationBatchPreferred"] is True
+    assert result["agentOutputContractVersion"] == run_store.CURRENT_AGENT_OUTPUT_CONTRACT_VERSION
 
 
 def test_start_run_initializes_bound_agent_output_template(tmp_path: Path):

@@ -57,6 +57,8 @@ def validate_generation_blueprint(
         bound_run = run_store.load_bound_run(run_id, run_token)
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
+    if run_store.generation_contract_upgrade_required(bound_run.manifest):
+        return models.rejected("generation_contract_upgrade_requires_restart")
     if not isinstance(blueprint_draft, dict):
         return models.rejected("invalid_input")
     raw_safety = models.validate_no_raw_or_hidden_reasoning(blueprint_draft)
@@ -68,9 +70,7 @@ def validate_generation_blueprint(
         return models.schema_error(exc, max_errors=20)
     research_use = draft.research_memory_use
     family_binding = _read_family_discovery_binding(bound_run.run_dir)
-    memory_mode = str(
-        (bound_run.manifest.get("experimentContext") or {}).get("memoryMode") or ""
-    )
+    memory_mode = str((bound_run.manifest.get("experimentContext") or {}).get("memoryMode") or "")
     if memory_mode == "memory_assisted":
         if family_binding is None:
             return models.rejected("generation_family_discovery_required")
@@ -122,6 +122,12 @@ def validate_generation_blueprint(
             )
             if execution_error:
                 return models.rejected(execution_error, caveats=execution_caveats)
+            subject_error, subject_caveats = research_execution.validate_insight_decision_subjects(
+                research_payload,
+                execution_contract,
+            )
+            if subject_error:
+                return models.rejected(subject_error, caveats=subject_caveats)
 
     if execution_contract is not None and research_use is not None:
         allowed_evidence_refs = _execution_evidence_refs(
@@ -134,9 +140,7 @@ def validate_generation_blueprint(
             str(item.get("queryRef") or "") for item in tool_references if item.get("queryRef")
         }
     claimed_evidence_refs = {
-        ref
-        for claim in draft.mechanism_blueprint.claims
-        for ref in claim.source_refs
+        ref for claim in draft.mechanism_blueprint.claims for ref in claim.source_refs
     }
     unknown_evidence_refs = sorted(claimed_evidence_refs - allowed_evidence_refs)
     if unknown_evidence_refs:
@@ -160,18 +164,14 @@ def validate_generation_blueprint(
         "researchExecutionStructureHash": (
             (execution_summary or {}).get("structureHash") if execution_summary else None
         ),
-        "mechanismBlueprint": draft.mechanism_blueprint.model_dump(
-            mode="json", by_alias=True
-        ),
+        "mechanismBlueprint": draft.mechanism_blueprint.model_dump(mode="json", by_alias=True),
         "validatedAt": validated_at,
         "noRawMaterial": True,
     }
     marker = {key: value for key, value in payload.items() if key != "mechanismBlueprint"}
     if not _write_json_atomic(bound_run.run_dir / "mechanism-blueprint.json", payload):
         return models.rejected("run_state_write_failed")
-    if not _write_json_atomic(
-        bound_run.run_dir / "mechanism-blueprint-validation.json", marker
-    ):
+    if not _write_json_atomic(bound_run.run_dir / "mechanism-blueprint-validation.json", marker):
         return models.rejected("run_state_write_failed")
     return {
         "status": "accepted",
@@ -179,12 +179,8 @@ def validate_generation_blueprint(
         "candidateId": draft.candidate_id,
         "blueprintRef": blueprint_ref,
         "blueprintHash": blueprint_hash,
-        "coverage": {
-            item.axis: item.status for item in draft.mechanism_blueprint.coverage
-        },
-        "unresolvedQuestionCount": len(
-            draft.mechanism_blueprint.unresolved_questions
-        ),
+        "coverage": {item.axis: item.status for item in draft.mechanism_blueprint.coverage},
+        "unresolvedQuestionCount": len(draft.mechanism_blueprint.unresolved_questions),
         "researchExecutionContractRef": marker["researchExecutionContractRef"],
         "noRawMaterial": True,
         "noHiddenChainOfThought": True,
@@ -229,6 +225,8 @@ def validate_generation_draft(
         return models.rejected("run_binding_mismatch")
     if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
+    if run_store.generation_contract_upgrade_required(manifest):
+        return models.rejected("generation_contract_upgrade_requires_restart")
     if not isinstance(agent_output_draft, dict):
         return models.rejected("invalid_input")
     raw_safety = models.validate_no_raw_or_hidden_reasoning(agent_output_draft)
@@ -305,6 +303,12 @@ def validate_generation_draft(
             )
             if execution_error:
                 return models.rejected(execution_error, caveats=execution_caveats)
+            subject_error, subject_caveats = research_execution.validate_insight_decision_subjects(
+                research_use.model_dump(mode="json", by_alias=True),
+                execution_contract,
+            )
+            if subject_error:
+                return models.rejected(subject_error, caveats=subject_caveats)
         else:
             execution_contract = None
             execution_summary = None
@@ -607,6 +611,7 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
         "requestRef": f"request:{run_id}",
         "promptId": f"prompt:{run_id}",
         "packetId": f"human-review:{run_id}",
+        "agentOutputContractVersion": run_store.CURRENT_AGENT_OUTPUT_CONTRACT_VERSION,
         "agentOutputFile": str(run_dir / "agent-output.json"),
         "experimentContext": {
             "memoryMode": args.memory_mode,
@@ -633,7 +638,7 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
         "packetId": manifest["packetId"],
         "agentOutputFile": manifest["agentOutputFile"],
         "agentOutputTemplateInitialized": True,
-        "agentOutputContractVersion": "generation-agent-output-v3",
+        "agentOutputContractVersion": manifest["agentOutputContractVersion"],
         "agentOutputDraftTemplate": output_template,
         "reviewResultFile": str(run_dir / "review-result.json"),
         "experimentContext": manifest["experimentContext"],
@@ -736,6 +741,8 @@ def _run_review_packet(
         return models.rejected("run_binding_mismatch")
     if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
+    if run_store.generation_contract_upgrade_required(manifest):
+        return models.rejected("generation_contract_upgrade_requires_restart")
 
     try:
         raw = output_path.read_text(encoding="utf-8")
@@ -872,7 +879,11 @@ def _selected_attempt_mechanism_binding_error(
     if current is None:
         return "generation_draft_validation_required"
     selected = (retry_report or {}).get("selectedAttemptIndex")
-    selected_index = selected if isinstance(selected, int) and not isinstance(selected, bool) else len(trusted_receipts) - 1
+    selected_index = (
+        selected
+        if isinstance(selected, int) and not isinstance(selected, bool)
+        else len(trusted_receipts) - 1
+    )
     if selected_index < 0 or selected_index >= len(trusted_receipts):
         return "trusted_evaluation_mismatch"
     if trusted_receipts[selected_index].get("mechanismBinding") != current:
@@ -901,6 +912,8 @@ def _submit_generation_output(
         return models.rejected("run_binding_mismatch")
     if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
+    if run_store.generation_contract_upgrade_required(manifest):
+        return models.rejected("generation_contract_upgrade_requires_restart")
     if not isinstance(agent_output, dict):
         return models.rejected("invalid_input")
     raw_safety = models.validate_no_raw_or_hidden_reasoning(agent_output)
@@ -945,9 +958,7 @@ def _validate_candidate_research_use(
     if premise_error:
         return premise_error, premise_caveats
     retrieval_outcome = str(
-        research_use.get("retrievalOutcome")
-        or research_use.get("retrieval_outcome")
-        or ""
+        research_use.get("retrievalOutcome") or research_use.get("retrieval_outcome") or ""
     )
     if retrieval_outcome != "matched":
         return None, []
@@ -956,9 +967,7 @@ def _validate_candidate_research_use(
         research_use,
         game_patch=str(version.get("gamePatch") or version.get("game_patch") or ""),
         passive_tree_version=str(
-            version.get("passiveTreeVersion")
-            or version.get("passive_tree_version")
-            or ""
+            version.get("passiveTreeVersion") or version.get("passive_tree_version") or ""
         ),
     )
     if contract.get("status") != "ready":
@@ -976,31 +985,30 @@ def _validate_candidate_research_use(
         contract,
         allowed_evidence_refs=_execution_evidence_refs(
             tool_references=list(
-                candidate.get("toolReferences")
-                or candidate.get("tool_references")
-                or []
+                candidate.get("toolReferences") or candidate.get("tool_references") or []
             ),
             research_use=research_use,
             contract=contract,
         ),
         external_evidence_refs=_execution_external_evidence_refs(
-            list(
-                candidate.get("toolReferences")
-                or candidate.get("tool_references")
-                or []
-            )
+            list(candidate.get("toolReferences") or candidate.get("tool_references") or [])
         ),
     )
     if error:
         return error, caveats
+    subject_error, subject_caveats = research_execution.validate_insight_decision_subjects(
+        research_use,
+        contract,
+    )
+    if subject_error:
+        return subject_error, subject_caveats
     if run_dir is not None:
         try:
             marker = json.loads((run_dir / "draft-validation.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return "generation_draft_validation_required", []
         structure_hash_matches = (
-            marker.get("researchExecutionStructureHash")
-            == (summary or {}).get("structureHash")
+            marker.get("researchExecutionStructureHash") == (summary or {}).get("structureHash")
             if "researchExecutionStructureHash" in marker
             else marker.get("researchExecutionPlanHash") == (summary or {}).get("planHash")
         )
@@ -1021,9 +1029,7 @@ def _validate_candidate_blueprint_use(
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Bind the candidate's free-form blueprint to its pre-build validation receipt."""
 
-    required = bool(
-        (manifest.get("experimentContext") or {}).get("mechanismBlueprintRequired")
-    )
+    required = bool((manifest.get("experimentContext") or {}).get("mechanismBlueprintRequired"))
     if isinstance(candidate, models.PrototypeBuildCandidate):
         candidate_id = candidate.candidate_id
         blueprint_ref = candidate.mechanism_blueprint_ref
@@ -1131,11 +1137,7 @@ def _adopted_primary_skill_package_error(
     active_gem = knowledge_db.get_gem(active_name)
     if not isinstance(active_gem, dict):
         return "research_execution_adopted_skill_unresolved"
-    active_keys = {
-        "skill:" + str(value)
-        for value in active_gem.get("grants") or []
-        if value
-    }
+    active_keys = {"skill:" + str(value) for value in active_gem.get("grants") or [] if value}
     decisions = {item.package_id: item for item in execution_plan.package_decisions}
     for package in execution_contract.get("packages") or []:
         if not isinstance(package, dict) or package.get("recordKind") != "skill_package":
@@ -1151,9 +1153,7 @@ def _adopted_primary_skill_package_error(
         }
         if not active_keys.intersection(primary_keys):
             continue
-        support_packages = (
-            (package.get("typedResponsibilities") or {}).get("supportPackages") or []
-        )
+        support_packages = (package.get("typedResponsibilities") or {}).get("supportPackages") or []
         matching = [
             item
             for item in support_packages
@@ -1168,14 +1168,11 @@ def _adopted_primary_skill_package_error(
             if not gem_id:
                 return "research_execution_adopted_support_unresolved"
             try:
-                actual_support_keys.add(
-                    component_keys.canonical_support_component_key(gem_id)
-                )
+                actual_support_keys.add(component_keys.canonical_support_component_key(gem_id))
             except ValueError:
                 return "research_execution_adopted_support_unresolved"
         expected_sets = [
-            {str(value) for value in item.get("supportKeys") or [] if value}
-            for item in matching
+            {str(value) for value in item.get("supportKeys") or [] if value} for item in matching
         ]
         if actual_support_keys not in expected_sets:
             return "research_execution_adoption_mismatch"
@@ -1196,9 +1193,7 @@ def _execution_external_evidence_refs(
         str(item.get("queryRef") or item.get("query_ref") or "")
         for item in tool_references
         if isinstance(item, dict)
-        and str(item.get("toolName") or item.get("tool_name") or "")
-        .casefold()
-        .split("__")[-1]
+        and str(item.get("toolName") or item.get("tool_name") or "").casefold().split("__")[-1]
         not in excluded_suffixes
         and str(item.get("queryRef") or item.get("query_ref") or "")
     }
