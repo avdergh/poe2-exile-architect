@@ -24,6 +24,34 @@ def test_counts():
     assert counts["mechanics"] > 20  # wiki mechanics tier (schema_version 4)
 
 
+def test_canonical_mod_tier_ladder_deduplicates_item_class_rows():
+    rows = [
+        {
+            "id": "mod-a",
+            "text": "+(80-90) to maximum Life",
+            "required_level": 80,
+            "ranges": [{"id": "life", "min": 80, "max": 90}],
+        },
+        {
+            "id": "mod-b",
+            "text": "+(80-90) to maximum Life",
+            "required_level": 80,
+            "ranges": [{"id": "life", "min": 80, "max": 90}],
+        },
+        {
+            "id": "mod-c",
+            "text": "+(60-70) to maximum Life",
+            "required_level": 60,
+            "ranges": [{"id": "life", "min": 60, "max": 70}],
+        },
+    ]
+
+    ladder = db.canonical_mod_tier_ladder(rows)
+
+    assert [(item["tier"], item["totalTiers"]) for item in ladder] == [(1, 2), (2, 2)]
+    assert ladder[0]["id"] == "mod-a"
+
+
 def test_unique_parse_skips_source_line_for_base():
     # Regression: a "Source:" drop line must be filtered, not mistaken for the unique's base — the
     # real base (e.g. Hand of Wisdom and Action -> "Furtive Wraps") follows it in the PoB block.

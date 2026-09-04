@@ -274,6 +274,19 @@ def test_freshness_report_tool_exposes_force_refresh_schema():
     assert schema["properties"]["force_refresh"]["default"] is False
 
 
+def test_config_and_rare_generation_tools_expose_new_state_and_profile_inputs():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    for name in ("set_config", "apply_combat_profile"):
+        assert "expected_state_hash" in tools[name].inputSchema["properties"]
+    tier = tools["apply_combat_profile"].inputSchema["properties"]["tier"]
+    assert tier["enum"] == ["None", "Boss", "Pinnacle", "Uber"]
+    for name in ("optimize_item", "craft_item", "rank_upgrades", "plan_gear"):
+        profile = tools[name].inputSchema["properties"]["acquisition_profile"]
+        assert profile["default"] == "realistic_trade"
+        assert profile["enum"] == ["realistic_trade", "theoretical"]
+
+
 def test_mcp_tool_call_routes_compute_to_current_session(monkeypatch):
     from server import main
 

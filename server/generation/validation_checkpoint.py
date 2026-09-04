@@ -8,7 +8,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from typing import Any
 
-from server.compute import completeness, craftopt, itemopt, supportopt, sustain
+from server.compute import attainability, completeness, craftopt, itemopt, supportopt, sustain
 from server.compute.state import build_state_hash
 from server.knowledge import lifecycle_verification
 
@@ -408,13 +408,13 @@ def _create_quality_checklist(
                 continue
             if str(equipped.get("rarity") or "").casefold() != "rare":
                 continue
-            affix_count = int(equipped.get("affixPrefixes") or 0) + int(
-                equipped.get("affixSuffixes") or 0
+            attainability_reasons.extend(
+                f"{reason}:{slot}"
+                for reason in attainability.rare_item_reasons(
+                    equipped,
+                    profile="realistic_trade",
+                )
             )
-            if affix_count > 5:
-                attainability_reasons.append(f"theoretical_six_affix_rare:{slot}")
-            if int(equipped.get("topTierAffixes") or 0) > 2:
-                attainability_reasons.append(f"too_many_top_tier_affixes:{slot}")
         attainability_reasons.extend(
             f"special_source_unverified:{slot}"
             for slot in completeness_result.get("unverifiedSpecialSourceSlots") or []

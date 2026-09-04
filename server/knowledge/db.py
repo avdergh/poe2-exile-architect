@@ -560,12 +560,13 @@ def mods_for_text(query: str, limit: int = 80) -> list[dict]:
     has_ranges = any(row[1] == "ranges" for row in con.execute("PRAGMA table_info(mods)"))
     cols = ", m.ranges" if has_ranges else ""
     rows = con.execute(
-        "SELECT m.text, m.type, m.required_level, m.groups, m.tags, m.domain" + cols + " "
+        "SELECT m.id, m.text, m.type, m.required_level, m.groups, m.tags, m.domain" + cols + " "
         "FROM mods_fts f JOIN mods m ON m.id = f.mod_id WHERE mods_fts MATCH ? LIMIT ?",
         (_match_cols(query, ("text",)), limit),
     )
     return [
         {
+            "id": r["id"],
             "text": r["text"],
             "type": r["type"],
             "required_level": r["required_level"],
@@ -739,6 +740,59 @@ def craft_profile(base_name: str) -> dict[str, Any] | None:
     return {"domain": domain, "rarity": "Rare", "prefixLimit": 3, "suffixLimit": 3}
 
 
+def canonical_mod_tier_ladder(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return one deterministic entry per real tier, collapsing corpus item-class duplicates."""
+
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for value in records:
+        record = dict(value)
+        ranges = list(record.get("ranges") or [])
+        range_key = tuple(
+            (
+                str(item.get("id") or ""),
+                item.get("min"),
+                item.get("max"),
+            )
+            for item in ranges
+            if isinstance(item, dict)
+        )
+        identity = (
+            int(record.get("required_level") or 0),
+            range_key,
+            str(record.get("text") or ""),
+        )
+        current = unique.get(identity)
+        if current is None or str(record.get("id") or "") < str(current.get("id") or ""):
+            unique[identity] = record
+
+    def strength(record: dict[str, Any]) -> tuple[Any, ...]:
+        numeric: list[float] = []
+        for item in record.get("ranges") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("max", "min"):
+                value = item.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    numeric.append(float(value))
+        return (
+            -int(record.get("required_level") or 0),
+            tuple(-value for value in numeric),
+            str(record.get("text") or ""),
+            str(record.get("id") or ""),
+        )
+
+    ordered = sorted(unique.values(), key=strength)
+    total = len(ordered)
+    return [
+        {
+            **record,
+            "tier": index,
+            "totalTiers": total,
+        }
+        for index, record in enumerate(ordered, start=1)
+    ]
+
+
 def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]]:
     """Craftable prefixes/suffixes for a base — the best available tier per mod group at `ilvl`.
 
@@ -761,13 +815,11 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
     # matching below keeps jewel mods off gear and gear mods off jewels.
     placeholders = ",".join("?" for _ in domains)
     rows = con.execute(
-        "SELECT text, type, groups, ranges, tags, required_level, domain FROM mods "
+        "SELECT id, text, type, groups, ranges, tags, required_level, domain FROM mods "
         f"WHERE domain IN ({placeholders}) AND type IN ('prefix','suffix') "
         "AND (required_level IS NULL OR required_level <= ?)",
         (*domains, ilvl),
     ).fetchall()
-    best: dict[tuple[str, str, str], dict[str, Any]] = {}
-    tier_count: dict[tuple[str, str, str], int] = {}
     tier_options: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for r in rows:
         mtags = set(json.loads(r["tags"] or "[]"))
@@ -784,21 +836,28 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
         # the optimizer can pick the variant matching the build. Group exclusivity still applies.
         norm = re.sub(r"\d+", "#", r["text"] or "")
         key = (r["type"], group, norm)
-        tier_count[key] = tier_count.get(key, 0) + 1  # how many ilvl tiers can roll here
         rl = r["required_level"] or 0
-        tier_options.setdefault(key, []).append({"text": r["text"], "required_level": rl})
-        cur = best.get(key)
-        if cur is None or rl > cur["required_level"]:
-            best[key] = {"group": group, "type": r["type"], "text": r["text"], "required_level": rl}
-    for key, m in best.items():
-        m["tiers"] = tier_count.get(key, 1)
-        m["tier_options"] = sorted(
-            tier_options.get(key) or [],
-            key=lambda value: int(value.get("required_level") or 0),
-            reverse=True,
+        tier_options.setdefault(key, []).append(
+            {
+                "id": str(r["id"]),
+                "group": group,
+                "type": r["type"],
+                "text": r["text"],
+                "required_level": rl,
+                "ranges": json.loads(r["ranges"] or "[]"),
+            }
         )
-    pre = sorted((m for m in best.values() if m["type"] == "prefix"), key=lambda m: m["group"])
-    suf = sorted((m for m in best.values() if m["type"] == "suffix"), key=lambda m: m["group"])
+    best: list[dict[str, Any]] = []
+    for options in tier_options.values():
+        ladder = canonical_mod_tier_ladder(options)
+        if not ladder:
+            continue
+        top = dict(ladder[0])
+        top["tiers"] = len(ladder)
+        top["tier_options"] = ladder
+        best.append(top)
+    pre = sorted((m for m in best if m["type"] == "prefix"), key=lambda m: m["group"])
+    suf = sorted((m for m in best if m["type"] == "suffix"), key=lambda m: m["group"])
     return {"prefixes": pre, "suffixes": suf}
 
 

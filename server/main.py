@@ -1927,6 +1927,7 @@ def optimize_item(
     planning: bool = False,
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    acquisition_profile: Literal["realistic_trade", "theoretical"] = "realistic_trade",
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare for a `slot` — one `metric`, or a weighted `goals` blend.
 
@@ -1947,10 +1948,9 @@ def optimize_item(
     axis (no life/resists). A blended craft returns `metricsBefore`/`metricsAfter` per goal.
     Re-check `get_defenses` after equipping.
 
-    Each result reports `attainability` (per affix: required ilvl + tier depth) and a coarse
-    `craft` effort rating — a realism check from tier depth, NOT a market price (no spawn-weight
-    data). The crafted item is a *theoretical best-in-slot target*; verify price with
-    get_prices. Bounded greedy search, not a global optimum.
+    `acquisition_profile="realistic_trade"` (default) limits the generated rare to five explicit
+    affixes and two deep T1 affixes; use explicit `theoretical` for a six-affix ceiling. Each result
+    reports the applied policy and per-affix tier evidence. This is not a market price.
     """
     return itemopt.optimize_item(
         get_engine(),
@@ -1965,6 +1965,7 @@ def optimize_item(
         planning=planning,
         elemental_resist_target=elemental_resist_target,
         chaos_resist_target=chaos_resist_target,
+        acquisition_profile=acquisition_profile,
     )
 
 
@@ -2024,18 +2025,27 @@ def rank_upgrades(
     slots: list[str] | None = None,
     rolls: str = "realistic",
     top: int = 8,
+    acquisition_profile: Literal["realistic_trade", "theoretical"] = "realistic_trade",
 ) -> dict[str, Any]:
     """Rank gear slots by upgrade potential — "what should I craft/upgrade next?".
 
     Recrafts each gear slot to its best (same crafter as optimize_item — a single `metric` or a
     weighted `goals` blend like {"TotalDPS":0.6,"TotalEHP":0.4}) and ranks slots by the gain over
-    your CURRENT item there, so the top slot is where the next upgrade buys the most. Read-only —
+    your CURRENT item there, so the top slot is where the next upgrade buys the most. The default
+    `realistic_trade` profile ranks achievable next upgrades; use `theoretical` for ceiling targets.
+    Read-only —
     every probe is snapshotted and restored. Gains are NOT additive (recrafting one slot shifts the
     others): recraft the top slot, equip it, then re-run. Empty slots with no base are skipped —
     explore those with optimize_item(slot, base=…). Targets are theoretical; price with get_prices.
     """
     return itemopt.rank_upgrades(
-        get_engine(), metric=metric, goals=goals, slots=slots, rolls=rolls, top=top
+        get_engine(),
+        metric=metric,
+        goals=goals,
+        slots=slots,
+        rolls=rolls,
+        top=top,
+        acquisition_profile=acquisition_profile,
     )
 
 
@@ -2235,6 +2245,7 @@ def craft_item(
     use_corruption: bool = True,
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    acquisition_profile: Literal["realistic_trade", "theoretical"] = "realistic_trade",
 ) -> dict[str, Any]:
     """Craft the best-in-slot item using the FULL crafting system — beyond a plain rare.
 
@@ -2245,7 +2256,8 @@ def craft_item(
     corrupted implicit). Pass a single `metric` or a weighted `goals` blend; `rune_sockets` is
     how many the base is assumed to support (Artificer's Orb; martial weapons/armour typically
     allow up to 2). Returns the item + `craftSteps` (the corruption is a Vaal gamble — do it
-    last). A theoretical best-in-slot target with idealized rolls; price the steps. The active
+    last). Generated rare affixes use the requested acquisition profile (realistic trade by
+    default; explicit theoretical for a ceiling); price the steps. The active
     build is restored, while a raw-free `craftReceiptRef` is persisted so later
     equip/checkpoint/Judge calls can verify special sources.
     """
@@ -2262,6 +2274,7 @@ def craft_item(
         use_corruption=use_corruption,
         elemental_resist_target=elemental_resist_target,
         chaos_resist_target=chaos_resist_target,
+        acquisition_profile=acquisition_profile,
     )
 
 

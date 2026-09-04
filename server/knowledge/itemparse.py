@@ -156,18 +156,18 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
             matches = base_matches
         if not matches:
             return None
-    # collapse RePoE's per-item-class duplicate tiers: one entry per (group, req level, ranges)
-    by_group: dict[str, dict[tuple, dict]] = defaultdict(dict)
+    # Collapse RePoE's per-item-class duplicates through the same deterministic tier ladder used by
+    # the optimizers; otherwise generation and final checkpoint can disagree about T1 depth.
+    by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for c in matches:
         gkey = (c["groups"] or [""])[0]
-        rk = (c["required_level"], tuple((r.get("min"), r.get("max")) for r in c["ranges"]))
-        by_group[gkey].setdefault(rk, c)
+        by_group[gkey].append(c)
     nums = _values(line)
     label = _resist_group(line)  # use the real element for resist lines (corpus stores generic)
     fallback: dict[str, Any] | None = None
-    for gkey, uniq in by_group.items():
-        mods = sorted(uniq.values(), key=lambda m: -(m["required_level"] or 0))  # T1 = highest req
-        for idx, m in enumerate(mods):
+    for gkey, group_matches in by_group.items():
+        mods = db.canonical_mod_tier_ladder(group_matches)
+        for m in mods:
             matched_ranges = m["ranges"]
             matched = _roll_in(matched_ranges, nums)
             display_ranges = _display_ranges(m["text"])
@@ -189,7 +189,7 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
             if matched:
                 return {
                     "type": m["type"],
-                    "tier": idx + 1,
+                    "tier": m["tier"],
                     "totalTiers": len(mods),
                     "tierRange": _range_str(matched_ranges),
                     "requiredLevel": m["required_level"],
@@ -522,9 +522,10 @@ def audit_item_legality(
         unique = db.get_unique(str(parsed.get("name") or ""))
         if not isinstance(unique, dict):
             unique_issue = "unique_item_unknown"
-        elif str(unique.get("base") or "").strip().casefold() != str(
-            parsed.get("base") or ""
-        ).strip().casefold():
+        elif (
+            str(unique.get("base") or "").strip().casefold()
+            != str(parsed.get("base") or "").strip().casefold()
+        ):
             unique_issue = "unique_item_base_mismatch"
         else:
             unique_issue = _unique_modifier_issue(text, unique)

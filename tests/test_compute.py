@@ -529,11 +529,23 @@ def test_optimize_item_reports_attainability_and_craft(engine):
     )
     r = itemopt.optimize_item(engine, "Weapon 1", metric="TotalDPS")
     assert r["ok"] and r["attainability"]
+    assert r["acquisitionProfile"] == "realistic_trade"
+    assert len(r["affixes"]) <= 5
+    assert sum(entry["tier"] == 1 and entry["totalTiers"] >= 4 for entry in r["attainability"]) <= 2
     for a in r["attainability"]:
         assert a["affix"] and a["ilvl"] >= 0 and a["tiers"] >= 1
     craft = r["craft"]
     assert craft["effort"] in {"trivial", "low", "moderate", "high", "very high"}
     assert craft["minItemLevel"] >= 1 and craft["prefixPool"] >= 1
+    theoretical = itemopt.optimize_item(
+        engine,
+        "Weapon 1",
+        metric="TotalDPS",
+        acquisition_profile="theoretical",
+    )
+    assert theoretical["ok"] is True
+    assert theoretical["acquisitionProfile"] == "theoretical"
+    assert theoretical["attainabilityPolicy"]["maxExplicitAffixes"] == 6
 
 
 def test_rank_upgrades_orders_slots_by_gain(engine):

@@ -168,6 +168,7 @@ def craft_item(
     keep_resists_capped: bool = True,
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    acquisition_profile: str = "realistic_trade",
 ) -> dict[str, Any]:
     """Craft the best-in-slot item using the full crafting system (runes + essences + corruption).
 
@@ -252,6 +253,7 @@ def craft_item(
             ilvl=ilvl,
             elemental_resist_target=elemental_resist_target,
             chaos_resist_target=chaos_resist_target,
+            acquisition_profile=acquisition_profile,
         )
         essence_candidates_rejected = bool(
             not opt.get("ok")
@@ -499,6 +501,8 @@ def craft_item(
         "base": base,
         "itemLevel": ilvl,
         "item": final,
+        "acquisitionProfile": acquisition_profile,
+        "attainabilityPolicy": opt.get("attainabilityPolicy"),
         "affixes": affix_lines,
         "crafting": {
             "essencesUsed": essences_used,
@@ -761,9 +765,7 @@ _SOCKET_DECISION_LIMIT_PER_ENGINE = 64
 def socket_batch_decisions_for_state(engine: Any, state_hash: str) -> dict[str, str]:
     with _SOCKET_DECISION_LOCK:
         try:
-            return deepcopy(
-                (_SOCKET_BATCH_DECISIONS.get(engine) or {}).get(state_hash) or {}
-            )
+            return deepcopy((_SOCKET_BATCH_DECISIONS.get(engine) or {}).get(state_hash) or {})
         except TypeError:
             return {}
 
@@ -877,8 +879,7 @@ def plan_item_sockets_batch(
             fingerprints = {
                 str(value)
                 for value in (
-                    result.get("acceptedItemFingerprints")
-                    or [result.get("itemFingerprint")]
+                    result.get("acceptedItemFingerprints") or [result.get("itemFingerprint")]
                 )
                 if value
             }

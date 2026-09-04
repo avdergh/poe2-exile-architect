@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET
 from ..knowledge import db, item_legality, itemparse
 from ..judge import hard_legality
 from ..runtime import craft_receipts
-from . import pob_structure
+from . import attainability, pob_structure
 from .engine import PobEngine
 from .state import build_state_hash, canonical_payload_hash
 
@@ -518,7 +518,11 @@ def _craft_summary(
     required — a rough realism check, not a probability or a divine cost.
     """
     n = len(chosen)
-    deep = sum(1 for c in chosen if (c.get("tiers") or 1) >= 4)
+    deep = sum(
+        1
+        for c in chosen
+        if int(c.get("tier") or 1) == 1 and int(c.get("totalTiers") or c.get("tiers") or 1) >= 4
+    )
     min_ilvl = max((c.get("ilvl") or 0 for c in chosen), default=0)
     score = n + deep
     if n == 0:
@@ -547,6 +551,39 @@ def _craft_summary(
     }
 
 
+def _affix_candidates_for_policy(
+    source: dict[str, Any],
+    *,
+    rolls: str,
+    policy: attainability.GearAttainabilityPolicy,
+) -> list[dict[str, Any]]:
+    """Return the top tier plus the first real lower tier needed by a realistic policy."""
+
+    options = [dict(value) for value in source.get("tier_options") or [] if isinstance(value, dict)]
+    if not options:
+        options = [dict(source)]
+    total = int(source.get("totalTiers") or source.get("tiers") or len(options) or 1)
+    selected = [options[0]]
+    deep_top = int(options[0].get("tier") or 1) == 1 and total >= 4
+    if policy.maxDeepTopTierAffixes is not None and deep_top:
+        lower = next((value for value in options if int(value.get("tier") or 1) > 1), None)
+        if lower is not None:
+            selected.append(lower)
+    return [
+        {
+            "group": str(source.get("group") or value.get("group") or ""),
+            "line": _roll(str(value.get("text") or source.get("text") or ""), rolls),
+            "type": str(source.get("type") or value.get("type") or ""),
+            "tiers": total,
+            "totalTiers": total,
+            "tier": int(value.get("tier") or 1),
+            "ilvl": int(value.get("required_level") or source.get("required_level") or 0),
+            "_deepTopTier": int(value.get("tier") or 1) == 1 and total >= 4,
+        }
+        for value in selected
+    ]
+
+
 def optimize_item(
     engine: PobEngine,
     slot: str,
@@ -562,6 +599,7 @@ def optimize_item(
     planning: bool = False,
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    acquisition_profile: str = "realistic_trade",
 ) -> dict[str, Any]:
     """Craft the best-in-slot rare for a single `metric`, or a weighted blend via `goals`.
 
@@ -573,6 +611,10 @@ def optimize_item(
     essence-only mods (e.g. a Perfect Essence's % Life on body armour). See the module docstring.
     """
     slot = _canonical_slot(slot)
+    try:
+        acquisition_policy = attainability.policy_for(acquisition_profile)
+    except ValueError:
+        return {"ok": False, "errorCode": "invalid_acquisition_profile"}
     build = engine.get_build()
     gear = build.get("gear") or {}
     if not base:
@@ -650,25 +692,25 @@ def optimize_item(
         elemental_target=int(profile["elementalResistTarget"]),
         chaos_target=int(profile["chaosResistTarget"]),
     )
+    prefix_family_count = len(pool["prefixes"])
+    suffix_family_count = len(pool["suffixes"])
     pre = [
-        {
-            "group": m["group"],
-            "line": _roll(m["text"], rolls),
-            "type": "prefix",
-            "tiers": m.get("tiers", 1),
-            "ilvl": m.get("required_level", 0),
-        }
-        for m in pool["prefixes"]
+        candidate
+        for source in pool["prefixes"]
+        for candidate in _affix_candidates_for_policy(
+            source,
+            rolls=rolls,
+            policy=acquisition_policy,
+        )
     ]
     suf = [
-        {
-            "group": m["group"],
-            "line": _roll(m["text"], rolls),
-            "type": "suffix",
-            "tiers": m.get("tiers", 1),
-            "ilvl": m.get("required_level", 0),
-        }
-        for m in pool["suffixes"]
+        candidate
+        for source in pool["suffixes"]
+        for candidate in _affix_candidates_for_policy(
+            source,
+            rolls=rolls,
+            policy=acquisition_policy,
+        )
     ]
     if not pre and not suf:
         return {"ok": False, "error": f"No craftable affixes found for base '{base}'."}
@@ -736,12 +778,18 @@ def optimize_item(
         # Greedy: each round add the affix (respecting 3 prefix / 3 suffix + group exclusivity) that
         # most improves the score, until full or no candidate helps.
         cur = score(base_stats)
-        while len(chosen_pre) < 3 or len(chosen_suf) < 3:
+        while (len(chosen_pre) < 3 or len(chosen_suf) < 3) and len(chosen_pre) + len(
+            chosen_suf
+        ) < acquisition_policy.maxExplicitAffixes:
             opts: list[dict[str, str]] = []
             if len(chosen_pre) < 3:
                 opts += [c for c in pre if c["group"] not in used]
             if len(chosen_suf) < 3:
                 opts += [c for c in suf if c["group"] not in used]
+            if acquisition_policy.maxDeepTopTierAffixes is not None:
+                deep_count = sum(bool(item.get("_deepTopTier")) for item in chosen_pre + chosen_suf)
+                if deep_count >= acquisition_policy.maxDeepTopTierAffixes:
+                    opts = [item for item in opts if not item.get("_deepTopTier")]
             bi, bv = best_of(opts, lines())
             if bi is None or bv <= cur + 1e-9:
                 break
@@ -761,6 +809,13 @@ def optimize_item(
                         rest = grp_list[:idx] + grp_list[idx + 1 :]
                         rest_used = used - {grp_list[idx]["group"]}
                         swaps = [c for c in poolside if c["group"] not in rest_used]
+                        if acquisition_policy.maxDeepTopTierAffixes is not None:
+                            existing_deep = sum(
+                                bool(item.get("_deepTopTier"))
+                                for item in rest + (chosen_suf if poolside is pre else chosen_pre)
+                            )
+                            if existing_deep >= acquisition_policy.maxDeepTopTierAffixes:
+                                swaps = [item for item in swaps if not item.get("_deepTopTier")]
                         other = [x["line"] for x in (chosen_suf if poolside is pre else chosen_pre)]
                         base_lines = [x["line"] for x in rest] + other
                         bi, bv = best_of(swaps, base_lines)
@@ -956,13 +1011,22 @@ def optimize_item(
         },
         "affixes": [x["line"] for x in chosen],
         "attainability": [
-            {"affix": c["line"], "ilvl": c.get("ilvl", 0), "tiers": c.get("tiers", 1)}
+            {
+                "affix": c["line"],
+                "ilvl": c.get("ilvl", 0),
+                "tier": c.get("tier", 1),
+                "totalTiers": c.get("totalTiers", c.get("tiers", 1)),
+                "tiers": c.get("totalTiers", c.get("tiers", 1)),
+            }
             for c in chosen
         ],
-        "craft": _craft_summary(chosen, len(pre), len(suf)),
+        "craft": _craft_summary(chosen, prefix_family_count, suffix_family_count),
+        "acquisitionProfile": acquisition_profile,
+        "attainabilityPolicy": attainability.public_policy(acquisition_profile),
         "warnings": warnings,
         "note": (
-            f"Theoretical best-in-slot for {goal_desc} ({rolls} rolls) from this base's real mod "
+            f"{('Realistic trade target' if acquisition_profile == 'realistic_trade' else 'Theoretical best-in-slot')} "
+            f"for {goal_desc} ({rolls} rolls) from this base's real mod "
             "pool — equip it with equip_item, then verify attainability/price with get_prices. "
             "Greedy search; pass thorough=true for a swap pass. Ignores un-modelled mechanics."
         ),
@@ -1246,6 +1310,7 @@ def rank_upgrades(
     slots: list[str] | None = None,
     rolls: str = "realistic",
     top: int = 8,
+    acquisition_profile: str = "realistic_trade",
 ) -> dict[str, Any]:
     """Rank gear slots by how much recrafting each would gain — 'what should I upgrade next'.
 
@@ -1255,13 +1320,23 @@ def rank_upgrades(
     shifts the others — so upgrade the top slot, then re-run. Empty slots with no base are skipped
     (optimize that slot directly with a `base` to explore them).
     """
+    try:
+        acquisition_policy = attainability.public_policy(acquisition_profile)
+    except ValueError:
+        return {"ok": False, "errorCode": "invalid_acquisition_profile"}
     candidate_slots = list(slots) if slots else list(_UPGRADE_SLOTS)
     ranked: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     rejected: list[dict[str, Any]] = []
     for slot in candidate_slots:
         r = optimize_item(
-            engine, slot, metric=metric, goals=goals, rolls=rolls, keep_resists_capped=True
+            engine,
+            slot,
+            metric=metric,
+            goals=goals,
+            rolls=rolls,
+            keep_resists_capped=True,
+            acquisition_profile=acquisition_profile,
         )
         if not r.get("ok"):
             if r.get("errorCode") == "whole_build_legality_check_failed":
@@ -1308,6 +1383,8 @@ def rank_upgrades(
         "ok": True,
         "metric": "blend" if goals else metric,
         "goals": goals or None,
+        "acquisitionProfile": acquisition_profile,
+        "attainabilityPolicy": acquisition_policy,
         "ranked": ranked[:top],
         "skipped": skipped,
         "rejected": rejected,
@@ -1658,8 +1735,7 @@ def _marginal_craft(
     chaos_resist_target: int,
     elemental_resist_target: int,
     ilvl: int,
-    max_affixes: int = 6,
-    max_deep_affixes: int | None = None,
+    acquisition_policy: attainability.GearAttainabilityPolicy,
 ) -> str | None:
     """Fast per-slot craft: rank each affix by its marginal weighted gain (TWO batched evals — bare
     base, then all single-affix candidates), then take the top 3 prefix + 3 suffix (group-exclusive).
@@ -1684,16 +1760,12 @@ def _marginal_craft(
     keys = list(weights)
     meta: list[tuple[dict[str, Any], str]] = []
     for source in pre + suf:
-        top = dict(source)
-        top["_topTierAffix"] = int(top.get("tiers") or 1) >= 4
-        meta.append((top, _roll(top["text"], rolls)))
-        tier_options = list(top.get("tier_options") or [])
-        if max_deep_affixes is not None and top["_topTierAffix"] and len(tier_options) > 1:
-            lower = dict(top)
-            lower["text"] = str(tier_options[1]["text"])
-            lower["required_level"] = int(tier_options[1].get("required_level") or 0)
-            lower["_topTierAffix"] = False
-            meta.append((lower, _roll(lower["text"], rolls)))
+        for candidate in _affix_candidates_for_policy(
+            source,
+            rolls=rolls,
+            policy=acquisition_policy,
+        ):
+            meta.append((candidate, str(candidate["line"])))
     base_res = engine.eval_items(slot, [_item_text(base, [], slot, ilvl=ilvl)], keys=keys)[
         "results"
     ]
@@ -1717,12 +1789,16 @@ def _marginal_craft(
         side = sorted((s for s in scored if s[1]["type"] == typ), key=lambda x: -x[0])
         n = 0
         for gain, m, line in side:
-            if n >= 3 or len(chosen_lines) >= max_affixes:
+            if n >= 3 or len(chosen_lines) >= acquisition_policy.maxExplicitAffixes:
                 break
             if gain <= 1e-9 or m["group"] in used:
                 continue
-            is_deep = bool(m.get("_topTierAffix"))
-            if max_deep_affixes is not None and is_deep and deep_affixes >= max_deep_affixes:
+            is_deep = bool(m.get("_deepTopTier"))
+            if (
+                acquisition_policy.maxDeepTopTierAffixes is not None
+                and is_deep
+                and deep_affixes >= acquisition_policy.maxDeepTopTierAffixes
+            ):
                 continue
             chosen_lines.append(line)
             used.add(m["group"])
@@ -1759,14 +1835,10 @@ def plan_gear(
     per-slot plan + projected whole-build DPS/EHP/resists; equip the items yourself. Greedy heuristic.
     """
     dps_weight = min(max(float(dps_weight), 0.0), 1.0)
-    if acquisition_profile not in {"realistic_trade", "theoretical"}:
+    try:
+        acquisition_policy = attainability.policy_for(acquisition_profile)
+    except ValueError:
         return {"ok": False, "errorCode": "invalid_acquisition_profile"}
-    realistic = acquisition_profile == "realistic_trade"
-    max_affixes = 5 if realistic else 6
-    # The corpus has no useful spawn weights, so "top-tier" remains a coarse tier-depth proxy. For
-    # the realistic profile, at most two deep mod families use their best tier; later selections
-    # automatically fall back to the next legal tier instead of dropping required resistance.
-    max_deep_affixes = 2 if realistic else None
     locked = {_canonical_slot(str(slot)) for slot in locked_slots or []}
     build = engine.get_build()
     profile = gear_stage_profile(
@@ -1809,7 +1881,7 @@ def plan_gear(
             if isinstance(cur, dict) and cur.get("base"):
                 base: str | None = cur["base"]
                 if (
-                    realistic
+                    acquisition_profile == "realistic_trade"
                     and slot in {"Weapon 1", "Weapon 2"}
                     and (
                         str(cur.get("rarity") or "").casefold() == "normal"
@@ -1865,8 +1937,7 @@ def plan_gear(
                 chaos_resist_target=int(profile["chaosResistTarget"]),
                 elemental_resist_target=int(profile["elementalResistTarget"]),
                 ilvl=item_level,
-                max_affixes=max_affixes,
-                max_deep_affixes=max_deep_affixes,
+                acquisition_policy=acquisition_policy,
             )
             if not item:
                 skipped.append({"slot": slot, "reason": "no improving affix in pool"})
@@ -1932,8 +2003,7 @@ def plan_gear(
                     chaos_resist_target=int(profile["chaosResistTarget"]),
                     elemental_resist_target=int(profile["elementalResistTarget"]),
                     ilvl=item_level,
-                    max_affixes=max_affixes,
-                    max_deep_affixes=max_deep_affixes,
+                    acquisition_policy=acquisition_policy,
                 )
                 if not item:
                     continue
@@ -2039,6 +2109,7 @@ def plan_gear(
         "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
         "baseDirection": base_direction,
         "acquisitionProfile": acquisition_profile,
+        "attainabilityPolicy": attainability.public_policy(acquisition_profile),
         "lockedSlots": sorted(locked),
         "replacedBootstrapSlots": replaced_bootstrap_slots,
         "conflictWarnings": conflict_warnings,
