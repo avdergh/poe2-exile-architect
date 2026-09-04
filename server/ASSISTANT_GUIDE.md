@@ -278,8 +278,8 @@ does not take over build completion.
   `apply_next_jewel_socket_decision(decision_ref, expected_state_hash)`, then review the output state
   again. Do not stop on a fixed round or jewel count. A current policy-limited/inconclusive review
   may reach Judge but keeps delivery at candidate; manual passive/jewel edits make the receipt stale.
-  Freeze final gear, passives, jewels, Runes, supports and config first, then run the state-bound
-  support/jewel/socket audits and `inspect_generation_checkpoint()`. Repair stale, missing and
+  Freeze final gear, passives, jewels, Runes and supports, apply the realistic combat profile, then
+  run the state-bound support/jewel/socket audits and `inspect_generation_checkpoint()`. Repair stale, missing and
   deterministic failures before calling the formal Judge. Once run-fresh Research deep reads and
   the final prompt/candidate summary are complete, fill the camelCase skeleton returned by
   `start_generation_run` and call `validate_generation_draft(...,

@@ -255,7 +255,8 @@ Create 不询问，也不执行用户交付导出。
    独立 compute/equip 工具（`equip_item`、`remove_skill_group`、`replace_skill_group`、
    `set_config`、`apply_combat_profile` 等）与批次共享同一活动构筑、同样会改变 state hash，
    之后第一批次必须用该工具返回的最新 hash（`build_state_conflict` 提示 actualStateHash）；
-   `apply_combat_profile` 等 config 变更不改 semantic hash 但改数值，读取前仍以工具返回为准。
+   `apply_combat_profile` 等 config 变更会改变 semantic hash，必须在最终状态绑定的审计、checkpoint
+   与 Draft 之前完成，读取前始终以工具返回的最新 hash 为准。
    **任何 `skill_loadout` 之前必须完成一次技能来源核对**：
    - 先装备组件级 `researchMemoryUse.insightDecisions` 与最终蓝图都确认 `adopted` 的非可选
      `unique_enabler`，并分配会授予技能的必要升华/被动；不能把 adopted package 中的每个组件都
@@ -400,7 +401,16 @@ Create 不询问，也不执行用户交付导出。
      Rune 且其余孔无正收益，`no_positive/not_applicable` 才能全部留空。检查以孔容量对比带可信
      craft receipt 的实际 Rune 数；只有 `Rune:` 声明而没有匹配效果/receipt 不算已镶嵌。不要为
      镶嵌重做整件装备，也不要机械套用带 Perfect Essence 和腐化的终局 `craft_item` 结果。
-7. 调用一次 `inspect_generation_checkpoint(strict_mode=<本次反馈模式>,
+7. 正式最终检查前先固化战斗假设：对终局/Boss 目标调用一次
+   `apply_combat_profile(tier=<与用户目标一致>，...开关...)`（或用 `set_config` 传相同 key）
+   设置敌方条件并读取返回的 assumed 清单。默认值全开，**只保留构筑实际能产生的假设**：
+   `shocked` 需要构筑能施加感电、`cursed` 需要实际配置的诅咒技能、power/frenzy charges 需要
+   生成手段、`full_es` 需要 ES 构建——无法产生的就关闭，否则 DPS 会被不可能维持的效果抬高；
+   不调用时这些条件全部关闭，对依赖感电/诅咒/充能的 BD 属于下限值，不能当作目标强度。
+   把 assumed 清单原样记入本轮 `failureAudit.summary` 与 `toolReferences`；战斗配置属于构筑
+   的一部分，后续重试沿用同一假设，不能为通过 Judge 临时切换开关。
+   战斗配置稳定后，重新完成最终 Support/Jewel/Socket 状态绑定审计，再调用一次
+   `inspect_generation_checkpoint(strict_mode=<本次反馈模式>,
    offense_skill_group_index=<最终Judge目标组>, expected_skill_name=<该组主动技能>)`。纯清图目标使用
    clear group；Boss/均衡目标使用 single-target group，确保续航和 Judge 检查同一技能。它按语义 `build_state_hash` 合并
    completeness、preflight、有界 stats 和 defenses；同一状态重复调用会复用结果。修复其中
@@ -455,15 +465,7 @@ Create 不询问，也不执行用户交付导出。
     required 任一 failed/unknown 时 `deliveryStatus` 只能是 `candidate`。检测到活动构筑中真实存在的
     未建模恢复层时，生命周期可以通过但必须带 `verificationRequired`；这不授权编造恢复吞吐数值，
     仍要用当前机制、Research 或实战证据核验实际轮转。
-10. 正式评估前先固化战斗假设：对终局/Boss 目标调用一次
-    `apply_combat_profile(tier=<与用户目标一致>，...开关...)`（或用 `set_config` 传相同 key）
-    设置敌方条件并读取返回的 assumed 清单。默认值全开，**只保留构筑实际能产生的假设**：
-    `shocked` 需要构筑能施加感电、`cursed` 需要实际配置的诅咒技能、power/frenzy charges 需要
-    生成手段、`full_es` 需要 ES 构建——无法产生的就关闭，否则 DPS 会被不可能维持的效果抬高；
-    不调用时这些条件全部关闭，对依赖感电/诅咒/充能的 BD 属于下限值，不能当作目标强度。
-    把 assumed 清单原样记入本轮 `failureAudit.summary` 与 `toolReferences`；战斗配置属于构筑
-    的一部分，后续重试沿用同一假设，不能为通过 Judge 临时切换开关。
-    然后调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context,
+10. 调用 `evaluate_generation_candidate(run_id, run_token, candidate_id, version_context,
     strict_mode=<本次反馈模式>, offense_skill_group_index=<clear或single-target组>,
     expected_skill_name=<该组实际主动技能>)`。纯清图目标评分 clear group；Boss/均衡目标优先评分
     single-target group。group/name 冲突返回 `selected_skill_conflict` 且不消耗 attempt；不得传

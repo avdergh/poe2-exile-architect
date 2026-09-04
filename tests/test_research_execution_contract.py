@@ -435,11 +435,11 @@ class AdoptedPrimarySkillPackageTests(unittest.TestCase):
         packages = [
             {
                 "skillKey": "skill:WhirlingAssaultPlayer",
-                "supportKeys": ["support:SupportGemBrutality"],
+                "supportKeys": ["support:Metadata/Items/Gems/SupportGemBrutality"],
             },
             {
                 "skillKey": "skill:WhirlingAssaultPlayer",
-                "supportKeys": ["support:SupportGemRapidAttacks"],
+                "supportKeys": ["support:Metadata/Items/Gems/SupportGemRapidAttacks"],
             },
         ]
         self.assertIsNone(self._check(packages, ["Rapid Attacks I"]))

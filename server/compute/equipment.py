@@ -191,6 +191,8 @@ def _verify_actual_item(
         same_item = requested_structure.get("itemFingerprint") == actual_structure.get(
             "itemFingerprint"
         )
+        if not same_item:
+            same_item = _same_unique_identity(raw, actual)
     else:
         requested_resolution = craft_receipts.resolve_receipt(
             raw,
@@ -212,6 +214,27 @@ def _verify_actual_item(
         "itemLegality": audit,
         "actualItemFingerprint": actual_structure.get("itemFingerprint"),
     }
+
+
+def _same_unique_identity(requested_text: str, actual_text: str) -> bool:
+    """Allow PoB property normalization only for the same corpus-validated Unique."""
+
+    requested = itemparse.parse_item(requested_text)
+    actual = itemparse.parse_item(actual_text)
+    return bool(
+        requested.get("ok")
+        and actual.get("ok")
+        and str(requested.get("rarity") or "").casefold() == "unique"
+        and str(actual.get("rarity") or "").casefold() == "unique"
+        and str(requested.get("name") or "").strip().casefold()
+        == str(actual.get("name") or "").strip().casefold()
+        and str(requested.get("base") or "").strip().casefold()
+        == str(actual.get("base") or "").strip().casefold()
+        and itemparse._unique_modifiers_match(
+            itemparse._unique_modifier_lines(actual_text),
+            itemparse._unique_modifier_lines(requested_text),
+        )
+    )
 
 
 def _carry_socket_decision(

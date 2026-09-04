@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import os
 import secrets
@@ -26,11 +26,8 @@ from server.generation import (  # noqa: E402
     retry,
     run_store,
 )
+from server.knowledge import component_keys, research_execution, research_memory  # noqa: E402
 from server.knowledge import db as knowledge_db  # noqa: E402
-from server.knowledge import research_execution, research_memory  # noqa: E402
-
-
-RUN_TTL = timedelta(hours=2)
 
 
 def start_generation_run(memory_mode: str = "memory_assisted") -> dict[str, Any]:
@@ -230,7 +227,7 @@ def validate_generation_draft(
         return models.rejected("invalid_run_manifest")
     if manifest["runContext"]["runToken"] != run_token:
         return models.rejected("run_binding_mismatch")
-    if _run_expired(manifest["startedAt"]):
+    if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
     if not isinstance(agent_output_draft, dict):
         return models.rejected("invalid_input")
@@ -737,7 +734,7 @@ def _run_review_packet(
         return models.rejected("invalid_run_manifest")
     if manifest["runContext"]["runToken"] != args.run_token:
         return models.rejected("run_binding_mismatch")
-    if _run_expired(manifest["startedAt"]):
+    if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
 
     try:
@@ -902,7 +899,7 @@ def _submit_generation_output(
         return models.rejected("invalid_run_manifest")
     if manifest["runContext"]["runToken"] != run_token:
         return models.rejected("run_binding_mismatch")
-    if _run_expired(manifest["startedAt"]):
+    if run_store.run_expired(manifest["startedAt"]):
         return models.rejected("run_expired")
     if not isinstance(agent_output, dict):
         return models.rejected("invalid_input")
@@ -1170,7 +1167,12 @@ def _adopted_primary_skill_package_error(
             gem_id = str((gem or {}).get("id") or "") if isinstance(gem, dict) else ""
             if not gem_id:
                 return "research_execution_adopted_support_unresolved"
-            actual_support_keys.add("support:" + gem_id.rsplit("/", 1)[-1])
+            try:
+                actual_support_keys.add(
+                    component_keys.canonical_support_component_key(gem_id)
+                )
+            except ValueError:
+                return "research_execution_adopted_support_unresolved"
         expected_sets = [
             {str(value) for value in item.get("supportKeys") or [] if value}
             for item in matching
@@ -1315,17 +1317,6 @@ def _canonical_run_id(value: str) -> str | None:
     except ValueError:
         return None
     return canonical if canonical == value else None
-
-
-def _run_expired(started_at: str) -> bool:
-    try:
-        started = datetime.fromisoformat(started_at)
-    except ValueError:
-        return True
-    if started.tzinfo is None:
-        return True
-    age = datetime.now(timezone.utc) - started.astimezone(timezone.utc)
-    return age < timedelta(0) or age > RUN_TTL
 
 
 def _run_binding_error(

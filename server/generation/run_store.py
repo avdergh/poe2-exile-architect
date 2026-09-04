@@ -19,7 +19,7 @@ from server.judge import hard_legality
 from . import models
 
 
-RUN_TTL = timedelta(hours=2)
+RUN_TTL = timedelta(hours=4)
 
 
 class RunStoreError(RuntimeError):
@@ -163,19 +163,7 @@ def read_trusted_evaluation(bound_run: BoundRun) -> dict[str, Any] | None:
         payload = json.loads(bound_run.trusted_evaluation_path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("schemaVersion") not in {1, 2, 3} or payload.get("runId") != bound_run.run_id:
-        return None
-    if not isinstance(payload.get("candidateId"), str) or not payload["candidateId"]:
-        return None
-    if not isinstance(payload.get("transientBuildState"), dict):
-        return None
-    if not isinstance(payload.get("judgeAdvisoryReport"), dict):
-        return None
-    if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
-        return None
-    if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
+    if not _valid_trusted_evaluation_receipt(payload, run_id=bound_run.run_id):
         return None
     return payload
 
@@ -190,19 +178,11 @@ def read_trusted_evaluations(bound_run: BoundRun) -> list[dict[str, Any]]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, OSError, json.JSONDecodeError):
             return []
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schemaVersion") not in {1, 2, 3}
-            or payload.get("runId") != bound_run.run_id
-            or payload.get("attemptIndex") != attempt_index
-            or not isinstance(payload.get("candidateId"), str)
-            or not isinstance(payload.get("transientBuildState"), dict)
-            or not isinstance(payload.get("judgeAdvisoryReport"), dict)
+        if not _valid_trusted_evaluation_receipt(
+            payload,
+            run_id=bound_run.run_id,
+            attempt_index=attempt_index,
         ):
-            return []
-        if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
-            return []
-        if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
             return []
         receipts.append(payload)
     return receipts
@@ -232,23 +212,11 @@ def read_trusted_evaluations_strict(bound_run: BoundRun) -> list[dict[str, Any]]
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, OSError, json.JSONDecodeError) as exc:
             raise RunStoreError("trusted_evaluation_corrupt") from exc
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schemaVersion") not in {1, 2, 3}
-            or payload.get("runId") != bound_run.run_id
-            or payload.get("attemptIndex") != attempt_index
-            or not isinstance(payload.get("candidateId"), str)
-            or not payload.get("candidateId")
+        if not _valid_trusted_evaluation_receipt(
+            payload,
+            run_id=bound_run.run_id,
+            attempt_index=attempt_index,
         ):
-            raise RunStoreError("trusted_evaluation_corrupt")
-        try:
-            models.TransientBuildStateRef.model_validate(payload.get("transientBuildState"))
-            models.JudgeAdvisoryReport.model_validate(payload.get("judgeAdvisoryReport"))
-        except ValidationError as exc:
-            raise RunStoreError("trusted_evaluation_corrupt") from exc
-        if payload.get("schemaVersion") in {2, 3} and not _valid_hard_legality_audit(payload):
-            raise RunStoreError("trusted_evaluation_corrupt")
-        if payload.get("schemaVersion") == 3 and not _valid_quality_checkpoint(payload):
             raise RunStoreError("trusted_evaluation_corrupt")
         receipts.append(payload)
 
@@ -303,6 +271,12 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
             else {}
         ),
     }
+    if not _valid_trusted_evaluation_receipt(
+        receipt,
+        run_id=bound_run.run_id,
+        attempt_index=attempt_index,
+    ):
+        raise RunStoreError("trusted_evaluation_corrupt")
     attempt_path = bound_run.trusted_evaluations_dir / f"attempt-{attempt_index}.json"
     if attempt_path.exists() or not write_json_atomic(attempt_path, receipt):
         return None
@@ -310,6 +284,41 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
         attempt_path.unlink(missing_ok=True)
         return None
     return attempt_index
+
+
+def _valid_trusted_evaluation_receipt(
+    receipt: Any,
+    *,
+    run_id: str,
+    attempt_index: int | None = None,
+) -> bool:
+    """Validate one receipt identically before write and across every read path."""
+
+    if not isinstance(receipt, dict):
+        return False
+    schema_version = receipt.get("schemaVersion")
+    stored_attempt = receipt.get("attemptIndex")
+    if (
+        schema_version not in {1, 2, 3}
+        or receipt.get("runId") != run_id
+        or not isinstance(stored_attempt, int)
+        or isinstance(stored_attempt, bool)
+        or stored_attempt not in range(3)
+        or (attempt_index is not None and stored_attempt != attempt_index)
+        or not isinstance(receipt.get("candidateId"), str)
+        or not receipt["candidateId"]
+    ):
+        return False
+    try:
+        models.TransientBuildStateRef.model_validate(receipt.get("transientBuildState"))
+        models.JudgeAdvisoryReport.model_validate(receipt.get("judgeAdvisoryReport"))
+    except ValidationError:
+        return False
+    if schema_version in {2, 3} and not _valid_hard_legality_audit(receipt):
+        return False
+    if schema_version == 3 and not _valid_quality_checkpoint(receipt):
+        return False
+    return True
 
 
 def _valid_hard_legality_audit(receipt: dict[str, Any]) -> bool:
@@ -356,13 +365,16 @@ def _valid_quality_checkpoint(receipt: dict[str, Any]) -> bool:
     for value in checklist.values():
         if (
             not isinstance(value, dict)
-            or value.get("status") not in {"passed", "failed", "not_applicable"}
+            or value.get("status")
+            not in {"passed", "failed", "unknown", "not_applicable"}
             or not isinstance(value.get("reasons"), list)
             or any(not isinstance(reason, str) for reason in value["reasons"])
         ):
             return False
     hard_ready = bool((receipt.get("hardLegalityAudit") or {}).get("hardLegalityReady"))
-    failed = any(value["status"] == "failed" for value in checklist.values())
+    unresolved = any(
+        value["status"] in {"failed", "unknown"} for value in checklist.values()
+    )
     lifecycle = receipt.get("lifecycleVerification")
     if (
         not isinstance(lifecycle, dict)
@@ -376,7 +388,7 @@ def _valid_quality_checkpoint(receipt: dict[str, Any]) -> bool:
         "blocked"
         if not hard_ready
         else "candidate"
-        if failed or not lifecycle["pass"]
+        if unresolved or not lifecycle["pass"]
         else "recommended"
     )
     return delivery_status == expected_status

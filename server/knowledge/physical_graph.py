@@ -18,6 +18,8 @@ import sqlite3
 from typing import Any
 import unicodedata
 
+from .component_keys import canonical_support_component_key
+
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset(
     {
@@ -4255,7 +4257,11 @@ def _json_top_level_count(path: Path) -> int:
 
 def _gem_key(metadata_id: str, gem_type: str) -> str:
     metadata = _required_text(metadata_id, "gem metadata id")
-    return f"support:{metadata}" if gem_type == "support" else f"gem:{metadata}"
+    return (
+        canonical_support_component_key(metadata)
+        if gem_type == "support"
+        else f"gem:{metadata}"
+    )
 
 
 def _gem_display_name(record: dict[str, Any], fallback: str) -> str:

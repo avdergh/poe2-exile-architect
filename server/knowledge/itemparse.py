@@ -441,6 +441,68 @@ def parse_item(text: str) -> dict[str, Any]:
     return out
 
 
+def _unique_modifier_lines(text: str) -> list[str]:
+    """Return only unique-owned modifier lines from one PoB/readable item block."""
+
+    lines = [line.rstrip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
+    info = _header([line.strip() for line in lines])
+    output: list[str] = []
+    for entry in _structured_effect_lines(lines, info):
+        kind = str(entry.get("kind") or "explicit")
+        value = str(entry.get("text") or "").strip()
+        if not value or kind in {"implicit", "enchant", "rune"}:
+            continue
+        if value.casefold().startswith("requires level "):
+            continue
+        output.append(value)
+    return output
+
+
+def _unique_modifier_line_matches(actual: str, expected: str) -> bool:
+    if _normalize(actual) != _normalize(expected):
+        return False
+    actual_ranges = _display_ranges(actual)
+    expected_ranges = _display_ranges(expected)
+    if len(actual_ranges) != len(expected_ranges):
+        return False
+    return all(
+        expected_range["min"] <= actual_range["min"]
+        and actual_range["max"] <= expected_range["max"]
+        for actual_range, expected_range in zip(actual_ranges, expected_ranges, strict=True)
+    )
+
+
+def _unique_modifiers_match(actual: list[str], expected: list[str]) -> bool:
+    if len(actual) != len(expected):
+        return False
+    remaining = list(expected)
+    for actual_line in actual:
+        match_index = next(
+            (
+                index
+                for index, expected_line in enumerate(remaining)
+                if _unique_modifier_line_matches(actual_line, expected_line)
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        remaining.pop(match_index)
+    return not remaining
+
+
+def _unique_modifier_issue(text: str, unique: dict[str, Any]) -> str | None:
+    corpus_text = "Rarity: Unique\n" + str(unique.get("text") or "")
+    return (
+        None
+        if _unique_modifiers_match(
+            _unique_modifier_lines(text),
+            _unique_modifier_lines(corpus_text),
+        )
+        else "unique_modifier_mismatch"
+    )
+
+
 def audit_item_legality(
     text: str,
     *,
@@ -455,9 +517,21 @@ def audit_item_legality(
     rarity = str(parsed.get("rarity") or "").lower()
 
     craft_profile = db.craft_profile(str(parsed.get("base") or ""))
+    unique_issue: str | None = None
+    if rarity == "unique":
+        unique = db.get_unique(str(parsed.get("name") or ""))
+        if not isinstance(unique, dict):
+            unique_issue = "unique_item_unknown"
+        elif str(unique.get("base") or "").strip().casefold() != str(
+            parsed.get("base") or ""
+        ).strip().casefold():
+            unique_issue = "unique_item_base_mismatch"
+        else:
+            unique_issue = _unique_modifier_issue(text, unique)
     domain_rarity_issue = bool(
         craft_profile
         and str(craft_profile.get("domain") or "") == "flask"
+        and rarity in {"normal", "magic", "rare"}
         and rarity != str(craft_profile.get("rarity") or "").casefold()
     )
 
@@ -552,6 +626,8 @@ def audit_item_legality(
     all_source_hashes = essence_hashes | special_non_affix_hashes
 
     issues: list[str] = list(source_issues)
+    if unique_issue:
+        issues.append(unique_issue)
     if domain_rarity_issue:
         issues.append("rarity_not_allowed_for_base_domain")
     if rarity not in {"rare", "magic"}:
