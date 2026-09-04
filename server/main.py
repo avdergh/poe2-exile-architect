@@ -142,6 +142,77 @@ def get_engine() -> PobEngine:
     return _engine_pool.get(current_session())
 
 
+_CONFIG_RECOVERY_ATTRIBUTE = "_poe2_mutation_batch_recovery_required"
+
+
+def _restore_public_config_state(engine: Any, xml: str, state_hash: str) -> bool:
+    """Restore one failed public config mutation without changing low-level probe semantics."""
+
+    try:
+        engine.load_build_xml(xml, name="public-config-mutation-rollback")
+        return compute_state.build_state_hash(engine.get_xml()) == state_hash
+    except Exception:  # noqa: BLE001 - the public response reports recoveryRequired.
+        return False
+
+
+def _apply_public_config_mutation(
+    *,
+    options: dict[str, Any] | None,
+    custom_mods: str | None,
+    expected_state_hash: str | None,
+) -> dict[str, Any]:
+    """Apply one public config patch with CAS, rollback and semantic state read-back."""
+
+    engine = get_engine()
+    if bool(getattr(engine, _CONFIG_RECOVERY_ATTRIBUTE, False)):
+        return {
+            "ok": False,
+            "errorCode": "build_state_recovery_required",
+            "recoveryRequired": True,
+        }
+    lock_factory = getattr(engine, "transaction_lock", None)
+    with lock_factory() if callable(lock_factory) else nullcontext():
+        try:
+            before_xml = engine.get_xml()
+            before_hash = compute_state.build_state_hash(before_xml)
+        except Exception:  # noqa: BLE001 - raw engine details stay private.
+            return {"ok": False, "errorCode": "config_mutation_snapshot_failed"}
+        if expected_state_hash is not None and expected_state_hash != before_hash:
+            return {
+                "ok": False,
+                "errorCode": "build_state_conflict",
+                "expectedStateHash": expected_state_hash,
+                "actualStateHash": before_hash,
+                "stateHash": before_hash,
+            }
+        try:
+            result = engine.set_config(options=options, custom_mods=custom_mods)
+            if not isinstance(result, dict) or result.get("ok") is False:
+                raise ValueError("invalid_config_mutation_result")
+            after_hash = compute_state.build_state_hash(engine.get_xml())
+        except Exception:  # noqa: BLE001 - restore before returning a bounded public error.
+            restored = _restore_public_config_state(engine, before_xml, before_hash)
+            setattr(engine, _CONFIG_RECOVERY_ATTRIBUTE, not restored)
+            return {
+                "ok": False,
+                "errorCode": "config_mutation_failed",
+                "rolledBack": restored,
+                "recoveryRequired": not restored,
+                **({"stateHash": before_hash, "currentStateHash": before_hash} if restored else {}),
+            }
+        setattr(engine, _CONFIG_RECOVERY_ATTRIBUTE, False)
+        return {
+            **result,
+            "ok": True,
+            "beforeStateHash": before_hash,
+            "afterStateHash": after_hash,
+            "stateHash": after_hash,
+            "changed": before_hash != after_hash,
+            "rolledBack": False,
+            "recoveryRequired": False,
+        }
+
+
 @contextmanager
 def _runtime_install_context(replace_engine: bool):
     with _session_call_gate.maintenance_sync():
@@ -496,27 +567,35 @@ def set_skill_group_state(
 
 @mcp.tool()
 def set_config(
-    options: dict[str, Any] | None = None, custom_mods: str | None = None
+    options: dict[str, Any] | None = None,
+    custom_mods: str | None = None,
+    expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
     """Set combat/configuration options and/or extra modifiers on the active build.
 
     `options` are Path of Building config keys, e.g. {"enemyIsBoss": "Boss"},
     {"usePowerCharges": true}. `custom_mods` is free-form modifier text applied to the
     character, e.g. "100% increased Fire Damage\\n+2 to Level of all Fire Skills".
-    Recomputes and returns stats.
+    This remains a PATCH operation: omitted keys are preserved. ``expected_state_hash`` optionally
+    rejects a stale write before mutation. Recomputes stats and returns the resulting state hash.
     """
-    return get_engine().set_config(options=options, custom_mods=custom_mods)
+    return _apply_public_config_mutation(
+        options=options,
+        custom_mods=custom_mods,
+        expected_state_hash=expected_state_hash,
+    )
 
 
 @mcp.tool()
 def apply_combat_profile(
-    tier: str = "Pinnacle",
+    tier: Literal["None", "Boss", "Pinnacle", "Uber"] = "Pinnacle",
     shocked: bool = True,
     cursed: bool = True,
     power_charges: bool = True,
     frenzy_charges: bool = True,
     full_es: bool = True,
     full_life: bool = False,
+    expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
     """Apply a realistic boss-combat profile in one call, so DPS reflects an actual fight.
 
@@ -529,28 +608,47 @@ def apply_combat_profile(
     ones that don't apply (they'd otherwise inflate DPS with effects the build can't sustain). The
     response lists what was assumed. Tiers: None / Boss / Pinnacle / Uber.
     """
-    options: dict[str, Any] = {"enemyIsBoss": tier}
+    if tier not in {"None", "Boss", "Pinnacle", "Uber"}:
+        return {"ok": False, "errorCode": "invalid_combat_profile_tier"}
+    options: dict[str, Any] = {
+        "enemyIsBoss": tier,
+        "conditionEnemyShocked": bool(shocked),
+        "conditionEnemyCursed": bool(cursed),
+        "usePowerCharges": bool(power_charges),
+        "useFrenzyCharges": bool(frenzy_charges),
+        "conditionFullEnergyShield": bool(full_es),
+        "conditionFullLife": bool(full_life),
+    }
     assumptions = [f"enemy tier = {tier}"]
     if shocked:
-        options["conditionEnemyShocked"] = True
         assumptions.append("enemy is Shocked (needs your build to shock)")
     if cursed:
-        options["conditionEnemyCursed"] = True
         assumptions.append("enemy is Cursed (needs a curse skill applied)")
     if power_charges:
-        options["usePowerCharges"] = True
         assumptions.append("Power Charges up (needs generation)")
     if frenzy_charges:
-        options["useFrenzyCharges"] = True
         assumptions.append("Frenzy Charges up (needs generation)")
     if full_es:
-        options["conditionFullEnergyShield"] = True
         assumptions.append("on Full Energy Shield")
     if full_life:
-        options["conditionFullLife"] = True
         assumptions.append("on Full Life")
-    res = get_engine().set_config(options=options)
+    res = _apply_public_config_mutation(
+        options=options,
+        custom_mods=None,
+        expected_state_hash=expected_state_hash,
+    )
+    if not res.get("ok"):
+        return res
     res["assumptions"] = assumptions
+    res["appliedProfile"] = {
+        "tier": tier,
+        "shocked": bool(shocked),
+        "cursed": bool(cursed),
+        "powerCharges": bool(power_charges),
+        "frenzyCharges": bool(frenzy_charges),
+        "fullEnergyShield": bool(full_es),
+        "fullLife": bool(full_life),
+    }
     res["note"] = (
         "DPS now assumes these combat conditions are active — verify the build actually maintains "
         "each (shock/curse/charges) or disable the ones it can't. This is the realistic fighting "

@@ -7,6 +7,7 @@ LLM client receives beyond per-tool docstrings. They run without booting the eng
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 
@@ -1758,20 +1759,128 @@ def test_check_data_version_calls_service_once_and_nests_legacy_probe(monkeypatc
 def test_apply_combat_profile_sets_conditions(monkeypatch):
     from server import main
 
-    captured: dict = {}
+    captured: list[dict] = []
 
     class _Stub:
+        def __init__(self):
+            self.options: dict = {}
+
+        def transaction_lock(self):
+            return nullcontext()
+
+        def get_xml(self):
+            entries = "".join(
+                f'<Input name="{key}" value="{str(value).lower()}" />'
+                for key, value in sorted(self.options.items())
+            )
+            return f"<PathOfBuilding2><ConfigSet>{entries}</ConfigSet></PathOfBuilding2>"
+
         def set_config(self, options=None, custom_mods=None):
-            captured["options"] = options
+            del custom_mods
+            captured.append(dict(options or {}))
+            self.options.update(options or {})
             return {"stats": {"TotalDPS": 1}}
 
-    monkeypatch.setattr(main, "get_engine", lambda: _Stub())
-    r = main.apply_combat_profile(tier="Pinnacle", shocked=True, cursed=False)
-    opts = captured["options"]
+    stub = _Stub()
+    monkeypatch.setattr(main, "get_engine", lambda: stub)
+    first = main.apply_combat_profile(tier="Pinnacle", shocked=True, cursed=True)
+    r = main.apply_combat_profile(
+        tier="Pinnacle",
+        shocked=True,
+        cursed=False,
+        expected_state_hash=first["stateHash"],
+    )
+    opts = captured[-1]
     assert opts["enemyIsBoss"] == "Pinnacle"
-    assert opts.get("conditionEnemyShocked") is True
-    assert "conditionEnemyCursed" not in opts  # cursed=False omitted
+    assert opts["conditionEnemyShocked"] is True
+    assert opts["conditionEnemyCursed"] is False
+    assert opts["usePowerCharges"] is True
+    assert opts["useFrenzyCharges"] is True
+    assert opts["conditionFullEnergyShield"] is True
+    assert opts["conditionFullLife"] is False
+    assert r["appliedProfile"]["cursed"] is False
+    assert r["beforeStateHash"] == first["stateHash"]
+    assert r["stateHash"] == r["afterStateHash"]
     assert r["assumptions"] and any("Shocked" in a for a in r["assumptions"])
+    invalid = main.apply_combat_profile(tier="Impossible")
+    assert invalid["errorCode"] == "invalid_combat_profile_tier"
+    assert len(captured) == 2
+
+
+def test_public_set_config_remains_a_patch_and_rejects_stale_state(monkeypatch):
+    from server import main
+
+    class _Stub:
+        def __init__(self):
+            self.options = {"conditionEnemyCursed": True}
+            self.calls = 0
+
+        def transaction_lock(self):
+            return nullcontext()
+
+        def get_xml(self):
+            return (
+                "<PathOfBuilding2><ConfigSet>"
+                + "".join(
+                    f'<Input name="{key}" value="{str(value).lower()}" />'
+                    for key, value in sorted(self.options.items())
+                )
+                + "</ConfigSet></PathOfBuilding2>"
+            )
+
+        def set_config(self, options=None, custom_mods=None):
+            del custom_mods
+            self.calls += 1
+            self.options.update(options or {})
+            return {"stats": {}}
+
+    stub = _Stub()
+    monkeypatch.setattr(main, "get_engine", lambda: stub)
+    before = main.compute_state.build_state_hash(stub.get_xml())
+    changed = main.set_config(options={"enemyIsBoss": "Boss"}, expected_state_hash=before)
+    assert changed["ok"] is True
+    assert stub.options["conditionEnemyCursed"] is True
+    rejected = main.set_config(options={"enemyIsBoss": "Uber"}, expected_state_hash=before)
+    assert rejected["errorCode"] == "build_state_conflict"
+    assert stub.calls == 1
+
+
+def test_public_config_mutation_rolls_back_partial_engine_failure(monkeypatch):
+    from server import main
+
+    class _Stub:
+        def __init__(self):
+            self.xml = "<PathOfBuilding2><ConfigSet /></PathOfBuilding2>"
+
+        def transaction_lock(self):
+            return nullcontext()
+
+        def get_xml(self):
+            return self.xml
+
+        def set_config(self, options=None, custom_mods=None):
+            del options, custom_mods
+            self.xml = (
+                '<PathOfBuilding2><ConfigSet><Input name="conditionEnemyCursed" '
+                'value="true" /></ConfigSet></PathOfBuilding2>'
+            )
+            raise RuntimeError("fixture failure after partial mutation")
+
+        def load_build_xml(self, xml, name=""):
+            del name
+            self.xml = xml
+            return {"ok": True}
+
+    stub = _Stub()
+    monkeypatch.setattr(main, "get_engine", lambda: stub)
+    before = main.compute_state.build_state_hash(stub.get_xml())
+
+    result = main.set_config(options={"conditionEnemyCursed": True})
+
+    assert result["errorCode"] == "config_mutation_failed"
+    assert result["rolledBack"] is True
+    assert result["recoveryRequired"] is False
+    assert result["stateHash"] == before
 
 
 def test_pinnacle_readiness_gate(monkeypatch):
