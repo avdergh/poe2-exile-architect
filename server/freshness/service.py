@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 from .. import paths
-from . import providers
+from . import leagues, providers
 from .cache import (
     CacheError,
     FileCacheStore,
@@ -132,6 +132,7 @@ def get_freshness_report(
     *,
     force_refresh: bool = False,
     total_timeout: float = DEFAULT_TOTAL_TIMEOUT_SECONDS,
+    target_league: str | None = None,
 ) -> dict[str, Any]:
     """Return the strict cross-source freshness report plus provider diagnostics."""
 
@@ -148,9 +149,14 @@ def get_freshness_report(
         now=now,
         force_refresh=force_refresh,
         total_timeout=float(total_timeout),
+        target_league=target_league,
     )
     manifest = FreshnessManifest(
-        evidence=tuple(evidence for result in results for evidence in result.evidence),
+        evidence=leagues.bind_league_evidence(
+            tuple(evidence for result in results for evidence in result.evidence),
+            now=now,
+            target_league=target_league,
+        ),
         evaluated_at=now,
     )
     report = evaluate_freshness(manifest).to_dict()
@@ -159,6 +165,7 @@ def get_freshness_report(
     # for older callers and the human-readable smoke script.
     report["provider_status"] = provider_status
     report["providers"] = provider_status
+    report["targetLeague"] = target_league or leagues.default_league(now)
     return report
 
 
@@ -167,8 +174,9 @@ def _collect_provider_results(
     now: datetime,
     force_refresh: bool,
     total_timeout: float,
+    target_league: str | None = None,
 ) -> tuple[ProviderResult, ...]:
-    tasks = _provider_tasks(now=now, force_refresh=force_refresh)
+    tasks = _provider_tasks(now=now, force_refresh=force_refresh, target_league=target_league)
     deadline = monotonic() + total_timeout
     results: dict[str, ProviderResult] = {}
     submitted_at: dict[Future[ProviderResult], float] = {}
@@ -229,12 +237,15 @@ def _provider_tasks(
     *,
     now: datetime,
     force_refresh: bool,
+    target_league: str | None = None,
 ) -> tuple[tuple[str, ProviderTask], ...]:
     tasks: list[tuple[str, ProviderTask]] = [
         (_LOCAL_SOURCE, partial(_collect_local, now=now)),
     ]
     for factory in _provider_factories:
         provider = factory()
+        if isinstance(provider, NinjaSnapshotProvider):
+            provider.target_league = target_league or leagues.default_league(now)
         source = _provider_source(provider)
         tasks.append(
             (

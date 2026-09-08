@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import asyncio
+import json
 import sqlite3
 import threading
 import time
@@ -10,10 +12,13 @@ import time
 import pytest
 
 from scripts import research_mature_builds
-from server import paths
+from server import main, paths
 from server.compute import pob_code
 from server.knowledge import research_workflow
 from server.knowledge import research_memory
+from server.knowledge import research_models
+from server.mcp import research_server
+from tests.test_research_v3_contracts import _record as research_v3_record
 
 
 def _sample_code() -> str:
@@ -34,6 +39,7 @@ def _configure_user_data(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(paths, "research_runtime_dir", lambda: runtime)
     monkeypatch.setattr(paths, "mature_learning_path", lambda: tmp_path / "memory.sqlite")
     monkeypatch.setattr(research_mature_builds, "_identity_resolvability_hint", lambda **_: {})
+    monkeypatch.setattr(research_workflow, "_source_patch_for_run", lambda **_: ("0.5.4", "runesofaldur"))
     return runtime
 
 
@@ -92,6 +98,7 @@ def test_typed_research_run_never_uses_checkout_or_plugin_cache(tmp_path, monkey
         {
             "run_id": run_id,
             "output_dir": runtime,
+            "memory_db_path": tmp_path / "memory.sqlite",
             "allow_rejected": False,
             "abandon_incomplete": True,
         }
@@ -203,6 +210,158 @@ def test_typed_research_run_targets_valid_supplement_sample_ids_before_allocatin
 
 def test_legacy_cli_default_remains_repo_local():
     assert research_mature_builds.DEFAULT_OUTPUT_DIR == paths.BUNDLE_ROOT / ".poe-bd-research"
+
+
+def test_typed_contract_preserves_research_rules_and_initializes_one_current_object(
+    tmp_path, monkeypatch
+):
+    row = {
+        "sample_id": "case:typed-contract",
+        "source_hash_ref": "source-hash:typed-contract",
+        "packet_safe_hash": "a" * 64,
+        "source_type": "local_file",
+        "status": "claimed",
+    }
+    version = {
+        "gamePatch": "0.5.4",
+        "passiveTreeVersion": "0_5",
+        "pobVersionOrCommit": "unknown",
+    }
+    monkeypatch.setattr(research_workflow, "_run_dir", lambda _: tmp_path)
+    monkeypatch.setattr(research_mature_builds, "_case_for_valid_lease", lambda *_: row)
+    monkeypatch.setattr(research_mature_builds, "_queue_version_context", lambda _: version)
+    lease_token = "typed-contract-lease"
+    legacy = research_mature_builds.render_review_contract(
+        output_dir=tmp_path, lease_token=lease_token
+    )
+    product = research_workflow.review_contract(
+        run_ref="research-run:fixture", lease_token=lease_token
+    )
+
+    # File transport and the example empty object remain available to legacy consumers only.
+    assert "artifactEncoding" in legacy and "topLevelTemplate" in legacy
+    assert "artifactEncoding" not in product and "topLevelTemplate" not in product
+    assert "reviewFile" not in product
+    assert product["nextActions"] == [
+        "initialize_research_review", "validate_research_review", "accept_research_review"
+    ]
+    assert not any("accept --validate-only" in rule for rule in product["rules"])
+    assert not any("两空格缩进" in rule for rule in product["rules"])
+    changed_rules = [
+        (before, after)
+        for before, after in zip(legacy["rules"], product["rules"], strict=True)
+        if before != after
+    ]
+    assert len(changed_rules) == 2
+    assert all(
+        legacy[field] == product[field]
+        for field in legacy
+        if field not in {"rules", "nextActions", "reviewFile", "artifactEncoding", "topLevelTemplate"}
+    )
+
+    initialized = research_workflow.initialize_review(
+        run_ref="research-run:fixture", lease_token=lease_token
+    )
+    assert initialized["review"] == legacy["topLevelTemplate"]
+    # A second initialize must read the existing object, not overwrite it with the template.
+    review = deepcopy(initialized["review"])
+    review["caseCoverage"]["rotation"] = "not_applicable"
+    review["deepResearchRecords"] = [{"recordKind": "open_question", "title": "待核机制"}]
+    research_mature_builds.save_review_payload(
+        output_dir=tmp_path, lease_token=lease_token, review_payload=review
+    )
+    resumed = research_workflow.initialize_review(
+        run_ref="research-run:fixture", lease_token=lease_token
+    )
+    assert resumed["status"] == "already_exists"
+    assert resumed["review"]["caseCoverage"] == review["caseCoverage"]
+    assert resumed["review"]["deepResearchRecords"][0]["title"] == "待核机制"
+    assert resumed["review"]["artifactIdentity"] == review["artifactIdentity"]
+
+
+def test_public_contract_requires_complete_support_ownership_in_every_record(tmp_path, monkeypatch):
+    row = {
+        "sample_id": "case:support-contract",
+        "source_hash_ref": "source-hash:support-contract",
+        "packet_safe_hash": "b" * 64,
+        "source_type": "local_file",
+        "status": "claimed",
+    }
+    version = {
+        "gamePatch": "0.5.4",
+        "passiveTreeVersion": "0_5",
+        "pobVersionOrCommit": "unknown",
+    }
+    monkeypatch.setattr(research_workflow, "_run_dir", lambda _: tmp_path)
+    monkeypatch.setattr(research_mature_builds, "_case_for_valid_lease", lambda *_: row)
+    monkeypatch.setattr(research_mature_builds, "_queue_version_context", lambda _: version)
+    monkeypatch.setattr(main.tool_telemetry, "record_tool_call", lambda **_: None)
+
+    content, product = asyncio.run(
+        research_server.mcp.call_tool(
+            "get_research_review_contract",
+            {"run_ref": "research-run:fixture", "lease_token": "support-contract-lease"},
+        )
+    )
+    assert json.loads(content[0].text) == product
+    rule = product["typedPayloadSchema"]["supportPackages"]["rule"]
+    for requirement in (
+        "For record schema 2, every record kind containing resolved support gems",
+        "all resolved support gems in that same record, even a single support",
+        "packages in other records cannot satisfy this obligation",
+        "supportKeys and socketedItemRefs are parallel lists",
+        "sourceGroupRef/rootSkillRef must match exactly",
+        "the same socketedItemRef cannot appear in two packages",
+    ):
+        assert requirement in rule
+
+    defense_record = research_v3_record()
+    defense_record["record_kind"] = "defense_engine"
+    defense_record["typed_payload"] = {}
+    defense_record["component_keys"].append("support:ArcaneTempo")
+    defense_record["component_mentions"].append(
+        {
+            "candidate_name": "Arcane Tempo",
+            "role": "support_modifier",
+            "resolver_query": "support:ArcaneTempo",
+            "expected_node_types": ["support_gem"],
+            "scope": "player",
+            "component_key": "support:ArcaneTempo",
+            "resolution_status": "resolved",
+        }
+    )
+    packaged_record = deepcopy(defense_record)
+    packaged_record["record_kind"] = "skill_package"
+    packaged_record["title"] = "核心技能辅助归属"
+    packaged_record["typed_payload"] = {
+        "supportPackages": [
+            {
+                "skillKey": "skill:CometPlayer",
+                "supportKeys": ["support:ArcaneTempo"],
+                "deliveryRole": "direct",
+            }
+        ]
+    }
+    payload = {
+        "schema_version": 6,
+        "deep_research_records": [defense_record, packaged_record],
+    }
+    rejected = research_models.validate_researcher_output(payload)
+    assert rejected["errorCode"] == "invalid_schema"
+    assert any(
+        issue["path"] == "deep_research_records.0"
+        and "records with resolved support gems require" in issue["message"]
+        for issue in rejected["facts"]["validationIssues"]
+    )
+
+    # A package in the core record cannot replace the defense record's own ownership.
+    assert "cannot waive per-record packaging" in product["typedPayloadSchema"]["supportCoverageExceptions"]["rule"]
+    defense_record["typed_payload"]["supportCoverageExceptions"] = [
+        {"skillKey": "skill:CometPlayer", "reason": "source_coverage_gap", "detail": "Only one source support was observed."}
+    ]
+    assert research_models.validate_researcher_output(payload)["errorCode"] == "invalid_schema"
+    defense_record["typed_payload"] = deepcopy(packaged_record["typed_payload"])
+    assert research_models.validate_researcher_output(payload)["status"] == "accepted"
 
 
 def test_typed_worker_keeps_review_in_memory_for_validate_and_accept(tmp_path, monkeypatch):

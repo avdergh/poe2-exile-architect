@@ -125,7 +125,8 @@ def _insert_safe_family_record(database: Path) -> None:
         )
         con.execute(
             "UPDATE deep_research_record_evidence SET source_state_scope = 'state_agnostic', "
-            "accepted_projection_hash = ? WHERE knowledge_key = 'knowledge:release-fixture'",
+            "accepted_projection_hash = ?, record_id = 'record:release-fixture', "
+            "binding_issue = NULL WHERE knowledge_key = 'knowledge:release-fixture'",
             (projection,),
         )
         con.execute(

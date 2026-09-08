@@ -12,10 +12,10 @@ from server.compute import attainability, completeness, craftopt, itemopt, suppo
 from server.compute.state import build_state_hash
 from server.knowledge import lifecycle_verification
 
-from . import preflight
+from . import lifecycle_observation, preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v5"
+CHECKPOINT_VERSION = "generation_checkpoint_v8"
 _CACHE_LIMIT = 48
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCK = threading.RLock()
@@ -83,6 +83,7 @@ def inspect_generation_checkpoint(
                 _CACHE.move_to_end(cache_key)
                 result = deepcopy(cached)
                 result["cacheHit"] = True
+                _refresh_lifecycle(result, engine=engine, xml=xml)
                 _refresh_dynamic_quality(
                     result,
                     engine=engine,
@@ -108,7 +109,9 @@ def inspect_generation_checkpoint(
             )
             if stats_result.get("errorCode"):
                 return _project_result(stats_result, strict_mode=strict_mode)
-            defenses = engine.get_defenses()
+            defenses = stats_result.pop("_checkpointDefenses", None)
+            if defenses is None:
+                defenses = engine.get_defenses()
             after_hash = build_state_hash(engine.get_xml())
         except Exception:  # noqa: BLE001
             return _project_result(
@@ -158,42 +161,11 @@ def inspect_generation_checkpoint(
             "_checkpointInputs": {
                 "build": deepcopy(build),
                 "stats": deepcopy(stats),
+                "engineWarning": stats_result.get("warning")
+                or stats_result.get("engineLimitation"),
             },
         }
-        lifecycle_stage = (
-            "endgame_final" if int(build.get("level") or 0) >= 92 else "endgame_budget"
-        )
-        resource_gap = preflight.inspect_resource_model_gap(
-            xml,
-            completeness.equipped_item_metadata(xml)
-            or (build.get("gear") if isinstance(build.get("gear"), dict) else {}),
-        )
-        lifecycle_result = lifecycle_verification.verify_stage_metrics(
-            lifecycle_stage,
-            stats=stats,
-            defenses=defenses if isinstance(defenses, dict) else {},
-            state={
-                "level": int(build.get("level") or 0),
-                "mainSkillSocketed": bool(
-                    preflight.inspect_main_skill_socketed(xml).get("socketed")
-                ),
-            },
-            engine_warning=(
-                str(stats_result.get("warning"))
-                if isinstance(stats_result, dict) and stats_result.get("warning")
-                else None
-            ),
-            unmodelled_mana_mechanisms=list(resource_gap.get("mechanismKeys") or []),
-        )
-        result["lifecycleVerification"] = {
-            "stage": lifecycle_stage,
-            "status": lifecycle_result.get("status"),
-            "pass": bool(lifecycle_result.get("pass")),
-            "requiredChecks": list(lifecycle_result.get("requiredChecks") or []),
-            "advisoryChecks": list(lifecycle_result.get("advisoryChecks") or []),
-            "failedChecks": list(lifecycle_result.get("failedChecks") or []),
-            "unknownChecks": list(lifecycle_result.get("unknownChecks") or []),
-        }
+        _refresh_lifecycle(result, engine=engine, xml=xml)
         _refresh_dynamic_quality(
             result,
             engine=engine,
@@ -213,6 +185,73 @@ def clear_validation_checkpoint_cache() -> None:
 
     with _LOCK:
         _CACHE.clear()
+
+
+def recheck_lifecycle_verification(
+    engine: Any,
+    *,
+    xml: str,
+    build: dict[str, Any],
+    stats: dict[str, Any],
+    defenses: dict[str, Any],
+    observation_target: dict[str, Any],
+    engine_warning: str | None = None,
+) -> dict[str, Any]:
+    """Re-evaluate lifecycle using same-state numeric reads and fresh mechanism declarations.
+
+    The caller holds the engine transaction and binds these readbacks to ``xml`` and the exact
+    offense target. This refresh never upgrades other quality checks or a trusted Judge result.
+    """
+    state_hash = build_state_hash(xml)
+    target = lifecycle_observation.normalize_target(observation_target)
+    declared = lifecycle_observation.state_for_target(
+        engine, state_hash=state_hash, observation_target=target
+    )
+    effective_state = lifecycle_observation.observe_state(
+        xml, build=build, observation_target=target, state=declared
+    )
+    lifecycle_stage = (
+        "endgame_final" if int(effective_state.get("level") or 0) >= 92 else "endgame_budget"
+    )
+    gear = completeness.equipped_item_metadata(xml) or (
+        build.get("gear") if isinstance(build.get("gear"), dict) else {}
+    )
+    resource_gap = preflight.inspect_resource_model_gap(xml, gear)
+    verified = lifecycle_verification.verify_stage_metrics(
+        lifecycle_stage,
+        stats=stats,
+        defenses=defenses,
+        state=effective_state,
+        engine_warning=engine_warning,
+        unmodelled_mana_mechanisms=list(resource_gap.get("mechanismNames") or []),
+    )
+    return {
+        "stage": lifecycle_stage,
+        "status": verified.get("status"),
+        "pass": bool(verified.get("pass")),
+        "verificationRequired": bool(verified.get("verificationRequired")),
+        "requiredChecks": list(verified.get("requiredChecks") or []),
+        "advisoryChecks": list(verified.get("advisoryChecks") or []),
+        "failedChecks": list(verified.get("failedChecks") or []),
+        "unknownChecks": list(verified.get("unknownChecks") or []),
+        "stateHash": state_hash,
+        "observationTarget": target,
+        "mechanismObservationVersion": lifecycle_observation.OBSERVATION_VERSION,
+        "mechanismDeclarationAvailable": declared is not None,
+    }
+
+
+def _refresh_lifecycle(result: dict[str, Any], *, engine: Any, xml: str) -> None:
+    inputs = result.get("_checkpointInputs") or {}
+    result["lifecycleVerification"] = recheck_lifecycle_verification(
+        engine,
+        xml=xml,
+        build=inputs.get("build") or {},
+        stats=inputs.get("stats") or {},
+        defenses=result.get("defenses") or {},
+        observation_target=result.get("calculationContext") or {},
+        engine_warning=inputs.get("engineWarning"),
+    )
 
 
 def _read_target_skill_stats(
@@ -260,20 +299,22 @@ def _read_target_skill_stats(
     if selected is None:
         return _error("selected_skill_conflict", state_hash=build_state_hash(xml)), {}
     active_skills = [str(name) for name in selected.get("activeSkills") or []]
+    if selected.get("activeSkillSelectionError"):
+        return _error("selected_skill_conflict", state_hash=build_state_hash(xml)), {}
     if expected:
-        active_index = next(
-            (
-                index
-                for index, name in enumerate(active_skills, start=1)
-                if name.casefold() == expected.casefold()
-            ),
-            None,
-        )
+        matches = [
+            index
+            for index, name in enumerate(active_skills, start=1)
+            if name.casefold() == expected.casefold()
+        ]
+        if len(matches) != 1:
+            return _error("selected_skill_conflict", state_hash=build_state_hash(xml)), {}
+        active_index = matches[0]
+    else:
+        active_index = _projected_active_index(selected)
         if active_index is None:
             return _error("selected_skill_conflict", state_hash=build_state_hash(xml)), {}
-    else:
-        active_index = 1
-        expected = active_skills[0] if active_skills else ""
+        expected = active_skills[active_index - 1] if active_skills else ""
     context = {
         "groupIndex": int(selected.get("groupIndex") or 0),
         "activeIndex": active_index,
@@ -299,6 +340,11 @@ def _read_target_skill_stats(
             selection_error = _error("selected_skill_conflict", state_hash=original_hash)
         else:
             stats_result = engine.get_stats(_STAT_KEYS)
+            read_defenses = getattr(engine, "get_defenses", None)
+            if callable(read_defenses):
+                # Defensive readbacks can depend on the chosen active effect as well. Gather
+                # them before restoring the selector, as the formal lifecycle verifier does.
+                stats_result["_checkpointDefenses"] = read_defenses()
     except Exception:  # noqa: BLE001 - restore below, then return a bounded error.
         selection_error = _error(
             "generation_checkpoint_skill_read_failed",
@@ -331,6 +377,19 @@ def _restore_checkpoint_state(engine: Any, xml: str, expected_hash: str) -> bool
         return False
 
 
+def _projected_active_index(group: dict[str, Any]) -> int | None:
+    """Use the verified runtime selection; a legacy singleton is the only unique fallback."""
+    if group.get("activeSkillSelectionError"):
+        return None
+    names = group.get("activeSkills") or []
+    value = group.get("mainActiveSkillCalcs")
+    if "mainActiveSkillCalcs" not in group and len(names) == 1:
+        return 1
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= len(names):
+        return None
+    return value
+
+
 def _create_quality_checklist(
     *,
     engine: Any,
@@ -340,6 +399,7 @@ def _create_quality_checklist(
     stats: dict[str, Any],
     completeness_result: dict[str, Any],
     preflight_result: dict[str, Any],
+    calculation_context: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     level = int(build.get("level") or 0)
     support_reasons: list[str] = []
@@ -376,33 +436,50 @@ def _create_quality_checklist(
             support_group_results.append(
                 {
                     "groupIndex": group_index,
-                    "activeSkillIndex": int(group.get("mainActiveSkillCalcs") or 1),
+                    "activeSkillIndex": _projected_active_index(group),
                     "freshness": freshness,
                     "status": "failed",
                     "reasonClass": "evidence_gap",
                     "reasonCodes": [reason],
                     "verificationRequired": False,
+                    "currentAdverseEvidence": False,
                 }
             )
             continue
 
+        target_index = _projected_active_index(group)
+        context = calculation_context or {}
+        if context.get("groupIndex") == group_index:
+            target_index = context.get("activeIndex")
+        names = group.get("activeSkills") or []
+        target_valid = (
+            not group.get("activeSkillSelectionError")
+            and isinstance(target_index, int)
+            and not isinstance(target_index, bool)
+            and 1 <= target_index <= len(names)
+        )
+        target_name = str(names[target_index - 1]) if target_valid else ""
+        if context.get("groupIndex") == group_index and context.get("skillName"):
+            target_name = str(context["skillName"])
+        context_matches = (
+            target_valid
+            and int(audit.get("groupIndex") or 0) == group_index
+            and int(audit.get("activeSkillIndex") or 0) == target_index
+            and (
+                not target_name
+                or str(audit.get("skill") or "").casefold() == target_name.casefold()
+            )
+        )
         measurement = audit.get("measurement") or {}
         complete = (
-            audit.get("status") == "passed"
-            and measurement.get("status") == "complete"
-            and measurement.get("checkpointEligible") is True
-            and measurement.get("coverageComplete") is True
-            and measurement.get("classificationComplete") is True
-            and int(measurement.get("measuredCandidates") or 0) >= 1
-            and int(measurement.get("classifiedCandidates") or 0)
-            == int(measurement.get("screenedCandidates") or 0)
-            and int(measurement.get("failedCandidates") or 0) == 0
-            and int(measurement.get("failedCombinations") or 0) == 0
-            and measurement.get("finalConstraintsSatisfied") is True
+            context_matches
+            and audit.get("status") == "passed"
+            and supportopt.support_audit_is_complete(audit)
         )
         capability = audit.get("capability") or {}
         pure_capability_gap = (
-            audit.get("auditVersion") == "support_audit_v2"
+            context_matches
+            and audit.get("auditVersion") == "support_audit_v3"
             and audit.get("status") == "inconclusive"
             and audit.get("reasonClass") == "capability_gap"
             and capability.get("capabilitySource") == "pob_runtime"
@@ -416,7 +493,10 @@ def _create_quality_checklist(
             and measurement.get("finalConstraintsSatisfied") is True
             and not audit.get("positiveGainSupportsMissing")
         )
-        if complete:
+        if not context_matches:
+            group_status = "failed"
+            group_reasons = [f"support_audit_calculation_context_mismatch:{group_index}"]
+        elif complete:
             group_status = "passed"
             group_reasons: list[str] = []
         elif pure_capability_gap:
@@ -431,6 +511,9 @@ def _create_quality_checklist(
             missing = ",".join(audit.get("positiveGainSupportsMissing") or []) or "unknown"
             if audit.get("status") == "inconclusive" or measurement.get("status") != "complete":
                 group_reasons = [f"support_audit_inconclusive:{group_index}"]
+            elif audit.get("supportsToRemove") and not audit.get("positiveGainSupportsMissing"):
+                removed = ",".join(audit["supportsToRemove"])
+                group_reasons = [f"positive_gain_supports_to_remove:{group_index}:{removed}"]
             else:
                 group_reasons = [f"positive_gain_supports_missing:{group_index}:{missing}"]
             group_status = "failed"
@@ -449,6 +532,11 @@ def _create_quality_checklist(
                 "reasonCodes": list(audit.get("reasonCodes") or []),
                 "verificationRequired": bool(group_status == "unknown"),
                 "capability": deepcopy(capability),
+                "currentAdverseEvidence": bool(
+                    context_matches
+                    and freshness == "current"
+                    and group_status in {"failed", "unknown"}
+                ),
             }
         )
 
@@ -543,20 +631,49 @@ def _create_quality_checklist(
                 jewel_reasons.append("selected_candidate_socket_probe_inconclusive")
     socket_state = completeness_result.get("runes") or {}
     batch_decisions = craftopt.socket_batch_decisions_for_state(engine, state_hash)
+    pending_socket_slots = set(craftopt.socket_pending_slots_for_state(engine, state_hash))
     socket_reasons: list[str] = []
     socket_freshness: dict[str, str] = {}
-    for slot in socket_state.get("decisionRequiredSlots") or []:
+    checked_socket_slots = (
+        set(socket_state.get("decisionRequiredSlots") or [])
+        | {
+            slot
+            for slot, decision in batch_decisions.items()
+            if decision in {"failed", "measurement_error", "capability_gap"}
+        }
+        | pending_socket_slots
+    )
+    equipped_socket_slots = {
+        str(row["slot"])
+        for row in socket_state.get("details") or []
+        if isinstance(row, dict) and row.get("slot") and str(row["slot"]) in gear
+    }
+    checked_socket_slots |= set(craftopt.socket_reviewed_slots(engine)) & equipped_socket_slots
+    current_socket_adverse = False
+    for slot in sorted(checked_socket_slots):
         freshness = craftopt.socket_decision_freshness(engine, state_hash, str(slot))
         socket_freshness[str(slot)] = freshness
         decision = batch_decisions.get(str(slot))
         if decision in {"no_positive", "partial_no_positive", "not_applicable"}:
             continue
-        if decision == "socketed":
+        if decision in {"socketed", "partial_socketed"}:
+            if freshness == "current" and slot not in pending_socket_slots:
+                continue
             socket_reasons.append(f"planned_socket_not_applied:{slot}")
         elif decision == "failed":
             socket_reasons.append(f"socket_plan_failed:{slot}")
+        elif decision in {"measurement_error", "capability_gap"}:
+            socket_reasons.append(f"socket_{decision}:{slot}")
         else:
             socket_reasons.append(f"socket_decision_{freshness}:{slot}")
+        if freshness == "current" and decision in {
+            "socketed",
+            "partial_socketed",
+            "failed",
+            "measurement_error",
+            "capability_gap",
+        }:
+            current_socket_adverse = True
     mana_flask = any(
         isinstance(item, dict)
         and str(slot).casefold().startswith("flask")
@@ -578,6 +695,7 @@ def _create_quality_checklist(
         return {
             "status": "not_applicable" if not applicable else "failed" if reasons else "passed",
             "reasons": reasons,
+            "currentAdverseEvidence": bool(applicable and reasons),
         }
 
     return {
@@ -597,11 +715,15 @@ def _create_quality_checklist(
             "verificationRequired": any(
                 bool(value.get("verificationRequired")) for value in support_group_results
             ),
+            "currentAdverseEvidence": any(
+                row.get("currentAdverseEvidence") is True for row in support_group_results
+            ),
         },
         "mechanismDependencies": {
             "status": "failed" if mechanism_advisories else "passed",
             "reasons": mechanism_advisories,
             "verificationRequired": bool(mechanism_advisories),
+            "currentAdverseEvidence": bool(mechanism_advisories),
         },
         "bootstrapItems": item(sorted(set(bootstrap_reasons))),
         "gearAttainability": item(sorted(set(attainability_reasons))),
@@ -649,16 +771,22 @@ def _create_quality_checklist(
             "verificationRequired": bool(
                 jewel_decision and jewel_decision.get("status") == "inconclusive"
             ),
+            "currentAdverseEvidence": bool(
+                filled < allocated
+                or (jewel_freshness == "current" and jewel_decision is not None and jewel_reasons)
+            ),
         },
         "itemSockets": {
             **item(socket_reasons),
             "evidenceFreshness": socket_freshness,
+            "currentAdverseEvidence": current_socket_adverse,
         },
         "sustain": {
             "status": sustain_status,
             "reasons": sustain_reasons,
             "verificationRequired": bool(sustain_result.get("verificationRequired")),
             "resourceSustain": sustain_result,
+            "currentAdverseEvidence": sustain_status == "failed",
         },
     }
 
@@ -687,6 +815,7 @@ def _refresh_dynamic_quality(
         stats=stats,
         completeness_result=completeness_result,
         preflight_result=preflight_result,
+        calculation_context=result.get("calculationContext"),
     )
     result["createQualityChecklist"] = checklist
     quality_unresolved = any(

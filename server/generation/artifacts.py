@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from contextlib import nullcontext
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -19,14 +20,23 @@ from server import paths
 from server.compute import completeness, pob_structure
 from server.compute.state import build_state_hash
 from server.knowledge import copy_safety
+from server.knowledge.lifecycle_verification import LifecycleStageVerificationState
 from server.judge import evaluator, hard_legality
 from server.runtime.file_lock import interprocess_file_lock
 
-from . import evaluation_snapshots, models, run_store
+from . import (
+    evaluation_snapshots,
+    lifecycle_observation,
+    mechanism_evidence,
+    models,
+    run_store,
+    validation_checkpoint,
+)
 
 
 ARTIFACT_SCHEMA_VERSION = 2
 SPIRIT_REVALIDATION_SCHEMA_VERSION = 1
+_RECOVERY_ATTRIBUTE = "_poe2_mutation_batch_recovery_required"
 
 
 class FinalBuildArtifactManifest(models.StrictModel):
@@ -47,7 +57,9 @@ class FinalBuildArtifactManifest(models.StrictModel):
     create_quality_checklist: dict[str, dict[str, Any]] = Field(default_factory=dict)
     pob_round_trip: dict[str, Any] = Field(default_factory=dict)
     lifecycle_verification: dict[str, Any] = Field(default_factory=dict)
+    lifecycle_declaration_binding: dict[str, Any] | None = None
     artifact_selection_ref: str | None = None
+    mechanism_evidence_hash: str | None = None
     selection_outcome: str = "latest_passing_attempt_selected"
     created_at: str
     local_only: bool = True
@@ -74,6 +86,46 @@ def save_final_build_artifact(
     selection_reason: str | None = None,
     later_findings_scope: str = "not_applicable",
 ) -> dict[str, Any]:
+    """Freeze the Judge chain while checking and publishing the selected exact artifact."""
+
+    try:
+        bound_run = run_store.load_bound_run(run_id, run_token, require_unconsumed=False)
+    except run_store.RunStoreError as exc:
+        return models.rejected(exc.code)
+    lock_path = bound_run.run_dir / "evaluation-lock"
+    if not run_store.acquire_generation_lock(lock_path):
+        return models.rejected("generation_evaluation_in_progress")
+    try:
+        lock_factory = getattr(active_engine, "transaction_lock", None)
+        with lock_factory() if callable(lock_factory) else nullcontext():
+            if getattr(active_engine, _RECOVERY_ATTRIBUTE, False):
+                return {
+                    **models.rejected("build_state_recovery_required"),
+                    "recoveryRequired": True,
+                }
+            return _save_final_build_artifact_locked(
+                active_engine,
+                run_id=run_id,
+                run_token=run_token,
+                candidate_id=candidate_id,
+                attempt_index=attempt_index,
+                selection_reason=selection_reason,
+                later_findings_scope=later_findings_scope,
+            )
+    finally:
+        run_store.release_generation_lock(lock_path)
+
+
+def _save_final_build_artifact_locked(
+    active_engine: Any,
+    *,
+    run_id: str,
+    run_token: str,
+    candidate_id: str,
+    attempt_index: int,
+    selection_reason: str | None = None,
+    later_findings_scope: str = "not_applicable",
+) -> dict[str, Any]:
     """Persist exactly one hard-valid, unchanged PoB snapshot for a generation run."""
     try:
         # Review consumption is an audit/workflow boundary, not build evidence.  A long
@@ -89,11 +141,13 @@ def save_final_build_artifact(
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
     review_already_consumed = (bound_run.run_dir / "review-consumed").exists()
+    if run_store.generation_contract_upgrade_required(bound_run.manifest):
+        return models.rejected("generation_contract_upgrade_requires_restart")
     try:
         receipts = run_store.read_trusted_evaluations_strict(bound_run)
     except run_store.RunStoreError as exc:
         return models.rejected(exc.code)
-    if attempt_index < 0 or attempt_index >= len(receipts):
+    if isinstance(attempt_index, bool) or attempt_index < 0 or attempt_index >= len(receipts):
         return models.rejected("trusted_evaluation_not_found")
     root = artifacts_dir()
     final_dir = root / bound_run.run_id
@@ -122,15 +176,28 @@ def save_final_build_artifact(
             "mechanismBlueprintRequired"
         )
     )
+    mechanism_revision_changed = False
+    historical_evidence = receipt.get("mechanismEvidence")
     if mechanism_required:
         current_binding = run_store.current_mechanism_binding(bound_run)
-        if current_binding is None or receipt.get("mechanismBinding") != current_binding:
-            return models.rejected("trusted_evaluation_mechanism_binding_mismatch")
+        mechanism_revision_changed = (
+            current_binding is None
+            or receipt.get("mechanismBinding") != current_binding
+            or (
+                historical_evidence is not None
+                and not mechanism_evidence.current_markers_match(bound_run, receipt)
+            )
+        )
+        if mechanism_revision_changed:
+            if historical_evidence is None:
+                return models.rejected("trusted_evaluation_mechanism_binding_mismatch")
+            if not selection_reason_valid:
+                return models.rejected("baseline_selection_reason_required")
+            if later_findings_scope != "candidate_delta_only":
+                return models.rejected("passing_baseline_implicated_by_later_findings")
     if receipt.get("schemaVersion") not in {2, 3}:
         return models.rejected("legacy_evaluation_requires_rejudge")
-    audit_version = str(
-        (receipt.get("hardLegalityAudit") or {}).get("auditVersion") or ""
-    )
+    audit_version = str((receipt.get("hardLegalityAudit") or {}).get("auditVersion") or "")
     if audit_version not in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS:
         return models.rejected("legacy_evaluation_requires_rejudge")
     try:
@@ -176,6 +243,10 @@ def save_final_build_artifact(
             return models.rejected("trusted_evaluation_snapshot_unavailable")
         if expected_semantic_hash != snapshot.semantic_state_hash:
             return models.rejected("trusted_evaluation_snapshot_mismatch")
+        if snapshot.mechanism_evidence_hash != (
+            historical_evidence.get("bundleHash") if isinstance(historical_evidence, dict) else None
+        ):
+            return models.rejected("trusted_mechanism_evidence_mismatch")
         active_state_regressed = False
         if not historical_attempt:
             try:
@@ -222,10 +293,54 @@ def save_final_build_artifact(
     if blockers:
         return models.rejected(blockers[0], caveats=blockers[1:])
     round_trip = _validate_pob_round_trip(active_engine, xml)
+    if round_trip.get("recoveryRequired"):
+        return {
+            **models.rejected("final_pob_round_trip_restore_failed"),
+            "recoveryRequired": True,
+        }
     if target_level >= 90 and round_trip.get("status") != "passed":
         return models.rejected(
             "final_pob_round_trip_failed",
             caveats=[str(round_trip.get("errorCode") or "round_trip_unavailable")],
+        )
+
+    refreshed_lifecycle = _refresh_saved_lifecycle(active_engine, xml, judge)
+    if refreshed_lifecycle is not None and refreshed_lifecycle.get("errorCode"):
+        return {
+            **models.rejected(str(refreshed_lifecycle["errorCode"])),
+            **({"recoveryRequired": True} if refreshed_lifecycle.get("recoveryRequired") else {}),
+        }
+    refreshed_checklist = (
+        refreshed_lifecycle.pop("_createQualityChecklist", {})
+        if refreshed_lifecycle is not None
+        else {}
+    )
+    declaration_binding = (
+        refreshed_lifecycle.pop("_lifecycleDeclarationBinding", None)
+        if refreshed_lifecycle is not None
+        else None
+    )
+    final_lifecycle = (
+        refreshed_lifecycle
+        if refreshed_lifecycle is not None
+        else dict(receipt.get("lifecycleVerification") or {})
+    )
+    final_checklist = _tighten_quality_checklist(
+        receipt.get("createQualityChecklist") or {}, refreshed_checklist
+    )
+    final_delivery_status = str(receipt.get("deliveryStatus") or "candidate")
+    if refreshed_lifecycle is not None:
+        # Keep every historical quality restriction, while retaining current same-state adverse
+        # evidence. Cache loss is not a counterexample to the trusted historical checks.
+        final_delivery_status = (
+            "recommended"
+            if final_checklist
+            and all(
+                item.get("status") in {"passed", "not_applicable"}
+                for item in final_checklist.values()
+            )
+            and final_lifecycle.get("pass") is True
+            else "candidate"
         )
 
     artifact_id = f"final-build:{uuid4()}"
@@ -236,10 +351,11 @@ def save_final_build_artifact(
         or item.get("hardLegalityAudit", {}).get("hardLegalityReady") is False
         for item in later_receipts
     )
-    restoring_baseline = historical_attempt or active_state_regressed
+    restoring_baseline = historical_attempt or active_state_regressed or mechanism_revision_changed
     selection_outcome = (
         "baseline_restored_after_regression"
-        if restoring_baseline and (later_regressed or active_state_regressed)
+        if restoring_baseline
+        and (later_regressed or active_state_regressed or mechanism_revision_changed)
         else "earlier_passing_baseline_selected"
         if historical_attempt
         else "latest_passing_attempt_selected"
@@ -261,11 +377,15 @@ def save_final_build_artifact(
             (receipt.get("hardLegalityAudit") or {}).get("auditVersion") or ""
         )
         or None,
-        delivery_status=str(receipt.get("deliveryStatus") or "candidate"),
-        create_quality_checklist=dict(receipt.get("createQualityChecklist") or {}),
+        delivery_status=final_delivery_status,
+        create_quality_checklist=final_checklist,
         pob_round_trip=round_trip,
-        lifecycle_verification=dict(receipt.get("lifecycleVerification") or {}),
+        lifecycle_verification=final_lifecycle,
+        lifecycle_declaration_binding=declaration_binding,
         artifact_selection_ref=selection_ref,
+        mechanism_evidence_hash=(
+            historical_evidence.get("bundleHash") if isinstance(historical_evidence, dict) else None
+        ),
         selection_outcome=selection_outcome,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -296,6 +416,15 @@ def save_final_build_artifact(
                 copy_safety.safe_text(selection_reason, limit=500) if selection_reason else None
             ),
             "laterFindingsScope": later_findings_scope,
+            **(
+                {
+                    "mechanismEvidenceHash": historical_evidence["bundleHash"],
+                    "sourceHash": state.source_hash,
+                    "semanticStateHash": state.semantic_state_hash,
+                }
+                if isinstance(historical_evidence, dict)
+                else {}
+            ),
         },
     )
     if not selection_written:
@@ -312,6 +441,23 @@ def save_final_build_artifact(
             "restoredEarlierBaseline": historical_attempt,
             "restoredPassingBaseline": restoring_baseline,
         },
+        **(
+            {
+                "selectedDesignEvidence": {
+                    "mechanismEvidenceHash": historical_evidence["bundleHash"],
+                    "mechanismBlueprintRef": historical_evidence["blueprintMarker"]["blueprintRef"],
+                    "mechanismBlueprint": deepcopy(historical_evidence["mechanismBlueprint"]),
+                    "researchMemoryUse": deepcopy(historical_evidence.get("researchMemoryUse")),
+                    "researchExecutionPlan": deepcopy(
+                        historical_evidence.get("researchExecutionPlan")
+                    ),
+                    "toolReferences": deepcopy(historical_evidence.get("toolReferences") or []),
+                    "evidenceAudit": deepcopy(historical_evidence["blueprintMarker"].get("evidenceAudit")),
+                }
+            }
+            if restoring_baseline and isinstance(historical_evidence, dict)
+            else {}
+        ),
         "containsRawPob": False,
         "orderingRecovery": (
             {
@@ -499,6 +645,68 @@ def read_final_build_artifact_for_export(
     return manifest, xml
 
 
+def read_artifact_lifecycle_declarations(
+    manifest: FinalBuildArtifactManifest,
+    xml: str,
+) -> dict[str, Any] | None:
+    """Read typed declarations only when bound to this artifact's exact state and Judge target.
+
+    These are inputs to a new observation, never a reusable pass result. Legacy artifacts without
+    declarations remain unverified; explicit empty declarations remain an intentional revocation.
+    """
+    binding = getattr(manifest, "lifecycle_declaration_binding", None)
+    target = manifest.judge_report.calculation_context
+    if not isinstance(binding, dict) or target is None:
+        return None
+    expected_target = lifecycle_observation.normalize_target(
+        target.model_dump(mode="json", by_alias=True)
+    )
+    if (
+        not _valid_pob_xml(xml)
+        or evaluator.compute_source_hash(xml) != manifest.source_hash
+        or binding.get("observationVersion") != lifecycle_observation.OBSERVATION_VERSION
+        or binding.get("stateHash") != build_state_hash(xml)
+        or binding.get("observationTarget") != expected_target
+        or not isinstance(binding.get("declarations"), dict)
+    ):
+        return None
+    try:
+        # Validate without the legacy-derived-field stripping used by older direct callers.
+        parsed = LifecycleStageVerificationState.model_validate(binding["declarations"])
+        declarations = lifecycle_observation.declaration_payload(parsed)
+    except (ValidationError, TypeError, ValueError):
+        return None
+    if models.validate_no_raw_or_hidden_reasoning(declarations).get("status") != "accepted":
+        return None
+    return declarations
+
+
+def _tighten_quality_checklist(
+    previous: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Join current adverse evidence without promoting historical quality restrictions."""
+    result = deepcopy(previous)
+    severity = {"not_applicable": 0, "passed": 0, "unknown": 1, "failed": 2}
+    for name, item in current.items():
+        if not isinstance(item, dict) or item.get("currentAdverseEvidence") is not True:
+            continue
+        new_status = item.get("status")
+        if new_status not in {"unknown", "failed"}:
+            continue
+        old = result.get(name) or {}
+        if severity.get(str(old.get("status")), 0) > severity[new_status]:
+            tightened = deepcopy(old)
+            tightened["currentAdverseEvidence"] = True
+        else:
+            tightened = deepcopy(item)
+        tightened["reasons"] = list(dict.fromkeys([
+            *old.get("reasons", []), *item.get("reasons", []),
+        ]))
+        result[name] = tightened
+    return result
+
+
 def _iter_artifacts() -> list[tuple[Path, FinalBuildArtifactManifest]]:
     root = artifacts_dir()
     if not root.is_dir():
@@ -621,12 +829,38 @@ def _validate_pob_round_trip(engine: Any, xml: str) -> dict[str, Any]:
     context = lock_factory() if callable(lock_factory) else nullcontext()
     try:
         with context:
+            if getattr(engine, _RECOVERY_ATTRIBUTE, False):
+                return {
+                    "status": "failed",
+                    "errorCode": "build_state_recovery_required",
+                    "recoveryRequired": True,
+                    "stateRestored": False,
+                }
             original = get_xml()
+            original_hash = build_state_hash(original)
             try:
                 load(xml, name="final-artifact-round-trip")
                 serialized = get_xml()
             finally:
-                load(original, name="final-artifact-round-trip-restore")
+                try:
+                    load(original, name="final-artifact-round-trip-restore")
+                    restored_hash = build_state_hash(get_xml())
+                except Exception:  # noqa: BLE001 - a failed restore must stop every save level.
+                    setattr(engine, _RECOVERY_ATTRIBUTE, True)
+                    return {
+                        "status": "failed",
+                        "errorCode": "round_trip_restore_failed",
+                        "recoveryRequired": True,
+                        "stateRestored": False,
+                    }
+                if restored_hash != original_hash:
+                    setattr(engine, _RECOVERY_ATTRIBUTE, True)
+                    return {
+                        "status": "failed",
+                        "errorCode": "round_trip_restore_failed",
+                        "recoveryRequired": True,
+                        "stateRestored": False,
+                    }
     except Exception:  # noqa: BLE001 - final delivery fails closed without engine internals.
         return {"status": "failed", "errorCode": "round_trip_engine_failed"}
     expected = _pob_structure_summary(xml)
@@ -645,8 +879,117 @@ def _validate_pob_round_trip(engine: Any, xml: str) -> dict[str, Any]:
         "equipmentCount": len(actual["equipmentSlots"]),
         "skillGroupCount": len(actual["skillGroups"]),
         "passiveJewelCount": len(actual["passiveJewels"]),
+        "stateRestored": True,
+        "restoredStateHash": restored_hash,
         **({"errorCode": "round_trip_structure_changed"} if not all(comparisons.values()) else {}),
     }
+
+
+def _refresh_saved_lifecycle(
+    engine: Any,
+    xml: str,
+    judge: models.JudgeAdvisoryReport,
+) -> dict[str, Any] | None:
+    """Observe late mechanism evidence against this exact Judge state and target only."""
+
+    if not all(
+        callable(getattr(engine, name, None))
+        for name in (
+            "transaction_lock",
+            "get_xml",
+            "load_build_xml",
+            "get_build",
+            "get_stats",
+            "get_defenses",
+        )
+    ):
+        return None
+    target = (
+        judge.calculation_context.model_dump(mode="json", by_alias=True)
+        if judge.calculation_context is not None
+        else {}
+    )
+    if not all(target.get(key) for key in ("groupIndex", "activeIndex", "skillName")):
+        return None
+    expected_hash = build_state_hash(xml)
+    with engine.transaction_lock():
+        if getattr(engine, _RECOVERY_ATTRIBUTE, False):
+            return {"errorCode": "build_state_recovery_required", "recoveryRequired": True}
+        try:
+            original = engine.get_xml()
+            original_hash = build_state_hash(original)
+        except Exception:  # noqa: BLE001 - expose no engine internals.
+            return {"errorCode": "final_lifecycle_snapshot_failed"}
+        result: dict[str, Any]
+        try:
+            engine.load_build_xml(xml, name="final-artifact-lifecycle")
+            if build_state_hash(engine.get_xml()) != expected_hash:
+                result = {"errorCode": "final_lifecycle_snapshot_mismatch"}
+            else:
+                checked = validation_checkpoint.inspect_generation_checkpoint(
+                    engine,
+                    strict_mode=judge.feedback_mode == "strict",
+                    offense_skill_group_index=int(target["groupIndex"]),
+                    expected_skill_name=str(target["skillName"]),
+                )
+                actual_target = checked.get("calculationContext") or {}
+                lifecycle = checked.get("lifecycleVerification")
+                if (
+                    checked.get("status") == "error"
+                    or checked.get("stateHash") != expected_hash
+                    or build_state_hash(engine.get_xml()) != expected_hash
+                    or any(
+                        actual_target.get(key) != target[key]
+                        for key in ("groupIndex", "activeIndex", "skillName")
+                    )
+                    or not isinstance(lifecycle, dict)
+                    or lifecycle.get("stateHash") != expected_hash
+                    or lifecycle.get("observationTarget")
+                    != {key: target[key] for key in ("groupIndex", "activeIndex", "skillName")}
+                ):
+                    result = {"errorCode": "final_lifecycle_snapshot_mismatch"}
+                else:
+                    legality = checked.get("hardLegality") or {}
+                    if (
+                        checked.get("hardLegalityReady") is False
+                        or legality.get("status") == "failed"
+                        or legality.get("hardFailures")
+                    ):
+                        result = {"errorCode": "final_candidate_hard_legality_not_verified"}
+                    else:
+                        result = dict(lifecycle)
+                        result["_createQualityChecklist"] = deepcopy(
+                            checked.get("createQualityChecklist") or {}
+                        )
+                        declarations = lifecycle_observation.state_for_target(
+                            engine, state_hash=expected_hash, observation_target=target
+                        )
+                        if declarations is not None:
+                            parsed = LifecycleStageVerificationState.model_validate(declarations)
+                            declarations = lifecycle_observation.declaration_payload(parsed)
+                            if (
+                                models.validate_no_raw_or_hidden_reasoning(declarations).get("status")
+                                != "accepted"
+                            ):
+                                raise ValueError("unsafe lifecycle declarations")
+                            result["_lifecycleDeclarationBinding"] = {
+                                "observationVersion": lifecycle_observation.OBSERVATION_VERSION,
+                                "stateHash": expected_hash,
+                                "observationTarget": lifecycle_observation.normalize_target(target),
+                                "declarations": declarations,
+                            }
+        except Exception:  # noqa: BLE001
+            result = {"errorCode": "final_lifecycle_verification_failed"}
+        try:
+            engine.load_build_xml(original, name="final-artifact-lifecycle-restore")
+            if build_state_hash(engine.get_xml()) != original_hash:
+                raise ValueError("state mismatch")
+        except Exception:  # noqa: BLE001
+            setattr(engine, _RECOVERY_ATTRIBUTE, True)
+            return {"errorCode": "final_lifecycle_restore_failed", "recoveryRequired": True}
+        if getattr(engine, _RECOVERY_ATTRIBUTE, False):
+            return {"errorCode": "build_state_recovery_required", "recoveryRequired": True}
+        return result
 
 
 def _pob_structure_summary(xml: str) -> dict[str, Any] | None:
@@ -856,8 +1199,7 @@ def _spirit_delivery_eligible(
 ) -> bool:
     if (
         manifest.schema_version == ARTIFACT_SCHEMA_VERSION
-        and manifest.hard_legality_audit_version
-        in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
+        and manifest.hard_legality_audit_version in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
     ):
         return True
     latest = _latest_spirit_revalidation(artifact_dir, manifest)
@@ -870,8 +1212,7 @@ def _spirit_validation_status(
 ) -> str:
     if (
         manifest.schema_version == ARTIFACT_SCHEMA_VERSION
-        and manifest.hard_legality_audit_version
-        in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
+        and manifest.hard_legality_audit_version in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS
     ):
         return "current"
     latest = _latest_spirit_revalidation(artifact_dir, manifest)

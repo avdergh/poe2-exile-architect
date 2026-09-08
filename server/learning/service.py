@@ -656,7 +656,13 @@ def submit_comparison(
         if error:
             return _rejected(error)
         assert case is not None
-        validated = comparison.validate_report(report, expected_case_id=case_id)
+        if not case.get("referenceEvidence") or not case.get("generatedEvidence"):
+            return _rejected("comparison_evidence_unavailable")
+        validated = comparison.validate_report(
+            report, expected_case_id=case_id,
+            reference_evidence=case["referenceEvidence"],
+            generated_evidence=case["generatedEvidence"],
+        )
         if validated.get("status") != "accepted":
             return validated
         report_value = validated["report"]
@@ -1057,7 +1063,7 @@ def campaign_status(*, campaign_id: str) -> dict[str, Any]:
         return _rejected("learning_campaign_not_found")
     cases = [_safe_case_status(item) for item in campaign["cases"]]
     completed_metrics = [
-        item["metrics"]
+        comparison.stored_case_metrics(item)
         for item in campaign["cases"]
         if item.get("phase") == "completed" or item.get("terminalFailure") is True
     ]
@@ -1300,7 +1306,7 @@ def _safe_case_status(case: dict[str, Any]) -> dict[str, Any]:
         "familyTarget": case["familyTarget"],
         "artifactId": case["artifactId"],
         "comparisonRef": case["comparisonRef"],
-        "metrics": case["metrics"],
+        "metrics": comparison.stored_case_metrics(case),
         "retryCounts": case["retryCounts"],
         "failureCode": case["failureCode"],
         "terminalFailure": case.get("terminalFailure", False),

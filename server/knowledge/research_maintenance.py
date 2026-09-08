@@ -13,6 +13,7 @@ from . import research_identity
 from . import research_memory
 from . import research_models
 from . import research_runtime
+from . import research_claim_writes
 
 
 LEGACY_CLEANUP_MARKER = "phase4_legacy_memory_cleanup_v1"
@@ -269,13 +270,11 @@ def remove_exclusive_research_sources(
             ):
                 ids = owned_rows[table]
                 if ids:
-                    visible_change_count += max(
-                        0,
-                        con.execute(
-                            f"DELETE FROM {table} WHERE {id_column} IN ({','.join('?' for _ in ids)})",
-                            ids,
-                        ).rowcount,
-                    )
+                    predicate = f"{id_column} IN ({','.join('?' for _ in ids)})"
+                    visible_change_count += int(con.execute(
+                        f"SELECT count(*) FROM {table} WHERE {predicate}", ids
+                    ).fetchone()[0])
+                    con.execute(f"DELETE FROM {table} WHERE {predicate}", ids)
             visible_change_count += max(
                 0,
                 con.execute(
@@ -476,6 +475,28 @@ def calibrate_research_contract_v1(
             "sourceSpecificRandomPatternCount": int(pattern_exists),
             "physicalDeleteCount": 0,
         }
+        protected = [
+            {"recordId": str(row["record_id"]), "reason": reason}
+            for row in [*skill_rows.values(), *mutated_rows]
+            if (reason := _legacy_mutation_issue(con, row))
+        ]
+        for row in skill_rows.values():
+            selected_sources = {
+                source for source, selected in skill_rows.items()
+                if selected["record_id"] == row["record_id"]
+            }
+            if set(_loads(row["source_case_refs"], [])) - selected_sources:
+                protected.append({
+                    "recordId": str(row["record_id"]),
+                    "reason": "source_claims_outside_calibration",
+                })
+        if protected:
+            return {
+                **report,
+                "status": "blocked_unsafe_targets",
+                "protectedRecords": protected,
+                "repair": "已绑定来源或存在条件变体的目标须使用逐来源研究修订，旧校准不覆盖这些记录。",
+            }
         if not apply:
             return report
 
@@ -611,7 +632,7 @@ def reconcile_deep_record_ids(
         active_rows = list(
             con.execute(
                 """
-                SELECT record_id, knowledge_key, title
+                SELECT *
                 FROM deep_research_records
                 WHERE knowledge_key IS NOT NULL
                   AND status IN ('valid', 'needs_revalidation')
@@ -624,13 +645,18 @@ def reconcile_deep_record_ids(
         husk_replacements: list[dict[str, str]] = []
         superseded_duplicates: list[dict[str, str]] = []
         conflicts: list[dict[str, str]] = []
+        protected_records: list[dict[str, str]] = []
         already_consistent_count = 0
         for row in active_rows:
             key = str(row["knowledge_key"])
             record_id = str(row["record_id"])
-            target_id = "drr-" + research_memory._stable_hash({"knowledge_key": key})[:16]
+            target_id = research_runtime.canonical_record_id(str(row["knowledge_scope"]), key)
             if target_id == record_id:
                 already_consistent_count += 1
+                continue
+            protection = _legacy_mutation_issue(con, row)
+            if protection:
+                protected_records.append({"recordId": record_id, "reason": protection})
                 continue
             occupant = con.execute(
                 """
@@ -684,8 +710,14 @@ def reconcile_deep_record_ids(
             "supersededDuplicates": superseded_duplicates,
             "conflictCount": len(conflicts),
             "conflicts": conflicts,
+            "protectedRecordCount": len(protected_records),
+            "protectedRecords": protected_records,
             "physicalDeleteCount": 0,
         }
+        if protected_records and not (relocations or husk_replacements or superseded_duplicates):
+            report["status"] = "blocked_unsafe_targets"
+            report["repair"] = "来源绑定或条件变体保留现有记录 ID；旧 ID 整理不能替代逐来源修订。"
+            return report
         if not apply:
             return report
 
@@ -701,38 +733,17 @@ def reconcile_deep_record_ids(
                 # The moving row already carries `key`, so blank it until the copy is in
                 # place and the old row is deprecated; otherwise the canonical
                 # knowledge-key index would see two active holders.
+                values = dict(con.execute(
+                    "SELECT * FROM deep_research_records WHERE record_id = ?", (old_id,)
+                ).fetchone())
                 con.execute(
                     "UPDATE deep_research_records SET knowledge_key = NULL WHERE record_id = ?",
                     (old_id,),
                 )
+                values.update(record_id=target_id, knowledge_key=key, superseded_by_id=None)
                 con.execute(
-                    """
-                    INSERT INTO deep_research_records(
-                        record_id, research_group_id, build_family_key, knowledge_key,
-                        evidence_count, record_kind, title, summary, content,
-                        content_language, length_exception_reason, component_keys,
-                        component_mentions, source_case_refs, safe_evidence_refs,
-                        conditions, failure_conditions, typed_payload, class_key,
-                        ascendancy_key, extraction_method_version, record_schema_version,
-                        game_patch, passive_tree_version, pob_version_or_commit,
-                        visibility, split, knowledge_scope, status, copy_safety_state,
-                        current_version_context, created_at, last_seen_at,
-                        last_validated_at, superseded_by_id
-                    )
-                    SELECT
-                        ?, research_group_id, build_family_key, ?,
-                        evidence_count, record_kind, title, summary, content,
-                        content_language, length_exception_reason, component_keys,
-                        component_mentions, source_case_refs, safe_evidence_refs,
-                        conditions, failure_conditions, typed_payload, class_key,
-                        ascendancy_key, extraction_method_version, record_schema_version,
-                        game_patch, passive_tree_version, pob_version_or_commit,
-                        visibility, split, knowledge_scope, status, copy_safety_state,
-                        current_version_context, created_at, last_seen_at,
-                        last_validated_at, NULL
-                    FROM deep_research_records WHERE record_id = ?
-                    """,
-                    (target_id, key, old_id),
+                    f"INSERT INTO deep_research_records({','.join(values)}) "
+                    f"VALUES ({','.join('?' for _ in values)})", tuple(values.values()),
                 )
 
             scheduled_husk_ids = {action["huskId"] for action in husk_replacements}
@@ -801,6 +812,16 @@ def reconcile_deep_record_ids(
                     """,
                     (action["targetRecordId"], now, action["recordId"]),
                 )
+            for action in [*relocations, *husk_replacements, *superseded_duplicates]:
+                con.execute(
+                    "UPDATE deep_research_record_evidence SET record_id = ? WHERE record_id = ?",
+                    (action["targetRecordId"], action["recordId"]),
+                )
+                if con.execute(
+                    "SELECT 1 FROM deep_research_record_evidence WHERE record_id = ? LIMIT 1",
+                    (action["targetRecordId"],),
+                ).fetchone():
+                    research_claim_writes.refresh_record_evidence(con, action["targetRecordId"], now)
 
             integrity = str(con.execute("PRAGMA integrity_check").fetchone()[0])
             foreign_keys = list(con.execute("PRAGMA foreign_key_check").fetchall())
@@ -815,10 +836,11 @@ def reconcile_deep_record_ids(
                 "conflictCount": len(conflicts),
                 "physicalDeleteCount": physical_delete_count,
             }
-            con.execute(
-                "INSERT INTO meta(key, value) VALUES (?, ?)",
-                (RECONCILE_RECORD_IDS_MARKER, _json(marker_details)),
-            )
+            if not protected_records:
+                con.execute(
+                    "INSERT INTO meta(key, value) VALUES (?, ?)",
+                    (RECONCILE_RECORD_IDS_MARKER, _json(marker_details)),
+                )
             if relocations or husk_replacements or superseded_duplicates:
                 research_runtime.bump_memory_revision(con)
             con.commit()
@@ -827,7 +849,7 @@ def reconcile_deep_record_ids(
             raise
         report.update(
             {
-                "status": "applied",
+                "status": "applied_safe_subset" if protected_records else "applied",
                 "backupPath": str(resolved_backup_path),
                 "databaseIntegrity": integrity,
                 "foreignKeyViolationCount": len(foreign_keys),
@@ -837,6 +859,29 @@ def reconcile_deep_record_ids(
         return report
     finally:
         con.close()
+
+
+def _legacy_mutation_issue(con: sqlite3.Connection, row: sqlite3.Row) -> str | None:
+    """Protect source-bound conclusions from historical key-only rewrite algorithms."""
+    key = str(row["knowledge_key"] or "")
+    if key and con.execute(
+        "SELECT 1 FROM deep_research_records WHERE knowledge_scope = ? AND knowledge_key = ? "
+        "AND record_id != ? AND superseded_by_id IS NULL "
+        "AND projection_hash IS NOT NULL AND projection_hash IS NOT ? LIMIT 1",
+        (row["knowledge_scope"], key, row["record_id"], row["projection_hash"]),
+    ).fetchone():
+        return "conditional_conclusion_variants"
+    if con.execute(
+        "SELECT 1 FROM deep_research_record_evidence WHERE record_id = ? "
+        "AND binding_issue IS NULL LIMIT 1",
+        (row["record_id"],),
+    ).fetchone():
+        return "source_claim_binding_requires_typed_revision"
+    if int(row["record_schema_version"] or 1) >= 2 and str(row["record_id"]) != (
+        research_runtime.canonical_record_id(str(row["knowledge_scope"]), key)
+    ):
+        return "conclusion_record_id_is_not_legacy_anchor"
+    return None
 
 
 def _calibration_skill_rows(con: sqlite3.Connection) -> dict[str, sqlite3.Row]:
@@ -893,13 +938,22 @@ def _apply_support_calibration(
 ) -> tuple[str, str]:
     old_record_id = str(row["record_id"])
     old_knowledge_key = str(row["knowledge_key"] or "")
-    evidence = con.execute(
+    protection = _legacy_mutation_issue(con, row)
+    if protection:
+        raise ValueError(f"support_calibration_unsafe_target: {protection}")
+    evidence_rows = con.execute(
         """
         SELECT * FROM deep_research_record_evidence
-        WHERE source_case_ref = ? AND knowledge_key = ?
+        WHERE knowledge_scope = ? AND source_case_ref = ? AND knowledge_key = ?
+          AND game_patch = ? AND passive_tree_version = ?
+          AND (record_id = ? OR record_id IS NULL)
         """,
-        (source_ref, old_knowledge_key),
-    ).fetchone()
+        (row["knowledge_scope"], source_ref, old_knowledge_key,
+         row["game_patch"], row["passive_tree_version"], old_record_id),
+    ).fetchall()
+    if len(evidence_rows) > 1:
+        raise ValueError("support_calibration_ambiguous_source_claim")
+    evidence = evidence_rows[0] if evidence_rows else None
     mentions = _loads(
         evidence["observed_component_mentions"] if evidence else row["component_mentions"],
         [],
@@ -987,6 +1041,12 @@ def _apply_support_calibration(
         raise ValueError(f"cannot infer calibrated knowledge key for {source_ref}")
     old_knowledge_key = str(row["knowledge_key"] or "")
     record_id = research_runtime.canonical_record_id(proposal.knowledge_scope, new_knowledge_key)
+    if con.execute(
+        "SELECT 1 FROM deep_research_records WHERE knowledge_scope = ? AND knowledge_key = ? "
+        "AND record_id != ? AND superseded_by_id IS NULL LIMIT 1",
+        (proposal.knowledge_scope, new_knowledge_key, old_record_id),
+    ).fetchone():
+        raise ValueError("support_calibration_target_conclusion_occupied")
     values = research_memory.ResearchMemoryService(initialize_store=False)._deep_record_values(
         proposal,
         record_id=record_id,
@@ -996,27 +1056,35 @@ def _apply_support_calibration(
         now=now,
     )
     existing = con.execute(
-        "SELECT created_at FROM deep_research_records WHERE record_id = ?", (record_id,)
+        "SELECT * FROM deep_research_records WHERE record_id = ?", (record_id,)
     ).fetchone()
+    if existing is not None and (
+        str(existing["record_id"]) != old_record_id
+        or _legacy_mutation_issue(con, existing)
+    ):
+        raise ValueError("support_calibration_target_conclusion_occupied")
     if existing is not None:
         values["created_at"] = existing["created_at"]
     columns = tuple(values)
-    updates = ", ".join(
-        f"{column} = excluded.{column}" for column in columns if column != "record_id"
-    )
-    con.execute(
-        f"""
-        INSERT INTO deep_research_records({", ".join(columns)})
-        VALUES ({", ".join("?" for _ in columns)})
-        ON CONFLICT(record_id) DO UPDATE SET {updates}
-        """,
-        tuple(values[column] for column in columns),
-    )
+    if existing is None:
+        con.execute(
+            f"INSERT INTO deep_research_records({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+            tuple(values[column] for column in columns),
+        )
+    else:
+        updates = [column for column in columns if column != "record_id"]
+        con.execute(
+            "UPDATE deep_research_records SET " + ",".join(f"{column}=?" for column in updates)
+            + " WHERE record_id=?", (*(values[column] for column in updates), record_id),
+        )
     first_seen_at = evidence["first_seen_at"] if evidence else row["created_at"]
     con.execute(
         "DELETE FROM deep_research_record_evidence WHERE knowledge_scope = ? "
-        "AND source_case_ref = ? AND knowledge_key = ?",
-        (proposal.knowledge_scope, source_ref, old_knowledge_key),
+        "AND source_case_ref = ? AND knowledge_key = ? AND source_claim_key = ? "
+        "AND game_patch = ? AND passive_tree_version = ?",
+        (proposal.knowledge_scope, source_ref, old_knowledge_key,
+         evidence["source_claim_key"] if evidence else "default",
+         row["game_patch"], row["passive_tree_version"]),
     )
     con.execute(
         """
@@ -1025,14 +1093,18 @@ def _apply_support_calibration(
             observed_component_keys, observed_component_mentions, conditions,
             failure_conditions, game_patch, passive_tree_version,
             pob_version_or_commit, accepted_projection_hash, source_state_scope,
-            first_seen_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'unknown', ?, ?)
-        ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref) DO UPDATE SET
+            first_seen_at, last_seen_at, source_claim_key, record_id, binding_issue
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'unknown', ?, ?, ?, NULL,
+                  'maintenance_requires_revalidation')
+        ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref, source_claim_key,
+                    game_patch, passive_tree_version) DO UPDATE SET
             safe_evidence_refs = excluded.safe_evidence_refs,
             observed_component_keys = excluded.observed_component_keys,
             observed_component_mentions = excluded.observed_component_mentions,
             conditions = excluded.conditions,
             failure_conditions = excluded.failure_conditions,
+            record_id = NULL, binding_issue = 'maintenance_requires_revalidation',
+            accepted_projection_hash = NULL, source_state_scope = 'unknown',
             last_seen_at = excluded.last_seen_at
         """,
         (
@@ -1049,6 +1121,7 @@ def _apply_support_calibration(
             row["pob_version_or_commit"],
             first_seen_at,
             now,
+            evidence["source_claim_key"] if evidence else "default",
         ),
     )
     return old_record_id, record_id

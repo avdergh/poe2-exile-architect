@@ -12,6 +12,15 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _clean_completion():
+    return {
+        "acceptanceMode": "clean",
+        "deferredCandidateCount": 0,
+        "unresolvedDeepRecordMentionCount": 0,
+        "caseCoverageGapCount": 0,
+    }
+
+
 def test_generation_cleanup_requires_delivery_marker(monkeypatch, tmp_path):
     run_id = "11111111-1111-1111-1111-111111111111"
     artifact_id = "final-build:test"
@@ -136,6 +145,7 @@ def test_research_cleanup_removes_run_and_exact_transient_packets(monkeypatch, t
     db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     accept_dir = output_root / "acceptance"
     accept_dir.mkdir(parents=True)
     (accept_dir / "sample-acceptance.json").write_text("{}", encoding="utf-8")
@@ -152,6 +162,7 @@ def test_research_cleanup_removes_run_and_exact_transient_packets(monkeypatch, t
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -297,6 +308,7 @@ def test_research_cleanup_restores_staging_directory_before_not_found(monkeypatc
     db_path = staging / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     (staging / "acceptance").mkdir()
     (staging / "acceptance" / "sample-acceptance.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
@@ -312,6 +324,7 @@ def test_research_cleanup_restores_staging_directory_before_not_found(monkeypatc
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -365,6 +378,7 @@ def test_research_cleanup_queues_delayed_retry_on_rename_failure_and_retries(mon
     db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     (output_root / "acceptance").mkdir()
     (output_root / "acceptance" / "sample-acceptance.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
@@ -380,6 +394,7 @@ def test_research_cleanup_queues_delayed_retry_on_rename_failure_and_retries(mon
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -447,6 +462,7 @@ def test_research_cleanup_drops_absent_run_from_delayed_queue(monkeypatch, tmp_p
     db_path = other_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     monkeypatch.setattr(
         research_mature_builds,
         "DEFAULT_OUTPUT_DIR",
@@ -460,6 +476,7 @@ def test_research_cleanup_drops_absent_run_from_delayed_queue(monkeypatch, tmp_p
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -532,6 +549,7 @@ def test_research_cleanup_retries_staging_removal_then_cleans(monkeypatch, tmp_p
     db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     monkeypatch.setattr(
         research_mature_builds,
         "DEFAULT_OUTPUT_DIR",
@@ -545,6 +563,7 @@ def test_research_cleanup_retries_staging_removal_then_cleans(monkeypatch, tmp_p
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -576,6 +595,7 @@ def test_research_cleanup_staging_removal_failed_restores_dir(monkeypatch, tmp_p
     db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     monkeypatch.setattr(
         research_mature_builds,
         "DEFAULT_OUTPUT_DIR",
@@ -589,6 +609,7 @@ def test_research_cleanup_staging_removal_failed_restores_dir(monkeypatch, tmp_p
                 "status": "accepted",
                 "packetSafeHash": "safe-hash",
                 "accepted_deep_record_count": 1,
+                **_clean_completion(),
             }
         ],
     )
@@ -618,6 +639,7 @@ def test_research_cleanup_allow_rejected_opt_in(monkeypatch, tmp_path):
     db_path = output_root / research_mature_builds.QUEUE_DB_FILENAME
     db_path.parent.mkdir(parents=True)
     db_path.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(research_mature_builds, "_read_metadata", lambda _path: {})
     (output_root / "acceptance").mkdir(parents=True)
     monkeypatch.setattr(
         research_mature_builds,
@@ -632,6 +654,7 @@ def test_research_cleanup_allow_rejected_opt_in(monkeypatch, tmp_path):
                 "status": "accepted",
                 "packetSafeHash": "h1",
                 "accepted_deep_record_count": 2,
+                **_clean_completion(),
             },
             {
                 "status": "acceptance_rejected",

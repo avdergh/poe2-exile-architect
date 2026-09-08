@@ -888,6 +888,7 @@ def test_queue_claim_and_prompt_expose_only_safe_bounded_navigation(tmp_path):
         "jewels",
         "passives",
         "config",
+        "config-sets",
         "build",
         "pob-readback",
     ]
@@ -3964,7 +3965,7 @@ def test_queue_persists_quarantine_and_resume_rebuilds_missing_packets(tmp_path)
     assert hashes_after == hashes_before
 
 
-def test_resume_drops_unrecoverable_cases_without_quarantine(tmp_path):
+def test_resume_preserves_unrecoverable_cases_without_quarantine(tmp_path):
     from scripts import research_mature_builds
 
     batch_file = tmp_path / "samples.txt"
@@ -4001,14 +4002,15 @@ def test_resume_drops_unrecoverable_cases_without_quarantine(tmp_path):
         ttl_seconds=24 * 60 * 60,
         resume=True,
     )
-    assert resumed["status"] == "resumed"
+    assert resumed["status"] == "resumed_partial"
     assert resumed["resumeSummary"]["unrecoverableCaseCount"] == 2
-    assert resumed["sampleCount"] == 0
+    assert resumed["resumeSummary"]["removedCaseCount"] == 0
+    assert resumed["sampleCount"] == 2
 
     db_path = output_dir / "poe_bd_research_queue.sqlite"
     with sqlite3.connect(db_path) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
-    assert remaining == 0
+    assert remaining == 2
 
 
 def test_accept_removes_transient_packet_after_success(tmp_path, monkeypatch):
@@ -4703,6 +4705,7 @@ def test_inspect_packet_lists_skill_groups_after_skills_with_accurate_count():
         "jewels",
         "passives",
         "config",
+        "config-sets",
         "build",
         "pob-readback",
     ]

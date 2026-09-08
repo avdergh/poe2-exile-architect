@@ -124,7 +124,7 @@ def _report(case_id: str, *, verdict: str = "generated_stronger") -> dict[str, o
             }
         )
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "comparisonId": f"cmp:{case_id}",
         "caseId": case_id,
         "familyMatch": True,
@@ -925,6 +925,9 @@ def test_ten_case_trend_is_directional_only():
         }
         for _ in range(3)
     ]
+    for row in first + middle + last:
+        row.update(metricsVersion=2, trendEligible=True, evidenceBound=True,
+                   comparableDimensionCount=10, unknownDimensionCount=0, levelMatch=True)
     result = comparison.campaign_trend(first + middle + last)
     assert result["claim"] == "initial_progress_signal"
     assert result["causalProof"] is False

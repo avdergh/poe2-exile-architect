@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      POB_COMMIT: 860f4268299739ce9df87c4f373abe35824101cf # pinned PoB-PoE2 (see pob/PINNED.md)
+      POB_COMMIT: 7d6f530cbdab20389ff8bc6ba97a37ac27f74e41 # pinned PoB-PoE2 (see pob/PINNED.md)
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +47,10 @@ jobs:
         run: npx --yes @anthropic-ai/mcpb validate manifest.json
 
       - name: Build corpus
-        run: uv run python -m pipeline.build_corpus
+        run: |
+          cp data/corpus.sqlite reviewed-corpus.sqlite
+          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
 
       - name: Run tests (golden engine + corpus)
         run: uv run pytest

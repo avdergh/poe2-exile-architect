@@ -18,6 +18,7 @@ from . import (
     copy_safety,
     mature_learning,
     research_identity,
+    research_claim_writes,
     research_memory,
     research_models,
     research_runtime,
@@ -258,25 +259,6 @@ class ResearchMergeService:
         knowledge_key = research_identity.knowledge_key(proposal, family)
         if not knowledge_key:
             raise ValueError("mergedRecord does not produce a canonical knowledge identity")
-        final_id = (
-            str(target["record_id"])
-            if item["action"] == "merge_into_head"
-            else research_runtime.canonical_record_id(proposal.knowledge_scope, knowledge_key)
-        )
-        if item["action"] == "deprecate_incorrect" and final_id == str(target["record_id"]):
-            raise ValueError(
-                "deprecate_incorrect requires a distinct corrected identity; use merge_into_head "
-                "to revise the existing knowledge head"
-            )
-        occupant = con.execute(
-            "SELECT record_id FROM deep_research_records WHERE knowledge_scope = ? "
-            "AND knowledge_key = ? AND superseded_by_id IS NULL",
-            (proposal.knowledge_scope, knowledge_key),
-        ).fetchone()
-        if occupant is not None and str(occupant["record_id"]) not in {
-            str(row["record_id"]) for row in rows
-        }:
-            raise ValueError("proposed knowledge identity is occupied by an unrelated active head")
         valid_projection = research_runtime.projection_hash(
             {**proposal.model_dump(mode="json"), "source_state_scope": proposal.source_state_scope}
         )
@@ -288,6 +270,12 @@ class ResearchMergeService:
                 "status": final_status,
                 "source_state_scope": proposal.source_state_scope,
             }
+        )
+        final_id = _select_merge_target(
+            con, rows, target, proposal, item["action"], knowledge_key, final_projection
+        )
+        _validate_claim_destinations(
+            con, rows, _projection_witness_rows(con, rows, valid_projection), knowledge_key
         )
         return {
             "action": item["action"],
@@ -331,25 +319,6 @@ class ResearchMergeService:
         knowledge_key = research_identity.knowledge_key(proposal, family)
         if not knowledge_key:
             raise ValueError("mergedRecord does not produce a canonical knowledge identity")
-        final_id = (
-            str(target["record_id"])
-            if item["action"] == "merge_into_head"
-            else research_runtime.canonical_record_id(proposal.knowledge_scope, knowledge_key)
-        )
-        if item["action"] == "deprecate_incorrect" and final_id == str(target["record_id"]):
-            raise ValueError(
-                "deprecate_incorrect requires a distinct corrected identity; use merge_into_head "
-                "to revise the existing knowledge head"
-            )
-        occupant = con.execute(
-            "SELECT record_id FROM deep_research_records WHERE knowledge_scope = ? "
-            "AND knowledge_key = ? AND superseded_by_id IS NULL",
-            (proposal.knowledge_scope, knowledge_key),
-        ).fetchone()
-        if occupant is not None and str(occupant["record_id"]) not in {
-            str(row["record_id"]) for row in rows
-        }:
-            raise ValueError("proposed knowledge identity is occupied by an unrelated active head")
         service = research_memory.ResearchMemoryService(initialize_store=False)
         valid_projection = research_runtime.projection_hash(
             {**proposal.model_dump(mode="json"), "source_state_scope": proposal.source_state_scope}
@@ -360,6 +329,11 @@ class ResearchMergeService:
             if witness_rows
             else proposal.model_copy(update={"status": "needs_revalidation"})
         )
+        final_projection = research_runtime.projection_hash(persisted_proposal.model_dump(mode="json"))
+        final_id = _select_merge_target(
+            con, rows, target, persisted_proposal, item["action"], knowledge_key, final_projection
+        )
+        _validate_claim_destinations(con, rows, witness_rows, knowledge_key)
         values = service._deep_record_values(
             persisted_proposal,
             record_id=final_id,
@@ -370,6 +344,13 @@ class ResearchMergeService:
         )
         projection = str(values["projection_hash"] or "")
         values["evidence_count"] = len({str(row["source_case_ref"]) for row in witness_rows})
+        values["source_case_refs"] = json.dumps(
+            sorted({str(row["source_case_ref"]) for row in witness_rows}), ensure_ascii=False
+        )
+        values["safe_evidence_refs"] = json.dumps(
+            sorted({ref for row in witness_rows for ref in _loads(row["safe_evidence_refs"], [])}),
+            ensure_ascii=False,
+        )
         existing = con.execute(
             "SELECT record_id, created_at, superseded_by_id FROM deep_research_records "
             "WHERE record_id = ?",
@@ -382,6 +363,13 @@ class ResearchMergeService:
             values["created_at"] = existing["created_at"]
         for row in rows:
             record_id = str(row["record_id"])
+            # Preserve old claims as unresolved history. Only exact witnesses below may
+            # acquire the final content; retirement itself cannot confer new evidence.
+            con.execute(
+                "UPDATE deep_research_record_evidence SET record_id = NULL, binding_issue = ? "
+                "WHERE record_id = ?",
+                ("merge_content_revised" if record_id == final_id else "record_retired", record_id),
+            )
             if record_id == final_id:
                 continue
             con.execute(
@@ -395,15 +383,19 @@ class ResearchMergeService:
                 (final_id, record_id, final_id),
             )
         columns = tuple(values)
-        updates = ", ".join(
-            f"{column} = excluded.{column}" for column in columns if column != "record_id"
-        )
-        con.execute(
-            f"INSERT INTO deep_research_records({', '.join(columns)}) "
-            f"VALUES ({', '.join('?' for _ in columns)}) "
-            f"ON CONFLICT(record_id) DO UPDATE SET {updates}",
-            tuple(values[column] for column in columns),
-        )
+        if existing is None:
+            con.execute(
+                f"INSERT INTO deep_research_records({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                tuple(values[column] for column in columns),
+            )
+        else:
+            updates = [column for column in columns if column != "record_id"]
+            con.execute(
+                "UPDATE deep_research_records SET " + ",".join(f"{column}=?" for column in updates)
+                + " WHERE record_id=?",
+                (*(values[column] for column in updates), final_id),
+            )
         for witness in witness_rows:
             con.execute(
                 """
@@ -411,9 +403,11 @@ class ResearchMergeService:
                     knowledge_scope, knowledge_key, source_case_ref, safe_evidence_refs,
                     observed_component_keys, observed_component_mentions, conditions,
                     failure_conditions, game_patch, passive_tree_version, pob_version_or_commit,
-                    accepted_projection_hash, source_state_scope, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref) DO UPDATE SET
+                    accepted_projection_hash, source_state_scope, first_seen_at, last_seen_at,
+                    record_id, binding_issue, source_claim_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref, source_claim_key,
+                            game_patch, passive_tree_version) DO UPDATE SET
                     safe_evidence_refs = excluded.safe_evidence_refs,
                     observed_component_keys = excluded.observed_component_keys,
                     observed_component_mentions = excluded.observed_component_mentions,
@@ -424,6 +418,8 @@ class ResearchMergeService:
                     pob_version_or_commit = excluded.pob_version_or_commit,
                     accepted_projection_hash = excluded.accepted_projection_hash,
                     source_state_scope = excluded.source_state_scope,
+                    record_id = excluded.record_id,
+                    binding_issue = NULL,
                     last_seen_at = excluded.last_seen_at
                 """,
                 (
@@ -442,15 +438,19 @@ class ResearchMergeService:
                     witness["source_state_scope"],
                     witness["first_seen_at"],
                     _now(),
+                    final_id,
+                    witness["source_claim_key"],
                 ),
             )
+        if witness_rows:
+            research_claim_writes.refresh_record_evidence(con, final_id, _now())
         return {
             "action": item["action"],
             "targetRecordId": item["targetRecordId"],
             "headRecordId": final_id,
             "knowledgeKey": knowledge_key,
             "status": values["status"],
-            "projectionWitnessCount": len(witness_rows),
+            "projectionWitnessCount": len({str(row["source_case_ref"]) for row in witness_rows}),
             "supersededRecordIds": sorted(
                 str(row["record_id"]) for row in rows if str(row["record_id"]) != final_id
             ),
@@ -665,6 +665,12 @@ def _validate_source_rows(rows: list[Any]) -> None:
 
 def _validated_proposal(item: dict[str, Any], rows: list[Any], target: Any) -> Any:
     proposal = research_models.DeepResearchRecordProposal.model_validate(item["mergedRecord"])
+    version_fields = ("game_patch", "passive_tree_version", "pob_version_or_commit")
+    if any(
+        row[field] != target[field] or getattr(proposal, field) != target[field]
+        for row in rows for field in version_fields
+    ):
+        raise ValueError("merge_cannot_relabel_source_versions; preserve separate version records")
     union_sources = sorted(
         {source for row in rows for source in _loads(row["source_case_refs"], [])}
     )
@@ -720,11 +726,58 @@ def _projection_witness_rows(con: Any, rows: list[Any], projection: str) -> list
         witnesses.extend(
             con.execute(
                 "SELECT * FROM deep_research_record_evidence WHERE knowledge_scope = ? "
-                "AND knowledge_key = ? AND accepted_projection_hash = ?",
-                (row["knowledge_scope"], row["knowledge_key"], projection),
+                "AND knowledge_key = ? AND accepted_projection_hash = ? AND record_id = ? "
+                "AND binding_issue IS NULL",
+                (row["knowledge_scope"], row["knowledge_key"], projection, row["record_id"]),
             ).fetchall()
         )
     return witnesses
+
+
+def _select_merge_target(
+    con: Any, rows: list[Any], target: Any, proposal: Any,
+    action: str, knowledge_key: str, projection: str,
+) -> str:
+    """Choose a conclusion identity without retiring another condition branch."""
+    source_ids = {str(row["record_id"]) for row in rows}
+    if action == "merge_into_head":
+        final_id = str(target["record_id"])
+    else:
+        if projection == str(target["projection_hash"] or ""):
+            raise ValueError("deprecate_incorrect requires a distinct corrected identity")
+        anchor = research_runtime.canonical_record_id(proposal.knowledge_scope, knowledge_key)
+        occupied = con.execute(
+            "SELECT 1 FROM deep_research_records WHERE record_id = ?", (anchor,)
+        ).fetchone()
+        final_id = (
+            research_claim_writes.variant_record_id(proposal.knowledge_scope, knowledge_key, projection)
+            if occupied else anchor
+        )
+    occupants = con.execute(
+        "SELECT record_id FROM deep_research_records WHERE record_id = ? OR "
+        "(knowledge_scope = ? AND knowledge_key = ? AND projection_hash = ? "
+        "AND superseded_by_id IS NULL)",
+        (final_id, proposal.knowledge_scope, knowledge_key, projection),
+    ).fetchall()
+    if any(str(row["record_id"]) not in source_ids for row in occupants):
+        raise ValueError("proposed conclusion is occupied by an unrelated active head")
+    return final_id
+
+
+def _validate_claim_destinations(
+    con: Any, rows: list[Any], witnesses: list[Any], knowledge_key: str
+) -> None:
+    selected_ids = {str(row["record_id"]) for row in rows}
+    for witness in witnesses:
+        current = con.execute(
+            "SELECT record_id FROM deep_research_record_evidence WHERE knowledge_scope = ? "
+            "AND knowledge_key = ? AND source_case_ref = ? AND source_claim_key = ? "
+            "AND game_patch = ? AND passive_tree_version = ?",
+            (witness["knowledge_scope"], knowledge_key, witness["source_case_ref"],
+             witness["source_claim_key"], witness["game_patch"], witness["passive_tree_version"]),
+        ).fetchone()
+        if current is not None and str(current["record_id"] or "") not in selected_ids:
+            raise ValueError("merge_source_claim_destination_not_in_reviewed_records")
 
 
 def _record_id(value: Any) -> str:

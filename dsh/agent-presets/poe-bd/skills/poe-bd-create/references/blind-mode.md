@@ -7,6 +7,7 @@
 
 - 不得追问或改写锁定的 `FamilyTarget`；不得索取、搜索或推断原 BD 的装备、天赋、技能组、
   机制摘要、配置或 Judge 结果。只按目标 Family、等级、版本和默认目标正常创建。
+- 不读取 starter-research、starter cache 或其他对照阶段状态，不使用联网开荒证据；只通过本次活动 claim 的受限工具取得 packet 与 Learning Memory。
 - 不询问任何交互问题——直接按锁定 packet 执行（普通 Create 本就不做开荒过程确认）。
 - 提交 Create 结果时使用 `mcp__poe_learning__submit_learning_create_result`，不是普通 review 流程的
   `mcp__poe_build__complete_generation_review`（盲测的 artifact 仍要进入 Compare，由 Learning campaign

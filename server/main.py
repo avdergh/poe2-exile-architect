@@ -62,6 +62,7 @@ from .knowledge import research_models
 from .knowledge import research_packet
 from .knowledge import research_prompt
 from .knowledge import research_workflow
+from .knowledge import research_followup_workflow
 from .live import meta as live_meta
 from .live import prices as live_prices
 from .live import update as live_update
@@ -75,6 +76,7 @@ from .generation import delivery as generation_delivery
 from .generation import leveled_build as generation_leveled_build
 from .generation import pob_exports as generation_pob_exports
 from .generation import preflight as generation_preflight
+from .generation import lifecycle_observation as generation_lifecycle_observation
 from .generation import validation_checkpoint as generation_validation_checkpoint
 from .judge import evaluator as judge_evaluator
 from .learning import memory as learning_memory
@@ -389,8 +391,9 @@ def get_build() -> dict[str, Any]:
 def get_defenses() -> dict[str, Any]:
     """Defensive summary for the active build: life/ES/mana/ward, armour/evasion, block,
     elemental + chaos resistances (with over-cap), and TotalEHP. Elemental resists are shown
-    net of PoB's configurable area penalty (default Endgame -60%); the response includes the
-    active `resistPenalty` and a note. Cap is 75%; aim at or just over it.
+    net of PoB's configured area penalty; the response includes the active `resistPenalty` and
+    a note. Read caps as diagnostics, not an implicit optimization target: normal level-90
+    softcore Create uses 60% elemental / 30% non-CI chaos unless the user requests 75%.
     """
     return get_engine().get_defenses()
 
@@ -990,6 +993,9 @@ def validate_generation_blueprint(
     claims, coverage of damage/clear/Boss/defense/recovery/Spirit/rotation, unresolved questions
     and verification tasks.  This tool stores a run-bound receipt and never selects gear or mutates
     the active build.
+    ToolReferences default to unverified; agent_reviewed requires reviewBasis. Only run-validated
+    Research sources support internal_receipt. evidenceAudit records identity/review authority,
+    not semantic truth or numeric legality. Unverified sources require hypothesis/unknown claims.
     """
 
     return generation_run_helper.validate_generation_blueprint(
@@ -1092,6 +1098,8 @@ def save_final_build_artifact(
     Any passing attempt with a still-live exact Judge snapshot may be selected. Selecting an older
     baseline requires an explicit reason and evidence that later findings affect only the explored
     delta. Each generation run can save only one artifact; raw PoB is never returned.
+    After design revisions, a trusted historical bundle keeps the selected Blueprint and Research
+    decisions intact. Restored runs return selectedDesignEvidence for the final candidate summary.
     """
     return generation_artifacts.save_final_build_artifact(
         get_engine(),
@@ -1442,6 +1450,8 @@ def submit_learning_comparison(
 
     Judge attachments must say `advisoryOnly=true`; the service validates but never derives a
     winner from Judge scores and never writes reward.
+    Report v2 needs both case-bound evidence sides for every non-unknown dimension and matching
+    critical gap flags/records. Tradeoff is separate; unknown and legacy coverage cannot show progress.
     """
     return learning_service.submit_comparison(
         campaign_id=campaign_id,
@@ -1951,6 +1961,9 @@ def optimize_item(
     `acquisition_profile="realistic_trade"` (default) limits the generated rare to five explicit
     affixes and two deep T1 affixes; use explicit `theoretical` for a six-affix ceiling. Each result
     reports the applied policy and per-affix tier evidence. This is not a market price.
+    Resistance pruning measures the character without this slot's old item. Every candidate and
+    the actual final item are bound to the original PoB output and complete measurements; an
+    unavailable source or lost source configuration is an explicit error, never another skill's DPS.
     """
     return itemopt.optimize_item(
         get_engine(),
@@ -2060,17 +2073,18 @@ def optimize_supports(
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
 ) -> dict[str, Any]:
-    """Choose the best support-gem set for the active main skill (engine-measured).
+    """Compare complete support sets for one exact active effect using PoB.
 
     Supports are usually a build's biggest "more" multiplier, but the corpus stores no support
-    MAGNITUDES — so this values them empirically. It picks the candidate pool by MEASUREMENT, not
-    tags (solo-measuring each tag-relevant support and keeping the strongest, so premier levers like
-    penetration aren't missed just because they share few tags), then greedily adds the support that
-    most raises the goal on the REAL build, round by round, until the sockets are full or nothing
-    helps. Pass `goals` (weighted, e.g. {"TotalDPS":0.7,"TotalEHP":0.3}) to blend objectives; omit
-    for a single `metric`. Read-only (the build is restored); raise `candidates` for a wider greedy
-    search. Apply ordinary-group results with ``set_skill``; apply Tree/Item source-group results
-    with ``configure_source_skill_supports`` and a fresh fingerprint. For a rate-dependent target,
+    MAGNITUDES — so this values them empirically. Candidate discovery covers the group's active
+    skills and exact selected effect. Solo probes order candidates; the installed combination is
+    preserved as a full baseline. Only a measured whole-set gain, satisfying constraints without
+    new hard illegality, can require application, including a removal-only improvement. Pass `goals`
+    (e.g. {"TotalDPS":0.7,"TotalEHP":0.3}) to blend objectives; omit for a single `metric`.
+    The build is restored. Apply ordinary-group results to the exact group with fresh fingerprint,
+    preserving activeGemSettings and supportGemSettings; Tree/Item groups use
+    ``configure_source_skill_supports``. Exact-ID runtime-unavailable candidates are listed as
+    uncovered, never measured as no gain. Other measurement failures block. For a rate-dependent target,
     a PoB-runtime-confirmed unmodelled trigger rate short-circuits before candidate enumeration and
     records a candidate-only capability gap; evidence, measurement, and actionable gaps remain
     blockers. Greedy, not a global optimum.
@@ -2145,7 +2159,9 @@ def plan_gear(
     use `resistanceTargetMet` for the stage-target result.
 
     Returns the per-slot plan + projected whole-build DPS/EHP/resists; equip with equip_item.
-    A heavier call (~10-20s); greedy heuristic — refine individual slots with optimize_item.
+    Marginal scores are selected jointly under affix/group/tier budgets, then the whole item and
+    returned plan are measured and replayed. The linear ranking does not prove a global optimum.
+    A heavier call; refine individual slots with optimize_item. Failures retain their typed cause.
     """
     return itemopt.plan_gear(
         get_engine(),
@@ -2175,7 +2191,9 @@ def optimize_item_sockets(
     Reads current PoB `crafting_options`, keeps the base, item level, implicit and every explicit,
     then returns the incrementally socketed item plus a `craftReceiptRef` for `equip_item`. A valid
     no-benefit result may be unchanged; Create should evaluate each socketable item, not blindly fill
-    every socket. Stage resistance saturation defaults to 60 elemental / 30 non-CI chaos at
+    every socket. Single-slot and batch calls register the same state-bound socket review. Measurement
+    failure revokes this slot's pending plan; only complete no-gain evidence can authorize empty holes.
+    Stage resistance saturation defaults to 60 elemental / 30 non-CI chaos at
     endgame; pass explicit 75 targets only when the user requires capped resistances.
     """
 
@@ -2199,7 +2217,8 @@ def plan_item_sockets_batch(
     """Plan Rune/Soul Core decisions for up to eight equipped slots in one read-only call.
 
     Socket capacity is preserved independently from the number of beneficial Runes. A partial
-    result reports ``partial_no_positive`` for the remaining holes; only receipt-verified Rune
+    result first reports ``partial_socketed``; trusted equip carries it to ``partial_no_positive``
+    for the remaining holes. Only receipt-verified Rune
     effects count as installed during the later quality check.
     """
 
@@ -2852,6 +2871,33 @@ def _verify_lifecycle_stage_locked(
             judge_context.model_dump(mode="json", by_alias=True)
         )
         required_observation_target = artifact_target
+        if state is None:
+            stored_declarations = generation_artifacts.read_artifact_lifecycle_declarations(
+                artifact_manifest, evidence_xml
+            )
+            if (
+                getattr(artifact_manifest, "lifecycle_declaration_binding", None) is not None
+                and stored_declarations is None
+            ):
+                return {
+                    "ok": False,
+                    "stage": stage,
+                    "status": "unknown",
+                    "pass": False,
+                    "errorCode": "artifact_lifecycle_declaration_binding_invalid",
+                }
+            current_declarations = generation_lifecycle_observation.state_for_target(
+                eng,
+                state_hash=compute_state.build_state_hash(evidence_xml),
+                observation_target=artifact_target,
+            )
+            # An explicit empty/new declaration in this exact session takes precedence over
+            # the saved inputs. Absence after a restart may recover the artifact-bound inputs.
+            state_payload = (
+                current_declarations
+                if current_declarations is not None
+                else stored_declarations if stored_declarations is not None else {}
+            )
         artifact_group = int(artifact_target.get("groupIndex") or 0)
         artifact_skill = str(artifact_target.get("skillName") or "")
         if offense_skill_group_index is not None and (
@@ -2894,54 +2940,9 @@ def _verify_lifecycle_stage_locked(
     # the original raw artifact/Judge hash as evaluatedSourceHash.
     restored_state_hash = compute_state.build_state_hash(source_before)
     evidence_xml = evidence_xml or source_before
-    effective_state = dict(state_payload)
-    main_skill_evidence = generation_preflight.inspect_main_skill_socketed(evidence_xml)
-    # This evidence must come from the exact active XML snapshot. Never accept a caller-supplied
-    # boolean as proof that the main skill is socketed.
-    effective_state["mainSkillSocketed"] = bool(main_skill_evidence.get("socketed"))
-    effective_state["mainSkillSocketEvidence"] = main_skill_evidence
-    lifecycle_skill_evidence = generation_preflight.inspect_lifecycle_skill_evidence(
-        evidence_xml,
-        single_target_skill_name=effective_state.get("singleTargetSkillName"),
-    )
-    effective_state["ascendancyOrKeySupport"] = lifecycle_skill_evidence.get(
-        "ascendancyOrKeySupport"
-    )
-    single_target_evidence = dict(lifecycle_skill_evidence.get("singleTargetDuty") or {})
-    evidence_refs = list(effective_state.get("singleTargetEvidenceRefs") or [])
-    single_target_evidence["evidenceRefs"] = evidence_refs
-    single_target_evidence["verified"] = bool(
-        single_target_evidence.get("verified") and evidence_refs
-    )
-    effective_state["singleTargetDuty"] = single_target_evidence
-    build_defining_evidence = generation_preflight.inspect_lifecycle_component_evidence(
-        evidence_xml,
-        component_kind=effective_state.get("buildDefiningComponentKind"),
-        component_name=effective_state.get("buildDefiningComponentName"),
-    )
-    build_defining_evidence["componentKey"] = effective_state.get("buildDefiningComponentKey")
-    build_defining_refs = list(effective_state.get("buildDefiningEvidenceRefs") or [])
-    build_defining_evidence["evidenceRefs"] = build_defining_refs
-    build_defining_evidence["verified"] = bool(
-        build_defining_evidence.get("verified")
-        and build_defining_evidence.get("componentKey")
-        and build_defining_refs
-    )
-    effective_state["buildDefiningComponent"] = build_defining_evidence
-    # Flask presence is evidence from the evaluated build, never a caller-authorized boolean.
     read_build = getattr(eng, "get_build", None)
     build = read_build() if callable(read_build) else {}
     gear = build.get("gear") if isinstance(build, dict) else {}
-    if isinstance(build, dict):
-        try:
-            actual_level = int(build.get("level") or 0)
-        except (TypeError, ValueError):
-            actual_level = 0
-        if 1 <= actual_level <= 100:
-            # Lifecycle resistance bands are keyed to the evaluated PoB level. A caller-provided
-            # stage label or stale state hint must not move the build into a different band.
-            effective_state["level"] = actual_level
-    effective_state["manaFlaskEquipped"] = _mana_flask_equipped(gear)
     stat_keys = lifecycle.lifecycle_verification.requested_metric_keys(stage)
     observation_target = _current_lifecycle_observation_target(eng)
     restore_failed = False
@@ -2964,9 +2965,6 @@ def _verify_lifecycle_stage_locked(
             ):
                 observation_error = "artifact_lifecycle_observation_target_mismatch"
                 raise ValueError(observation_error)
-            selected_main_evidence = generation_preflight.inspect_main_skill_socketed(eng.get_xml())
-            effective_state["mainSkillSocketed"] = bool(selected_main_evidence.get("socketed"))
-            effective_state["mainSkillSocketEvidence"] = selected_main_evidence
         stats_result = eng.get_stats(stat_keys)
         stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
         defenses = eng.get_defenses()
@@ -2995,6 +2993,12 @@ def _verify_lifecycle_stage_locked(
             "pass": False,
             "errorCode": observation_error,
         }
+    effective_state = generation_lifecycle_observation.observe_state(
+        source_before,
+        build=build if isinstance(build, dict) else {},
+        observation_target=observation_target,
+        state=state_payload,
+    )
     # Preserve engine warnings as caveats instead of hiding them behind a boolean. This is
     # especially important for PoE2 mechanics that the pinned PoB runtime cannot model faithfully.
     engine_warning = None
@@ -3031,6 +3035,12 @@ def _verify_lifecycle_stage_locked(
             "pass": False,
             "errorCode": "lifecycle_snapshot_changed_during_verification",
         }
+    generation_lifecycle_observation.remember_state(
+        eng,
+        state_hash=restored_state_hash,
+        observation_target=observation_target,
+        state=state_payload,
+    )
     result["evaluatedSourceHash"] = (
         artifact_manifest.source_hash if artifact_manifest is not None else raw_source_hash
     )
@@ -3217,18 +3227,6 @@ def _normalize_lifecycle_observation_target(value: Any) -> dict[str, Any]:
     }
 
 
-def _mana_flask_equipped(gear: Any) -> bool:
-    if not isinstance(gear, dict):
-        return False
-    for slot, item in gear.items():
-        if not str(slot).casefold().startswith("flask") or not isinstance(item, dict):
-            continue
-        text = f"{item.get('name') or ''} {item.get('base') or ''}".casefold()
-        if "mana flask" in text:
-            return True
-    return False
-
-
 @mcp.tool()
 def record_build_feedback(
     build_id: str,
@@ -3372,6 +3370,9 @@ def search_uniques(
 @mcp.tool()
 def get_unique(name: str) -> dict[str, Any]:
     """Return a unique item's full readable text (base, mods) by name.
+
+    For selectable variants, `variantSelection` supplies the required choice count, duplicate
+    policy and complete modifier templates. The flattened `text` is not an equip-ready item.
 
     If the name is a base type rather than a unique (e.g. "Warmonger Bow"), says so and points to
     get_item, instead of returning a confusing null.
@@ -3525,6 +3526,9 @@ def start_research_run(
     re_research_run_ref: str | None = None,
     supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
+    source_game_patch: str | None = None,
+    retention_days: int = 7,
+    re_research_scope: Literal["supplement", "full_case"] = "supplement",
 ) -> dict[str, Any]:
     """Create one mature-build Research queue in private user data and return an opaque runRef.
 
@@ -3547,6 +3551,9 @@ def start_research_run(
         re_research_run_ref=re_research_run_ref,
         supplement_sample_ids=supplement_sample_ids,
         supplement_focus=supplement_focus,
+        source_game_patch=source_game_patch,
+        retention_days=retention_days,
+        re_research_scope=re_research_scope,
     )
 
 
@@ -3554,6 +3561,41 @@ def start_research_run(
 def get_research_run_status(run_ref: str) -> dict[str, Any]:
     """Return safe queue/lease/acceptance counts for one opaque Research runRef."""
     return research_workflow.run_status(run_ref=run_ref)
+
+
+@mcp.tool()
+def get_research_followup_status(
+    run_ref: str, sample_id: str, view: Literal["gaps", "events", "reacquisitions"] = "gaps",
+    cursor: int = 0, limit: int = 24,
+) -> dict[str, Any]:
+    """Page stable gaps or their append-only review history for an accepted Research case."""
+    return research_followup_workflow.get_followup_status(
+        run_ref=run_ref, sample_id=sample_id, view=view, cursor=cursor, limit=limit,
+    )
+
+
+@mcp.tool()
+def submit_research_gap_review(
+    run_ref: str, sample_id: str, expected_revision: int, request_id: str,
+    decisions: list[research_followup_workflow.GapDecision],
+) -> dict[str, Any]:
+    """Append Agent-reviewed per-gap decisions backed by exact accepted evidence; never alter the origin receipt."""
+    return research_followup_workflow.submit_gap_review(
+        run_ref=run_ref, sample_id=sample_id, expected_revision=expected_revision,
+        request_id=request_id, decisions=[item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item for item in decisions],
+    )
+
+
+@mcp.tool()
+def reacquire_research_source(
+    run_ref: str, sample_id: str, request_id: str,
+    action: Literal["start", "status", "release"] = "start", retention_days: int = 7,
+) -> dict[str, Any]:
+    """Explicitly re-find one source with open gaps, inspect its reservation, or release a stopped request."""
+    return research_followup_workflow.reacquire_source(
+        run_ref=run_ref, sample_id=sample_id, request_id=request_id, action=action,
+        retention_days=retention_days,
+    )
 
 
 @mcp.tool()
@@ -3573,7 +3615,7 @@ def read_research_case(
     run_ref: str,
     lease_token: str,
     section: Literal[
-        "skills", "gear", "passives", "config", "build", "jewels", "pob-readback", "skill-groups"
+        "skills", "gear", "passives", "config", "config-sets", "build", "jewels", "pob-readback", "skill-groups"
     ],
     cursor: int = 0,
     limit: int = 24,
@@ -3597,7 +3639,7 @@ def search_research_case(
     run_ref: str,
     lease_token: str,
     query: str,
-    section: Literal["skills", "gear", "passives", "config", "build", "jewels", "pob-readback"]
+    section: Literal["skills", "gear", "passives", "config", "config-sets", "build", "jewels", "pob-readback"]
     | None = None,
     limit: int = 24,
 ) -> dict[str, Any]:
@@ -3673,7 +3715,7 @@ def cleanup_research_run(
     allow_rejected: bool = False,
     abandon_incomplete: bool = False,
 ) -> dict[str, Any]:
-    """Delete one private Research runtime by opaque runRef; durable knowledge is preserved."""
+    """Clean completed Research; unresolved work requires explicit abandonment and retains a safe audit."""
     return research_workflow.cleanup_run(
         run_ref=run_ref,
         allow_rejected=allow_rejected,
@@ -3886,6 +3928,10 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
     detail_level = payload.get("detailLevel")
     record_keys = (
         "recordId",
+        "knowledgeKey",
+        "targetApplicability",
+        "knowledgeConceptKey",
+        "contentRevisionRef",
         "buildFamilyKey",
         "recordKind",
         "title",
@@ -3902,8 +3948,11 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
             "failureConditions",
             "content",
             "typedPayload",
+            "sourceClaims",
+            "projectionHash",
         )
     pattern_keys = (
+        "targetApplicability",
         "patternId",
         "patternType",
         "title",
@@ -3920,6 +3969,7 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
         "status",
     )
     fragment_keys = (
+        "targetApplicability",
         "memoryItemId",
         "fragmentId",
         "fragmentType",
@@ -3935,6 +3985,7 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
         "contextCaveats",
     )
     edge_keys = (
+        "targetApplicability",
         "edgeId",
         "sourceKey",
         "targetKey",
@@ -3949,6 +4000,8 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
     )
     family_keys = (
         "buildFamilyKey",
+        "requestedGamePatch",
+        "sourceGamePatches",
         "knowledgeScope",
         "ascendancyKey",
         "primarySkillKey",
@@ -4069,8 +4122,10 @@ def _compact_create_research_response(payload: dict[str, Any]) -> dict[str, Any]
     compact = {
         "status": payload.get("status"),
         "dedupeQueryRef": payload.get("dedupeQueryRef"),
+        "deepRecordEligibilityVersion": payload.get("deepRecordEligibilityVersion"),
         "results": fragments,
         "deepResearchRecords": records,
+        "patchCorrections": payload.get("patchCorrections") or [],
         "buildFamilies": [
             _select_mapping_fields(item, family_keys)
             for item in payload.get("buildFamilies", [])
@@ -4193,6 +4248,35 @@ def submit_revalidation_result(
         safe_evidence_refs=safe_evidence_refs,
         affected_component_keys=affected_component_keys,
     )
+
+
+@mcp.tool()
+def inspect_research_patch_review_targets(
+    target_game_patch: str, target_kind: str = "deep_research_record",
+    target_ids: list[str] | None = None, after_id: str = "", limit: int = 50,
+) -> dict[str, Any]:
+    """Read safe paginated knowledge for patch review; no validity is inferred from component matches."""
+    try:
+        return _research_memory_service().inspect_patch_review_targets(
+            target_game_patch=target_game_patch, target_kind=target_kind,
+            target_ids=target_ids, after_id=after_id, limit=limit,
+        )
+    except ValueError as exc:
+        return {"status": "rejected", "errorCode": str(exc)}
+
+
+@mcp.tool()
+def submit_research_patch_review(payload: dict[str, Any]) -> dict[str, Any]:
+    """Append an independently reviewed target-patch decision bound to exact source knowledge.
+
+    Required: target_kind/id, knowledge_scope, target_game_patch, source_fingerprint, outcome,
+    rationale, patch_evidence_refs, review_evidence_refs, distinct author_ref/reviewer_ref.
+    changed_scope/invalid require correction_summary. Original content/version are preserved.
+    """
+    try:
+        return _research_memory_service().submit_patch_review(payload)
+    except (ValueError, TypeError):
+        return {"status": "rejected", "errorCode": "patch_review_validation_failed"}
 
 
 @mcp.tool()
@@ -4323,7 +4407,9 @@ def lookup_mechanic(
 
 
 @mcp.tool()
-def get_freshness_report(force_refresh: bool = False) -> dict[str, Any]:
+def get_freshness_report(
+    force_refresh: bool = False, target_league: str | None = None
+) -> dict[str, Any]:
     """Return the strict cross-source freshness gate used before claiming a current-season build.
 
     This is a live cross-source gate over the local validated release, official GGG patch/tree
@@ -4331,7 +4417,11 @@ def get_freshness_report(force_refresh: bool = False) -> dict[str, Any]:
     block current-season verification. Pass force_refresh=True to ask live providers to refresh
     their caches now, subject to provider safety throttles.
     """
-    return freshness_service.get_freshness_report(force_refresh=force_refresh)
+    if target_league is None:
+        return freshness_service.get_freshness_report(force_refresh=force_refresh)
+    return freshness_service.get_freshness_report(
+        force_refresh=force_refresh, target_league=target_league
+    )
 
 
 @mcp.tool()
@@ -4394,10 +4484,13 @@ def start_build_session(opening: str = "") -> str:
         "What you can do here:\n"
         "- Analyze a build: import_build (a PoB code, pobb.in/pastebin link, or XML), then get_build "
         "/ get_defenses / get_build_stats, and suggest engine-validated improvements.\n"
-        "- Build from scratch: set_class → set_level → set_skill → optimize_supports (best support "
-        "set) → allocate the ascendancy + optimize_passives → gear with plan_gear / optimize_item "
-        "(goals) / optimize_jewel → apply_combat_profile + gate, validating each step on the engine.\n"
-        "- Solve toward a goal: solve_for, evaluate_build, optimize_passives.\n"
+        "- Create a build: follow /poe-bd-create and its stage references. Start a generation run, "
+        "query current Research receipts, select the Family source variant, validate the "
+        "Blueprint, and let the Agent implement the mechanism through typed mutations. Validate "
+        "the final Draft before Judge, complete the quality pass, and use the trusted "
+        "artifact/lifecycle/review delivery path. Global build/tree optimization is disabled.\n"
+        "- Investigate a named gap: rank_levers, targeted candidate measurements, and current "
+        "generation checkpoints; preserve the selected mechanism and exact calculation context.\n"
         "- Look things up: items, gems, mods, uniques, passives, ascendancies; check live prices.\n\n"
         "If the player hasn't said what they want, ask whether they'd like to analyze an existing "
         "build, create one from a goal, or get advice — then go."
@@ -4422,34 +4515,31 @@ def analyze_build(source: str) -> str:
 
 @mcp.prompt()
 def build_from_goal(goal: str, character_class: str = "") -> str:
-    """Create a verified build from a natural-language goal (create → validate → cost → present)."""
+    """Route a natural-language goal through the current Agent-led Create contract."""
     cls = f" Start from the {character_class} class." if character_class else ""
     return (
         f"Create a Path of Exile 2 build for this goal:\n\n{goal}\n{cls}\n\n"
-        "Follow create → validate → cost → present: set_class → set_level → set_skill → for an "
-        "attack skill equip a weapon FIRST (equip_item) so DPS computes → optimize_supports for the "
-        "best support set → allocate the ascendancy (often the build's biggest multiplier) + "
-        "optimize_passives (metric='balanced' to raise offense AND defense) → gear it: plan_gear for "
-        "a whole-set first pass (auto-bases empty slots; pass min_ehp for a survivability floor), or "
-        "optimize_item per slot with goals={'TotalDPS':..,'TotalEHP':..} for blends, optimize_jewel "
-        "for jewels, rank_upgrades for the next slot → check relevant_uniques for build-defining "
-        "uniques + unique jewels (the leap past the ~100k rare-only ceiling; verify each on the "
-        "engine) → apply_combat_profile for the realistic fight.\n\n"
-        "Commit to a dominant multiplier and a game-valid archetype early: pinnacle DPS "
-        "comes from a committed multiplier (crit, ailment/DoT, minions, '+levels', a 'more'/penetration "
-        "stack), not slot-by-slot tuning — a half-built lane reads weak per slot, so judge it once "
-        "stacked across tree + several gear pieces. IMPORTANT: the engine does NOT model energy-based "
-        "meta TRIGGERS (Cast on Critical, the Invocations) — a socketed spell computes as a weak "
-        "SELF-CAST (tools flag `engineLimitation`). This limits numeric PoB claims only: do not reject, "
-        "replace, or re-socket a game-valid trigger-meta archetype to satisfy the engine. Preserve the "
-        "intended host + payload structure and validate it with current mechanic/Research or in-game "
-        "evidence.\n\n"
-        "A build is NOT done until it clears a real bar (see build_advice('targets')): resists "
-        "capped, a full gear set, a meaningful hit pool, DPS that clears the player's content, and "
-        "sustain. CONFIRM with get_defenses + evaluate_build against explicit goals; sanity-check "
-        "with build_advice('red flags') and, if you have one, compare_to a known-good build. Check "
-        "cost with get_prices and present with export_build. If the build is a partial skeleton or "
-        "fails the goal, say so plainly — never present a draft or a failing build as finished."
+        "Follow /poe-bd-create and its typed run, Blueprint, Draft, Judge and delivery contracts. "
+        "Generate the requested target-level stage. A matched Research Family and its selected "
+        "source variant remain identity and design authority; when no Family matches, record "
+        "no_matching_memory and use the allowed graph/corpus/external design evidence.\n\n"
+        "Read the required records and failure premises. Implement the core mechanism and "
+        "required unique enablers before ordinary gear, using Agent-decided mutation batches. "
+        "Do not use optimize_build or globally rearrange the passive tree. Measure complete "
+        "support/gear combinations under the same exact output and realistic configuration; "
+        "local stat probes are discovery evidence, not a universal scaling hierarchy.\n\n"
+        "Inspect modelability for this runtime, output and metric. Preserve a legal trigger "
+        "host/payload or other intended mechanism when its numeric rate is unmodelled; report "
+        "the gap and verify its conditions instead of switching archetype for computability. "
+        "There is no universal rare-only damage ceiling or fixed DPS/EHP completion number.\n\n"
+        "Use inspect_generation_checkpoint while refining, validate_generation_draft for each "
+        "substantive design revision, and the formal Judge plus artifact-bound lifecycle for "
+        "trusted delivery. Protect a passing baseline during quality exploration. Normal "
+        "level-90 softcore gear optimization stops adding ordinary resistance at 60% elemental "
+        "and 30% non-CI chaos; use 75% only when requested. Other levels follow their current "
+        "typed gates. Check offense, resource sustain, defense and unmet conditions even when "
+        "hard-only Judge passes. Finish through artifact, lifecycle and review, preserving the "
+        "manifest's delivery tier and limitations. Prices are reported after design is locked."
     )
 
 
@@ -4458,11 +4548,12 @@ def audit_defenses() -> str:
     """Audit the active build's survivability and propose fixes."""
     return (
         "Audit the active build's defenses. Call get_defenses and report life/ES, EHP, and "
-        "elemental + chaos resistances with over-cap. Remember PoB's default endgame resistance "
-        "penalty makes fresh resists deeply negative — that's expected; the target is the 75% "
-        "cap. Identify the weakest defensive layer and propose specific, engine-validated fixes — "
-        "recraft slots with optimize_item goals (or plan_gear to re-cap the whole set while keeping "
-        "damage), gear mods via search_mods, uniques, or passives — confirming each with the engine."
+        "elemental + chaos resistances with over-cap, actual level and CI state. Use the current "
+        "typed stage/Judge gates. Normal level-90 softcore optimization targets 60% elemental "
+        "and 30% non-CI chaos; 75% is an explicit user override, not a default completion gate. "
+        "Then inspect damage-type Max Hit, recovery conditions, ailments and resource tradeoffs. "
+        "Propose a targeted change and compare complete candidates under the same output and "
+        "configuration, checking attributes, resistances and source skills after replacement."
     )
 
 

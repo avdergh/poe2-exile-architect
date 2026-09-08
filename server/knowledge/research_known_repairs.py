@@ -61,6 +61,11 @@ def apply_known_repair(db_path: str | Path) -> dict[str, Any]:
                 return {**plan, "status": "mismatch"}
             for item in plan["records"]:
                 con.execute(
+                    "UPDATE deep_research_record_evidence SET record_id = NULL, "
+                    "binding_issue = 'record_quarantined' WHERE record_id = ?",
+                    (item["recordId"],),
+                )
+                con.execute(
                     """
                     UPDATE deep_research_records
                     SET visibility = 'quarantined', split = 'quarantine', status = 'quarantined',
@@ -102,9 +107,12 @@ def _plan(con: sqlite3.Connection) -> dict[str, Any]:
         evidence_sources = sorted(
             str(item[0])
             for item in con.execute(
-                "SELECT source_case_ref FROM deep_research_record_evidence "
-                "WHERE knowledge_scope = ? AND knowledge_key = ? ORDER BY source_case_ref",
-                (str(row["knowledge_scope"]), str(row["knowledge_key"])),
+                "SELECT DISTINCT source_case_ref FROM deep_research_record_evidence "
+                "WHERE knowledge_scope = ? AND knowledge_key = ? AND record_id = ? "
+                "AND accepted_projection_hash = ? AND COALESCE(binding_issue, '') = '' "
+                "ORDER BY source_case_ref",
+                (str(row["knowledge_scope"]), str(row["knowledge_key"]),
+                 str(row["record_id"]), row["projection_hash"]),
             ).fetchall()
         )
         actual = {

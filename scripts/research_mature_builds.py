@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,9 @@ from server.knowledge import (  # noqa: E402
     research_identity,
     research_intake_ledger,
     research_contracts,
+    research_completion,
+    research_retention,
+    research_followups,
     research_memory,
     research_models,
     research_packet,
@@ -59,6 +63,7 @@ DEFAULT_INTAKE_LEDGER_PATH = research_intake_ledger.default_ledger_path()
 DEFAULT_WORKER_COUNT = 5
 MAX_WORKER_COUNT = 5
 _ACCEPT_LOCK = threading.RLock()
+MAX_LEASE_SECONDS = 24 * 60 * 60
 
 RESEARCH_MANDATORY_CHECKS = (
     "暗金/lineage 宝石必须标注 unique 身份；unique support gem 保持 support_modifier role，"
@@ -145,6 +150,11 @@ def queue_cases(
     re_research_run_dir: str | Path | None = None,
     supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
+    retention_days: int = 7,
+    target_character_refs: set[str] | None = None,
+    reacquisition_context: dict[str, str] | None = None,
+    re_research_scope: str = "supplement",
+    memory_db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create or resume a safe mature-build research queue.
 
@@ -154,13 +164,27 @@ def queue_cases(
     without quarantine material are skipped.
     """
     effective_worker_count = _effective_worker_count(worker_count)
+    if re_research_scope not in {"supplement", "full_case"}:
+        raise ValueError("invalid_re_research_scope")
+    if re_research_scope == "full_case" and (re_research_run_dir is None or not supplement_sample_ids):
+        raise ValueError("full_case_revisit_requires_selected_source_cases")
+    if resume and dry_run:
+        raise ValueError("resume_dry_run_not_supported")
     output_root = Path(output_dir)
-    output_root.mkdir(parents=True, exist_ok=True)
+    if not resume:
+        output_root.mkdir(parents=True, exist_ok=True)
     db_path = _queue_db_path(output_root, queue_db_path)
+    if db_path.exists() and not resume:
+        raise FileExistsError("research queue already exists; use --resume with the same --output-dir")
     effective_ledger = (
         Path(intake_ledger_path) if intake_ledger_path is not None else DEFAULT_INTAKE_LEDGER_PATH
     )
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
+    if resume and not dry_run:
+        return _resume_queue_cases(
+            output_root=output_root, db_path=db_path, effective_temp_root=effective_temp_root,
+            worker_count=effective_worker_count, memory_db_path=memory_db_path,
+        )
     effective_temp_root.mkdir(parents=True, exist_ok=True)
     research_packet.cleanup_expired_packets(temp_root=effective_temp_root)
     version_context = _runtime_version_context(
@@ -168,19 +192,6 @@ def queue_cases(
         passive_tree_version=passive_tree_version,
         pob_version_or_commit=pob_version_or_commit,
     )
-    if not dry_run and db_path.exists() and not resume:
-        raise FileExistsError(
-            "research queue already exists; use --resume with the same --output-dir"
-        )
-
-    if resume and not dry_run:
-        return _resume_queue_cases(
-            output_root=output_root,
-            db_path=db_path,
-            effective_temp_root=effective_temp_root,
-            worker_count=effective_worker_count,
-        )
-
     source_file_values = list(source_files or [])
     source_batch_file_values = list(source_batch_files or [])
     if re_research_run_dir is not None:
@@ -257,6 +268,9 @@ def queue_cases(
             supplement_sample_ids=normalized_supplement_ids,
             supplement_focus=supplement_focus,
         )
+        if re_research_scope == "full_case":
+            for case in re_research_cases:
+                case["supplement"] = False
         source_input_summary["reSupplementCaseCount"] = len(re_research_cases)
         source_input_summary["reSupplementSkippedUnrecoverableCount"] = re_unrecoverable
         source_input_summary["selectedSupplementSampleCount"] = len(re_research_cases)
@@ -282,9 +296,17 @@ def queue_cases(
                 ninja_classes=normalized_ninja_classes,
                 intake_ledger_path=effective_ledger,
                 collector_stats=collector_stats,
+                **({"target_character_refs": target_character_refs} if target_character_refs is not None else {}),
             )
         )
     )
+    if target_character_refs is not None and any(
+        case.get("status") == "pending" and (
+            case.get("characterRef") not in target_character_refs
+            or case.get("league") != league_url
+        ) for case in cases
+    ):
+        raise ValueError("reacquisition_target_mismatch")
     _normalize_sample_ids(cases, sample_start_index=sample_start_index)
     source_input_summary["uniqueLocalCaseCount"] = len(cases) if local_sources else 0
     source_input_summary["duplicateLocalSourceCount"] = (
@@ -318,6 +340,16 @@ def queue_cases(
         db_path,
         {
             "queueKind": "poe_bd_research_external_agent_queue",
+            "retentionPolicy": json.dumps(research_retention.create_policy(
+                now=_now(), retention_days=retention_days,
+            ), sort_keys=True),
+            "reacquisitionParentRunRef": (reacquisition_context or {}).get("parentRunRef", ""),
+            "reacquisitionParentSampleId": (reacquisition_context or {}).get("sampleId", ""),
+            "reacquisitionRequestId": (reacquisition_context or {}).get("requestId", ""),
+            "reResearchScope": re_research_scope if re_research_run_dir else "case",
+            "supplementParentRunRef": (
+                f"research-run:{Path(re_research_run_dir).name}" if re_research_run_dir else ""
+            ),
             "leagueUrl": legacy_batch._safe_text(league_url),
             "limit": str(limit),
             "levelMin": str(level_min),
@@ -391,6 +423,7 @@ def queue_cases(
             "passiveTreeVersion": version_context["passiveTreeVersion"],
             "pobVersionOrCommit": version_context["pobVersionOrCommit"],
             "versionContextStatus": version_context["status"],
+            "modelGamePatch": version_context.get("modelGamePatch", ""),
             "updatedAt": _now_iso(),
         },
     )
@@ -413,6 +446,7 @@ def queue_cases(
                 current_patch=version_context["gamePatch"],
                 passive_tree_version=version_context["passiveTreeVersion"],
                 pob_version_or_commit=version_context["pobVersionOrCommit"],
+                version_context=version_context,
             )
             packet_id = str(packet["packetId"])
             packet_safe_hash = str(packet["packetSafeHash"])
@@ -423,6 +457,7 @@ def queue_cases(
             and not dry_run
             and not local_sources
             and not re_research_run_dir
+            and target_character_refs is None
         ):
             # The same mature build (byte-identical PoB text) was already researched and
             # accepted into durable memory; re-queueing it would duplicate knowledge and
@@ -438,7 +473,7 @@ def queue_cases(
         inserted += 1 if was_inserted else 0
         skipped_duplicates += 0 if was_inserted else 1
         character_ref = str(case.get("characterRef") or "").strip()
-        if was_inserted and character_ref.startswith("character-hash:"):
+        if was_inserted and character_ref.startswith("character-hash:") and target_character_refs is None:
             if research_intake_ledger.record_case(
                 effective_ledger,
                 league=str(case.get("league") or league_url),
@@ -503,17 +538,75 @@ def claim_case(
     lease_owner: str = "current_researcher_agent",
     temp_root: str | Path | None = None,
 ) -> dict[str, Any]:
+    db_path = _queue_db_path(Path(output_dir), queue_db_path)
+    with interprocess_file_lock(_run_lock_path(db_path)):
+        # Cleanup can win after the caller resolved runRef but before this lock.
+        # Never let _init_db recreate that run and shadow its safe cleanup audit.
+        if not db_path.is_file():
+            return {
+                "status": "rejected", "errorCode": "research_run_not_found",
+                "noRawMatureBuildMaterial": True,
+            }
+        policy = research_retention.inspect_policy(_read_metadata(db_path), now=_now())
+        if not policy["newClaimAllowed"]:
+            return {
+                "status": "retention_expired" if policy["status"] == "expired" else "retention_policy_invalid",
+                "retention": policy, "noRawMatureBuildMaterial": True,
+            }
+        return _claim_case_locked(
+            output_dir=output_dir, queue_db_path=queue_db_path, lease_seconds=lease_seconds,
+            lease_owner=lease_owner, temp_root=temp_root,
+        )
+
+
+def _run_lock_path(db_path: Path) -> Path:
+    return db_path.parent.parent / f".{db_path.parent.name}.research-run.lock"
+
+
+def _acceptance_source_context(
+    row: sqlite3.Row, version_context: dict[str, Any], pob_readback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context = {
+        "sourceHashRef": str(row["source_hash_ref"]),
+        "sourceHash": str(row["source_hash"]),
+        "gamePatch": str(version_context.get("gamePatch") or ""),
+        "passiveTreeVersion": str(version_context.get("passiveTreeVersion") or ""),
+        "pobVersionOrCommit": str(version_context.get("pobVersionOrCommit") or ""),
+        "knowledgeScope": _authoritative_knowledge_scope(row),
+    }
+    if isinstance(pob_readback, dict) and pob_readback.get("status") == "available":
+        binding = pob_readback.get("stateBinding") or {}
+        for key in ("sourceSnapshotHash", "activeSets"):
+            if binding.get(key):
+                context[key] = binding[key]
+    return context
+
+
+def _claim_case_locked(
+    *,
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    queue_db_path: str | Path | None = None,
+    lease_seconds: int = 7200,
+    lease_owner: str = "current_researcher_agent",
+    temp_root: str | Path | None = None,
+) -> dict[str, Any]:
     """Atomically lease one case up to the queue's bounded worker capacity."""
     db_path = _queue_db_path(Path(output_dir), queue_db_path)
-    _init_db(db_path)
+    if not db_path.is_file():
+        return {
+            "status": "rejected", "errorCode": "research_run_not_found",
+            "noRawMatureBuildMaterial": True,
+        }
+    _init_db(db_path, allow_create=False)
     now = _now()
-    expires = now + timedelta(seconds=max(1, int(lease_seconds or 1)))
+    lease_seconds = min(MAX_LEASE_SECONDS, max(1, int(lease_seconds or 1)))
+    expires = now + timedelta(seconds=lease_seconds)
     # token_urlsafe's alphabet includes "-", so a token can start with "-" and argparse would
     # treat a "--lease-token <value>" value as a new option ("expected one argument"). Prefix a
     # letter so every generated token is argparse-safe; main() additionally rewrites legacy
     # dash-leading values into the equals form.
     lease_token = "t" + secrets.token_urlsafe(32)
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
         configured_worker_count = conn.execute(
@@ -584,13 +677,13 @@ def claim_case(
             lease_seconds=lease_seconds,
             queue_db_path=db_path,
         )
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             claimed = conn.execute(
                 "SELECT * FROM cases WHERE id = ?", (int(claimed["id"]),)
             ).fetchone()
     except Exception:
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             cur = conn.execute(
                 """
                 UPDATE cases
@@ -729,8 +822,8 @@ def read_case_section(
         limit=limit,
         node_type=node_type,
         exclude_routing=exclude_routing,
+        response_metadata={"sampleId": str(row["sample_id"])},
     )
-    result["sampleId"] = str(row["sample_id"])
     _assert_transient_view_payload(result, enforce_size=True)
     return result
 
@@ -758,8 +851,8 @@ def search_case(
         query=query,
         section=section,
         limit=limit,
+        response_metadata={"sampleId": str(row["sample_id"])},
     )
-    result["sampleId"] = str(row["sample_id"])
     _assert_transient_view_payload(result, enforce_size=True)
     return result
 
@@ -896,6 +989,18 @@ def render_review_contract(
             for role, node_types in sorted(acceptance.ROLE_NODE_TYPES.items())
         },
         "recordIdentityRoles": research_identity.kind_identity_roles(),
+        "sourceClaimKeyRule": (
+            "Optional record-root sourceClaimKey defaults to default. Use a stable lowercase "
+            "ASCII slug (letters/digits first, then letters/digits/_/-, <=80 characters) only "
+            "to distinguish parallel conditional claims from the same source and mechanism "
+            "topic. Reuse the key when revising that claim. It is not a typedPayload field, "
+            "content identity, new source, or additional independent evidence."
+        ),
+        "sourceClaimRevisionRule": (
+            "Different knowledge topics coexist even when their titles match. A cross-topic correction "
+            "must supply optional record-root sourceClaimRevision with knowledgeKey, recordId and "
+            "projectionHash from the exact current source claim; it never authorizes another source."
+        ),
         "typedPayloadSchema": {
             "knowledgeShape": {
                 "mechanic_chain": "state_causal_chain",
@@ -913,12 +1018,12 @@ def render_review_contract(
             "supportPackages": {
                 "type": "list[object]",
                 "entry": '{"skillKey": str, "supportKeys": [str, ...], "socketedItemRefs": [str, ...], "deliveryRole": "direct", "sourceGroupRef": str, "rootSkillRef": str}',
-                "rule": "copy the physical socket package from the lease skill-group manifest: skillKey is the resolved root skill; supportKeys and socketedItemRefs are parallel lists identifying the support type and exact physical instance under that root; sourceGroupRef/rootSkillRef must match exactly; <=12 entries; the same socketedItemRef cannot appear in two packages, while distinct instances may share a support stable key; source-local refs are stripped before durable storage; record socketed active payloads and host/payload mechanics through components/mechanic records rather than deliveryRole",
+                "rule": "For record schema 2, every record kind containing resolved support gems must provide supportPackages covering all resolved support gems in that same record, even a single support; packages in other records cannot satisfy this obligation; copy the physical socket package from the lease skill-group manifest: skillKey is the resolved root skill; supportKeys and socketedItemRefs are parallel lists identifying the support type and exact physical instance under that root; sourceGroupRef/rootSkillRef must match exactly; <=12 entries; the same socketedItemRef cannot appear in two packages, while distinct instances may share a support stable key; source-local refs are stripped before durable storage; record socketed active payloads and host/payload mechanics through components/mechanic records rather than deliveryRole",
             },
             "supportCoverageExceptions": {
                 "type": "list[object]",
                 "entry": 'exactly {"skillKey": str, "reason": "source_coverage_gap"|"not_applicable", "detail": str}',
-                "rule": "skillKey resolved and mentioned in the same record; one entry per skillKey; detail <=240 chars; use only for a real gap or a single-support skill, never to dodge packaging",
+                "rule": "skillKey resolved and mentioned in the same record; one entry per skillKey; detail <=240 chars; use only for a real gap or a single-support skill; exceptions explain group-level source coverage and cannot waive per-record packaging of resolved supports",
             },
             "availability": {"type": "str", "values": ["standard", "source_specific_random"]},
             "sourceSpecificComponentKeys": {
@@ -976,6 +1081,7 @@ def render_review_contract(
         },
         "recordTemplate": {
             "recordKind": "mechanic_chain",
+            "sourceClaimKey": "default",
             "title": "聚焦知识单元标题",
             "summary": "用于召回的短摘要",
             "content": "只解释一个主要问题，并写出具体组件、因果、条件与风险。",
@@ -1624,6 +1730,7 @@ def accept_case(
                     "canonicalReviewHash": canonical_review_hash,
                     "contractVersion": review_contract_version,
                     "expectedOriginState": "claimed",
+                    "sourceContext": _acceptance_source_context(row, version_context, pob_readback),
                     "supplement": bool(row["supplement"]),
                 },
             )
@@ -1655,7 +1762,7 @@ def accept_case(
                 sample_id=sample_id,
             )
             if ledger_finalization == "conflict":
-                with sqlite3.connect(db_path) as conn:
+                with closing(_connect_queue(db_path)) as conn, conn:
                     conn.execute(
                         "UPDATE cases SET finalization_status = 'ledger_conflict', updated_at = ? "
                         "WHERE sample_id = ? AND status = 'accepting' "
@@ -1675,7 +1782,7 @@ def accept_case(
                 }
                 _assert_safe_payload(result)
                 return result
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             cur = conn.execute(
                 """
                 UPDATE cases
@@ -1793,8 +1900,8 @@ def _recover_accepting_case(
     memory_db_path: Path,
     intake_ledger_path: Path,
 ) -> dict[str, Any] | None:
-    _init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    _init_db(db_path, allow_create=False)
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM cases WHERE status IN ('accepting', 'accepted') "
@@ -1839,7 +1946,7 @@ def _recover_accepting_case(
     if receipt is None:
         if str(row["status"]) == "accepted":
             raise ValueError("accepted queue case is missing its final write receipt")
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             conn.execute(
                 "UPDATE cases SET status = COALESCE(NULLIF(accept_origin_state, ''), 'claimed'), "
                 "finalization_status = 'memory_not_committed', updated_at = ? "
@@ -1852,6 +1959,7 @@ def _recover_accepting_case(
         raise ValueError("accepting case receipt does not match acceptAttemptKey")
     if str(row["status"]) == "accepted":
         return {
+            **_research_quality_summary(receipt.get("acceptanceSummary") or {}),
             "status": "accepted",
             "sampleId": str(row["sample_id"]),
             "acceptAttemptKey": str(row["accept_attempt_key"]),
@@ -1883,7 +1991,7 @@ def _recover_accepting_case(
                 "noRawMatureBuildMaterial": True,
             }
     summary = receipt.get("acceptanceSummary") or {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         cur = conn.execute(
             """
             UPDATE cases
@@ -1892,7 +2000,8 @@ def _recover_accepting_case(
                    acceptance_status = 'accepted',
                    accepted_pattern_count = ?, accepted_deep_record_count = ?,
                    accepted_semantic_edge_count = ?, write_receipt_ref = ?,
-                   finalization_status = 'complete'
+                   finalization_status = 'complete', research_quality_summary = ?,
+                   deferred_candidate_count = ?, unresolved_deep_record_component_count = ?
              WHERE sample_id = ? AND status = 'accepting' AND accept_attempt_key = ?
             """,
             (
@@ -1902,6 +2011,9 @@ def _recover_accepting_case(
                 int(summary.get("acceptedDeepRecordCount") or 0),
                 int(summary.get("acceptedSemanticEdgeCount") or 0),
                 receipt_ref,
+                json.dumps(_research_quality_summary(summary), ensure_ascii=False, sort_keys=True),
+                int(summary.get("deferredCandidateCount") or 0),
+                int(summary.get("unresolvedDeepRecordMentionCount") or 0),
                 str(row["sample_id"]),
                 str(row["accept_attempt_key"]),
             ),
@@ -1910,6 +2022,7 @@ def _recover_accepting_case(
     if cur.rowcount != 1:
         raise ValueError("accepting case changed before receipt recovery completed")
     return {
+        **_research_quality_summary(summary),
         "status": "accepted",
         "sampleId": str(row["sample_id"]),
         "acceptAttemptKey": str(row["accept_attempt_key"]),
@@ -1932,8 +2045,8 @@ def _recover_retry_accepting_case(
 ) -> dict[str, Any] | None:
     """Finish or replay a retry attempt from its committed Memory receipt."""
 
-    _init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    _init_db(db_path, allow_create=False)
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM cases WHERE sample_id = ? "
@@ -2004,6 +2117,7 @@ def _recover_retry_accepting_case(
             }
     if str(row["status"]) == "accepted":
         return {
+            **_research_quality_summary(receipt.get("acceptanceSummary") or {}),
             "status": "accepted",
             "sampleId": str(row["sample_id"]),
             "acceptAttemptKey": expected_attempt_key,
@@ -2016,7 +2130,7 @@ def _recover_retry_accepting_case(
         }
 
     summary = receipt.get("acceptanceSummary") or {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         cur = conn.execute(
             """
             UPDATE cases
@@ -2025,7 +2139,8 @@ def _recover_retry_accepting_case(
                    acceptance_status = 'accepted',
                    accepted_pattern_count = ?, accepted_deep_record_count = ?,
                    accepted_semantic_edge_count = ?, write_receipt_ref = ?,
-                   finalization_status = 'complete'
+                   finalization_status = 'complete', research_quality_summary = ?,
+                   deferred_candidate_count = ?, unresolved_deep_record_component_count = ?
              WHERE sample_id = ? AND status = 'accepting' AND accept_attempt_key = ?
             """,
             (
@@ -2035,6 +2150,9 @@ def _recover_retry_accepting_case(
                 int(summary.get("acceptedDeepRecordCount") or 0),
                 int(summary.get("acceptedSemanticEdgeCount") or 0),
                 receipt_ref,
+                json.dumps(_research_quality_summary(summary), ensure_ascii=False, sort_keys=True),
+                int(summary.get("deferredCandidateCount") or 0),
+                int(summary.get("unresolvedDeepRecordMentionCount") or 0),
                 str(row["sample_id"]),
                 expected_attempt_key,
             ),
@@ -2043,6 +2161,7 @@ def _recover_retry_accepting_case(
     if cur.rowcount != 1:
         raise ValueError("retry accepting case changed before receipt recovery completed")
     return {
+        **_research_quality_summary(summary),
         "status": "accepted",
         "sampleId": str(row["sample_id"]),
         "acceptAttemptKey": expected_attempt_key,
@@ -2352,6 +2471,7 @@ def retry_accept_case(
                     "canonicalReviewHash": canonical_review_hash,
                     "contractVersion": review_contract_version,
                     "expectedOriginState": "acceptance_rejected",
+                    "sourceContext": _acceptance_source_context(row, version_context, pob_readback),
                     "supplement": bool(row["supplement"]),
                 },
             )
@@ -2385,7 +2505,7 @@ def retry_accept_case(
                 sample_id=str(row["sample_id"]),
             )
             if ledger_finalization == "conflict":
-                with sqlite3.connect(db_path) as conn:
+                with closing(_connect_queue(db_path)) as conn, conn:
                     conn.execute(
                         "UPDATE cases SET finalization_status = 'ledger_conflict', updated_at = ? "
                         "WHERE sample_id = ? AND status = 'accepting' "
@@ -2405,7 +2525,7 @@ def retry_accept_case(
                 }
                 _assert_safe_payload(result)
                 return result
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             cur = conn.execute(
                 """
                 UPDATE cases
@@ -2520,7 +2640,7 @@ def _begin_accepting(
     origin_state: str = "claimed",
 ) -> None:
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         cur = conn.execute(
             """
             UPDATE cases
@@ -2551,8 +2671,8 @@ def _begin_accepting(
 
 
 def _case_for_rejected_sample(db_path: Path, sample_id: str) -> sqlite3.Row:
-    _init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    _init_db(db_path, allow_create=False)
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -2571,8 +2691,8 @@ def _case_for_rejected_sample(db_path: Path, sample_id: str) -> sqlite3.Row:
 def _case_for_retry_review_save(db_path: Path, sample_id: str) -> sqlite3.Row:
     """Return the normal retry row or the exact in-flight retry row for replay."""
 
-    _init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    _init_db(db_path, allow_create=False)
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -2602,7 +2722,7 @@ def _begin_retry_accepting(
     accept_attempt_key: str,
 ) -> None:
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         cur = conn.execute(
             """
             UPDATE cases
@@ -2634,7 +2754,7 @@ def _finish_accepting_after_exception(
     lease_token: str,
 ) -> None:
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.execute(
             """
             UPDATE cases
@@ -2661,7 +2781,7 @@ def _finish_retry_accepting_after_exception(
     row: sqlite3.Row,
 ) -> None:
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.execute(
             """
             UPDATE cases
@@ -2690,7 +2810,7 @@ def queue_status(
     intake_ledger_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     db_path = _queue_db_path(Path(output_dir), queue_db_path)
-    _init_db(db_path)
+    _init_db(db_path, allow_create=False)
     metadata = _read_metadata(db_path)
     rows = _fetch_cases(db_path)
     local_source_input_count = int(metadata.get("localSourceInputCount") or 0)
@@ -2854,14 +2974,51 @@ def _probe_locked_files(output_root: Path, *, max_depth: int = 3) -> list[str]:
 
 
 def _delete_run_directory(output_root: Path, staging: Path) -> tuple[str, dict[str, Any]]:
-    """Delete the run directory through rename-aside + rmtree with rollback.
+    """Delete a run, retaining its exact safe queue if removal only partly succeeds.
 
-    Returns ("cleaned", {}) when fully removed, or ("deferred", detail) when the
-    directory could not be removed and must stay untouched (the caller queues a
-    retry). The run directory (queue DB, reviews, acceptance reports) is only
-    touched as a whole via rename, so an interrupted cleanup can never leave the
-    run half-deleted and un-auditable.
+    A failed rmtree can already have removed the queue or raw source files. Restore
+    only the safe queue so the next cleanup can recheck the original completion
+    evidence; deleted source material is neither reconstructed nor claimed intact.
     """
+    try:
+        queue_snapshot = (output_root / QUEUE_DB_FILENAME).read_bytes()
+    except OSError as exc:
+        return "deferred", {
+            "reason": "queue_snapshot_unavailable",
+            "osError": _safe_os_error(exc),
+            "retried": False,
+            "hint": "The safe queue could not be preserved; no directory removal was attempted.",
+        }
+
+    def restore_missing_queue(retained_root: Path) -> dict[str, Any]:
+        queue_path = retained_root / QUEUE_DB_FILENAME
+        restored = False
+        restore_error = None
+        if not queue_path.is_file():
+            temporary = retained_root / f".{QUEUE_DB_FILENAME}.{secrets.token_hex(8)}.restore"
+            try:
+                with temporary.open("xb") as handle:
+                    handle.write(queue_snapshot)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if not queue_path.exists():
+                    temporary.replace(queue_path)
+                    restored = True
+            except OSError as exc:
+                restore_error = _safe_os_error(exc)
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        available = queue_path.is_file()
+        return {
+            "queueRestored": restored,
+            "queuePreserved": available,
+            "queueRestoreError": restore_error,
+            "recoveryRequired": not available,
+            "runtimeMayBePartiallyRemoved": True,
+        }
     for attempt in (1, 2, 3):
         try:
             if staging.exists():
@@ -2896,38 +3053,27 @@ def _delete_run_directory(output_root: Path, staging: Path) -> tuple[str, dict[s
         except OSError:
             try:
                 staging.rename(output_root)
-                return (
-                    "deferred",
-                    {
-                        "reason": "staging_removal_failed",
-                        "osError": _safe_os_error(exc),
-                        "retried": True,
-                        "restoredFromStaging": True,
-                        "hint": (
-                            "the run directory was moved to staging and the staging "
-                            "removal failed twice; the directory was renamed back to its "
-                            "original name. Re-run cleanup after closing any open handles."
-                        ),
-                    },
-                )
+                restored_from_staging = True
             except OSError:
-                return (
-                    "deferred",
-                    {
-                        "reason": "staging_removal_failed",
-                        "osError": _safe_os_error(exc),
-                        "retried": True,
-                        "restoredFromStaging": False,
-                        "hint": (
-                            "the run directory was moved to staging and both the staging "
-                            "removal and the rename-back failed; the staging directory is "
-                            "preserved at "
-                            + str(staging)
-                            + ". Re-run cleanup after closing any open handles; it will "
-                            "attempt to restore the staging directory automatically."
-                        ),
-                    },
-                )
+                restored_from_staging = False
+            queue_recovery = restore_missing_queue(
+                output_root if restored_from_staging else staging
+            )
+            return (
+                "deferred",
+                {
+                    "reason": "staging_removal_failed",
+                    "osError": _safe_os_error(exc),
+                    "retried": True,
+                    "restoredFromStaging": restored_from_staging,
+                    **queue_recovery,
+                    "hint": (
+                        "Directory removal partly failed. The safe queue is preserved when "
+                        "queuePreserved is true; already removed source material is unavailable. "
+                        "Close blocking handles and retry cleanup to recheck the same evidence."
+                    ),
+                },
+            )
     return "cleaned", {}
 
 
@@ -3012,6 +3158,35 @@ def cleanup_completed_run(
     abandon_incomplete: bool = False,
     memory_db_path: str | Path = DEFAULT_MEMORY_DB_PATH,
 ) -> dict[str, Any]:
+    """Serialize cleanup with acceptance; preserve safe diagnostics before removing raw data."""
+    if not isinstance(run_id, str) or not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
+        return {"status": "rejected", "errorCode": "invalid_research_run_id"}
+    runtime_root = Path(output_dir) if output_dir is not None else DEFAULT_OUTPUT_DIR
+    run_db = runtime_root / RUNS_DIRNAME / run_id / QUEUE_DB_FILENAME
+    # Store initialization owns the same process lock; finish it before entering
+    # the non-reentrant OS lock used by acceptance and cleanup.
+    research_memory.ResearchMemoryService(db_path=Path(memory_db_path))
+    with (
+        _ACCEPT_LOCK,
+        interprocess_file_lock(_accept_lock_path(memory_db_path)),
+        interprocess_file_lock(_run_lock_path(run_db)),
+    ):
+        return _cleanup_completed_run_locked(
+            run_id=run_id, temp_root=temp_root, output_dir=output_dir,
+            allow_rejected=allow_rejected, abandon_incomplete=abandon_incomplete,
+            memory_db_path=memory_db_path,
+        )
+
+
+def _cleanup_completed_run_locked(
+    *,
+    run_id: str,
+    temp_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    allow_rejected: bool = False,
+    abandon_incomplete: bool = False,
+    memory_db_path: str | Path = DEFAULT_MEMORY_DB_PATH,
+) -> dict[str, Any]:
     """Delete one Research run while preserving its durable Research Memory.
 
     ``allow_rejected`` permits cleanup when the run also contains ``acceptance_rejected``
@@ -3034,7 +3209,7 @@ def cleanup_completed_run(
         return {"status": "rejected", "errorCode": "invalid_research_run_id"}
     # Every cleanup call first drains the delayed-retry queue so a run whose directory
     # rename failed earlier gets cleaned as soon as the blocking handle is gone.
-    retried = _retry_pending_cleanups(runs_root)
+    retried = _retry_pending_cleanups(runs_root, memory_db_path=Path(memory_db_path), current_run_id=run_id)
     if run_id in retried.get("retriedIds", []):
         # The queued retry just cleaned this exact run (evidence was captured before any
         # deletion); report it as cleaned instead of falling into not-found.
@@ -3075,7 +3250,20 @@ def cleanup_completed_run(
     if not db_path.is_file():
         return {"status": "rejected", "errorCode": "research_run_not_found"}
     rows = _fetch_cases(db_path)
-    if not abandon_incomplete:
+    metadata = _read_metadata(db_path)
+    retention = research_retention.inspect_policy(metadata, rows, now=_now())
+    if retention["activeLeaseCount"] or retention["invalidLeaseCount"]:
+        return {"status": "rejected", "errorCode": "research_active_claim_lease", "retention": retention}
+    if any(
+        row.get("status") == "accepting"
+        or (row.get("status") == "accepted"
+            and row.get("finalizationStatus") not in (None, "", "complete"))
+        for row in rows
+    ):
+        return {"status": "rejected", "errorCode": "research_acceptance_recovery_required"}
+    retention_expired = retention["expiredCleanupAllowed"]
+    discard_incomplete = abandon_incomplete or retention_expired
+    if not discard_incomplete:
         allowed_statuses = {"accepted", "acceptance_rejected"} if allow_rejected else {"accepted"}
         if not rows or any(str(row.get("status") or "") not in allowed_statuses for row in rows):
             return {"status": "rejected", "errorCode": "completed_research_run_required"}
@@ -3094,11 +3282,6 @@ def cleanup_completed_run(
         "acceptedIntakeLedgerCountPreserved": 0,
         "missingIntakeLedgerCount": 0,
     }
-    if abandon_incomplete:
-        metadata = _read_metadata(db_path)
-        ledger_release = _release_abandoned_intake_rows(rows=rows, metadata=metadata)
-        if ledger_release.get("status") != "ok":
-            return ledger_release
     preserved_receipts = _preserve_legacy_write_receipts(
         output_root=output_root,
         run_id=run_id,
@@ -3107,6 +3290,34 @@ def cleanup_completed_run(
     )
     if preserved_receipts.get("status") != "ok":
         return preserved_receipts
+    _attach_followup_completion(
+        runtime_root=runtime_root, memory_db_path=Path(memory_db_path), run_id=run_id, rows=rows,
+    )
+    incomplete = [
+        row for row in rows if row.get("status") == "accepted"
+        and row.get("effectiveResearchCompletion", research_completion.completion_summary(row)["researchCompletion"]) != "complete"
+    ]
+    if incomplete and not discard_incomplete:
+        return {
+            "status": "rejected", "errorCode": "research_followup_required",
+            "incompleteSampleIds": [row.get("sampleId") for row in incomplete],
+            "preservedWriteReceiptRefs": preserved_receipts.get("writeReceiptRefs") or [],
+            "rawMaterialPreserved": True,
+            "nextAction": "Supplement the retained source, or explicitly abandon incomplete research.",
+            "noRawMatureBuildMaterial": True,
+        }
+    metadata = {**metadata, "cleanupReason": (
+        "explicit_abandonment" if abandon_incomplete else "retention_expired" if retention_expired else "completed"
+    )}
+    audit = _preserve_run_audit(
+        runtime_root=runtime_root, run_id=run_id, rows=rows, metadata=metadata,
+        receipt_refs=preserved_receipts.get("writeReceiptRefs") or [],
+        abandon_incomplete=abandon_incomplete,
+    )
+    if discard_incomplete:
+        ledger_release = _release_abandoned_intake_rows(rows=rows, metadata=metadata)
+        if ledger_release.get("status") != "ok":
+            return ledger_release
     packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
     evidence = {
         "caseCount": len(rows),
@@ -3117,6 +3328,11 @@ def cleanup_completed_run(
         "packetSafeHashes": sorted(packet_hashes),
         "validatedAt": _now_iso(),
         "preservedWriteReceiptRefs": preserved_receipts.get("writeReceiptRefs") or [],
+        "completionProtectionVersion": 1,
+        "cleanupAuditHash": research_runtime.stable_hash(audit),
+        "queueStateHash": research_runtime.stable_hash(_fetch_cases(db_path)),
+        "followupStateHash": research_followups.state_fingerprint(runtime_root / "followups.sqlite", f"research-run:{run_id}"),
+        "memoryRevision": _cleanup_memory_revision(Path(memory_db_path)),
     }
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
     packet_cleanup = research_packet.cleanup_packets_by_safe_hashes(
@@ -3131,7 +3347,7 @@ def cleanup_completed_run(
     # retry never re-reads a half-removed queue DB).
     outcome, detail = _delete_run_directory(output_root, staging)
     if outcome == "deferred":
-        if abandon_incomplete:
+        if discard_incomplete:
             rollback_failures = _restore_released_intake_rows(
                 Path(ledger_release["ledgerPath"]),
                 list(ledger_release["releasedRows"]),
@@ -3142,7 +3358,7 @@ def cleanup_completed_run(
                 "detail": detail,
                 "releasedIntakeLedgerCount": int(ledger_release["releasedIntakeLedgerCount"]),
                 "ledgerRollbackFailedSampleIds": rollback_failures,
-                "recoveryRequired": bool(rollback_failures),
+                "recoveryRequired": bool(rollback_failures) or bool(detail.get("recoveryRequired")),
             }
         _queue_pending_cleanup(
             runs_root,
@@ -3154,6 +3370,7 @@ def cleanup_completed_run(
             "errorCode": "research_run_cleanup_failed",
             "detail": detail,
             "queuedDelayedRetry": True,
+            "recoveryRequired": bool(detail.get("recoveryRequired")),
             "delayedRetry": retried,
         }
     _drop_pending_cleanup(runs_root, run_id)
@@ -3166,6 +3383,7 @@ def cleanup_completed_run(
         "userExportsPreserved": True,
         "containsRawMaterial": False,
         "abandonedIncomplete": abandon_incomplete,
+        "retentionExpired": retention_expired,
         "releasedIntakeLedgerCount": int(ledger_release["releasedIntakeLedgerCount"]),
         "acceptedIntakeLedgerCountPreserved": int(
             ledger_release["acceptedIntakeLedgerCountPreserved"]
@@ -3173,6 +3391,8 @@ def cleanup_completed_run(
         "missingIntakeLedgerCount": int(ledger_release["missingIntakeLedgerCount"]),
         "delayedRetry": retried,
         "preservedWriteReceiptRefs": preserved_receipts.get("writeReceiptRefs") or [],
+        "safeAuditPreserved": True,
+        "researchIncompleteCount": len(incomplete),
     }
 
 
@@ -3185,7 +3405,6 @@ def _preserve_legacy_write_receipts(
 ) -> dict[str, Any]:
     """Import a minimal audit receipt before a legacy run directory is removed."""
 
-    research_memory.ResearchMemoryService(db_path=memory_db_path)
     con = mature_learning.connect(memory_db_path)
     refs: list[str] = []
     try:
@@ -3199,10 +3418,21 @@ def _preserve_legacy_write_receipts(
                 # identity cannot produce an auditable receipt; real product rows always carry it.
                 continue
             receipt_ref = research_runtime.write_receipt_ref(f"research-run:{run_id}", sample_id)
-            if con.execute(
-                "SELECT 1 FROM research_record_write_receipts WHERE receipt_ref = ?",
+            existing = con.execute(
+                "SELECT acceptance_summary FROM research_record_write_receipts WHERE receipt_ref = ?",
                 (receipt_ref,),
-            ).fetchone():
+            ).fetchone()
+            if existing:
+                receipt_summary = json.loads(existing["acceptance_summary"])
+                if receipt_summary.get("completionDiagnosticsVersion") == 1:
+                    row.update(research_completion.completion_summary(receipt_summary))
+                else:
+                    # Legacy receipts did not record research quality. Preserve known
+                    # queue/report gaps without upgrading the immutable receipt to clean.
+                    row.update(_legacy_completion_diagnostics(
+                        output_root=output_root, sample_id=sample_id, row=row,
+                    ))
+                row["writeReceiptRef"] = receipt_ref
                 refs.append(receipt_ref)
                 continue
             report: dict[str, Any] | None = None
@@ -3238,7 +3468,10 @@ def _preserve_legacy_write_receipts(
                 "acceptedSemanticEdgeCount": int(
                     (report or {}).get("acceptedSemanticEdgeCount") or 0
                 ),
+                **research_completion.completion_summary(report or {}),
             }
+            _assert_safe_payload(summary)
+            _assert_safe_payload({"recordWrites": record_writes})
             attempt_key = str(row.get("acceptAttemptKey") or row.get("accept_attempt_key") or "")
             if not attempt_key:
                 attempt_key = (
@@ -3271,6 +3504,8 @@ def _preserve_legacy_write_receipts(
                 ),
             )
             refs.append(receipt_ref)
+            row.update(research_completion.completion_summary(summary))
+            row["writeReceiptRef"] = receipt_ref
         con.commit()
     except BaseException:
         con.rollback()
@@ -3280,7 +3515,178 @@ def _preserve_legacy_write_receipts(
     return {"status": "ok", "writeReceiptRefs": refs}
 
 
-def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
+def _legacy_completion_diagnostics(
+    *, output_root: Path, sample_id: str, row: dict[str, Any],
+) -> dict[str, Any]:
+    projections = [research_completion.completion_summary(row)]
+    for path in sorted((output_root / "acceptance").glob(f"{_slug(sample_id)}-*-acceptance.json")):
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(report, dict) and report.get("safeArtifactOnly") is True:
+            projections.append(research_completion.completion_summary(report))
+    merged: dict[str, Any] = {"acceptanceMode": "unknown"}
+    for projection in projections:
+        if projection["researchCompletion"] == "needs_followup":
+            merged["acceptanceMode"] = "partial_with_deferred"
+        for key, value in projection.items():
+            if isinstance(value, int) and not isinstance(value, bool) and key.endswith("Count"):
+                merged[key] = max(merged.get(key, 0), value)
+            elif key in {"deferredGapSummaries", "unresolvedComponentGapSummaries", "caseCoverageGaps"}:
+                items = merged.setdefault(key, [])
+                items.extend(item for item in value if item not in items)
+            elif key == "deferredReasonCounts":
+                reasons = merged.setdefault(key, {})
+                for reason, count in value.items():
+                    reasons[reason] = max(reasons.get(reason, 0), count)
+            elif key == "caseCoverage":
+                coverage = merged.setdefault(key, {})
+                for dimension, state in value.items():
+                    if state == "evidence_missing" or dimension not in coverage:
+                        coverage[dimension] = state
+    return {
+        **research_completion.completion_summary(merged, supplement=bool(row.get("supplement"))),
+        "completionEvidence": "legacy_queue_and_safe_reports",
+    }
+
+
+def _run_audit_path(runtime_root: Path, run_id: str) -> Path:
+    if not re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{4}", run_id):
+        raise ValueError("invalid_research_run_id")
+    audit_root = (runtime_root / "run-audits").resolve()
+    candidate = (audit_root / f"{run_id}.json").resolve()
+    if candidate.parent != audit_root:
+        raise ValueError("invalid_research_run_audit_path")
+    return candidate
+
+
+def _cleanup_memory_revision(memory_db_path: Path) -> int:
+    with closing(mature_learning.connect(memory_db_path)) as con:
+        return research_runtime.get_memory_revision(con)
+
+
+def _attach_followup_completion(
+    *, runtime_root: Path, memory_db_path: Path, run_id: str, rows: list[dict[str, Any]],
+) -> None:
+    for row in rows:
+        if row.get("status") != "accepted" or not row.get("sampleId"):
+            continue
+        original = research_completion.completion_summary(row)["researchCompletion"]
+        row["effectiveResearchCompletion"] = original
+        if not memory_db_path.is_file():
+            continue
+        try:
+            state = research_followups.inspect_followups(
+                db_path=runtime_root / "followups.sqlite", memory_db_path=memory_db_path,
+                run_ref=f"research-run:{run_id}", sample_id=row["sampleId"], limit=1,
+            )
+        except (sqlite3.Error, ValueError):
+            state = {"status": "unavailable"}
+        if state.get("status") == "ok":
+            row["effectiveResearchCompletion"] = state["effectiveResearchCompletion"]
+            row["followupRevision"] = state["revision"]
+            row["openGapCount"] = state["openGapCount"]
+            row["originFingerprint"] = state["originFingerprint"]
+
+
+def _preserve_run_audit(
+    *, runtime_root: Path, run_id: str, rows: list[dict[str, Any]],
+    metadata: dict[str, Any], receipt_refs: list[str], abandon_incomplete: bool,
+) -> dict[str, Any]:
+    """Persist only safe identities and unresolved work outside disposable source material."""
+    samples = [
+        {
+            "sampleId": row.get("sampleId"), "status": row.get("status"),
+            "sourceHashRef": row.get("sourceHashRef"),
+            "sourceHash": row.get("sourceHash") or "",
+            "characterRef": row.get("characterRef") or "",
+            "league": row.get("league") or "",
+            "sourceType": row.get("sourceType") or "",
+            "writeReceiptRef": row.get("writeReceiptRef") or None,
+            "completionEvidence": row.get("completionEvidence") or "acceptance_diagnostics",
+            **research_completion.completion_summary(row, supplement=bool(row.get("supplement"))),
+            "effectiveResearchCompletion": row.get("effectiveResearchCompletion") or research_completion.completion_summary(row)["researchCompletion"],
+            "followupRevision": row.get("followupRevision"),
+        }
+        for row in rows
+    ]
+    audit = {
+        "auditVersion": 1, "runId": run_id, "runRef": f"research-run:{run_id}",
+        "status": "cleanup_prepared", "preparedAt": _now_iso(),
+        "sourceGamePatch": metadata.get("currentPatch") or "unknown",
+        "sourcePassiveTreeVersion": metadata.get("passiveTreeVersion") or "unknown",
+        "retention": research_retention.inspect_policy(metadata, rows, now=_now()),
+        "cleanupReason": metadata.get("cleanupReason") or "completed",
+        "parentRunRef": metadata.get("supplementParentRunRef") or None,
+        "reacquisitionParentRunRef": metadata.get("reacquisitionParentRunRef") or None,
+        "reacquisitionParentSampleId": metadata.get("reacquisitionParentSampleId") or None,
+        "reacquisitionRequestId": metadata.get("reacquisitionRequestId") or None,
+        "abandonedIncomplete": abandon_incomplete,
+        "preservedWriteReceiptRefs": receipt_refs,
+        "sampleCount": len(samples), "samples": samples,
+        "acceptedCount": sum(row["status"] == "accepted" for row in samples),
+        "researchCompleteCount": sum(
+            row["status"] == "accepted" and row["researchCompletion"] == "complete"
+            for row in samples
+        ),
+        "researchNeedsFollowupCount": sum(
+            row["status"] == "accepted" and row["researchCompletion"] == "needs_followup"
+            for row in samples
+        ),
+        "researchCompletionUnknownCount": sum(
+            row["status"] == "accepted" and row["researchCompletion"] == "unknown"
+            for row in samples
+        ),
+        "acceptedPatternCount": sum(int(row.get("acceptedPatternCount") or 0) for row in rows),
+        "acceptedDeepRecordCount": sum(int(row.get("acceptedDeepRecordCount") or 0) for row in rows),
+        "acceptedSemanticEdgeCount": sum(int(row.get("acceptedSemanticEdgeCount") or 0) for row in rows),
+        "researchIncompleteCount": sum(
+            row["researchCompletion"] != "complete" or row["status"] != "accepted"
+            for row in samples
+        ),
+        "createAuthorizing": False, "noRawMatureBuildMaterial": True,
+    }
+    _assert_safe_payload(audit)
+    path = _run_audit_path(runtime_root, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(audit, ensure_ascii=False, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return audit
+
+
+def read_run_audit(*, output_dir: str | Path, run_id: str) -> dict[str, Any] | None:
+    root = Path(output_dir)
+    path = _run_audit_path(root, run_id)
+    if not path.is_file():
+        return None
+    audit = json.loads(path.read_text(encoding="utf-8"))
+    if audit.get("auditVersion") != 1 or audit.get("runId") != run_id:
+        raise ValueError("invalid_research_run_audit")
+    _assert_safe_payload(audit)
+    runtime_exists = any(
+        (root / RUNS_DIRNAME / f"{run_id}{suffix}").exists()
+        for suffix in ("", ".cleanup-staging")
+    )
+    return {
+        **audit, "status": "cleanup_pending" if runtime_exists else "archived",
+        "rawMaterialAvailable": False,
+        "sourceSnapshotRecovery": "check_retained_run" if runtime_exists else "unavailable",
+        "runtimeDirectoryPreserved": runtime_exists,
+        "dispatchableCount": 0,
+    }
+
+
+def _retry_pending_cleanups(
+    runs_root: Path, *, memory_db_path: Path | None = None, current_run_id: str | None = None,
+) -> dict[str, Any]:
     """Retry queued cleanups whose directory rename previously failed.
 
     Each queued item carries the validation evidence captured before any deletion, so a
@@ -3305,6 +3711,15 @@ def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
             report["dropped"] += 1
             continue
         staging = output_root.with_name(f"{output_root.name}.cleanup-staging")
+        if not output_root.exists() and not staging.exists():
+            _drop_pending_cleanup(runs_root, run_id)
+            report["dropped"] += 1
+            continue
+        # A run lock is held by the caller only for its own target. Other queued
+        # cleanups remain visible until explicitly retried under their own lock.
+        if current_run_id is not None and run_id != current_run_id:
+            report["stillPending"] += 1
+            continue
         if not output_root.exists():
             if not staging.exists():
                 _drop_pending_cleanup(runs_root, run_id)
@@ -3315,6 +3730,45 @@ def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
             except OSError:
                 report["stillPending"] += 1
                 continue
+        evidence = item.get("evidence") or {}
+        try:
+            audit_path = _run_audit_path(runs_root.parent, run_id)
+            protected = (
+                evidence.get("completionProtectionVersion") == 1
+                and audit_path.is_file()
+                and evidence.get("cleanupAuditHash") == research_runtime.stable_hash(
+                    json.loads(audit_path.read_text(encoding="utf-8"))
+                )
+                and evidence.get("queueStateHash") == research_runtime.stable_hash(
+                    _fetch_cases(output_root / QUEUE_DB_FILENAME)
+                )
+                and evidence.get("followupStateHash") == research_followups.state_fingerprint(
+                    runs_root.parent / "followups.sqlite", f"research-run:{run_id}"
+                )
+                and memory_db_path is not None
+                and evidence.get("memoryRevision") == _cleanup_memory_revision(memory_db_path)
+            )
+        except (OSError, ValueError, sqlite3.Error):
+            protected = False
+        if not protected:
+            report["stillPending"] += 1
+            report.setdefault("revalidationRequiredIds", []).append(run_id)
+            continue
+        # Even repairs that forgot to advance memory_revision must not let a
+        # stale support projection authorize deletion of unresolved source data.
+        retry_rows = _fetch_cases(output_root / QUEUE_DB_FILENAME)
+        retry_metadata = _read_metadata(output_root / QUEUE_DB_FILENAME)
+        retry_policy = research_retention.inspect_policy(retry_metadata, retry_rows, now=_now())
+        _attach_followup_completion(
+            runtime_root=runs_root.parent, memory_db_path=memory_db_path, run_id=run_id, rows=retry_rows,
+        )
+        if (retry_policy["activeLeaseCount"] or retry_policy["invalidLeaseCount"]
+                or retry_policy["acceptanceRecoveryCount"]
+                or any(row.get("status") == "accepted" and row.get("effectiveResearchCompletion", research_completion.completion_summary(row)["researchCompletion"]) != "complete"
+                       for row in retry_rows)):
+            report["stillPending"] += 1
+            report.setdefault("revalidationRequiredIds", []).append(run_id)
+            continue
         outcome, _detail = _delete_run_directory(output_root, staging)
         if outcome == "cleaned":
             _drop_pending_cleanup(runs_root, run_id)
@@ -3325,9 +3779,22 @@ def _retry_pending_cleanups(runs_root: Path) -> dict[str, Any]:
     return report
 
 
-def _init_db(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+def _connect_queue(db_path: Path, *, readonly: bool = False) -> sqlite3.Connection:
+    if not db_path.is_file():
+        raise FileNotFoundError("research queue was not found")
+    try:
+        return sqlite3.connect(db_path.resolve().as_uri() + ("?mode=ro" if readonly else "?mode=rw"), uri=True)
+    except sqlite3.OperationalError:
+        if not db_path.is_file():
+            raise FileNotFoundError("research queue was not found") from None
+        raise
+
+
+def _init_db(db_path: Path, *, allow_create: bool = True) -> None:
+    if allow_create:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(db_path)) if allow_create else _connect_queue(db_path)
+    with closing(connection) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS metadata (
@@ -3411,7 +3878,7 @@ def _init_db(db_path: Path) -> None:
 
 
 def _write_metadata(db_path: Path, values: dict[str, str]) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.executemany(
             """
             INSERT INTO metadata(key, value) VALUES(?, ?)
@@ -3423,7 +3890,7 @@ def _write_metadata(db_path: Path, values: dict[str, str]) -> None:
 
 
 def _read_metadata(db_path: Path) -> dict[str, str]:
-    conn = sqlite3.connect(db_path)
+    conn = _connect_queue(db_path, readonly=True)
     try:
         rows = conn.execute("SELECT key, value FROM metadata").fetchall()
     finally:
@@ -3433,7 +3900,7 @@ def _read_metadata(db_path: Path) -> dict[str, str]:
 
 def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO cases(
@@ -3470,7 +3937,7 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
 
 
 def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(db_path)
+    conn = _connect_queue(db_path, readonly=True)
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM cases ORDER BY id ASC").fetchall()
@@ -3482,6 +3949,20 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
             quality_summary = json.loads(str(row["research_quality_summary"] or "{}"))
         except json.JSONDecodeError:
             quality_summary = {}
+        # Queue columns predate completion diagnostics and default to zero. Only
+        # positive legacy counts prove a gap; defaults cannot prove its absence.
+        completion_input = dict(quality_summary)
+        for field, column in (
+            ("deferredCandidateCount", "deferred_candidate_count"),
+            ("unresolvedDeepRecordMentionCount", "unresolved_deep_record_component_count"),
+        ):
+            if int(row[column] or 0) > 0:
+                completion_input[field] = max(
+                    int(row[column]), int(completion_input.get(field) or 0)
+                )
+        completion = research_completion.completion_summary(
+            completion_input, supplement=bool(row["supplement"])
+        )
         out.append(
             {
                 "sampleId": str(row["sample_id"]),
@@ -3502,6 +3983,9 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
                 "leaseExpiresAt": str(row["lease_expires_at"] or ""),
                 "acceptedAt": str(row["accepted_at"] or ""),
                 "acceptanceStatus": str(row["acceptance_status"] or ""),
+                "writeReceiptRef": str(row["write_receipt_ref"] or ""),
+                "finalizationStatus": str(row["finalization_status"] or ""),
+                "supplement": bool(row["supplement"]),
                 "acceptedPatternCount": int(row["accepted_pattern_count"] or 0),
                 "acceptedDeepRecordCount": int(row["accepted_deep_record_count"] or 0),
                 "acceptedSemanticEdgeCount": int(row["accepted_semantic_edge_count"] or 0),
@@ -3510,15 +3994,16 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
                 ),
                 **quality_summary,
                 "deferredCandidateCount": int(row["deferred_candidate_count"] or 0),
+                **completion,
             }
         )
     return out
 
 
 def _case_for_valid_lease(db_path: Path, lease_token: str) -> sqlite3.Row:
-    _init_db(db_path)
+    _init_db(db_path, allow_create=False)
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -3538,9 +4023,9 @@ def _case_for_valid_lease(db_path: Path, lease_token: str) -> sqlite3.Row:
 def _case_for_review_save(db_path: Path, lease_token: str) -> sqlite3.Row:
     """Return the valid claimed row or the exact in-flight row for accept replay."""
 
-    _init_db(db_path)
+    _init_db(db_path, allow_create=False)
     now = _now_iso()
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -3614,16 +4099,9 @@ def _rebuild_packet_for_claim(
     effective_temp_root = _effective_temp_root(temp_root, output_root=output_root)
     db_path = _queue_db_path(output_root, queue_db_path)
     quarantine = _quarantine_dir(output_root)
-    quarantine_path = quarantine / f"{str(row['source_hash'])}.json"
-    if not quarantine_path.exists():
-        return
-    try:
-        payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
-        raw = str(payload.get("rawImportCode") or "")
-    except (OSError, ValueError):
-        return
+    raw = _verified_quarantine_raw(quarantine, row)
     if not raw:
-        return
+        raise ValueError("research_source_material_unavailable_or_mismatched")
     version_context = _queue_version_context(db_path)
     case = legacy_batch._case_from_source(
         raw,
@@ -3645,8 +4123,9 @@ def _rebuild_packet_for_claim(
         passive_tree_version=version_context["passiveTreeVersion"],
         pob_version_or_commit=version_context["pobVersionOrCommit"],
         include_pob_readback=True,
+        version_context=version_context,
     )
-    with sqlite3.connect(db_path) as conn:
+    with closing(_connect_queue(db_path)) as conn, conn:
         conn.execute(
             """
             UPDATE cases
@@ -3684,10 +4163,21 @@ def _write_quarantine_case(output_root: Path, case: dict[str, Any]) -> Path:
     quarantine = _quarantine_dir(output_root)
     quarantine.mkdir(parents=True, exist_ok=True)
     source_hash = str(case.get("sourceHash") or "").strip()
-    if not source_hash:
-        raise ValueError("case is missing sourceHash; cannot quarantine raw source material")
+    raw = str(case.get("_rawImportCode") or "")
+    source_ref = str(case.get("sourceHashRef") or "")
+    if (not re.fullmatch(r"[a-f0-9]{64}", source_hash)
+            or legacy_batch.pob_code.is_link(raw)
+            or hashlib.sha256(raw.encode("utf-8")).hexdigest() != source_hash
+            or source_ref not in {f"source-hash:{source_hash}", f"source-hash:{source_hash[:16]}"}
+            or legacy_batch._source_to_xml(raw) != str(case.get("_rawXml") or "")):
+        raise ValueError("research_source_material_identity_mismatch")
     target = quarantine / f"{source_hash}.json"
     if target.exists():
+        if not _verified_quarantine_raw(quarantine, {
+            "sample_id": str(case.get("sampleId") or ""),
+            "source_hash": source_hash, "source_hash_ref": source_ref,
+        }):
+            raise ValueError("existing_quarantine_material_mismatch")
         return target
     payload = {
         "sampleId": str(case.get("sampleId") or ""),
@@ -3715,7 +4205,14 @@ def _prepare_packet(
     passive_tree_version: str,
     pob_version_or_commit: str,
     include_pob_readback: bool = False,
+    version_context: dict[str, str] | None = None,
 ) -> dict[str, str]:
+    context = research_readback.normalize_version_context({
+        **(version_context or {}),
+        "gamePatch": current_patch,
+        "passiveTreeVersion": passive_tree_version,
+        "pobVersionOrCommit": pob_version_or_commit,
+    })
     packet_case = {
         "safeMetadata": {
             "case_id": case["sampleId"],
@@ -3731,6 +4228,8 @@ def _prepare_packet(
             "gamePatch": current_patch,
             "passiveTreeVersion": passive_tree_version,
             "pobVersionOrCommit": pob_version_or_commit,
+            "modelGamePatch": context["modelGamePatch"],
+            "versionContextStatus": context["status"],
             "visibility": "creator_visible",
             "split": "train_context",
             "knowledgeScope": (
@@ -3766,11 +4265,7 @@ def _prepare_packet(
         packet_case["pobReadback"] = research_readback.build_safe_readback(
             str(case.get("_rawXml") or ""),
             source_hash_ref=str(case.get("sourceHashRef") or ""),
-            version_context={
-                "gamePatch": current_patch,
-                "passiveTreeVersion": passive_tree_version,
-                "pobVersionOrCommit": pob_version_or_commit,
-            },
+            version_context=context,
         )
     result = research_packet.build_research_packet(
         packet_case,
@@ -3788,15 +4283,31 @@ def _resume_queue_cases(
     db_path: Path,
     effective_temp_root: Path,
     worker_count: int,
+    memory_db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Resume an existing queue by rebuilding missing transient packets.
+    """Resume without changing a live lease, an accept attempt or its source binding."""
+    effective_memory = Path(memory_db_path) if memory_db_path is not None else paths.mature_learning_path()
+    # Same memory -> run lock order as cleanup. The locked implementation only
+    # reads Memory-independent queue state; it never re-enters accept or cleanup.
+    with (
+        _ACCEPT_LOCK,
+        interprocess_file_lock(_accept_lock_path(effective_memory)),
+        interprocess_file_lock(_run_lock_path(db_path)),
+    ):
+        return _resume_queue_cases_locked(
+            output_root=output_root, db_path=db_path,
+            effective_temp_root=effective_temp_root, worker_count=worker_count,
+        )
 
-    Resume no longer refetches poe.ninja samples. Every queued/claimed case whose transient
-    packet is missing is rebuilt from the run-local quarantine (raw material backup written
-    at queue time). A case with neither a live packet nor a quarantine backup is deleted:
-    its raw material is unrecoverable and we do not depend on any particular sample.
-    """
-    if not db_path.exists():
+
+def _resume_queue_cases_locked(
+    *,
+    output_root: Path,
+    db_path: Path,
+    effective_temp_root: Path,
+    worker_count: int,
+) -> dict[str, Any]:
+    if not db_path.is_file():
         report = _queue_report(
             status="resume_failed",
             db_path=db_path,
@@ -3810,7 +4321,24 @@ def _resume_queue_cases(
                 "expectedSourceCount": None,
             },
         )
+        report["errorCode"] = "research_run_not_found"
         report["safeError"] = "resume requires the --output-dir returned by the original queue run"
+        _assert_safe_payload(report)
+        return report
+
+    metadata = _read_metadata(db_path)
+    rows = _fetch_cases(db_path)
+    now = _now()
+    retention = research_retention.inspect_policy(metadata, rows, now=now)
+    if not retention["newClaimAllowed"]:
+        report = queue_status(output_dir=output_root, queue_db_path=db_path)
+        report.update({
+            "status": "resume_blocked",
+            "errorCode": "retention_expired" if retention["status"] == "expired" else "retention_policy_invalid",
+            "retention": retention,
+            "recoveryRequired": bool(retention["acceptanceRecoveryCount"]),
+            "nextAction": "Preserve pending accept/retry recovery and active leases; use audited cleanup when allowed.",
+        })
         _assert_safe_payload(report)
         return report
 
@@ -3823,43 +4351,64 @@ def _resume_queue_cases(
     )
     version_context = _queue_version_context(db_path)
     quarantine = _quarantine_dir(output_root)
-    rows = _fetch_cases(db_path)
     active_rows = [
         row
         for row in rows
         if str(row.get("status") or "") in {"queued", "claimed", "accepting", "acceptance_rejected"}
+        or (row.get("status") == "accepted" and row.get("finalizationStatus") not in (None, "", "complete"))
     ]
     rebuilt = 0
     intact = 0
-    removed = 0
+    unavailable = 0
+    recovery_count = 0
+    protected_lease_count = 0
+    diagnostics: list[dict[str, str]] = []
+    ttl_seconds = 24 * 60 * 60
+    if retention["policy"]:
+        deadline = datetime.fromisoformat(retention["policy"]["expiresAt"])
+        ttl_seconds = min(ttl_seconds, max(1, int((deadline - now).total_seconds())))
     for row in active_rows:
+        row_policy = research_retention.inspect_policy(metadata, [row], now=now)
+        if row_policy["acceptanceRecoveryCount"]:
+            recovery_count += 1
+            diagnostics.append({
+                "sampleId": str(row["sampleId"]),
+                "errorCode": "research_acceptance_recovery_required",
+                "nextAction": "Replay the original accept or retry with its unchanged review and receipt binding.",
+            })
+            continue
+        if row_policy["activeLeaseCount"] or row_policy["invalidLeaseCount"]:
+            protected_lease_count += 1
+            diagnostics.append({
+                "sampleId": str(row["sampleId"]),
+                "errorCode": "research_active_claim_lease" if row_policy["activeLeaseCount"] else "invalid_research_claim_lease",
+                "nextAction": "Keep the original lease binding; resume only after the lease is safely released or expired.",
+            })
+            continue
         packet_safe_hash = str(row.get("packetSafeHash") or "")
-        if packet_safe_hash:
-            try:
-                _load_packet_by_safe_hash(effective_temp_root, packet_safe_hash)
-                intact += 1
-                continue
-            except FileNotFoundError:
-                pass
+        if packet_safe_hash and _resume_packet_is_current(effective_temp_root, packet_safe_hash, now):
+            intact += 1
+            continue
         source_hash = str(row.get("sourceHash") or "")
-        raw = None
-        quarantine_path = quarantine / f"{source_hash}.json"
-        if quarantine_path.exists():
-            try:
-                payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
-                raw = str(payload.get("rawImportCode") or "")
-            except (OSError, ValueError):
-                raw = None
+        raw = _verified_quarantine_raw(quarantine, {
+            "sample_id": row["sampleId"], "source_hash": source_hash,
+            "source_hash_ref": row["sourceHashRef"],
+        })
         if not raw:
-            # Raw material is unrecoverable; the case cannot be studied and we do not
-            # depend on it, so drop it instead of blocking the queue.
-            with sqlite3.connect(db_path) as conn:
+            # Keep trusted queue history even if material was lost. Reacquisition
+            # and audited expiry cleanup must still be able to explain this case.
+            with closing(_connect_queue(db_path)) as conn, conn:
                 conn.execute(
-                    "DELETE FROM cases WHERE sample_id = ?",
-                    (str(row.get("sampleId") or ""),),
+                    "UPDATE cases SET safe_error = 'resume_source_material_unavailable', updated_at = ? "
+                    "WHERE sample_id = ? AND status = ? AND packet_safe_hash = ?",
+                    (_now_iso(), row["sampleId"], row["status"], packet_safe_hash),
                 )
-                conn.commit()
-            removed += 1
+            unavailable += 1
+            diagnostics.append({
+                "sampleId": str(row["sampleId"]),
+                "errorCode": "resume_source_material_unavailable",
+                "nextAction": "Keep this source case for controlled reacquisition or audited cleanup.",
+            })
             continue
         case = legacy_batch._case_from_source(
             raw,
@@ -3869,57 +4418,93 @@ def _resume_queue_cases(
             league=str(row.get("league") or "unknown"),
             row={},
         )
-        _write_quarantine_case(output_root, case)
         packet = _prepare_packet(
             case,
             temp_root=effective_temp_root,
-            ttl_seconds=24 * 60 * 60,
+            ttl_seconds=ttl_seconds,
             current_patch=version_context["gamePatch"],
             passive_tree_version=version_context["passiveTreeVersion"],
             pob_version_or_commit=version_context["pobVersionOrCommit"],
+            version_context=version_context,
         )
-        now = _now_iso()
-        with sqlite3.connect(db_path) as conn:
+        with closing(_connect_queue(db_path)) as conn, conn:
             conn.execute(
                 """
                 UPDATE cases
                    SET packet_id = ?,
                        packet_safe_hash = ?,
+                       safe_error = CASE WHEN safe_error = 'resume_source_material_unavailable' THEN '' ELSE safe_error END,
                        updated_at = ?
                  WHERE sample_id = ?
+                   AND status = ? AND packet_safe_hash = ?
                 """,
                 (
                     str(packet["packetId"]),
                     str(packet["packetSafeHash"]),
-                    now,
+                    _now_iso(),
                     str(row.get("sampleId") or ""),
+                    row["status"], packet_safe_hash,
                 ),
             )
             conn.commit()
         rebuilt += 1
 
     report = queue_status(output_dir=output_root, queue_db_path=db_path)
-    report["status"] = "resumed"
+    report["status"] = "resumed_partial" if diagnostics else "resumed"
+    report["retention"] = retention
+    report["recoveryRequired"] = recovery_count > 0
+    report["resumeDiagnostics"] = diagnostics
     report["resumeSummary"] = {
         "activeCaseCount": len(active_rows),
         "packetIntactCount": intact,
         "packetRebuiltCount": rebuilt,
-        "unrecoverableCaseCount": removed,
+        "unrecoverableCaseCount": unavailable,
+        "acceptanceRecoveryRequiredCount": recovery_count,
+        "protectedLeaseCount": protected_lease_count,
+        "removedCaseCount": 0,
     }
     _assert_safe_payload(report)
     return report
 
 
+def _resume_packet_is_current(temp_root: Path, packet_safe_hash: str, now: datetime) -> bool:
+    # The general loader expires every packet in this directory. Resume must not
+    # sweep a different case's material while its acceptance is still recoverable.
+    for packet_path in temp_root.glob(f"{research_packet.PACKET_PREFIX}*/packet.json"):
+        try:
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            expires = datetime.fromisoformat(str(packet.get("expiresAt") or ""))
+            if expires.tzinfo is not None and expires > now and _packet_integrity_matches(packet, packet_safe_hash):
+                return True
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return False
+
+
 def _load_packet_by_safe_hash(temp_root: Path, packet_safe_hash: str) -> dict[str, Any]:
-    research_packet.cleanup_expired_packets(temp_root=temp_root)
     for packet_path in temp_root.glob(f"{research_packet.PACKET_PREFIX}*/packet.json"):
         try:
             packet = json.loads(packet_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if str(packet.get("safeHash")) == str(packet_safe_hash):
+        if _packet_integrity_matches(packet, packet_safe_hash):
+            try:
+                expiry = datetime.fromisoformat(str(packet["expiresAt"]).replace("Z", "+00:00"))
+                if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                    continue
+            except (KeyError, ValueError, TypeError):
+                continue
             return packet
     raise FileNotFoundError("transient packet not found; recreate the queue or reclaim the case")
+
+
+def _packet_integrity_matches(packet: Any, expected_hash: str) -> bool:
+    if not isinstance(packet, dict) or packet.get("safeHash") != expected_hash:
+        return False
+    core = {key: value for key, value in packet.items() if key not in {
+        "packetId", "createdAt", "expiresAt", "safeHash",
+    }}
+    return research_packet._safe_hash(core) == expected_hash
 
 
 def _packet_for_valid_lease(
@@ -3929,7 +4514,18 @@ def _packet_for_valid_lease(
     temp_root: str | Path | None,
 ) -> dict[str, Any]:
     root = _effective_temp_root(temp_root, output_root=output_dir)
-    return _load_packet_by_safe_hash(root, str(row["packet_safe_hash"]))
+    packet = _load_packet_by_safe_hash(root, str(row["packet_safe_hash"]))
+    metadata, raw = packet.get("safeMetadata") or {}, packet.get("rawContext") or {}
+    material = raw.get("rawImportCode")
+    if (metadata.get("case_id") != str(row["sample_id"])
+            or metadata.get("sourceHash") != str(row["source_hash"])
+            or metadata.get("sourceRef") != str(row["source_hash_ref"])
+            or not isinstance(material, str) or legacy_batch.pob_code.is_link(material)
+            or hashlib.sha256(material.encode("utf-8")).hexdigest() != str(row["source_hash"])):
+        raise ValueError("research_packet_source_identity_mismatch")
+    if legacy_batch._source_to_xml(material) != raw.get("rawXml"):
+        raise ValueError("research_packet_source_snapshot_mismatch")
+    return packet
 
 
 def _optional_acceptance_skill_manifest(
@@ -3963,8 +4559,7 @@ def _optional_pob_readback(
         )
     except FileNotFoundError:
         return None
-    readback = packet.get("pobReadback")
-    return dict(readback) if isinstance(readback, dict) and readback else None
+    return research_packet.validated_pob_readback(packet)
 
 
 def _optional_jewel_counts(
@@ -4034,7 +4629,7 @@ def inspect_supplement_selection(
     assert requested is not None
     prior_db = prior_run_root / QUEUE_DB_FILENAME
     prior_quarantine = _quarantine_dir(prior_run_root)
-    with sqlite3.connect(prior_db) as conn:
+    with closing(sqlite3.connect(prior_db)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT sample_id, status, source_hash, source_hash_ref FROM cases ORDER BY id"
@@ -4077,15 +4672,18 @@ def _verified_quarantine_raw(prior_quarantine: Path, row: Any) -> str:
     sample_id = str(row["sample_id"] or "").strip()
     source_hash = str(row["source_hash"] or "").strip()
     source_hash_ref = str(row["source_hash_ref"] or "").strip()
-    if not sample_id or not source_hash:
+    if (not sample_id or not re.fullmatch(r"[a-f0-9]{64}", source_hash)
+            or source_hash_ref not in {f"source-hash:{source_hash}", f"source-hash:{source_hash[:16]}"}):
         return ""
     quarantine_path = prior_quarantine / f"{source_hash}.json"
     try:
         payload = json.loads(quarantine_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return ""
-    raw = str(payload.get("rawImportCode") or "")
-    if not raw:
+    if not isinstance(payload, dict):
+        return ""
+    raw = payload.get("rawImportCode")
+    if not isinstance(raw, str) or not raw or legacy_batch.pob_code.is_link(raw):
         return ""
     if str(payload.get("sampleId") or "").strip() != sample_id:
         return ""
@@ -4094,6 +4692,13 @@ def _verified_quarantine_raw(prior_quarantine: Path, row: Any) -> str:
     if str(payload.get("sourceHashRef") or "").strip() != source_hash_ref:
         return ""
     if hashlib.sha256(raw.encode("utf-8")).hexdigest() != source_hash:
+        return ""
+    try:
+        decoded = legacy_batch._source_to_xml(raw)
+    except (ValueError, TypeError):
+        return ""
+    frozen = payload.get("rawXml")
+    if frozen is not None and frozen != decoded:
         return ""
     return raw
 
@@ -4123,7 +4728,7 @@ def _cases_from_prior_run(
     prior_quarantine = _quarantine_dir(prior_run_root)
     cases: list[dict[str, Any]] = []
     skipped = 0
-    with sqlite3.connect(prior_db) as conn:
+    with closing(sqlite3.connect(prior_db)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -4223,6 +4828,18 @@ def _queue_report(
         "acceptingCount": counts.get("accepting", 0),
         "staleAcceptingCount": stale_accepting_count,
         "acceptedCount": counts.get("accepted", 0),
+        "researchCompleteCount": sum(
+            case.get("status") == "accepted" and case.get("researchCompletion") == "complete"
+            for case in samples
+        ),
+        "researchNeedsFollowupCount": sum(
+            case.get("status") == "accepted" and case.get("researchCompletion") == "needs_followup"
+            for case in samples
+        ),
+        "researchCompletionUnknownCount": sum(
+            case.get("status") == "accepted" and case.get("researchCompletion") == "unknown"
+            for case in samples
+        ),
         "rejectedCount": counts.get("acceptance_rejected", 0),
         "importFailedCount": counts.get("import_failed", 0),
         "requestedWorkerCount": _effective_worker_count(requested_worker_count),
@@ -4471,6 +5088,8 @@ def _safe_sample_for_report(case: dict[str, Any]) -> dict[str, Any]:
         "uniqueGemDiagnostics": case.get("uniqueGemDiagnostics") or {},
         "acceptanceCaveats": case.get("acceptanceCaveats") or [],
         "deferredCandidateCount": int(case.get("deferredCandidateCount") or 0),
+        "writeReceiptRef": str(case.get("writeReceiptRef") or ""),
+        **research_completion.completion_summary(case, supplement=bool(case.get("supplement"))),
     }
 
 
@@ -4478,6 +5097,8 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "acceptanceMode": legacy_batch._safe_text(report.get("acceptanceMode")),
         "deferredReasonCounts": dict(report.get("deferredReasonCounts") or {}),
+        "acceptedPatternCount": int(report.get("acceptedPatternCount") or 0),
+        "acceptedDeepRecordCount": int(report.get("acceptedDeepRecordCount") or 0),
         "acceptedSemanticEdgeCount": int(report.get("acceptedSemanticEdgeCount") or 0),
         "createdDeepRecordCount": int(report.get("createdDeepRecordCount") or 0),
         "updatedDeepRecordCount": int(report.get("updatedDeepRecordCount") or 0),
@@ -4520,6 +5141,9 @@ def _research_quality_summary(report: dict[str, Any]) -> dict[str, Any]:
         "unkeyedDeepRecordCount": int(report.get("unkeyedDeepRecordCount") or 0),
         "deepRecordsWithoutKnowledgeIdentity": report.get("deepRecordsWithoutKnowledgeIdentity")
         or [],
+        **research_completion.completion_summary(
+            report, supplement=report.get("completionScope") == "supplement"
+        ),
     }
 
 
@@ -5475,8 +6099,10 @@ def _runtime_version_context(
             "durable research requires certified patch, passive tree, and PoB versions; "
             f"missing: {', '.join(missing)}"
         )
-    context["status"] = "certified_local_runtime"
-    return context
+    context["modelGamePatch"] = local.get("gamePatch", "")
+    context["status"] = ("source_patch_model_mismatch" if context["gamePatch"] != local.get("gamePatch")
+                         else "certified_local_runtime")
+    return research_readback.normalize_version_context(context)
 
 
 def _local_certified_version_context() -> dict[str, str]:
@@ -5497,14 +6123,15 @@ def _queue_version_context(db_path: Path) -> dict[str, str]:
         "passiveTreeVersion": _known_version(metadata.get("passiveTreeVersion")),
         "pobVersionOrCommit": _known_version(metadata.get("pobVersionOrCommit")),
         "status": _known_version(metadata.get("versionContextStatus")),
+        "modelGamePatch": _known_version(metadata.get("modelGamePatch")),
     }
-    missing = [key for key, value in context.items() if not value]
+    missing = [key for key, value in context.items() if not value and key != "modelGamePatch"]
     if missing:
         raise ValueError(
             "research queue lacks durable version context; recreate the queue after updating "
             f"the local certified runtime ({', '.join(missing)})"
         )
-    return context
+    return research_readback.normalize_version_context(context)
 
 
 def _known_version(value: Any) -> str:

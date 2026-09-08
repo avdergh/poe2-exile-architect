@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from html import escape
 
+import pytest
+
 from scripts import run_phase45_researcher_batch
 from server.compute import pob_code
 
@@ -754,6 +756,8 @@ def test_researcher_batch_rejects_durable_temp_roots(tmp_path):
 
 
 def test_researcher_batch_current_league_uses_freshness_selection(monkeypatch):
+    from server.freshness import leagues
+    monkeypatch.setattr(leagues, "default_league", lambda _now: None)
     calls: list[str] = []
 
     def fake_fetch_json(url: str):
@@ -816,6 +820,8 @@ def test_researcher_batch_fetch_json_uses_browser_like_json_headers(monkeypatch)
 
 
 def test_researcher_batch_current_league_does_not_fall_back_to_standard_hc_or_ssf(monkeypatch):
+    from server.freshness import leagues
+    monkeypatch.setattr(leagues, "default_league", lambda _now: None)
     def fake_fetch_json(url: str):
         if url.endswith("build-index-state"):
             return {
@@ -1090,6 +1096,71 @@ def test_researcher_batch_keeps_paginating_after_an_all_ledger_skipped_page(tmp_
     assert stats["skippedAlreadyResearched"] == 2
     assert any("page=3" in url for url in browser.urls)
     assert browser.urls[-1].endswith("/character/acctD/CharD")
+
+
+def test_targeted_reacquisition_only_fetches_selected_accepted_character(tmp_path):
+    from server.knowledge import research_intake_ledger
+
+    list_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=90&max-level=100"
+    character_base = "https://poe.ninja/poe2/builds/runesofaldur/character"
+    rows = {
+        name: (f'<tr><td><a href="/poe2/builds/runesofaldur/character/acct{name}/Char{name}">'
+               f'Char{name}</a></td><td><div>95<img alt="Deadeye" /></div></td></tr>')
+        for name in ("A", "B", "C")
+    }
+    browser = _FakeBrowser({
+        list_url: "<html><body>" + rows["A"] + rows["B"] + "</body></html>",
+        list_url + "&page=2": "<html><body>" + rows["C"] + "</body></html>",
+        f"{character_base}/acctC/CharC": _build_page(_sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95)),
+    })
+    ledger = tmp_path / "ledger.sqlite"
+    for name in ("A", "C"):
+        ref = research_intake_ledger.character_ref(f"acct{name}", f"Char{name}")
+        research_intake_ledger.record_case(ledger, league="runesofaldur", character_ref=ref,
+                                          source_hash="a" * 64, sample_id=f"case:{name}")
+        research_intake_ledger.mark_accepted(ledger, league="runesofaldur", character_ref=ref)
+    before = ledger.read_bytes()
+    target = research_intake_ledger.character_ref("acctC", "CharC")
+    stats = {}
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur", limit=10, level_min=90, level_max=100,
+        ascendancies=[], browser_driver=browser, intake_ledger_path=ledger,
+        collector_stats=stats, target_character_refs={target},
+    )
+    assert [case["characterRef"] for case in cases] == [target]
+    assert [url for url in browser.urls if "/character/" in url] == [f"{character_base}/acctC/CharC"]
+    assert stats["pagesFetched"] == 2 and stats["matchedTargetCount"] == 1
+    assert stats["missingTargetCount"] == 0
+    assert ledger.read_bytes() == before
+
+
+def test_targeted_reacquisition_cannot_substitute_a_fresh_character():
+    list_url = "https://poe.ninja/poe2/builds/runesofaldur?min-level=90&max-level=100"
+    rows = '''<html><body><tr><td><a href="/poe2/builds/runesofaldur/character/acctA/CharA">CharA</a>
+    </td><td><div>95<img alt="Deadeye" /></div></td></tr></body></html>'''
+    browser = _FakeBrowser({list_url: rows, list_url + "&page=2": rows})
+    stats = {}
+    cases = run_phase45_researcher_batch._cases_from_ninja(
+        league_url="runesofaldur", limit=1, level_min=90, level_max=100,
+        ascendancies=[], browser_driver=browser, target_character_refs={"character-hash:" + "f" * 16},
+        collector_stats=stats,
+    )
+    assert cases == [] and not any("/character/" in url for url in browser.urls)
+    assert stats["matchedTargetCount"] == 0 and stats["missingTargetCount"] == 1
+    assert len(browser.urls) == 2
+
+
+@pytest.mark.parametrize("targets", [set(), {"raw-account/raw-character"}])
+def test_invalid_or_empty_reacquisition_scope_never_collects(targets):
+    browser = _FakeBrowser({})
+    kwargs = dict(league_url="current", limit=1, level_min=90, level_max=100,
+                  ascendancies=[], browser_driver=browser, target_character_refs=targets)
+    if targets:
+        with pytest.raises(ValueError, match="safe character hashes"):
+            run_phase45_researcher_batch._cases_from_ninja(**kwargs)
+    else:
+        assert run_phase45_researcher_batch._cases_from_ninja(**kwargs) == []
+    assert browser.urls == []
 
 
 def _sample_code(skill_id: str, *, ascendancy: str, level: int) -> str:

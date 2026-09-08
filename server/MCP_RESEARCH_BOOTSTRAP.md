@@ -1,5 +1,7 @@
 # Exile Architect — Research server
 
+Patch reviews preserve source versions and require fingerprints and independent review.
+
 Mature-build queue/lease/review acceptance plus clean fragment/edge/record/pattern validation.
 Installed-product runtime is private user data addressed by opaque `runRef`; Agents never edit its
 queue, review, quarantine or database files directly.
@@ -23,9 +25,9 @@ queue, review, quarantine or database files directly.
 6. This server never calls a model provider, searches the working directory, or writes into a
    checkout/plugin cache. Product tools read local source files only from explicitly submitted
    absolute paths.
-7. Every enabled source skill container has an explicit research/support disposition. Preserve its
-   root skill and socketed items; socketed payload effects do not replace that physical relation.
-   Unresolved or coverage-gap containers cannot be reported as clean.
+7. Research every enabled skill container; preserve its root and physical sockets. Gaps are not clean.
+   Review each gap against exact accepted evidence. Cleanup requires effective completion, explicit
+   abandonment or locked-policy expiry; live leases protect raw data. Keep ConfigSet scenarios distinct.
 8. A merge reviewer must browse primary PoE2 sources when mechanics are unfamiliar, patch-sensitive
    or disputed. Full URLs and copied pages remain outside durable memory; unavailable or conflicting
    authority rejects the merge or keeps the records distinct.

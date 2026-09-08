@@ -1,12 +1,13 @@
 """Gear slot min-maxer (thin engine + corpus coordinator).
 
-Searches a slot's real craftable affix pool for the best-in-slot rare. It maximizes either a
+Searches a slot's real craftable affix pool for an improved rare. It targets either a
 single `metric` (e.g. TotalDPS on a weapon) or a weighted blend of metrics via `goals`
 (e.g. {"TotalDPS": .6, "TotalEHP": .4}) so one craft can carry both damage AND defense —
 respecting crafting reality: prefix/suffix limits, mod-group exclusivity, and the base's mod
-restrictions. Every candidate is engine-evaluated (batched via eval_items) — nothing is estimated.
-The result is a *theoretical best-in-slot target* with idealized rolls; verify attainability and
-price with get_prices.
+restrictions and the selected attainability policy. Whole-set planning selects jointly from
+measured marginal scores; single-slot refinement measures successive full combinations. Both
+verify complete candidates in PoB. These searches do not prove a global optimum; generated rares
+default to realistic_trade, with theoretical ceilings available only by explicit request.
 
 Like solve_for/optimize_passives, this is a bounded mechanical search over engine truth — it
 optimizes a goal the caller gives, it does not decide the goal.
@@ -17,6 +18,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import math
 import re
 import threading
 from typing import Any, Literal
@@ -26,7 +28,8 @@ import xml.etree.ElementTree as ET
 from ..knowledge import db, item_legality, itemparse
 from ..judge import hard_legality
 from ..runtime import craft_receipts
-from . import attainability, pob_structure
+from . import attainability, completeness, item_search, pob_structure
+from .affix_selection import select_affix_subset
 from .engine import PobEngine
 from .state import build_state_hash, canonical_payload_hash
 
@@ -405,7 +408,8 @@ def _roll(text: str, rolls: str) -> str:
 
     def sub(m: re.Match[str]) -> str:
         a, b = float(m.group(1)), float(m.group(2))
-        v = b if rolls == "max" else round(a + 0.85 * (b - a))
+        precision = max(len(value.partition(".")[2]) for value in m.groups())
+        v = b if rolls == "max" else round(a + 0.85 * (b - a), precision)
         return str(int(v)) if abs(v - round(v)) < 1e-9 else f"{v:g}"
 
     return _RANGE.sub(sub, text)
@@ -518,11 +522,7 @@ def _craft_summary(
     required — a rough realism check, not a probability or a divine cost.
     """
     n = len(chosen)
-    deep = sum(
-        1
-        for c in chosen
-        if int(c.get("tier") or 1) == 1 and int(c.get("totalTiers") or c.get("tiers") or 1) >= 4
-    )
+    deep = sum(attainability.is_deep_top_tier(c) for c in chosen)
     min_ilvl = max((c.get("ilvl") or 0 for c in chosen), default=0)
     score = n + deep
     if n == 0:
@@ -554,36 +554,62 @@ def _craft_summary(
 def _affix_candidates_for_policy(
     source: dict[str, Any],
     *,
+    base_name: str,
     rolls: str,
     policy: attainability.GearAttainabilityPolicy,
 ) -> list[dict[str, Any]]:
-    """Return the top tier plus the first real lower tier needed by a realistic policy."""
+    """Classify actual rolls, then find a lower option that really leaves the deep-T1 budget.
+
+    Adjacent source tiers can overlap. The checkpoint classifies the resulting item text, so the
+    source ladder's tier label cannot authorize a candidate as a lower-tier trade alternative.
+    """
 
     options = [dict(value) for value in source.get("tier_options") or [] if isinstance(value, dict)]
     if not options:
         options = [dict(source)]
     total = int(source.get("totalTiers") or source.get("tiers") or len(options) or 1)
-    selected = [options[0]]
-    deep_top = int(options[0].get("tier") or 1) == 1 and total >= 4
-    if policy.maxDeepTopTierAffixes is not None and deep_top:
-        lower = next((value for value in options if int(value.get("tier") or 1) > 1), None)
-        if lower is not None:
-            selected.append(lower)
-    return [
-        {
+    selected: list[dict[str, Any]] = []
+    for value in options:
+        line = _roll(str(value.get("text") or source.get("text") or ""), rolls)
+        classified = itemparse.classify_affix(line, base_name=base_name)
+        evidence = (
+            classified
+            if classified is not None
+            else {
+                "tier": int(value.get("tier") or 1),
+                "totalTiers": total,
+            }
+        )
+        candidate = {
             "group": str(source.get("group") or value.get("group") or ""),
-            "line": _roll(str(value.get("text") or source.get("text") or ""), rolls),
+            "line": line,
             "type": str(source.get("type") or value.get("type") or ""),
-            "tiers": total,
-            "totalTiers": total,
-            "tier": int(value.get("tier") or 1),
+            "tiers": int(evidence.get("totalTiers") or total),
+            "totalTiers": int(evidence.get("totalTiers") or total),
+            "tier": evidence.get("tier"),
             "ilvl": int(value.get("required_level") or source.get("required_level") or 0),
-            "_deepTopTier": int(value.get("tier") or 1) == 1 and total >= 4,
+            "_deepTopTier": attainability.is_deep_top_tier(evidence),
         }
-        for value in selected
-    ]
+        if not selected or not candidate["_deepTopTier"]:
+            selected.append(candidate)
+        if policy.maxDeepTopTierAffixes is None or not candidate["_deepTopTier"]:
+            break
+    return selected
 
 
+def _item_attainability_reasons(
+    text: str,
+    policy: attainability.GearAttainabilityPolicy,
+    *,
+    legality: dict[str, Any] | None = None,
+) -> list[str]:
+    return attainability.rare_item_reasons(
+        attainability.item_evidence(itemparse.parse_item(text), legality=legality),
+        policy=policy,
+    )
+
+
+@item_search.read_only_search
 def optimize_item(
     engine: PobEngine,
     slot: str,
@@ -646,14 +672,15 @@ def optimize_item(
 
     # `goals` = weighted multi-objective (blended gear); falls back to the single `metric`.
     weights: dict[str, float] = {}
-    if goals:
-        weights = {str(k): float(v) for k, v in goals.items() if _num(v) and float(v) > 0}
-        if not weights:
+    if goals is not None:
+        if not goals or any(not _num(v) or not math.isfinite(v) or v <= 0 for v in goals.values()):
             return {
                 "ok": False,
+                "errorCode": "invalid_item_search_goals",
                 "error": "goals must map stat names to positive weights, "
                 'e.g. {"TotalDPS": 0.6, "TotalEHP": 0.4}.',
             }
+        weights = {str(k): float(v) for k, v in goals.items()}
     keys = list(weights) if weights else [metric]
 
     pool = db.affix_pool(base, ilvl=ilvl)
@@ -668,18 +695,7 @@ def optimize_item(
         elemental_resist_target=elemental_resist_target,
         chaos_resist_target=chaos_resist_target,
     )
-    resistance_snapshot = engine.get_xml()
-    can_probe_without_slot = callable(getattr(engine, "unequip_item", None))
-    try:
-        if can_probe_without_slot and isinstance(gear.get(slot), dict):
-            engine.unequip_item(slot)
-        current_resists = engine.get_defenses().get("resistances") or {}
-    finally:
-        if can_probe_without_slot:
-            try:
-                engine.load_build_xml(resistance_snapshot, name="item-resistance-target-restore")
-            except TypeError:
-                engine.load_build_xml(resistance_snapshot)
+    current_resists = item_search.resistances_without_slot(engine, slot)
     pool["prefixes"] = _without_satisfied_resistances(
         list(pool["prefixes"]),
         current=current_resists,
@@ -698,7 +714,8 @@ def optimize_item(
         candidate
         for source in pool["prefixes"]
         for candidate in _affix_candidates_for_policy(
-            source,
+            {**source, "type": "prefix"},
+            base_name=base,
             rolls=rolls,
             policy=acquisition_policy,
         )
@@ -707,7 +724,8 @@ def optimize_item(
         candidate
         for source in pool["suffixes"]
         for candidate in _affix_candidates_for_policy(
-            source,
+            {**source, "type": "suffix"},
+            base_name=base,
             rolls=rolls,
             policy=acquisition_policy,
         )
@@ -721,7 +739,9 @@ def optimize_item(
         hard_legality.augment_build_with_snapshot_gear(build, snapshot)
     )
     try:
-        before_vals = engine.get_stats(keys)["stats"]
+        calculation_context = item_search.capture_context(engine)
+        before_vals = item_search.baseline_stats(engine, slot, keys, build, calculation_context)
+        baseline_complete = all(before_vals.get(key) is not None for key in keys)
         before_missing = (
             (engine.get_defenses().get("resistMissing") or {}) if keep_resists_capped else {}
         )
@@ -734,19 +754,9 @@ def optimize_item(
             return [x["line"] for x in chosen_pre + chosen_suf]
 
         def stats_of(line_sets: list[list[str]]) -> list[dict[str, Any]]:
-            res = engine.eval_items(
-                slot, [_item_text(base, ls, slot, ilvl=ilvl) for ls in line_sets], keys=keys
-            )["results"]
-            # A candidate that failed to parse/equip comes back as `false` from the engine bridge.
-            # Do NOT silently treat it as "no change": an all-failed batch means the slot/base is
-            # not craftable here and the caller must hear that instead of receiving a blank item.
-            failed = sum(1 for r in res if not isinstance(r, dict))
-            if failed:
-                raise ValueError(
-                    f"eval_items failed to equip {failed}/{len(res)} candidate(s) for slot "
-                    f"'{slot}' on base '{base}' — the slot may not be craftable via this tool"
-                )
-            return res
+            return item_search.evaluate_items(
+                engine, slot, [_item_text(base, ls, slot, ilvl=ilvl) for ls in line_sets], keys
+            )
 
         # Bare base = the craft's starting point; relative gains in `goals` mode are measured from it.
         base_stats = stats_of([[]])[0]
@@ -755,10 +765,13 @@ def optimize_item(
         def score(st: dict[str, Any]) -> float:
             """Weighted relative gain vs the bare base (goals mode), else the raw metric value."""
             if weights:
-                return sum(
+                value = sum(
                     w * ((st.get(k) or 0.0) - (base_stats.get(k) or 0.0)) / denom[k]
                     for k, w in weights.items()
                 )
+                if not math.isfinite(value):
+                    raise item_search.ItemSearchError("item_measurement_nonfinite_score", slot=slot)
+                return value
             v = st.get(metric)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 return float(v)
@@ -867,22 +880,37 @@ def optimize_item(
                 "base": base,
                 "legalityCheck": legality,
             }
-        add_result = engine.add_item(final, slot=slot)
-        if not isinstance(add_result, dict) or not add_result.get("ok"):
+        attainability_reasons = _item_attainability_reasons(
+            final, acquisition_policy, legality=legality
+        )
+        if attainability_reasons:
             return {
                 "ok": False,
-                "errorCode": "optimized_item_equip_failed",
-                "error": (
-                    "The optimized candidate could not be equipped into slot '{slot}' "
-                    "(engine rejected the item text or the slot). "
-                    + str((add_result or {}).get("error") or "no engine detail")
-                ),
+                "errorCode": "generated_item_attainability_check_failed",
                 "slot": slot,
-                "base": base,
-                "rejectedCandidate": final,
+                "reasons": attainability_reasons,
             }
+        expected_stats = stats_of([lines()])[0]
+        item_search.equip_candidate(engine, final, slot, calculation_context)
         candidate_xml = engine.get_xml()
+        canonical_item = completeness.equipped_item_text(candidate_xml, slot)
+        if canonical_item:
+            attainability_reasons = _item_attainability_reasons(
+                canonical_item, acquisition_policy, legality=legality
+            )
+            if attainability_reasons:
+                return {
+                    "ok": False,
+                    "errorCode": "generated_item_attainability_check_failed",
+                    "slot": slot,
+                    "reasons": attainability_reasons,
+                }
         candidate_build = engine.get_build()
+        if (
+            not baseline_complete
+            and (candidate_build.get("mainSkillWeaponCheck") or {}).get("compatible") is not True
+        ):
+            raise item_search.ItemSearchError("item_calculation_context_mismatch", slot=slot)
         after_equipped_slots = _equipped_slots(candidate_build)
         slot_regressions = sorted(before_equipped_slots - after_equipped_slots)
         whole_build_legality = hard_legality.audit_build(
@@ -949,7 +977,12 @@ def optimize_item(
                     "missingSlots": slot_regressions,
                 },
             }
-        after_vals = engine.get_stats(keys)["stats"]
+        after_vals = item_search.finite_stats(engine.get_stats(keys).get("stats"), keys)
+        if any(
+            not math.isclose(after_vals[key], expected_stats[key], rel_tol=1e-7, abs_tol=1e-8)
+            for key in keys
+        ):
+            raise item_search.ItemSearchError("item_candidate_measurement_mismatch", slot=slot)
         warnings = []
         if whole_build_legality.get("hardFailures") and not legality_regression["regressed"]:
             warnings.append(
@@ -981,6 +1014,8 @@ def optimize_item(
                 "item is blank; pick a slot/metric the skill actually moves, or optimize a defensive "
                 "metric (e.g. TotalEHP) on this slot instead."
             )
+    except item_search.ItemSearchError:
+        raise
     except ValueError as exc:
         return {
             "ok": False,
@@ -1001,6 +1036,8 @@ def optimize_item(
         "base": base,
         "itemLevel": ilvl,
         "item": final,
+        "baselineStatus": "measured" if baseline_complete else "unavailable_empty_weapon",
+        "comparisonAvailable": baseline_complete,
         "legalityCheck": legality,
         "wholeBuildLegality": whole_build_legality,
         "legalityRegression": legality_regression,
@@ -1303,6 +1340,7 @@ _UPGRADE_SLOTS = (
 )
 
 
+@item_search.read_only_search
 def rank_upgrades(
     engine: PobEngine,
     metric: str = "TotalDPS",
@@ -1339,6 +1377,8 @@ def rank_upgrades(
             acquisition_profile=acquisition_profile,
         )
         if not r.get("ok"):
+            if r.get("recoveryRequired"):
+                raise item_search.ItemSearchError("item_search_restore_failed", slot=slot)
             if r.get("errorCode") == "whole_build_legality_check_failed":
                 rejected.append(
                     {
@@ -1349,7 +1389,41 @@ def rank_upgrades(
                         "slotRegression": r.get("slotRegression"),
                     }
                 )
-            skipped.append({"slot": slot, "reason": str(r.get("error", "no craftable affixes"))})
+            elif r.get("errorCode"):
+                rejected.append(
+                    {
+                        "slot": slot,
+                        **{
+                            key: r[key]
+                            for key in (
+                                "errorCode",
+                                "failureCodes",
+                                "candidateIndex",
+                                "requiredKeys",
+                                "recoveryRequired",
+                                "rolledBack",
+                            )
+                            if key in r
+                        },
+                    }
+                )
+            skipped.append(
+                {
+                    "slot": slot,
+                    "reason": str(r.get("error") or r.get("errorCode") or "no craftable affixes"),
+                }
+            )
+            continue
+        try:
+            if goals:
+                item_search.finite_stats(r.get("metricsBefore"), list(goals))
+                item_search.finite_stats(r.get("metricsAfter"), list(goals))
+            else:
+                item_search.finite_stats({metric: r.get("metricBefore")}, [metric])
+                item_search.finite_stats({metric: r.get("metricAfter")}, [metric])
+        except item_search.ItemSearchError:
+            rejected.append({"slot": slot, "errorCode": "item_upgrade_comparison_unavailable"})
+            skipped.append({"slot": slot, "reason": "item_upgrade_comparison_unavailable"})
             continue
         entry: dict[str, Any] = {"slot": slot, "affixes": r["affixes"], "item": r["item"]}
         if r.get("warnings"):
@@ -1737,12 +1811,39 @@ def _marginal_craft(
     ilvl: int,
     acquisition_policy: attainability.GearAttainabilityPolicy,
 ) -> str | None:
-    """Fast per-slot craft: rank each affix by its marginal weighted gain (TWO batched evals — bare
-    base, then all single-affix candidates), then take the top 3 prefix + 3 suffix (group-exclusive).
-    Approximate (ignores affix interaction) but ~6x cheaper than the full greedy — used by plan_gear
-    so a whole-set plan fits in one call."""
+    """Select jointly from measured marginal scores, then verify the complete item in PoB.
+
+    The linear ranking is approximate; only the full candidate comparison can show improvement.
+    The old item is removed solely for resistance pruning, never credited to the replacement.
+    """
+    with item_search.preserved_state(engine):
+        return _marginal_craft_locked(
+            engine,
+            slot,
+            base,
+            weights,
+            rolls,
+            chaos_resist_target=chaos_resist_target,
+            elemental_resist_target=elemental_resist_target,
+            ilvl=ilvl,
+            acquisition_policy=acquisition_policy,
+        )
+
+
+def _marginal_craft_locked(
+    engine: PobEngine,
+    slot: str,
+    base: str,
+    weights: dict[str, float],
+    rolls: str,
+    *,
+    chaos_resist_target: int,
+    elemental_resist_target: int,
+    ilvl: int,
+    acquisition_policy: attainability.GearAttainabilityPolicy,
+) -> str | None:
     pool = db.affix_pool(base, ilvl=ilvl)
-    current_resists = engine.get_defenses().get("resistances") or {}
+    current_resists = item_search.resistances_without_slot(engine, slot)
     pre = _without_satisfied_resistances(
         pool["prefixes"],
         current=current_resists,
@@ -1757,56 +1858,109 @@ def _marginal_craft(
     )
     if not pre and not suf:
         return None
+    if not weights or any(
+        not _num(value) or not math.isfinite(value) or value < 0 for value in weights.values()
+    ):
+        raise item_search.ItemSearchError("invalid_item_search_goals")
+    weights = {key: value for key, value in weights.items() if value > 0}
+    if not weights:
+        raise item_search.ItemSearchError("invalid_item_search_goals")
     keys = list(weights)
+    original_stats = item_search.finite_stats(engine.get_stats(keys).get("stats"), keys)
     meta: list[tuple[dict[str, Any], str]] = []
     for source in pre + suf:
         for candidate in _affix_candidates_for_policy(
             source,
+            base_name=base,
             rolls=rolls,
             policy=acquisition_policy,
         ):
             meta.append((candidate, str(candidate["line"])))
-    base_res = engine.eval_items(slot, [_item_text(base, [], slot, ilvl=ilvl)], keys=keys)[
-        "results"
-    ]
-    base_stats = base_res[0] if base_res and isinstance(base_res[0], dict) else {}
-    denom = {k: max(abs(base_stats.get(k) or 0.0), 1.0) for k in keys}
-    results = engine.eval_items(
-        slot, [_item_text(base, [ln], slot, ilvl=ilvl) for _m, ln in meta], keys=keys
-    )["results"]
+    base_stats = item_search.evaluate_items(
+        engine, slot, [_item_text(base, [], slot, ilvl=ilvl)], keys
+    )[0]
+    denom = {k: max(abs(base_stats[k]), 1.0) for k in keys}
+    results = item_search.evaluate_items(
+        engine, slot, [_item_text(base, [ln], slot, ilvl=ilvl) for _m, ln in meta], keys
+    )
+
+    def score(stats: dict[str, Any]) -> float:
+        value = sum(weights[key] * (stats[key] - base_stats[key]) / denom[key] for key in keys)
+        if not math.isfinite(value):
+            raise item_search.ItemSearchError("item_measurement_nonfinite_score", slot=slot)
+        return value
+
     scored: list[tuple[float, dict[str, Any], str]] = []
-    for (m, line), st in zip(meta, results):
-        st = st if isinstance(st, dict) else {}
-        gain = sum(
-            w * ((st.get(k) or 0.0) - (base_stats.get(k) or 0.0)) / denom[k]
-            for k, w in weights.items()
+    for (candidate, line), stats in zip(meta, results, strict=True):
+        scored.append((score(stats), candidate, line))
+    chosen_lines = [entry[2] for entry in select_affix_subset(scored, acquisition_policy)]
+    if not chosen_lines:
+        return None
+    final = _item_text(base, chosen_lines, slot, ilvl=ilvl)
+    reasons = _item_attainability_reasons(final, acquisition_policy)
+    if reasons:
+        raise item_search.ItemSearchError(
+            "generated_item_attainability_check_failed", slot=slot, reasons=reasons
         )
-        scored.append((gain, m, line))
-    chosen_lines: list[str] = []
-    used: set[str] = set()
-    deep_affixes = 0
-    for typ in ("prefix", "suffix"):
-        side = sorted((s for s in scored if s[1]["type"] == typ), key=lambda x: -x[0])
-        n = 0
-        for gain, m, line in side:
-            if n >= 3 or len(chosen_lines) >= acquisition_policy.maxExplicitAffixes:
-                break
-            if gain <= 1e-9 or m["group"] in used:
-                continue
-            is_deep = bool(m.get("_deepTopTier"))
-            if (
-                acquisition_policy.maxDeepTopTierAffixes is not None
-                and is_deep
-                and deep_affixes >= acquisition_policy.maxDeepTopTierAffixes
-            ):
-                continue
-            chosen_lines.append(line)
-            used.add(m["group"])
-            deep_affixes += int(is_deep)
-            n += 1
-    return _item_text(base, chosen_lines, slot, ilvl=ilvl) if chosen_lines else None
+    final_stats = item_search.evaluate_items(engine, slot, [final], keys)[0]
+    original = (engine.get_build().get("gear") or {}).get(slot) or {}
+    if not original.get("isScaffold") and score(final_stats) <= score(original_stats) + 1e-9:
+        return None
+    return final
 
 
+def _stage_planned_item(
+    engine: PobEngine, raw: str, slot: str, policy: attainability.GearAttainabilityPolicy
+) -> dict[str, Any]:
+    """Accept a planning step only after its actual character and item readbacks agree."""
+    before = engine.get_xml()
+    before_build = engine.get_build()
+    prior_audit = hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(before_build, before)
+    )
+    context = item_search.capture_context(engine)
+    legality = _generated_item_legality(raw)
+    if not legality.get("ok"):
+        return {
+            "ok": False,
+            "errorCode": "generated_item_legality_check_failed",
+            "issues": list(legality.get("issues") or []),
+        }
+    actual = item_search.equip_candidate(engine, raw, slot, context)
+    actual_legality = _generated_item_legality(actual)
+    policy_reasons = _item_attainability_reasons(actual, policy, legality=actual_legality)
+    after_xml = engine.get_xml()
+    after_build = engine.get_build()
+    audit = hard_legality.audit_build(
+        hard_legality.augment_build_with_snapshot_gear(
+            after_build, after_xml, item_legality_overrides={slot: actual_legality}
+        )
+    )
+    regression = hard_legality.compare_audits_for_regression(prior_audit, audit)
+    lost_slots = sorted(_equipped_slots(before_build) - _equipped_slots(after_build))
+    if not actual_legality.get("ok") or policy_reasons or regression["regressed"] or lost_slots:
+        item_search.restore_state(engine, before)
+        return {
+            "ok": False,
+            "errorCode": "whole_build_legality_check_failed",
+            "legalityCheck": actual_legality,
+            "attainabilityReasons": policy_reasons,
+            "legalityRegression": regression,
+            "missingSlots": lost_slots,
+        }
+    return {
+        "ok": True,
+        "item": raw,
+        "itemLevel": itemparse.semantic_item_structure(actual).get("itemLevel"),
+        "affixes": _explicit_item_lines(raw),
+        "topTierAffixCount": attainability.item_evidence(itemparse.parse_item(actual))[
+            "topTierAffixes"
+        ],
+        "legalityCheck": actual_legality,
+    }
+
+
+@item_search.read_only_search
 def plan_gear(
     engine: PobEngine,
     dps_weight: float = 0.7,
@@ -1834,6 +1988,10 @@ def plan_gear(
     toward pure EHP (the cheapest DPS to give up) until TotalEHP reaches it. Read-only: returns the
     per-slot plan + projected whole-build DPS/EHP/resists; equip the items yourself. Greedy heuristic.
     """
+    if not _num(dps_weight) or not math.isfinite(dps_weight):
+        return {"ok": False, "errorCode": "invalid_item_search_goals"}
+    if min_ehp is not None and (not _num(min_ehp) or not math.isfinite(min_ehp) or min_ehp < 0):
+        return {"ok": False, "errorCode": "invalid_min_ehp"}
     dps_weight = min(max(float(dps_weight), 0.0), 1.0)
     try:
         acquisition_policy = attainability.policy_for(acquisition_profile)
@@ -1901,8 +2059,6 @@ def plan_gear(
                     )
                     if replacement and replacement != base:
                         base = replacement
-                        replaced_bootstrap_slots.append(slot)
-                        engine.add_item(_item_text(base, [], slot, ilvl=item_level), slot=slot)
             elif auto_base and slot in _AUTO_BASE_CLASS:
                 # AUTO-BASE an empty armour/jewellery slot so a from-scratch build gets a whole set.
                 # Allocated defence passives (Spectral Ward / Subterfuge Mask / Iron Reflexes) can
@@ -1913,9 +2069,6 @@ def plan_gear(
                 )
                 if base:
                     base_direction[slot] = slot_attr
-                    engine.add_item(
-                        _item_text(base, [], slot, ilvl=item_level), slot=slot
-                    )  # bare base; crafted below
             else:
                 base = None
             if not base:
@@ -1942,38 +2095,16 @@ def plan_gear(
             if not item:
                 skipped.append({"slot": slot, "reason": "no improving affix in pool"})
                 continue
-            legality = _generated_item_legality(item)
-            if not legality.get("ok"):
+            staged = _stage_planned_item(engine, item, slot, acquisition_policy)
+            if not staged["ok"]:
                 skipped.append(
-                    {"slot": slot, "reason": "generated item failed the shared legality audit"}
+                    {"slot": slot, "reason": "candidate failed the complete character audit"}
                 )
-                rejected_illegal.append(
-                    {
-                        "slot": slot,
-                        "errorCode": "generated_item_legality_check_failed",
-                        "issues": list(legality.get("issues") or []),
-                    }
-                )
+                rejected_illegal.append({"slot": slot, **staged})
                 continue
-            engine.add_item(item, slot=slot)  # persist so the next slot is crafted coherently
-            affixes = _explicit_item_lines(item)
-            parsed_item = itemparse.parse_item(item)
-            plan.append(
-                {
-                    "slot": slot,
-                    "item": item,
-                    "itemLevel": item_level,
-                    "affixes": affixes,
-                    "topTierAffixCount": sum(
-                        1
-                        for affix in parsed_item.get("affixes") or []
-                        if isinstance(affix, dict)
-                        and affix.get("tier") == 1
-                        and int(affix.get("totalTiers") or 0) >= 4
-                    ),
-                    "legalityCheck": legality,
-                }
-            )
+            plan.append({"slot": slot, **staged})
+            if isinstance(cur, dict) and cur.get("base") != base:
+                replaced_bootstrap_slots.append(slot)
         # EHP-floor recovery: if short of `min_ehp`, re-craft DEFENSE slots toward pure EHP (which
         # PoB's effective-HP also credits resists for) — the cheapest DPS to give up — until met.
         ehp_floor_met: bool | None = None
@@ -2007,17 +2138,10 @@ def plan_gear(
                 )
                 if not item:
                     continue
-                legality = _generated_item_legality(item)
-                if not legality.get("ok"):
-                    rejected_illegal.append(
-                        {
-                            "slot": slot,
-                            "errorCode": "generated_item_legality_check_failed",
-                            "issues": list(legality.get("issues") or []),
-                        }
-                    )
+                staged = _stage_planned_item(engine, item, slot, acquisition_policy)
+                if not staged["ok"]:
+                    rejected_illegal.append({"slot": slot, **staged})
                     continue
-                engine.add_item(item, slot=slot)
                 after_resists = engine.get_defenses().get("resistances") or {}
                 after_resist_gap = sum(
                     max(
@@ -2031,30 +2155,41 @@ def plan_gear(
                     int(profile["chaosResistTarget"]) - float(after_resists.get("chaos") or 0),
                 )
                 if after_resist_gap > before_resist_gap + 1e-9:
-                    engine.load_build_xml(before_recraft_xml)
+                    item_search.restore_state(engine, before_recraft_xml)
                     continue
-                affixes = _explicit_item_lines(item)
-                parsed_item = itemparse.parse_item(item)
                 plan[:] = [p for p in plan if p["slot"] != slot]
-                plan.append(
-                    {
-                        "slot": slot,
-                        "item": item,
-                        "itemLevel": item_level,
-                        "affixes": affixes,
-                        "topTierAffixCount": sum(
-                            1
-                            for affix in parsed_item.get("affixes") or []
-                            if isinstance(affix, dict)
-                            and affix.get("tier") == 1
-                            and int(affix.get("totalTiers") or 0) >= 4
-                        ),
-                        "legalityCheck": legality,
-                    }
-                )
+                plan.append({"slot": slot, **staged})
             ehp_floor_met = (engine.get_defenses().get("totalEHP") or 0) >= min_ehp
-        stats = engine.get_stats(["TotalDPS", "FullDPS"])["stats"]
+        # Reproduce the returned set from the caller's input. No omitted auto-base may contribute.
+        expected_stats = item_search.finite_stats(
+            engine.get_stats(["TotalDPS", "FullDPS", "TotalEHP"]).get("stats"),
+            ["TotalDPS", "FullDPS", "TotalEHP"],
+        )
+        expected_resists = item_search.finite_stats(
+            engine.get_defenses().get("resistances"), ["fire", "cold", "lightning", "chaos"]
+        )
+        item_search.restore_state(engine, snapshot)
+        for entry in plan:
+            replayed = _stage_planned_item(engine, entry["item"], entry["slot"], acquisition_policy)
+            if not replayed["ok"]:
+                raise item_search.ItemSearchError("gear_plan_replay_failed", slot=entry["slot"])
+        stats = item_search.finite_stats(
+            engine.get_stats(["TotalDPS", "FullDPS", "TotalEHP"]).get("stats"),
+            ["TotalDPS", "FullDPS", "TotalEHP"],
+        )
         d = engine.get_defenses()
+        replay_resists = item_search.finite_stats(
+            d.get("resistances"), ["fire", "cold", "lightning", "chaos"]
+        )
+        if any(
+            not math.isclose(stats[key], expected_stats[key], rel_tol=1e-7, abs_tol=1e-8)
+            for key in stats
+            if key in expected_stats
+        ) or any(
+            not math.isclose(replay_resists[key], expected_resists[key], rel_tol=1e-7, abs_tol=1e-8)
+            for key in expected_resists
+        ):
+            raise item_search.ItemSearchError("gear_plan_replay_mismatch")
         planned_xml = engine.get_xml()
         whole_build_legality = hard_legality.audit_build(
             hard_legality.augment_build_with_snapshot_gear(engine.get_build(), planned_xml)
@@ -2106,7 +2241,9 @@ def plan_gear(
         "plan": plan,
         "skipped": skipped,
         "rejectedIllegalCandidates": rejected_illegal,
-        "autoBased": [s for s in slot_base if not (gear.get(s) or {}).get("base")],
+        "autoBased": [
+            entry["slot"] for entry in plan if not (gear.get(entry["slot"]) or {}).get("base")
+        ],
         "baseDirection": base_direction,
         "acquisitionProfile": acquisition_profile,
         "attainabilityPolicy": attainability.public_policy(acquisition_profile),
@@ -2117,6 +2254,7 @@ def plan_gear(
         "itemLevel": item_level,
         "projected": projected,
         "wholeBuildLegality": whole_build_legality,
+        "planReplayVerified": True,
         "note": (
             "Budget-allocation heuristic: offense slots crafted damage-leaning, defense slots EHP-"
             "leaning (which pulls missing elemental resists onto the cheapest-DPS pieces), built "

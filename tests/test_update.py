@@ -37,6 +37,10 @@ def _manifest(version: str, corpus_blob: bytes, engine_blob: bytes, app: str = "
         "corpus": {
             "url": "http://x/corpus.sqlite",
             "sha256": hashlib.sha256(corpus_blob).hexdigest(),
+            "certificate": {
+                "schemaVersion": 1, "sha256": hashlib.sha256(corpus_blob).hexdigest(),
+                "game_patch": "0.5.3", "passive_tree": "0_5",
+            },
         },
         "engine": {"url": "http://x/engine.zip", "sha256": hashlib.sha256(engine_blob).hexdigest()},
     }

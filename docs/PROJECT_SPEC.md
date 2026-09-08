@@ -256,7 +256,8 @@ Spec 只维护 Phase 状态和概括目标；更细的执行进度维护在对�
 - Phase 4 之后 graph / vector / text retrieval 组合相对纯文本检索的质量；
 - copy-safety pass rate；
 - 同 Family、同等级 Create 的接受率和 Family 匹配率；
-- generated stronger/not-weaker 比例、reference-advantage 维度数和 critical gap；
+- generated stronger/not-weaker 比例（tradeoff单列，不自动非劣）、reference-advantage 维度数和
+  critical gap，以及双方证据绑定、unknown/可比较维度覆盖；旧证据不自动取得新趋势资格；
 - Learning Memory 的召回、采用、拒绝、污染与 correction；
 - 第一批 10 案例中最后 3 例相对最初 3 例的方向性趋势。
 

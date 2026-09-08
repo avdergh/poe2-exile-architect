@@ -1,5 +1,242 @@
 # Phase 4 - Researcher 语义记忆
 
+## 审查后优化进度（2026-09-06）
+
+### R1–R4修改复审：修复与交叉复验完成
+
+按用户要求，在C1/C2前增加一轮独立复审。五个子agent分域审查后，主agent逐项重新阅读代码、执行
+反例并补交叉复现，确认9项（3项P1、6项P2）。这9项现已修复，反例已转正式回归；主agent另核验
+并修复交叉审查发现的同类遗漏：status复活空queue、resume dry-run清理旁路、full-case省略目标
+却关闭缺口，以及公开search遗漏config-sets枚举。
+详细证据与逐项核对见[复审报告](../../tmp/review-r1-r4/REVIEW.md)。
+
+新主题默认并存，跨主题修订通过sourceClaimRevision精确CAS；所有可发布种子版本共用安全检查。
+URL入队只解析一次并冻结材料，claim/resume核验完整hash与packet；旧URL不能重新抓取后沿用旧身份。
+缺口resolved必须有原组件实际解决证据，旧缺口缺少组件身份时不能借full-case省略目标关闭。
+结构提取与数值读回复用活动身份选择器，config-sets明细及响应wrapper纳入预算。
+V08影响限定为审计诊断；V09属于保留兼容入口的遗留问题。218项集成回归及quick通过后，已进入
+C1/C2；最终全量与计算层验证合并记录在Phase 5本轮验收。以下历史测试计数保留原批次含义。
+
+追加阻断项V10（P1，C1整态回退复验发现）：PoB把customMods多行值直接保存在XML属性内，
+通用ET解析将换行折为空格，导致配置视图失真以及不同数值状态的build_state_hash碰撞。
+合成Fireball实测原多行为Mana2150/DPS249.667，折为单行为Mana50/DPS124.833，旧hash相同。
+R4原始sourceSnapshotHash仍能拒绝跨packet数值绑定，不能把该问题扩大成全部保护失效。
+本轮已修复共享PoB语义读取，状态hash与Research配置提取共同保留真实属性值；101项focused
+通过，主agent独立复跑36项语义测试及C1/C2整合258项与3个subtest通过；最终full通过2829项与
+14个subtest及发布合同；compute全套123项分批覆盖通过，清单无漏项，详见Phase 5最终验收。
+受影响旧回执重新查询/验证，不批量重标来源或提升权限。
+
+Skills收敛已先行完成：Controller/Worker减少重复说明，区分运行态与知识工具，产品review合同移除
+重复顶层空模板和legacy CLI/文件编辑协议。DSH同步、42项聚焦测试与quick通过；这不代表
+学习效果已经验证；知识实现与实际内容效果分别验收。
+
+| 修复包 | 状态 | 范围 |
+| --- | --- | --- |
+| 1A：R1/R2知识身份与来源修订 | 复审修复与交叉复验完成 | V01/V02/V08正式反例通过；真实库切换和语义整理未执行 |
+| 1B：R3a缺口保留与安全清理 | 复审修复与交叉复验完成 | V03/V05/V09及status/resume dry-run旁路已覆盖 |
+| 1B：R3b缺口关闭与受控重取 | 复审修复与交叉复验完成 | V03/V04/V05及full-case省略目标反例通过；实际数据补研未执行 |
+| 1B：R4配置身份 | 修复与最终验收完成 | V03/V06/V07及多行配置/hash正式回归、full与全套compute通过；详情见Phase 5 |
+| K1：召回资格与receipt | 已修复并验收 | 统一coverage、可深读集合及可信分页receipt，旧资格回执须重查；Create深读与决定消费、noncompute/quick通过 |
+
+### K1召回合同修复与知识质量工作（2026-09-08）
+
+Create的覆盖、索引、前提和实际深读共用资格过滤，排除待复核、已被替代、非standard availability
+和不支持schema的记录；诊断计数与实际可读集合一致。每页可信回执保存该页coverage，完整页链
+合并后执行必读及采用决定检查。`deepRecordEligibilityVersion=1`区分新资格语义，旧raw查询、
+旧session及缺coverage的授权回执不得仅补标记恢复。普通Research仍保留待复核诊断读回。
+
+首轮反例为5失败/1通过；修复后的资格、旧会话、旧回执及Create消费聚焦已通过。最终64项聚焦、
+noncompute的3126项及静态检查、quick的132项及静态检查通过；主agent固定六维复核完成。
+日志与矩阵见`tmp/k1-d1-20260908/`。未改PoB/Lua/optimizer，不重复运行compute；未修改真实
+知识库正文、发布种子或已安装插件。
+
+知识质量准备已开始：只读发布种子冻结副本仍为679记录/54Family，来源全为0.5.4。首个
+Stormweaver Spark Family默认摘要展开10/12条，按精确ID深读12/12条并核对持久coverage。
+已读到资源冲突、换武器条件与Boss失效场景；对“以选中载荷推断其他效果无辅助归属”的表述
+登记优先复核任务，尚未判机制错误或修改知识。具体初读与safe record refs见
+`tmp/k1-d1-20260908/CONTENT_AUDIT.md`。缺独立原料时不计算完整提取率，也不把旧记录认证为
+当期样本。随后同Family的12条知识已在真实Create run内重新深读并落实到95级Spark技术候选，
+artifact保存与受管review完成，数值与机制限制见Phase 5。当期来源采样返回source_unavailable，
+没有可研究案例，已停止且未计研究成功；当期内容提取质量审计仍未完成。
+
+用户已确认将Research内容质量与真实Create基线前移。K1/D1验收后的首批工作按以下合同执行：
+
+1. 先冻结评估使用的runtime、PoB、图/语料、知识快照、模型与目标场景；新Research只采当期来源，
+   历史知识保留版本和targetApplicability。旧Phase7维持6/10暂停，不重跑已比较案例。
+2. 内容审计先独立列出来源应解释的输出职责、核心联动、启动/稳态、资源、防御、失败条件和验证
+   任务，再对照Research提出、接受和可召回内容。缺原材料时只能评价现有记录的可用性，不能
+   声称完整提取率；不以record数量或全部adopted为质量目标。
+3. 首批覆盖不同机制与条件的代表性来源，按证据需要确定样本规模和深读范围；不将全库重研、
+   全量语义整理或大型评估集作为起步条件。安全的局部机制包保留必要配套，整角色材料不入库。
+4. 与Create基线联动追踪“应提取→已提出→安全接受→可召回→实际深读→正确决定→artifact落实”。
+   各环节独立计分母，将缺知识、漏召回、误用知识、工具失败和模型缺口分别归因。
+5. 按高影响缺口修Research流程、知识组织或Create采用方式，定向补研后用新评估批次复验。
+   D4/E1在正式比较统计前完成，未知和证据缺失不得记为质量改善。
+
+### R1/R2既有验收记录
+
+修复前的R1/R2反例现已转为正式回归。实现采用同主题多结论、精确投影共享record、来源声明六列键
+及record/hash显式绑定；共享来源修订写时复制，独占旧锚点保留兼容ID。已覆盖写入、召回、Family
+整理、typed merge、patch review、发布种子和Create消费，不放宽projection授权。
+
+75项专门回归已通过；最终full通过2163项测试、迁移回放、种子校验、打包、四域MCP及PoB Research
+读回smoke（不含重型compute）。schema6发布种子的隔离副本保留679记录、54个Family和
+681条声明，全部可精确绑定；修正23条派生缓存（22条安全引用、1条来源计数2→1），不改正文、ID、
+版本和projection。迁移审计保存在meta的research_claim_migration_v7_report，只含安全标识及计数。
+真实用户库、原发布种子和已安装插件均未由本次修改。新发布输出严格schema7，bundle允许经验证的
+旧种子输入，并在用户副本初始化时迁移；这种输入兼容不提升legacy/unknown知识权限。
+
+后续步骤：实际升级在无旧进程写入的受管窗口进行，初始化先备份再迁移，原种子不覆盖用户库；
+全库语义整理与实际缺口补研仍分别验收。当前已转入计算工具C1/C2，详见Phase 5。
+
+### 1B本轮边界与验证
+
+R3a修复“安全子集accepted被当作整案完成”的P1问题：接受诊断与知识在同一事务保存；两条恢复与
+响应重放使用同一receipt。旧receipt缺诊断时不升级权限，仍存的queue/安全报告缺口单独保留。
+默认清理只接收complete；explicit abandon先保存不含原料的审计，清理后原runRef仍可读状态。
+accepting必须先恢复；旧延迟清理须重验。Windows连接及时关闭，避免等待GC；锁外初始化避免文件锁
+重入。部分删除失败保留精确queue以便重试，不假称已删原料恢复。
+
+R4为配置条目保存身份、活动标志和值类型，Input/Placeholder分开；读回v4绑定来源及PoB实际
+skill/item/passive/config组合、sourceRef与精确sourceSnapshotHash。缺失、重复、无效、跨来源或
+状态漂移时不提供可采纳数值，legacy单配置保持上游默认语义。真实pinned PoB双配置smoke已验证
+不同配置的读数随身份一起变化；未修改Lua或数值引擎。
+
+原R3拆为R3a/R3b实施：R3a先防止不可逆丢失；R3b现已接入逐项关闭、受控重取与期限策略。
+保留原始researchCompletion，另算effectiveResearchCompletion；后续关闭不会改写原receipt。
+补录clean本身不关闭父案，必须逐gap明确审核并绑定可信新证据。旧来源版本不重标。
+
+R3b当前合同与验收边界：
+
+- `get_research_followup_status`分页返回稳定缺口、追加事件或重取历史；默认页只给重取摘要，
+  UTF-8响应超过预算时续页，不静默省略条目。明细抵扣统计数，已完整定位的未解析/未建知识身份问题
+  不再重复生成aggregate；真正未定位的余项与unknown继续保留。
+- `submit_research_gap_review`以CAS revision和稳定request ID追加处置，核对新receipt的同完整
+  sourceHash、版本、场景范围和当前精确record/claim投影。真实sourceHashRef通常只有16位，不能
+  从短引用补造64位hash；新接受回执保存服务端sourceContext，旧缺证据不升级权限。支持后来被修订
+  或撤销时有效缺口重开，历史关闭事件保留。
+- 原quarantine仍可用时支持局部supplement或显式`re_research_scope=full_case`。后者必须明确
+  parent与sample IDs，新run完整读取与复核，保留来源/Family身份，可证明真正unknown/aggregate；
+  不要求为完成审核制造知识改动。原run期限和receipt均不刷新。
+- `reacquire_research_source`按指定character-hash在线重新发现，原子预留绑定parent/sample/
+  fingerprint/request/child，禁止超时抢占。仅目标可越过角色去重，不改旧accepted ledger；
+  未找到只表示当前检索范围未命中。精确快照与后继快照分开记录，新hash/patch/场景不证明旧案。
+  队列与归档恢复逐项核对lineage、完整hash/短ref、league/patch与可信接受receipt；已释放请求不得
+  继续collector，同请求并发只产生一份子run。
+- 新run创建时锁定默认7天（可选1–30天）原料期限，resume/claim不续期；新claim最多24小时，
+  packet与lease期限一致。到期停止新claim，已有有效lease与accepting/finalization优先保护。
+  cleanup调用时按期限处置并保留安全审计，不后台运行模型或定时删除；离线期不承诺准点物理清理。
+  legacy无policy继续明确处置。删除恢复还重核有效缺口，不能仅凭缓存revision授权。
+
+本轮只实现并隔离验证上述能力；尚未对真实历史库批量补研、执行在线重取、发布或安装插件。
+旧归档缺角色定位/完整hash时明确不可定向恢复，需用户提供真实来源材料；没有伪造旧数据缺失证据。
+R3b验证完成：348项主要集成回归、quick及两个Skill校验通过；最终全量2470项与14个subtest通过。
+初次full的打包后烟测发现旧工具总数162未同步，已改成与打包manifest逐工具比较，并补同数量错工具、
+重复声明和域重叠反例；12项相关复验通过。随后完整重跑静态检查及full发布合同，迁移回放、种子校验、
+DSH、插件构建、四域MCP和pinned PoB读回全部通过。当前公开工具165个，新工具归research域；
+知识schema仍为7，跟进状态使用独立user-data SQLite，不修改发布种子。
+日志为tmp/r3b-full.log、tmp/r3b-release-completion.log；没有重复运行重型compute，也没有启动真实
+在线研究或更新已安装插件。此处记录修复烟测后的完整验收结果，不把第一次full命令描述为成功退出。
+
+新增85项专项回归通过，覆盖事务回滚/提交后中断、历史诊断保真、缺失计数、清理锁与部分删除，
+以及多配置/活动组合/缓存漂移。quick与两个Skill校验通过，DSH已同步。
+全量2248项首次运行2247通过，唯一失败是Research bootstrap新增文本超过2400字符；已收敛至2345，
+相关MCP/Skills及最终R3回归83项复验通过。随后完成full剩余静态检查、迁移回放、种子校验、打包、
+四域MCP和pinned PoB读回检查，全部通过（不含重型compute）。日志为tmp/r34-full.log与
+tmp/r34-full-completion.log；此处记录分步完成的验收矩阵，不描述成第一次full命令全部通过。
+真实用户库、发布种子与已安装插件不在本轮操作范围。
+
+1A验收：不同条件并存；A/B共享正文后仅修订A，B原正文与lane不变；新结论不虚计B证据；两源再次
+收敛可复用内容；跨补丁复核、global/local隔离及分页绑定不退化。Family stable key和来源补丁保持
+不变；旧库先在隔离副本做迁移、幂等及回滚验证，不伪造恢复已丢正文。验证按focused→quick及跨范围
+noncompute推进；实际数据发布/安装另行验收。
+
+### 1A设计约束：Family稳定，知识可并存，召回不按来源堆叠
+
+本节是设计与验收边界。1A已实现来源/结论分离和exact-content范围的复用；语义同义整理、条件匹配
+及完整比较视图仍待后续Agent审核与评估，不把存储修复当成语义整理完成。
+
+**Family不随细微条件扩张。** 维持既有升华与规范化主输出技能集合的身份，以及既有别名/包含关系
+处理；条件、正文措辞、来源、补丁、普通辅助及utility变化不能成为新Family键。相似名称不授权合并，
+仍需stable key与角色证据；同一BD的副技能误标primary也要作为身份质量问题检查，不能靠扩大Family
+定义掩盖。R1/R2新增的是Family内部的来源声明与修订，不是一份来源或一种条件建一个Family。
+
+**分清三种增长。** 来源证据可以随独立样本增长；逻辑知识结论只随新的条件/结论增长；需要Agent
+比较的机制方案只随影响采用决定的实质差异增长。正文去重只用于完全一致的内容；语义同义、条件
+蕴含或冲突由外部Research Agent阅读后作typed审核，字符串差异、关键词表或向量相似度不能授权
+合并、扩大适用范围或改变来源证据权重。
+
+| 差异 | 存储与展示建议 | Create如何使用 |
+| --- | --- | --- |
+| 同一来源重复提交，内容未变 | 幂等，不重复计证据 | 不产生新决策项 |
+| 独立来源支持相同结论/条件 | 保留独立授权；相同正文共享，等价关系经审核后合并展示 | 读一份有来源索引的结论，证据数按独立支持计，不按提及次数计 |
+| 数值/措辞有差别，但不改变机制与适用边界 | 保留来源差异，不自动创建机制方案 | 需要精确装备/等级判断时再展开；不能仅凭数值相近判等价 |
+| 成立/失败条件不同，例如击杀与无击杀场景 | 同一机制问题下保存条件分支，禁止抹平或取并集泛化 | 与当前目标/状态比对，显示满足、未满足或未知及对应证据 |
+| 支付域、触发链或必需组件配套发生实质改变 | 同Family内展示有依赖关系的候选机制方案 | 比较配套、机会成本、失败窗口；跨来源采纳仍需完整crossCase计划 |
+| 相同条件下结论相反或当期补丁否定 | 独立保留、显式冲突/失效状态 | 不以多数票或来源数量消除冲突；展示与当前任务相关的反证并验证 |
+
+**召回先给可比较的差异，再做所选方案深读。** Family发现后按伤害投送、资源、防御、轮转等问题
+组织“已支持结论及其边界、条件差异、实质方案差异、冲突与未验证项”，每项可追到具体record/source/
+content revision。共同观察不自动升级为Family通用规律；代表摘要不能授权未读记录。
+
+条件对照由Agent结合目标等级/补丁、所选职责及活动PoB事实进行：满足时进入采用候选；未满足时说明
+需要什么配套改变或为何不适用，不等同永远不可用；未知时列精确查询/PoB验证任务，不能按缺失字段
+当作满足。筛选先遵守Family/scope/版本/来源状态权限，再比较适用性、证据和互补差异；不能仅按记录
+数量挑选案例，也不能让大量近义记录挤掉少数关键失败证据。
+
+**聚合只改变呈现，不合并授权。** Create继续锁定一条authoritative source lane；代表摘要必须标明
+该lane可用的来源声明。其他来源仍是comparison，采纳其完整机制仍走crossCase合同。相同正文的另一
+来源回执不能代替本lane深读，也不能写进premise resolution。选中方案的必需机制/失败premise完整
+覆盖、完整分页回执与state/version绑定继续保留。来源索引可增长并分页，禁止静默截断。
+
+1A保留精确相同结论的共享record，所以同版本等价来源不增加package。跨版本exact unit已由权威
+lane提供时，对照来源挂为comparisonRecordBindings，仍使用权威recordId与深读要求；条件差异及
+comparison-only独有包保持各自权限。完整目标排序与语义比较视图仍归后续阶段。
+
+新增验收：同身份多来源/细微条件变化不增加canonical Family数；同源重放不增证据；新增多个等价
+来源只增加真实来源支持，不使首层摘要正文和必要设计决策数按来源数线性增长；条件分支和冲突不能
+被等价摘要吞掉；只有条件未知时如实保留未知；同Family下不同资源/触发方案不会被拼成无来源的
+“全都有效”方案。Family数、逻辑结论数、来源数、决策数分别统计，不用限制入库数量掩盖膨胀。
+
+每次优化或范围调整同步更新本节的状态、原因、验证与未覆盖项，以及首轮审查报告中的同名问题编号。
+以下既有“已完成”项描述底座能力，不表示本节后续发现的缺陷已经关闭。
+
+### 1A旧数据处理：保真迁移、分批整理、缺口补研
+
+迁移代码已在隔离副本验证，尚未修改真实知识库或发布种子。2026-09-06只读检查仓库发布种子：679条
+schema2/valid记录、679份现存正文、681条来源证据，来源补丁均为0.5.4；613条active_state、66条
+state_agnostic，无缺失projection的记录，来源证据均存在匹配的现存projection。这只是当前发布种子的
+结构盘点，不是用户本地库盘点，也不能证明过去没有被覆盖、清理或拒绝入库的知识。
+
+| 旧数据情况 | 新方案处理 | 保留的权限边界 |
+| --- | --- | --- |
+| 正文、来源与指纹完整一致 | 确定性迁移到来源声明/正文绑定；完全相同正文共享 | 保留Family、来源补丁、scope、状态和证据等级，不算新研究 |
+| 多来源明确支持同一现存正文 | 拆分独立来源授权，共享正文 | 以后A修订只换A绑定；B授权不随之改变；计数不因拆行重复增加 |
+| 近义表述、条件重叠或实质变体 | 保留原声明，由Agent阅读现有净化知识后作typed等价/条件/冲突审核，生成可追溯比较索引 | 不用向量/关键词直接归并，不改原正文凑统一，不将共同观察自动泛化 |
+| 旧schema、来源状态未知、指纹缺失/不匹配 | 保留为待复核的历史知识，列出精确缺口 | 不自动补造指纹/状态，不升级Create权限；仅限制有问题的来源声明，不无差别禁用整个Family |
+| 正文已覆盖且无可匹配旧版本，或曾拒绝的变体根本未入库 | 从合法备份或已保留安全验收材料核对；有精确匹配才恢复，否则标记不可恢复/待补研 | 哈希不能还原正文，不能把当前A正文复制给B并重写指纹 |
+
+程序迁移只改变结构和索引，不承担语义改写。历史内容的语义整理是对已有知识的复核，不应伪装成
+新的成熟BD研究；正常Research仍只研究最新版本。需要新增实证时优先取当前版本对应Family样本，
+新来源/新补丁独立存证，历史记录及其来源版本保留。补丁兼容只走追加复核，不批量把0.5.4改成0.5.5。
+
+迁移与验收顺序：
+
+1. 只读盘点待迁库，分类统计可直接迁移、待语义复核、证据缺口、可能不可恢复项；对多来源与历史
+   覆盖风险优先抽查。发布种子与local_user分别处理，不能用新版种子覆盖用户库。
+2. 建立一致性备份，在隔离副本迁移。保留旧recordId可追溯映射、原正文指纹与patch-review绑定；
+   旧ID映射多个新声明时不能静默猜来源，也不能把原review无条件复制到所有新声明。
+3. 比较迁移前后Family、来源、正文、条件/失败条件、授权与精确查询结果，验证A/B独立修订、幂等、
+   回滚和引用完整性。已知错误证据计数的修正单独报告，不以总行数相等作为无损的唯一证明。
+4. 程序正确性通过后，按高召回Family、多来源、资源/Boss/关键失败条件和冲突风险分批做Agent整理；
+   审核前保留可用原记录的既有权限，聚合索引只有被审核的结论范围，不能把未审内容标成已合并。
+5. 实际切换安排在无活动写入的受管窗口，增加memory revision；旧查询receipt保持原绑定而失效，
+   后续Create重新查询，不能篡改回执延续权限。保留迁移报告和备份，schema/内容迁移失败可回滚；
+   新版发布种子另走copy-safety/provenance/release校验。
+
+迁移完成只表示旧知识在新结构下保真可用，不表示全部内容经过新一轮语义复核、当期数值认证或
+历史缺口已经恢复。三项进度分别记录：结构迁移覆盖率、语义整理覆盖率、缺口补研关闭率。
+
 持续研究积累维护在：
 
 - `docs/research/BD_KNOWLEDGE.md`：成熟 BD 中提取的可复用知识与技巧；
@@ -21,10 +258,10 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
 
 当前实现进度：
 
-- SQLite schema 5、`ResearcherOutput` 4/5 双读与 6 新写、`DeepResearchRecord` schema 1 双读与
+- SQLite schema 7、`ResearcherOutput` 4/5 双读与 6 新写、`DeepResearchRecord` schema 1 双读与
   schema 2 新写：已完成；
-- canonical 以 `(knowledge_scope, knowledge_key)` 隔离；identity v2 纳入 gearSubjects 与
-  skill/support/host topology，同批和 DB active projection collision 均在写入前失败：已完成；
+- 机制主题以 `(knowledge_scope, knowledge_key)` 隔离；identity v2纳入gearSubjects与
+  skill/support/host topology，同主题不同结论并存；同源同claim/版本的同批冲突在写入前拒绝：已完成；
 - BuildFamily 的可变元数据/evidence 以 `(knowledge_scope, build_family_key)` 隔离；resolver、merge、
   查询统计和 seed 均不得让 Local 改写 Global：已完成；
 - evidence 保存 accepted projection hash 与 source state；Create 授权单位固定为
@@ -78,7 +315,9 @@ schema 不能反向限制 Researcher 分析深度；新维度即使尚未结构�
   它继续维护研究质量优先、`nextCursor` 连续分页、案例证据/推断/模型记忆边界、机制校对顺序、
   permission preflight、compact 失败回退和 contract-upgrade 同 lease 分流，传输方式变化不得删弱这些
   业务语义；
-- `get_research_review_contract`：在写 artifact 前提供精确 JSON 形状、canonical 枚举与模板；
+- `get_research_review_contract`：在写 artifact 前提供精确 JSON 形状、canonical 枚举及跨字段规则；
+  产品响应不再重复返回顶层空对象或文件编码要求，当前review对象由 `initialize_research_review`
+  唯一返回，含已有内容的恢复不覆盖；legacy CLI仍保留自己的模板和文件编码协议。
 - `initialize_research_review`：返回当前 lease 的内存 safe review 对象，已有对象不覆盖；
 - `validate_research_review`：保存并校验调用方提交的完整 safe review，返回可修复错误；
 - `accept_research_review`：对相同 lease 下调用方再次提交的完整 safe review 执行正式验收。
@@ -175,6 +414,23 @@ Phase 4.5 继续维护在本文档内，作为进入 Phase 5 前的补课阶段�
   evidence、typed context、version 和 copy-safety fields。
 - patch decay / revalidation：memory item、semantic edge、build pattern 可进入
   `needs_revalidation`，复核后可恢复或产生 successor。
+
+0.5.5 起采用目标版本适用性复核：`inspect_research_patch_review_targets` 分页提供完整安全断言，
+`submit_research_patch_review` 追加绑定原指纹、补丁证据及独立 review 的决定。历史来源正文、
+版本和状态保留，复核不是新赛季样本。0.5.5 继续召回 0.5.4，目标版本不适用的记录只退出目标
+Create 授权，普通 Research 仍可读取诊断。Family identity 跨版本稳定；0.5.5 及之后的
+record/evidence key 包含来源 patch，`knowledgeConceptKey` 用于比较同一知识主题。
+正常 Research 只研究最新版本 BD，历史知识继续召回。DB schema 7 保留历史record/evidence可追溯身份
+作为版本授权绑定，把完全相同的深度知识正文移入不可变 `research_content_revisions`，
+以兼容视图保留旧字段、ID 与复核指纹。正文、条件和 typed payload 精确相同才共享；不同条件
+独立保存。来源过滤后的正文、Family coverage／premise 与 ExecutionContract 共用去重选择，
+当期证据优先；明确 record ID 深读仍保持原记录身份。正文共享不增加独立样本数量。
+`scripts/apply_research_patch_reviews.py` 仅供仓库维护，以先完整验证、整库备份、事务应用的方式
+导入已完成独立复核的决定；不生成模型结论。发布种子保留绑定有效的 global_seed 审查，并剔除
+local_user 与已移除目标的审查，防止安装后丢失已确认的目标版本限制。
+语义边冲突检测的逆边、递归起点和每一层路径统一检查目标补丁及树版本；复核为不适用的旧边
+只退出目标版本冲突判断，原始记录继续保留。Research packet、PoB 读回和 review contract
+共享来源／模型补丁上下文，缺失模型信息保持 unknown，不因读取到数值就提升认证。
 - Phase 5 handoff：`build_phase4_architect_research_context.py` 输出 creator-visible、
   planner-visible、copy-safe context，并包含 `usedFragmentIds`、`usedSemanticEdgeIds`、
   `usedPatternIds` 和 verification tasks。
@@ -349,7 +605,7 @@ Family discovery 仍只返回适合比较的轻量摘要。`supportingRecordIds`
 分页；每页最终 UTF-8 JSON 不超过 65,536 bytes。`limit` 只影响候选选择，不代表完整授权；只有
 同一 session 的 `0..terminal` 页链才完整。精确 Family 响应还必须返回：
 
-- `familyRecordCoverage`：当前精确版本下合格记录总数、已展开数量、各 record kind 数量和是否完整；
+- `familyRecordCoverage`：所选来源和目标版本下合格记录总数、已展开数量、各 record kind 数量和是否完整；
 - `requiredDeepReadRecordIds`：从支持包、非 optional 装备职责、资源机制、失败条件和核心机制代表
   记录派生；Create draft 缺读任一项都会失败；
 - `familyRecordIndex`：本轮未展开记录的安全索引，包含 ID、类型、标题、摘要和稳定组件 key；
@@ -363,7 +619,9 @@ Family discovery 仍只返回适合比较的轻量摘要。`supportingRecordIds`
 
 typed query receipt 的 `result_contract` 保存本轮 `familyRecordCoverage`、
 `familyPremiseCatalog`、`premiseAuditVersion` 和实际 `deepReadRecordIds`。这样后续 Create 审计
-依据的是查询当时的安全快照，不会因数据库后来新增、修订或失效记录而改变已经完成的运行。
+依据的是查询当时的安全快照。分页回执逐页保存本页coverage，完整页链共同覆盖必读义务；
+不能只保留目录却丢失可信回执里的义务。运行中memory revision或深读资格版本改变须重查，
+不改写已经完成运行的历史证据。
 
 ## Legacy 兼容
 

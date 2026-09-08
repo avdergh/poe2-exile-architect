@@ -1,7 +1,15 @@
 {
   "schema_version": 1,
-  "current_pob_version": "0.22.0",
+  "current_pob_version": "0.23.1",
   "entries": [
+    {
+      "commit": "7d6f530cbdab20389ff8bc6ba97a37ac27f74e41",
+      "pob_version": "0.23.1",
+      "game_patch": "0.5.4",
+      "passive_tree": "0_5",
+      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "pob-patch-contract", "upstream-release"],
+      "verified_at": "2026-09-05T05:11:52Z"
+    },
     {
       "commit": "dc409a7073e4e2752e9a642db7544af53551d006",
       "pob_version": "0.21.1",

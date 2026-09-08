@@ -150,6 +150,8 @@ def _attach_no_family_blueprint(payload, run, monkeypatch):
             "toolName": "graph_tool_query",
             "queryRef": EVIDENCE_REF,
             "summary": "Current graph evidence for the no-Family blueprint fixture.",
+            "evidenceKind": "agent_reviewed",
+            "reviewBasis": "Agent inspected the selected synthetic graph evidence and its conditions.",
         }
     )
     validated = create_build.validate_generation_blueprint(
@@ -404,6 +406,8 @@ def test_validate_generation_draft_checks_premise_contract_and_deep_read(
             "toolName": "inspect_generation_checkpoint",
             "queryRef": "checkpoint:test-state",
             "summary": "Current active candidate verification for the Research decision.",
+            "evidenceKind": "agent_reviewed",
+            "reviewBasis": "Agent inspected the synthetic current checkpoint for the Research decision.",
         }
     )
     monkeypatch.setattr(
@@ -518,7 +522,14 @@ def test_validate_generation_draft_checks_premise_contract_and_deep_read(
         str(run["runContext"]["runToken"]),
         payload,
     )
-    assert caveated["errorCode"] == "generation_draft_unchanged"
+    assert caveated["status"] == "accepted"
+    assert caveated["researchDecisionHash"] != accepted["researchDecisionHash"]
+    unchanged = create_build.validate_generation_draft(
+        str(run["runContext"]["runId"]),
+        str(run["runContext"]["runToken"]),
+        payload,
+    )
+    assert unchanged["errorCode"] == "generation_draft_unchanged"
 
 
 def _bind_submission_to_run(payload: dict[str, object], run: dict[str, object]) -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from server import paths
 from server.compute import craftopt, equipment
 from server.knowledge import item_legality, itemparse
@@ -87,6 +89,7 @@ Item Level: 82
 
         def __init__(self):
             self.restored = False
+            self.equipped = True
 
         def get_build(self):
             return {
@@ -97,8 +100,19 @@ Item Level: 82
         def get_xml(self):
             return "<PathOfBuilding2 />"
 
+        def get_stats(self, _keys):
+            return {"stats": {"TotalEHP": 100}}
+
+        def inspect_item_replacement_context(self, expected_context=None):
+            return {"ok": True, "contextStatus": "no_active_output"}
+
         def add_item(self, _raw, slot=None):
+            self.equipped = True
             return {"ok": True, "slot": slot}
+
+        def unequip_item(self, _slot):
+            self.equipped = False
+            return {"ok": True}
 
         def crafting_options(self, _slot):
             return {
@@ -114,7 +128,7 @@ Item Level: 82
     monkeypatch.setattr(
         craftopt.completeness,
         "equipped_item_text",
-        lambda _xml, _slot: raw,
+        lambda _xml, _slot: raw if engine.equipped else None,
     )
     monkeypatch.setattr(
         craftopt.hard_legality,
@@ -350,3 +364,100 @@ def test_prepared_receipt_rejects_rune_count_and_corruption_marker_drift(monkeyp
     assert "craft_receipt_item_mismatch" in rune_legality["issues"]
     assert corruption_legality["ok"] is False
     assert "craft_receipt_corruption_mismatch" in corruption_legality["issues"]
+
+
+def test_socket_derivation_carries_exact_verified_non_rune_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(itemparse.db, "illegal_affixes", lambda *_: [])
+    original = _prepared()
+    assert craft_receipts.persist_receipt(original)["status"] == "recorded"
+    changed = ITEM.replace("Iron Rune", "Other Rune").replace(
+        "{rune}+20 to Armour", "{rune}+30 to Armour"
+    )
+    derived = craft_receipts.derive_socket_receipt(
+        ITEM,
+        changed,
+        slot="Body Armour",
+        item_level=82,
+        runes=[
+            {"name": "Other Rune", "lines": ["+30 to Armour"], "option": {"name": "Other Rune"}}
+        ],
+        runtime_context=original["runtimeVersion"],
+    )
+    assert derived["sources"]["perfectEssences"] == original["sources"]["perfectEssences"]
+    assert derived["sources"]["corruption"] == original["sources"]["corruption"]
+    assert derived["sources"]["runes"] != original["sources"]["runes"]
+    assert derived["acceptedItemFingerprints"] != original["acceptedItemFingerprints"]
+    assert derived["sourceDerivation"]["sourceReceiptRef"] == original["receiptRef"]
+    assert craft_receipts.persist_receipt(derived)["status"] == "recorded"
+    assert item_legality.audit_item(
+        changed, prepared_receipt=derived, require_special_provenance=True
+    )["ok"]
+    stored = json.dumps(derived)
+    assert "25% increased maximum Life" not in stored
+    assert "+1 to Level of all Skills" not in stored
+
+
+def test_socket_derivation_never_guesses_unrecorded_special_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    original = _prepared()  # Deliberately never persist the source receipt.
+    derived = craft_receipts.derive_socket_receipt(
+        ITEM,
+        ITEM,
+        slot="Body Armour",
+        item_level=82,
+        runes=[{"name": "Iron Rune", "lines": ["+20 to Armour"], "option": {"name": "Iron Rune"}}],
+        runtime_context=original["runtimeVersion"],
+    )
+    assert derived["sources"]["perfectEssences"] == []
+    assert derived["sources"]["corruption"] is None
+    assert "sourceDerivation" not in derived
+    assert (
+        item_legality.audit_item(ITEM, prepared_receipt=derived, require_special_provenance=True)[
+            "ok"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["affix", "implicit", "base", "level", "slot", "version", "unknown_version", "canonical"],
+)
+def test_socket_derivation_cannot_extend_original_item_or_version_authority(
+    change, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(itemparse.db, "illegal_affixes", lambda *_: [])
+    original = _prepared()
+    craft_receipts.persist_receipt(original)
+    changed = ITEM
+    canonical = None
+    slot = "Body Armour"
+    context = dict(original["runtimeVersion"])
+    if change == "affix":
+        changed = ITEM.replace("25% increased maximum Life", "26% increased maximum Life")
+    elif change == "implicit":
+        changed = ITEM.replace("+1 to Level of all Skills", "+2 to Level of all Skills")
+    elif change == "base":
+        changed = ITEM.replace("Sacramental Robe", "Elegant Robe")
+    elif change == "level":
+        changed = ITEM.replace("Item Level: 82", "Item Level: 83")
+    elif change == "slot":
+        slot = "Helmet"
+    elif change == "version":
+        context["dataVersion"] = "different"
+    elif change == "unknown_version":
+        context["pobCommit"] = None
+    else:
+        canonical = ITEM.replace("+100 to maximum Life", "+101 to maximum Life")
+    with pytest.raises(ValueError):
+        craft_receipts.derive_socket_receipt(
+            ITEM,
+            changed,
+            canonical_item_text=canonical,
+            slot=slot,
+            item_level=82,
+            runes=[],
+            runtime_context=context,
+        )

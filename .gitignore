@@ -23,6 +23,9 @@ data/mature_build_learning/research_memory.sqlite
 *.sqlite-shm
 
 # Local mature-build research runs and phase reports
+/tmp/
+/.tmp/
+/.tmp-pytest-*/
 /.phase45_runs/
 /.poe-bd-research/
 /phase4_*.json

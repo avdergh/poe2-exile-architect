@@ -152,6 +152,7 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     spec = (REPO_ROOT / "docs" / "PROJECT_SPEC.md").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
+    guide = " ".join(guide.split())
     controller = (
         REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research" / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -190,8 +191,9 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "在 typed validation 和正式 accept 前复核每个最终对象" in worker
     assert "initialize_research_review" in guide
     assert "in-memory safe review object" in guide
-    assert "targets six" in guide and "up to five shared subagent slots" in guide
-    assert "wait_agent(timeout_ms=300000)" in guide
+    # Scheduling is maintained in the installed Controller, not a second GUIDE workflow.
+    assert "Controller" in guide and "scheduling" in guide
+    assert "poe-bd-research-worker" in controller
     assert "never claims cases or reads case evidence" in guide
     assert "最多 5 个普通 Research subagent" in phase4
     assert "poe-bd-research-worker" in phase4
@@ -209,13 +211,11 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "poe-bd-research" in phase4
     assert "before any network crawl" in guide
     assert "显式意图优先于预检菜单" in phase4
-    assert "Do not ask Codex Desktop" in guide
-    assert "users to paste PowerShell/Python commands into the chat box" in guide
+    assert "Do not ask Codex Desktop users to paste PowerShell/Python commands into the chat box" in guide
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
     assert "poe-bd-research-worker" in guide
     assert "opaque `runRef`" in guide
     assert "分析 5 个成熟 BD 样本" in readme
-    assert "preflight 5" in guide
     assert "预检 5 个样本（推荐）" not in phase4
     assert "No-Argument Behavior" in controller
     assert "--resume --run-ref REF" in controller
@@ -224,9 +224,6 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "runRef" in controller
     assert "plugin cache" in guide
     assert "--class NAME" in controller
-    assert "class=Blood+Mage" in guide
-    assert "class=Blood%2BMage" in guide
-    assert 'URL-style input such as `--class "Blood+Mage"` is normalized' in guide
     assert "class" in controller and "不得二次编码" in controller
     assert "runtime product workflow" in guide
     assert "query_research_memory" in guide

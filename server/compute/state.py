@@ -7,6 +7,8 @@ import json
 from typing import Any
 import xml.etree.ElementTree as ET
 
+from .pob_xml_input import parse_pob_xml
+
 
 def build_state_hash(xml: str) -> str:
     """Bind a mutation/plan to the semantic PoB inputs that were observed.
@@ -18,7 +20,7 @@ def build_state_hash(xml: str) -> str:
     """
 
     try:
-        root = ET.fromstring(xml)
+        root = parse_pob_xml(xml)
     except ET.ParseError:
         payload: Any = {"invalidXml": xml}
     else:

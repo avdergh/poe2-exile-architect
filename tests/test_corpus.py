@@ -52,6 +52,76 @@ def test_canonical_mod_tier_ladder_deduplicates_item_class_rows():
     assert ladder[0]["id"] == "mod-a"
 
 
+def test_policy_candidates_use_actual_roll_tiers_and_skip_overlapping_lower_tier():
+    from server.compute import attainability, itemopt
+    from server.knowledge import itemparse
+
+    policy = attainability.policy_for("realistic_trade")
+    pool = db.affix_pool("Grand Spear", ilvl=82)
+    physical = next(source for source in pool["prefixes"] if source["group"] == "PhysicalDamage")
+    candidates = itemopt._affix_candidates_for_policy(
+        physical, base_name="Grand Spear", rolls="realistic", policy=policy
+    )
+    overlapping = itemopt._roll(physical["tier_options"][1]["text"], "realistic")
+    assert overlapping == "Adds 30 to 50 Physical Damage"
+    assert itemparse.classify_affix(overlapping, base_name="Grand Spear")["tier"] == 1
+    assert len(candidates) == 2
+    assert candidates[1]["line"] != overlapping
+    assert candidates[1]["_deepTopTier"] is False
+    for candidate in candidates:
+        actual = itemparse.classify_affix(candidate["line"], base_name="Grand Spear")
+        assert candidate["tier"] == actual["tier"]
+        assert candidate["totalTiers"] == actual["totalTiers"]
+
+
+def test_decimal_affixes_share_one_tier_ladder_and_roll_within_source_range():
+    from server.compute import attainability, itemopt
+    from server.knowledge import itemparse
+
+    pool = db.affix_pool("Grand Spear", ilvl=82)
+    crit = [s for s in pool["suffixes"] if s["group"] == "CriticalStrikeChanceIncrease"]
+    assert len(crit) == 1
+    assert crit[0]["totalTiers"] == 6
+    candidates = itemopt._affix_candidates_for_policy(
+        crit[0],
+        base_name="Grand Spear",
+        rolls="realistic",
+        policy=attainability.policy_for("realistic_trade"),
+    )
+    assert candidates[0]["_deepTopTier"] is True
+    assert candidates[1]["_deepTopTier"] is False
+    leech = next(s for s in pool["suffixes"] if s["group"] == "LifeLeech")
+    for option in leech["tier_options"]:
+        rolled = itemopt._roll(option["text"], "realistic")
+        assert itemparse.classify_affix(rolled, base_name="Grand Spear")["tier"] is not None
+
+
+def test_final_attainability_ignores_non_explicit_effects_but_detects_overlap():
+    from server.compute import attainability, itemopt
+    from server.knowledge import itemparse
+
+    text = itemopt._item_text(
+        "Grand Spear",
+        [
+            "Adds 99 to 151 Fire Damage",
+            "98% increased Elemental Damage with Attacks",
+            "Adds 30 to 50 Physical Damage",
+        ],
+        "Weapon 1",
+        ilvl=82,
+    )
+    evidence = attainability.item_evidence(itemparse.parse_item(text))
+    assert evidence["topTierAffixes"] == 3
+    assert attainability.rare_item_reasons(evidence) == ["too_many_top_tier_affixes"]
+    for kind in ("rune", "implicit", "enchant"):
+        marked = text.replace(
+            "Adds 30 to 50 Physical Damage", f"Adds 30 to 50 Physical Damage ({kind})"
+        )
+        evidence = attainability.item_evidence(itemparse.parse_item(marked))
+        assert evidence["topTierAffixes"] == 2
+        assert attainability.rare_item_reasons(evidence) == []
+
+
 def test_unique_parse_skips_source_line_for_base():
     # Regression: a "Source:" drop line must be filtered, not mistaken for the unique's base — the
     # real base (e.g. Hand of Wisdom and Action -> "Furtive Wraps") follows it in the PoB block.

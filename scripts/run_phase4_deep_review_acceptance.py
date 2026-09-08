@@ -26,6 +26,7 @@ from server.knowledge import (  # noqa: E402
     copy_safety,
     graph_tools,
     physical_graph,
+    research_completion,
     research_identity,
     research_contracts,
     research_memory,
@@ -896,6 +897,7 @@ def accept_deep_review_candidates(
         and deep_validation.get("status") == "accepted"
         and edge_validation.get("status") == "accepted"
     )
+    durable_completion = None
     if validation_only:
         result = _pattern_validation_result(pattern_validation)
         deep_result = _deep_record_validation_result(
@@ -924,13 +926,22 @@ def accept_deep_review_candidates(
                 pattern_payload=payload,
                 deep_payload=deep_payload,
                 edge_payload=edge_payload,
+                acceptance_diagnostics=_acceptance_completion_diagnostics(
+                    accepted_record_summaries=accepted_record_summaries,
+                    deferred=deferred,
+                    case_coverage=case_coverage,
+                    accepted_records=deep_payload.get("deep_research_records") or [],
+                    candidate_reviews=_deep_record_reviews(review),
+                ),
                 supplement=bool(acceptance_context.get("supplement")),
+                source_context=acceptance_context.get("sourceContext"),
             )
             if unit.get("status") != "accepted":
                 result = unit
                 deep_result = unit.get("deepRecordWrite") or unit
                 edge_result = unit.get("semanticEdgeWrite") or unit
             else:
+                durable_completion = research_completion.completion_summary(unit)
                 result = unit.get("patternWrite") or empty_pattern_result
                 deep_result = unit.get("deepRecordWrite") or empty_deep_result
                 edge_result = unit.get("semanticEdgeWrite") or empty_edge_result
@@ -1230,6 +1241,13 @@ def accept_deep_review_candidates(
             ),
         ],
     }
+    report.update(
+        durable_completion
+        or research_completion.completion_summary(
+            report,
+            supplement=bool((acceptance_context or {}).get("supplement")),
+        )
+    )
     if not validation_only:
         if acceptance_context:
             try:
@@ -1242,6 +1260,83 @@ def accept_deep_review_candidates(
         else:
             _write_safe_report(report, Path(json_output), Path(md_output))
     return report
+
+
+def _acceptance_completion_diagnostics(
+    *,
+    accepted_record_summaries: list[dict[str, Any]],
+    deferred: list[dict[str, Any]],
+    case_coverage: dict[str, str],
+    accepted_records: list[dict[str, Any]] | None = None,
+    candidate_reviews: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the safe completion projection before the transactional commit."""
+    # 旧调用只有位置索引，不能凭索引推断新记录解决了原条件。新版从本次
+    # 最终 payload/原声明生成安全指纹，既不保存被拒正文，也不扩大图权限。
+    records = accepted_records or []
+    unresolved_subjects: dict[tuple[int, int], dict[str, str]] = {}
+    if len(records) == len(accepted_record_summaries):
+        for record_index, record in enumerate(records):
+            mentions = [mention for mention in record.get("component_mentions", [])
+                        if not mention.get("component_key")]
+            if len(mentions) != len(accepted_record_summaries[record_index].get("unresolvedComponents") or []):
+                continue
+            for component_index, mention in enumerate(mentions):
+                unresolved_subjects[record_index, component_index] = {
+                    "recordSubjectHash": research_completion.record_subject_hash(record),
+                    "componentSubjectHash": research_completion.component_subject_hash(mention),
+                }
+    deferred_diagnostics = []
+    for diagnostic in deferred:
+        matches = [candidate for candidate in candidate_reviews or []
+                   if diagnostic.get("candidateKind") == "deep_research_record"
+                   and candidate.get("title") == diagnostic.get("titleZh")
+                   and candidate.get("recordKind") == diagnostic.get("recordKind")
+                   and candidate.get("sampleId") == diagnostic.get("sampleId")]
+        deferred_diagnostics.append({
+            **diagnostic,
+            **({"recordSubjectHash": research_completion.record_subject_hash(matches[0])}
+               if len(matches) == 1 else {}),
+        })
+    unresolved = [
+        component
+        for item in accepted_record_summaries
+        for component in item.get("unresolvedComponents") or []
+    ]
+    identities = {
+        str(component.get("resolverQuery") or component.get("candidateName") or "")
+        .strip().casefold()
+        for component in unresolved
+        if str(component.get("resolverQuery") or component.get("candidateName") or "").strip()
+    }
+    coverage_gaps = [
+        dimension for dimension, status in case_coverage.items() if status == "evidence_missing"
+    ]
+    return research_completion.completion_summary({
+        "acceptanceMode": "partial_with_deferred"
+        if deferred or unresolved or coverage_gaps else "clean",
+        "deferredCandidateCount": len(deferred),
+        "deferredCandidates": deferred_diagnostics,
+        "deferredReasonCounts": _reason_counts(deferred),
+        "unresolvedDeepRecordMentionCount": len(unresolved),
+        "unresolvedUniqueComponentCount": len(identities),
+        "unresolvedComponentGapSummaries": [
+            {
+                "acceptedRecordIndex": record_index,
+                "unresolvedComponentIndex": component_index,
+                "recordKind": item.get("recordKind"),
+                **unresolved_subjects.get((record_index, component_index), {}),
+            }
+            for record_index, item in enumerate(accepted_record_summaries)
+            for component_index, _ in enumerate(item.get("unresolvedComponents") or [])
+        ],
+        "unkeyedDeepRecordCount": sum(
+            item.get("reason") == "missing_knowledge_identity" for item in deferred
+        ),
+        "caseCoverageGapCount": len(coverage_gaps),
+        "caseCoverage": case_coverage,
+        "caseCoverageGaps": coverage_gaps,
+    })
 
 
 def _pattern_validation_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -1414,6 +1509,8 @@ def _build_deep_record_payload(
             "component_keys": sorted(set(component_keys)),
             "component_mentions": component_mentions,
             "source_case_refs": [item["caseRef"]],
+            "source_claim_key": item["sourceClaimKey"],
+            "source_claim_revision": item.get("sourceClaimRevision"),
             "safe_evidence_refs": item["safeEvidenceRefs"],
             "conditions": item["conditions"],
             "failure_conditions": item["failureConditions"],
@@ -4818,6 +4915,12 @@ def _deep_record_reviews(review: dict[str, Any]) -> list[dict[str, Any]]:
                 "sampleId": sample_id,
                 "researchGroupId": research_group_id,
                 "caseRef": _required(item, "caseRef"),
+                "sourceClaimKey": item.get("sourceClaimKey", "default"),
+                "sourceClaimRevision": (
+                    { {"knowledgeKey": "knowledge_key", "recordId": "record_id", "projectionHash": "projection_hash"}.get(key, key): value
+                      for key, value in item["sourceClaimRevision"].items() }
+                    if isinstance(item.get("sourceClaimRevision"), dict) else item.get("sourceClaimRevision")
+                ),
                 "safeEvidenceRefs": _safe_evidence_refs(item),
                 "recordKind": record_kind,
                 "title": title,
@@ -4869,6 +4972,11 @@ def _record_validation_issues(
             "typed_payload": "typedPayload",
             "record_kind": "recordKind",
             "research_group_id": "researchGroupId",
+            "source_claim_key": "sourceClaimKey",
+            "source_claim_revision": "sourceClaimRevision",
+            "knowledge_key": "knowledgeKey",
+            "record_id": "recordId",
+            "projection_hash": "projectionHash",
             "content_language": "contentLanguage",
             "failure_conditions": "failureConditions",
             "length_exception_reason": "lengthExceptionReason",

@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import sys
+import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server.knowledge import mature_learning, research_memory  # noqa: E402
+from server.knowledge import (  # noqa: E402
+    mature_learning, patch_reviews, research_claim_writes, research_memory,
+)
 
 
 DEFAULT_SOURCE = mature_learning.mature_learning_path()
@@ -44,17 +48,6 @@ _SCOPED_TABLES = (
     "research_build_patterns",
     "deep_research_records",
 )
-_FORBIDDEN_TEXT_MARKERS = (
-    "<pathofbuilding",
-    "rawxml",
-    "rawimportcode",
-    "pobb.in/",
-    "pastebin.com/",
-    "http://",
-    "https://",
-    "c:\\users\\",
-    "/home/",
-)
 
 
 def build_release_seed(
@@ -72,9 +65,15 @@ def build_release_seed(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
     try:
-        _backup_database(source_path, temp)
-        _prune_to_creator_safe_seed(temp, release_version=release_version)
-        report = _validate_seed(temp)
+        # The pre-pruning snapshot and any schema backup contain private source data.
+        # Keep both in a disposable directory outside the publication tree, including failures.
+        with tempfile.TemporaryDirectory(prefix="poe-research-release-") as scratch:
+            snapshot = Path(scratch) / "snapshot.sqlite"
+            _backup_database(source_path, snapshot)
+            mature_learning.initialize_store(snapshot)
+            _prune_to_creator_safe_seed(snapshot, release_version=release_version)
+            report = _validate_seed(snapshot)
+            shutil.copyfile(snapshot, temp)
         temp.replace(output_path)
     finally:
         temp.unlink(missing_ok=True)
@@ -137,6 +136,8 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
                    AND family.build_family_key = deep_research_records.build_family_key
                   WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope
                     AND evidence.knowledge_key = deep_research_records.knowledge_key
+                    AND evidence.record_id = deep_research_records.record_id
+                    AND COALESCE(evidence.binding_issue, '') = ''
                     AND evidence.accepted_projection_hash = deep_research_records.projection_hash
                     AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
               )
@@ -159,6 +160,8 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
                     SELECT 1 FROM deep_research_records AS record
                     WHERE record.knowledge_scope = deep_research_record_evidence.knowledge_scope
                       AND record.knowledge_key = deep_research_record_evidence.knowledge_key
+                      AND record.record_id = deep_research_record_evidence.record_id
+                      AND COALESCE(deep_research_record_evidence.binding_issue, '') = ''
                       AND record.status = 'valid'
                       AND record.superseded_by_id IS NULL
                       AND record.projection_hash =
@@ -183,6 +186,9 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
                 JOIN deep_research_record_evidence AS record_evidence
                   ON record_evidence.knowledge_scope = record.knowledge_scope
                  AND record_evidence.knowledge_key = record.knowledge_key
+                 AND record_evidence.record_id = record.record_id
+                 AND record_evidence.accepted_projection_hash = record.projection_hash
+                 AND COALESCE(record_evidence.binding_issue, '') = ''
                 WHERE record.build_family_key = research_build_family_evidence.build_family_key
                   AND record.knowledge_scope = research_build_family_evidence.knowledge_scope
                   AND record_evidence.source_case_ref =
@@ -193,6 +199,10 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
             )
             """
         )
+        for row in con.execute("SELECT record_id FROM deep_research_records").fetchall():
+            research_claim_writes.refresh_record_evidence(
+                con, str(row["record_id"]), datetime.now(timezone.utc).isoformat()
+            )
         con.execute(
             """
             DELETE FROM research_build_families
@@ -218,6 +228,7 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
             knowledge_scope="global_seed",
         )
         con.execute("DELETE FROM meta WHERE key <> 'schema_version'")
+        patch_reviews.validate_release_reviews(con, prune=True)
         now = datetime.now(timezone.utc).isoformat()
         for key, value in (
             ("release_seed_kind", mature_learning.RELEASE_SEED_KIND),
@@ -264,27 +275,7 @@ def _validate_seed(path: Path) -> dict[str, Any]:
 
 
 def _reject_unsafe_text(con: sqlite3.Connection) -> None:
-    tables = [
-        str(row[0])
-        for row in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        )
-        if not str(row[0]).startswith("research_fragment_fts")
-    ]
-    for table in tables:
-        text_columns = [
-            str(row[1])
-            for row in con.execute(f"PRAGMA table_info({table})")
-            if str(row[2] or "").upper() in {"TEXT", ""}
-        ]
-        if not text_columns:
-            continue
-        query = "SELECT " + ", ".join(f'"{column}"' for column in text_columns) + f" FROM {table}"
-        for row in con.execute(query):
-            joined = "\n".join(str(value) for value in row if value is not None).casefold()
-            marker = next((item for item in _FORBIDDEN_TEXT_MARKERS if item in joined), None)
-            if marker:
-                raise ValueError(f"Research release seed contains forbidden text marker in {table}")
+    mature_learning.validate_release_seed_text(con)
 
 
 def _sha256(path: Path) -> str:

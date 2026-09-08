@@ -180,12 +180,22 @@ class ToolReference(StrictModel):
     tool_name: str = Field(min_length=1)
     query_ref: str = Field(min_length=1)
     summary: str = Field(min_length=1)
+    evidence_kind: Literal["unverified", "agent_reviewed", "internal_receipt"] = "unverified"
+    review_basis: str | None = Field(default=None, min_length=20, max_length=1000)
+
+    @model_validator(mode="after")
+    def _review_is_explicit(self) -> "ToolReference":
+        if (self.evidence_kind == "agent_reviewed") != (self.review_basis is not None):
+            raise ValueError("only agent_reviewed evidence requires a substantive review_basis")
+        if self.review_basis is not None and len(self.review_basis.strip()) < 20:
+            raise ValueError("review_basis must contain substantive non-whitespace text")
+        return self
 
 
 class ResearchMemoryInsightDecision(StrictModel):
     subject_ref: str | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9_.:/\-]{3,240}$",
+        pattern=research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN,
     )
     source_refs: list[str] = Field(min_length=1, max_length=12)
     decision: Literal["adopted", "caveated", "rejected"]
@@ -358,7 +368,10 @@ class ResearchExecutionPackageDecision(StrictModel):
     def _evidence_refs_are_safe(cls, values: list[str]) -> list[str]:
         if len(values) != len(set(values)):
             raise ValueError("verification_evidence_refs must not contain duplicates")
-        if any(not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value) for value in values):
+        if any(
+            not re.fullmatch(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN, value)
+            for value in values
+        ):
             raise ValueError("verification_evidence_refs must use safe bounded references")
         return values
 
@@ -389,7 +402,10 @@ class CrossCaseMechanismPlan(StrictModel):
     def _reference_lists_are_unique(cls, values: list[str]) -> list[str]:
         if len(values) != len(set(values)):
             raise ValueError("cross-case plan reference lists must not contain duplicates")
-        if any(not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value) for value in values):
+        if any(
+            not re.fullmatch(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN, value)
+            for value in values
+        ):
             raise ValueError("cross-case plan references must use safe bounded values")
         return values
 
@@ -449,7 +465,7 @@ class MechanismBlueprintClaim(StrictModel):
         if len(self.component_keys) != len(set(self.component_keys)):
             raise ValueError("mechanism blueprint component_keys must not contain duplicates")
         if any(
-            not re.fullmatch(r"[A-Za-z0-9_.:/\-]{3,240}", value)
+            not re.fullmatch(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN, value)
             for value in [*self.source_refs, *self.component_keys]
         ):
             raise ValueError("mechanism blueprint references must use safe bounded values")

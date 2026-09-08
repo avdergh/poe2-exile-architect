@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from server import paths  # noqa: E402
+from server.knowledge import corpus_certification  # noqa: E402
 from server.freshness.pob import (  # noqa: E402
     PobParseError,
     load_compatibility_manifest,
@@ -89,12 +90,21 @@ def install_local_runtime(
         )
 
     corpus = _required_file(repo_root / "data" / "corpus.sqlite")
+    try:
+        corpus_certificate = corpus_certification.validate(
+            json.loads(_required_file(repo_root / "data" / "compatibility" / "corpus.json").read_text(encoding="utf-8")),
+            corpus_sha256=corpus_certification.file_sha256(corpus),
+        )
+    except (ValueError, OSError) as exc:
+        raise LocalRuntimeInstallError(f"corpus certificate invalid: {exc}") from exc
     headless = _required_file(repo_root / "pob" / "pob_headless.lua")
     src = _required_dir(repo_root / "pob" / "PathOfBuilding-PoE2" / "src")
     runtime_lua = _required_dir(repo_root / "pob" / "PathOfBuilding-PoE2" / "runtime" / "lua")
 
     target_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(corpus, target_dir / "corpus.sqlite")
+    certificate_path = target_dir / corpus_certification.CERTIFICATE_FILENAME
+    _write_json_atomic(certificate_path, corpus_certificate)
 
     target_pob = target_dir / "pob"
     # Only this child directory is replaced. `_validate_target` prevents target_dir from being the
@@ -120,6 +130,8 @@ def install_local_runtime(
         # This is a local provenance fingerprint of the copied engine subset, not a public release
         # zip checksum. A later official update will still download the engine if its zip SHA differs.
         "engine_sha256": _directory_sha256(target_pob),
+        "corpus_sha256": corpus_certificate["sha256"],
+        "corpus_certificate_sha256": corpus_certification.file_sha256(certificate_path),
     }
     _write_json_atomic(target_dir / "installed.json", installed)
     return {"updated": True, "target": str(target_dir), **installed}

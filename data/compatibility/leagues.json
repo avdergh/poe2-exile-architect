@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "rulesets": [
+    {
+      "gamePatch": "0.5.5",
+      "defaultLeague": "Forbidden Rites",
+      "activeLeagues": ["Forbidden Rites", "Runes of Aldur"],
+      "validFrom": "2026-09-04T20:00:00Z",
+      "validUntil": "2026-12-11T00:00:00Z",
+      "sourceUrl": "https://www.pathofexile.com/forum/view-thread/4000430",
+      "verifiedAt": "2026-09-05T00:00:00Z"
+    }
+  ]
+}

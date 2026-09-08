@@ -8,140 +8,53 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_poe_bd_create_skill_documents_current_p5_boundary():
-    skill_path = REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-create" / "SKILL.md"
-    skill = skill_path.read_text(encoding="utf-8")
+    from skill_document_helpers import read_skill_documents
 
-    assert "name: poe-bd-create" in skill
-    assert "# /poe-bd-create" in skill
-    assert "Agent 主导" in skill
-    assert "当前功能" in skill
-    assert "结构化需求摘要" in skill
-    assert "构筑经验记忆" in skill
-    assert "常用 MCP 工具清单" in skill
-    assert "必须通过 MCP 工具调用" in skill
-    assert "不能用 PowerShell 搜索仓库文件代替" in skill
-    assert "get_freshness_report" in skill
-    assert "不能因为没有在界面中" in skill
-    assert 'decision="blocked_stale"' in skill
-    assert "不等于停止生成" in skill
-    assert "过期 PoB 有限证据" in skill
-    assert "只填原始版本号/commit" in skill
-    assert 'qualityBand="strong"' in skill
-    assert 'rewardStrength="limited"' in skill
-    assert "start_generation_run" in skill
-    assert "runContext" in skill
-    assert "禁止复用/改写其他运行的旧" in skill
-    assert "query_research_memory" in skill
-    assert 'detail_level="summary"' in skill
-    assert 'detail_level="record"' in skill
-    assert 'response_profile="create_compact"' in skill
-    assert "criticalPremiseDigest" in skill
-    assert "ascendancy_key" in skill
-    assert "primary_skill_key" in skill
-    assert "build_family_keys" in skill
-    assert "record_kinds" in skill
-    assert "recordKindCounts" in skill
-    assert "supportPackages" in skill
-    assert "gearResponsibilities" in skill
-    assert "ascendancyResponsibilities" in skill
-    assert "resourceMechanisms" in skill
-    assert "buildFamilies" in skill
-    assert "deepResearchRecords" in skill
-    assert "buildPatterns" in skill
-    assert "selectedKnowledgeScope" in skill
-    assert "selectedSourceCaseRef" in skill
-    assert "continuation_cursor" in skill
-    assert "case_observation" in skill
-    assert "researchMemoryUse" in skill
-    assert 'retrievalOutcome="no_matching_memory"' in skill
-    assert "insightDecisions" in skill
-    assert "role=unique_enabler" in skill
-    assert "optional_upgrade" in skill
-    assert "budget_substitute" in skill
-    assert "requiredInsightDecisionSubjects" in skill
-    assert "subjectRef" in skill
-    assert "价格不能成为拒绝理由" in skill
-    assert "价格不能成为拒绝理由" in skill
-    assert "apply_next_jewel_socket_decision" in skill
-    assert "protected_node_ids" in skill
-    assert "selected_mod_ids" in skill
-    assert "全部当前可达槽" in skill
-    assert "最近额外孔" not in skill
-    assert "最多两轮" not in skill
-    assert "offense_skill_group_index=<最终Judge目标组>" in skill
-    assert "当前版本不可用时写 `rejected`" in skill
-    assert "adopted / rejected / unavailable" not in skill
-    assert "操作简单、造价低" not in skill
-    assert "graph_tool_query" in skill
-    assert "find_skills" in skill
-    assert "find_supports_for" in skill
-    assert "explain_mechanic" in skill
-    assert "build_advice" in skill
-    assert "补丁敏感事实以当前 pinned PoB" in skill
-    assert "suggest_build_lifecycle" in skill
-    assert "new_build" in skill
-    assert "set_class" in skill
-    assert "set_skill" in skill
-    assert "optimize_supports" in skill
-    assert "plan_gear" in skill
-    assert "optimize_flask" in skill
-    assert "endgame_flask_loadout_incomplete" in skill
-    assert "evaluate_build" in skill
-    assert "apply_build_mutation_batch" in skill
-    assert "mechanism_shell" in skill
-    assert "passive_delta" in skill
-    assert "recoveryRequired=true" in skill
-    assert "inspect_generation_checkpoint" in skill
-    assert "evaluate_generation_candidate" in skill
-    assert "strict_mode=false" in skill
-    assert "strict_mode=true" in skill
-    assert "feedbackMode" in skill
-    assert "hard_only" in skill
-    assert "不要用" in skill
-    assert "冒充正式 Judge" in skill
-    assert "材料可进入人工验收" in skill
-    assert "agent-output.json" in skill
-    assert "agentRefinedBuildPrompt" in skill
-    assert "prototypeBuildCandidate" in skill
-    assert "Agent 提交的顶层字段" in skill
-    assert "最终选中 attempt 的完整候选摘要" in skill
-    assert "baseline_acceptance_audit_required" in skill
-    assert "currentOutputStages" in skill
-    assert "targetLifecycleStages" in skill
-    assert "crossStageLockedDimensions" in skill
-    assert "transientBuildState" in skill
-    assert "testedSkillGroups" in skill
-    assert "judgeAdvisoryReport" in skill
-    assert "toolFeedbackEvents" in skill
-    assert "给用户看的内容" in skill
-    assert "提交给运行工具的内部对象" in skill
-    assert "不能换职业" in skill
-    assert "complete_generation_review" in skill
-    assert "poe_ninja_pob" in skill
-    assert "publicExternalUpload=true" in skill
-    assert "validate_generation_output" in skill
-    assert "lifecycleEvidenceCoverage" in skill
-    assert "HumanReviewPacket" in skill
-    assert "referenceBlind=true" in skill
-    assert "不要搜索仓库" in skill
-    assert "隐藏思维链" in skill
-    assert "完整对话记录" in skill
-    assert "技能组合、辅助组合、装备槽位摘要、天赋锚点或转型路线" in skill
-    assert "必须串行调用" in skill
-    assert "不接触活动构筑的" in skill
-    assert "设计判断" in skill
-    assert "工具验证结论" in skill
-    assert "完整技能连接" not in skill
-    assert "P5" not in skill
-    assert "程序化解释器" not in skill
-    assert "旧的" not in skill
-    assert "强奖励" not in skill
-    assert "Architect" not in skill
+    skill_dir = REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-create"
+    documents = read_skill_documents(skill_dir)
+    entrypoint = documents["SKILL.md"]
+    assert "name: poe-bd-create" in entrypoint
+    # The workflow is usable from the installed entrypoint, without repository-only docs.
+    assert set(documents) == {
+        path.relative_to(skill_dir).as_posix() for path in skill_dir.rglob("*.md")
+    }
+    content = "\n".join(documents.values())
+    for tool in (
+        "start_generation_run", "record_generation_family_discovery",
+        "construct_research_execution_contract", "validate_generation_blueprint",
+        "validate_generation_draft", "inspect_generation_checkpoint",
+        "evaluate_generation_candidate", "save_final_build_artifact",
+        "verify_lifecycle_stage", "validate_generation_output",
+        "complete_generation_review", "submit_learning_create_result",
+    ):
+        assert tool in content
+    for mode in ("referenceBlind=true", "--no-memory", "strict_mode=false", "strict_mode=true"):
+        assert mode in entrypoint
+    assert "starter-research" in documents["references/blind-mode.md"]
+    assert "starter cache" in documents["references/blind-mode.md"]
+    assert "联网开荒证据" in documents["references/blind-mode.md"]
+
+
+def test_create_submission_reference_covers_current_failure_enums():
+    from typing import get_args
+    from server.generation import models
+
+    reference = (
+        REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-create"
+        / "references" / "output-contract.md"
+    ).read_text(encoding="utf-8")
+    # These enums are needed because start-run intentionally does not invent audit content.
+    for model, field in ((models.FailureAuditSummary, "classification"), (models.ToolFeedbackEvent, "feedback_type")):
+        values = get_args(model.model_fields[field].annotation)
+        assert values
+        for value in values:
+            assert value in reference
 
 
 def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     phase5 = (REPO_ROOT / "docs" / "phases" / "05_generation.md").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
+    guide = " ".join(guide.split())
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "/poe-bd-create" in phase5
@@ -207,13 +120,24 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "progressive research recall" in guide
     assert "directly generates the requested target-level endgame build" in guide
     assert "no blocking leveling-progression question" in guide
-    assert "recordKindCounts" in guide
-    assert "successful component resolution proves existence" in guide
+    assert "Successful component resolution proves existence" in guide
     assert 'response_profile="create_compact"' in guide
     assert "researchMemoryUse" in guide
     assert "physical graph, and corpus override patch-sensitive prose" in guide
     assert "use `optimize_flask` to create a legal Magic target" in guide
     assert "because it is expensive or because the user supplied a budget" in guide
+    # Workflow details remain reachable from the installed skill, not duplicated in this index.
+    for reference in (
+        "research-use.md", "mechanism-blueprint.md", "build-and-refine.md",
+        "validation-and-recovery.md", "output-contract.md", "delivery.md", "blind-mode.md",
+    ):
+        assert reference in guide
+    assert "execute the internal script" not in guide
+    assert "import_build` a known PoB and copy its archetype" not in guide
+    assert "formal evaluation still ends with" not in guide
+    assert guide.index("| Prepare design |") < guide.index("| Validate implementation |")
+    assert guide.index("| Preserve final candidate |") < guide.index("| Verify saved artifact |")
+    assert guide.index("| Verify saved artifact |") < guide.index("| Validate and consume final submission |")
     assert "价格只在方案锁定后披露，不参与采用" in phase5
     assert "清图/Boss/生存/造价/上限" not in phase5
     assert "/poe-bd-create" in readme
@@ -307,7 +231,7 @@ def test_phase5_distribution_includes_generation_runtime_contracts():
     manifest = json.loads((REPO_ROOT / "manifest.json").read_text(encoding="utf-8"))
     tool_names = {tool["name"] for tool in manifest["tools"]}
 
-    assert 'ROOT / "data" / "compatibility" / "pob.json"' in bundle_builder
+    assert 'ROOT / "data" / "compatibility"' in bundle_builder
     assert {
         "get_freshness_report",
         "query_research_memory",

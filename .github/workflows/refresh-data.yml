@@ -57,7 +57,10 @@ jobs:
       - name: Build corpus + gate on tests
         if: steps.gate.outputs.changed == 'true'
         run: |
+          cp data/corpus.sqlite reviewed-corpus.sqlite
           uv run python -m pipeline.build_corpus
+          # Never recertify changed static game facts from the engine's old patch claim.
+          uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
           uv run pytest -q
 
       - name: Assemble refreshed manifest (preserve engine + app_version)
@@ -72,10 +75,12 @@ jobs:
           mkdir -p rel && cp data/corpus.sqlite rel/corpus.sqlite
           python - "${{ steps.gate.outputs.new }}" "${{ github.run_number }}" <<'PY'
           import hashlib, json, sys
+          from server.knowledge.corpus_certification import validate
           src_sha, run = sys.argv[1], sys.argv[2]
           cur = json.load(open("cur-manifest.json"))
           def sha(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
           app = str(cur.get("app_version") or cur.get("version", "0")).lstrip("v")
+          corpus_certificate = validate(json.load(open("data/compatibility/corpus.json", encoding="utf-8")), corpus_sha256=sha("rel/corpus.sqlite"))
           manifest = {
               "version": f"{app}.{run}",        # data version: monotonic, > app_version, < next app release
               "app_version": app,               # unchanged → no "new .mcpb" nag
@@ -86,7 +91,7 @@ jobs:
               "passive_tree": cur.get("passive_tree"),
               "source_sha": src_sha,
               # corpus replaced in place on the latest release; engine preserved (unchanged)
-              "corpus": {"url": cur["corpus"]["url"], "sha256": sha("rel/corpus.sqlite")},
+              "corpus": {"url": cur["corpus"]["url"], "sha256": sha("rel/corpus.sqlite"), "certificate": corpus_certificate},
               "engine": cur.get("engine"),
           }
           json.dump(manifest, open("rel/update-manifest.json", "w"), indent=2)

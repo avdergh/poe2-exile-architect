@@ -365,6 +365,13 @@ def knowledge_identity(record: Any, family: BuildFamilyIdentity) -> dict[str, An
 
 def knowledge_key(record: Any, family: BuildFamilyIdentity) -> str | None:
     identity = knowledge_identity(record, family)
+    # Preserve the published <=0.5.4 record IDs. New ruleset revisions have a separate storage
+    # identity, while knowledge_identity and Family identity remain patch-independent.
+    patch = str(_value(record, "game_patch", "") or "")
+    version = tuple(int(part) for part in re.findall(r"\d+", patch)[:3])
+    if identity is not None and version >= (0, 5, 5):
+        identity = {**identity, "source_game_patch": patch,
+                    "passive_tree_version": str(_value(record, "passive_tree_version", "") or "")}
     return "ku-" + _stable_hash(identity)[:20] if identity is not None else None
 
 
@@ -383,6 +390,14 @@ def record_quality(record: Any) -> tuple[int, int, int, int]:
     )
     content_length = len(re.sub(r"\s+", "", str(_value(record, "content", "") or "")))
     return resolved, distinct_roles, conditions, min(content_length, 2000)
+
+
+def knowledge_concept_key(record: Any, family_key: str) -> str | None:
+    """The same reviewed topic across patches; never a storage/evidence identity."""
+    from types import SimpleNamespace
+
+    identity = knowledge_identity(record, SimpleNamespace(key=family_key))
+    return "kc-" + _stable_hash(identity)[:20] if identity is not None else None
 
 
 def family_core_skill_keys(record: Any) -> tuple[str, ...]:

@@ -528,6 +528,14 @@ class DeepResearchComponentMention(StrictModel):
     resolution_status: Literal["resolved", "ambiguous", "missing", "type_mismatch"]
 
 
+class SourceClaimRevision(StrictModel):
+    """An explicit CAS target for correcting this source's structured knowledge topic."""
+
+    knowledge_key: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9_.:/\-']+$")
+    record_id: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9_.:/\-']+$")
+    projection_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class DeepResearchRecordProposal(StrictModel):
     research_group_id: str = Field(min_length=1, max_length=240)
     record_kind: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
@@ -539,6 +547,10 @@ class DeepResearchRecordProposal(StrictModel):
     component_keys: list[StableKey] = Field(default_factory=list)
     component_mentions: list[DeepResearchComponentMention] = Field(default_factory=list)
     source_case_refs: list[str] = Field(min_length=1)
+    source_claim_key: str = Field(
+        default="default", min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$"
+    )
+    source_claim_revision: SourceClaimRevision | None = None
     safe_evidence_refs: list[str] = Field(default_factory=list)
     conditions: list[str] = Field(default_factory=list)
     failure_conditions: list[str] = Field(default_factory=list)

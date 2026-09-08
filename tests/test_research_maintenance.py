@@ -584,6 +584,13 @@ def test_reconcile_deep_record_ids_plan_apply_and_idempotent(tmp_path: Path):
     drifted_key = "ku-" + "f" * 20
     con = mature_learning.connect(db_path)
     try:
+        # Historical ID drift predates explicit source bindings. A schema-7 binding
+        # must not be made inconsistent merely to simulate that older fixture.
+        con.execute(
+            "UPDATE deep_research_record_evidence SET record_id = NULL, "
+            "accepted_projection_hash = NULL, binding_issue = 'missing_projection_hash' "
+            "WHERE record_id = ?", (record_id,),
+        )
         con.execute(
             "UPDATE deep_research_records SET knowledge_key = ? WHERE record_id = ?",
             (drifted_key, record_id),
@@ -650,6 +657,11 @@ def test_reconcile_deep_record_ids_replaces_husk_at_anchor(tmp_path: Path):
     husk_head_id = "drr-" + "1" * 16
     con = mature_learning.connect(db_path)
     try:
+        con.execute(
+            "UPDATE deep_research_record_evidence SET record_id = NULL, "
+            "accepted_projection_hash = NULL, binding_issue = 'missing_projection_hash' "
+            "WHERE record_id = ?", (record_id,),
+        )
         con.execute(
             "UPDATE deep_research_records SET knowledge_key = ? WHERE record_id = ?",
             (drifted_key, record_id),

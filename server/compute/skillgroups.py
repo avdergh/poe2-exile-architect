@@ -58,7 +58,7 @@ def _apply_complete_group(
     skill: str,
     include_in_full_dps: bool = False,
 ) -> dict[str, Any]:
-    requested, unresolved = _canonical_requested_gems(skill)
+    requested, unresolved, normalized = _canonical_skill_request(engine, skill)
     if unresolved:
         return {
             **_error("unknown_skill_gem", "one or more requested gems are unknown"),
@@ -67,7 +67,6 @@ def _apply_complete_group(
     if not requested:
         return _error("skill_text_required", "skill text must contain at least one gem")
 
-    normalized = normalize_skill_text(skill, default_level=None)
     with engine.transaction_lock():
         before_xml = engine.get_xml()
         before_hash = build_state_hash(before_xml)
@@ -134,7 +133,7 @@ def replace_skill_group(
     skill: str,
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
-    requested, unresolved = _canonical_requested_gems(skill)
+    requested, unresolved, normalized = _canonical_skill_request(engine, skill)
     if unresolved:
         return {
             **_error("unknown_skill_gem", "one or more requested gems are unknown"),
@@ -147,7 +146,7 @@ def replace_skill_group(
         expected_fingerprint=expected_fingerprint,
         expected_state_hash=expected_state_hash,
         expected_gems=requested,
-        text=normalize_skill_text(skill, default_level=None),
+        text=normalized,
     )
 
 
@@ -236,6 +235,8 @@ def configure_source_skill_supports(
                 "candidateGemIds": list(matching_ids),
             }
         gem = db.get_gem(matching_ids[0]) if len(matching_ids) == 1 else db.get_gem(name)
+        if gem is None and name:
+            gem = _corpus_support_for_runtime_name(engine, name)
         if gem is None:
             return {
                 **_error("unknown_support_gem", "one or more requested supports are unknown"),
@@ -293,11 +294,28 @@ def configure_source_skill_supports(
                 "source": source or None,
                 "stateHash": before_hash,
             }
+        runtime_supports: list[dict[str, Any]] = []
+        for gem in resolved:
+            identity = engine.call(
+                "resolve_support_gem_identity",
+                gemIds=[str(gem["id"])],
+                effectIds=list(gem.get("grants") or []),
+            )
+            if (not isinstance(identity, dict) or identity.get("ok") is not True
+                    or identity.get("status") != "resolved" or not identity.get("gemId")
+                    or not identity.get("name")):
+                return {
+                    **_error("support_identity_unresolved", "the current PoB cannot uniquely resolve this support"),
+                    "support": str(gem["name"]),
+                    "identityStatus": identity.get("status") if isinstance(identity, dict) else "error",
+                    "stateHash": before_hash,
+                }
+            runtime_supports.append(identity)
         try:
             result = engine.call(
                 "configure_source_skill_supports",
                 index=source_group_index,
-                supportGemIds=[str(gem["id"]) for gem in resolved],
+                supportGemIds=[str(gem["gemId"]) for gem in runtime_supports],
             )
         except Exception:
             try:
@@ -318,7 +336,7 @@ def configure_source_skill_supports(
         after_hash = build_state_hash(after_xml)
         after = _decorate(engine.call("list_skill_groups"), state_hash=after_hash)
         actual_group = _group_at(after, source_group_index)
-        expected_supports = [str(gem["name"]) for gem in resolved]
+        expected_supports = [str(gem["name"]) for gem in runtime_supports]
         actual_gems = (actual_group or {}).get("gems") or []
         actual_supports = [
             str(gem.get("name"))
@@ -489,16 +507,50 @@ def _group_at(payload: dict[str, Any], index: int) -> dict[str, Any] | None:
     return None
 
 
-def _canonical_requested_gems(skill: str) -> tuple[list[str], list[str]]:
+def _corpus_support_for_runtime_name(engine: PobEngine, name: str) -> dict[str, Any] | None:
+    """Bind an exact PoB display label back to corpus identity without guessing aliases."""
+    runtime = engine.call("resolve_support_gem_identity", runtimeName=name)
+    if not isinstance(runtime, dict) or runtime.get("ok") is not True or runtime.get("status") != "resolved":
+        return None
+    corpus_ids = SkillEquivalenceIndex.shared().gem_ids_for_skill_key(str(runtime.get("effectId") or ""))
+    if runtime.get("gameId") in corpus_ids:
+        return db.get_gem(str(runtime["gameId"]))
+    if len(corpus_ids) == 1:
+        return db.get_gem(corpus_ids[0])
+    return None
+
+
+def _canonical_skill_request(engine: PobEngine, skill: str) -> tuple[list[str], list[str], str]:
     canonical: list[str] = []
     unresolved: list[str] = []
-    for name in requested_gem_names(skill):
+    lines: list[str] = []
+    for line in normalize_skill_text(skill, default_level=None).splitlines():
+        names = requested_gem_names(line)
+        if not names:
+            lines.append(line)
+            continue
+        name = names[0]
         gem = db.get_gem(name)
         if gem is None:
+            gem = _corpus_support_for_runtime_name(engine, name)
+        if gem is None:
             unresolved.append(name)
-        else:
-            canonical.append(str(gem["name"]))
-    return canonical, unresolved
+            continue
+        canonical_name = str(gem["name"])
+        if str(gem.get("gem_type") or "").lower() == "support":
+            identity = engine.call(
+                "resolve_support_gem_identity", gemIds=[str(gem["id"])],
+                effectIds=list(gem.get("grants") or []),
+            )
+            if (not isinstance(identity, dict) or identity.get("ok") is not True
+                    or identity.get("status") != "resolved" or not identity.get("name")):
+                unresolved.append(name)
+                continue
+            canonical_name = str(identity["name"])
+        canonical.append(canonical_name)
+        # Keep every caller-specified level, quality and count; only the verified name changes.
+        lines.append(canonical_name + line[len(name):])
+    return canonical, unresolved, "\n".join(lines)
 
 
 def _canonical_actual_gems(group: dict[str, Any] | None) -> list[str]:

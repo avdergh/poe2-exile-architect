@@ -88,6 +88,8 @@ def inspect_generation_snapshot(
                 "groupIndex": group["groupIndex"],
                 "role": group["role"],
                 "activeSkills": group["activeNames"],
+                "mainActiveSkillCalcs": group.get("mainActiveSkillCalcs"),
+                "activeSkillSelectionError": group.get("activeSkillSelectionError"),
                 "supports": group["supportNames"],
                 "source": group.get("source"),
                 "sourceKind": group.get("sourceKind"),
@@ -160,7 +162,11 @@ def inspect_generation_snapshot(
     }
 
 
-def inspect_main_skill_socketed(xml: str) -> dict[str, Any]:
+def inspect_main_skill_socketed(
+    xml: str,
+    *,
+    offense_skill_group_index: int | None = None,
+) -> dict[str, Any]:
     """Return bounded evidence that the main group has a legal enabled active composition.
 
     Lifecycle verification calls this against the exact XML snapshot whose hash it reports.
@@ -176,7 +182,13 @@ def inspect_main_skill_socketed(xml: str) -> dict[str, Any]:
             "activeSkillCount": 0,
         }
     main_group = next(
-        (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
+        (
+            group
+            for group in parsed["groups"]
+            if group["groupIndex"] == offense_skill_group_index
+        )
+        if offense_skill_group_index is not None
+        else (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
         None,
     )
     active_count = len(main_group["activeIds"]) if main_group else 0
@@ -194,6 +206,7 @@ def inspect_lifecycle_skill_evidence(
     xml: str,
     *,
     single_target_skill_name: str | None = None,
+    offense_skill_group_index: int | None = None,
 ) -> dict[str, Any]:
     """Read bounded lifecycle skill/ascendancy evidence from one active XML snapshot."""
     parsed = _parse_skill_groups(xml)
@@ -205,7 +218,13 @@ def inspect_lifecycle_skill_evidence(
             "singleTargetDuty": {"verified": False},
         }
     main_group = next(
-        (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
+        (
+            group
+            for group in parsed["groups"]
+            if group["groupIndex"] == offense_skill_group_index
+        )
+        if offense_skill_group_index is not None
+        else (group for group in parsed["groups"] if group["role"] == "pob_main_group"),
         None,
     )
     ascendancy = str(parsed.get("ascendancy") or "").strip()
@@ -449,19 +468,30 @@ def _socket_composition_valid(group: dict[str, Any]) -> bool:
 
 
 def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
-    """Use runtime active effects for display/selection without changing XML identity checks."""
+    """Project complete runtime effect order and selection only after matching XML identity."""
 
+    for group in parsed.get("groups") or []:
+        group["mainActiveSkillCalcs"] = None
+        group["activeSkillSelectionError"] = "runtime_skill_group_unavailable"
     try:
         runtime = engine.call("list_skill_groups")
     except Exception:  # noqa: BLE001 - preflight keeps XML evidence when runtime readback fails.
         return
-    runtime_groups = {
-        int(group.get("index") or 0): group
-        for group in (runtime.get("groups") or [])
-        if isinstance(group, dict)
-    }
+    if not isinstance(runtime, dict) or runtime.get("ok") is False:
+        return
+    runtime_groups: dict[int, list[dict[str, Any]]] = {}
+    for runtime_group in runtime.get("groups") or []:
+        if isinstance(runtime_group, dict):
+            index = _positive_runtime_index(runtime_group.get("index"))
+            if index is not None:
+                runtime_groups.setdefault(index, []).append(runtime_group)
     for group in parsed.get("groups") or []:
-        runtime_group = runtime_groups.get(int(group.get("groupIndex") or 0)) or {}
+        matches = runtime_groups.get(group["groupIndex"]) or []
+        if len(matches) != 1:
+            if matches:
+                group["activeSkillSelectionError"] = "runtime_skill_group_ambiguous"
+            continue
+        runtime_group = matches[0]
         parsed_source = str(group.get("source") or "")
         runtime_source = str(runtime_group.get("source") or "")
         parsed_root_id = str(group.get("rootSkillId") or "").strip()
@@ -471,19 +501,41 @@ def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
             or not parsed_root_id
             or not runtime_root_id
             or parsed_root_id != runtime_root_id
+            or runtime_group.get("enabled") is False
         ):
+            group["activeSkillSelectionError"] = "runtime_skill_group_identity_mismatch"
             continue
-        names = [
-            str(active.get("name") or "").strip()
-            for active in (runtime_group.get("activeSkills") or [])
-            if isinstance(active, dict) and str(active.get("name") or "").strip()
-        ]
-        if names:
-            group["activeNames"] = list(dict.fromkeys(names))
+        effects = runtime_group.get("activeSkills")
+        if not isinstance(effects, list) or not effects:
+            group["activeSkillSelectionError"] = "runtime_active_skills_missing"
+            continue
+        indexed_names: dict[int, str] = {}
+        for effect in effects:
+            index = _positive_runtime_index(effect.get("index")) if isinstance(effect, dict) else None
+            name = str(effect.get("name") or "").strip() if isinstance(effect, dict) else ""
+            if index is None or index in indexed_names or not name:
+                break
+            indexed_names[index] = name
+        if set(indexed_names) != set(range(1, len(effects) + 1)):
+            group["activeSkillSelectionError"] = "runtime_active_skills_invalid"
+            continue
+        # Duplicate display names still occupy separate effect indices. Removing either would
+        # shift the exact PoB selector; explicit name-only consumers must reject ambiguity.
+        group["activeNames"] = [indexed_names[index] for index in range(1, len(effects) + 1)]
+        active_index = _positive_runtime_index(runtime_group.get("mainActiveSkillCalcs"))
+        if active_index not in indexed_names:
+            group["activeSkillSelectionError"] = "runtime_active_skill_selection_invalid"
+            continue
+        group["mainActiveSkillCalcs"] = active_index
+        group["activeSkillSelectionError"] = None
         if "noSupports" in runtime_group:
             group["noSupports"] = bool(runtime_group.get("noSupports"))
         if runtime_group.get("sourceKind"):
             group["sourceKind"] = str(runtime_group["sourceKind"])
+
+
+def _positive_runtime_index(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def _gem_identity(gem: ET.Element) -> str:

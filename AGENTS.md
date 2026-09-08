@@ -65,11 +65,37 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   唯一解析到该 stable key。解析缺失、歧义、跨 snapshot 或 key 不同都必须失败关闭，不能因此
   放宽职业、升华、Family、artifact 或 lifecycle。
 - 没有 patch/version/status，就不能进入 durable memory。
+- 跨版本 Family 身份保持稳定，来源版本不得批量重标。0.5.5 Create/Research 继续正常召回
+  0.5.4 知识，优先当期证据，历史知识保留 `targetApplicability` 与验证任务。
+  `reviewed_compatible` 只表示指定补丁差异已复核，不等于当期样本或 PoB 数值认证；
+  `incompatible/changed_scope` 仅禁止目标版本采纳。变更必须绑定原记录指纹与独立复核证据，
+  使用追加的 `submit_research_patch_review`。正常 Research 只研究最新版本 BD；历史知识用于
+  召回和补丁复核。不同来源 patch 保留独立记录 ID、版本与证据绑定，完全相同的深度知识正文
+  共享不可变内容修订；内容和条件有差异时独立保存。正文去重不合并来源权限，也不替代复核。
 - 没有 copy-safety pass，就不能持久化成熟 BD 知识。
+- Research接受安全子集与整案完成分离；缺口诊断随write receipt提交。默认cleanup要求研究完成，
+  后续逐项关闭追加事件并核对同完整source hash/版本/场景的精确新receipt与record投影，原诊断不改，
+  支持失效则有效缺口重开；短sourceRef不能补造完整hash。受控重取仅抓指定角色，新快照不证明旧案。
+  新run默认7天原料期限，恢复不续期，新租约最多24小时；cleanup可按锁定期限处置并保留安全审计，
+  不能绕过活跃lease或accepting恢复，也不将到期算研究完成。旧run无policy不自动过期。
+  ConfigSet及技能/装备/被动活动组合必须与PoB读回一致，非活动条件不得混作常驻收益。
+- Research同主题的不同条件结论必须并存，精确相同结论可共享record/正文，来源声明独立绑定record与
+  projection。修订只移动本来源声明，不按正文丰富度覆盖他源；sourceClaimKey只区分本来源的稳定
+  条件分支，不进入Family身份，也不增加独立来源数。迁移和维护不得补造缺失hash或提升legacy/unknown
+  权限；来源数由当前精确绑定计，派生缓存纠偏保留安全审计，完整合同见docs/SCHEMAS.md。
+- 不同主题即使同名也默认并存；跨主题修订以`sourceClaimRevision`的旧key/id/projection精确绑定，
+  不凭标题推断。URL入队先冻结内容，重建/读回重验材料身份，旧URL-only数据不以新响应冒充旧源。
+  gap的resolved必须有对应typed解决证据；同missing、同deferred或完整case省略目标不能解除缺口。
 - 没有后 3 例相对前 3 例的四项联合趋势，就不能声称 Phase 7 出现初步进步信号；十案例趋势
   不能声明因果证明。
 - Phase 7 不允许比较后修复或重新生成同一案例；Phase 5 已有有限内部 retry 不受此条影响。
 - Judge 数值只能作为 Phase 7 `advisoryOnly` 附件，不能自动决定 Comparator winner 或写 reward。
+- 比较报告v2的非unknown维度须绑定本案例双方安全证据，critical标记与typed gaps一致；tradeoff
+  单列，不自动非劣。十案例全程须有完整可比较覆盖；旧报告、unknown、缺失数值不能冒充进步。
+- ToolReference的evidenceKind区分内部可核验Research来源、agent_reviewed审读声明与unverified。
+  查询名字不能证明执行；外部审读不能提升为内部回执。Blueprint/Draft/Judge及baseline保存、最终
+  Review保持同一证据权限；旧受管run升级合同须重启，旧artifact不批量提权。
+  package/跨案例plan的原来源关联须逐subject保留，不能由全局引用并集替代；同subject可追加旁证。
 - Create packet 只能包含 FamilyTarget、等级、版本和默认目标，不能泄露原 BD 装备、天赋、技能组、
   机制摘要或 Judge 结果。
 - Phase 7 Blind Create 不得读取或调用任何 starter-research 材料、starter cache 或
@@ -85,8 +111,10 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   与合法性仍以 PoB 读回与 Judge 为准。
 - 发布插件内的普通 Create 必须通过 `start_generation_run / validate_generation_draft /
   validate_generation_output / complete_generation_review` 管理 Phase 5 run。draft validator 在
-  Research 深读完成、最终候选摘要形成、首次正式 Judge 前对每个机制修订调用一次；相同 Blueprint、
-  implementation signature 与 state hash 不得重复刷新。核心输出、辅助、伤害类型或 Mana/Life
+  Research 深读完成、最终候选摘要形成、首次正式 Judge 前对每个实质设计修订调用一次；Blueprint、
+  implementation signature、state hash及Research实质决定均相同时不得刷新marker。只补叙述或调整
+  无序引用顺序不构成修订；合法新增深读/决定/解决证据需重验Draft。内存证据丢失可完整重验重建，
+  不改原marker时间；要求Blueprint的run缺所需bundle时Judge非消耗拒绝。核心输出、辅助、伤害类型或 Mana/Life
   支付域改变后必须重验 Draft；只有 Blueprint 的机制意图也改变时才重验 Blueprint。Draft 调用必须
   传与 Checkpoint/Judge 相同的 group index 和精确技能名，完整 implementation signature 由服务端
   从最终 PoB 观察，不能要求 Agent 在构筑前猜最终组号或辅助；它不持久化、不消耗 run，
@@ -140,11 +168,23 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 重复的 completeness、preflight、stats 和 defenses 检查使用
   `inspect_generation_checkpoint`，以语义 `build_state_hash` 合并；状态改变后必须生成新检查，
   正式 Judge 与 artifact-bound lifecycle verification 仍是独立可信步骤。
+- PoB输入读取与状态hash复用`server/compute/pob_xml_input.py`的pinned Lua语义，保留属性内换行，
+  不把W3C实体解码或属性空白折叠当成PoB语义。该只读投影不得写回活动构筑；局部编辑保留其他
+  原XML字节。受旧读取语义影响的回执须重验，不能仅补版本标记或批量重标来源。
 - 最终 Support、Jewel、Socket 回执必须在装备、天赋、珠宝、Rune 和 config 锁定后生成。
   Checkpoint 必须区分 `current/stale/missing`；正式 Judge 对适用检查的 stale/missing、明确失败和
   未应用正收益非消耗式拒绝。Support 只有当前 PoB 已验证辅助实际作用、结构检查完整且唯一缺口为
   速率数值不可建模的 `capability_gap` 才能以 `unknown` 继续 Judge，交付仍保持 candidate；测量错误、
   证据不全和可修复问题继续阻止 Judge。Jewel 的受保护 `policy_limited/inconclusive` 规则不变。
+  辅助应用按同组实际职责验证：允许分别作用于触发宿主和输出技能，但每个辅助都必须由 PoB
+  确认至少作用于组内一个 active effect；数值能力仍绑定选中的精确输出。
+- 辅助整改须由 `support_audit_v3` 在同一精确输出上比较完整当前组合与完整候选，满足约束、硬合法性
+  不回归且有净正收益；单辅助读数不能替代组合比较，方案允许只移除辅助。候选发现覆盖同组职责，
+  PoB精确ID确认模型不可用的辅助单列未覆盖，不算无收益；其他测量错误仍阻断。名称差异只由稳定
+  gem/effect ID与PoB实际回读绑定，不能按去重音或相似名猜测。
+- 镶嵌使用 `item_socket_review_v2`：单槽与批量测量共用回执，失败/缺数值不能转成无收益。
+  临时写入须清除旧Rune继承并核实际物品；`socketed/partial_socketed`只是待应用，可信装备后
+  才能沿用精确方案。重测失败撤销同槽旧pending，不能用旧计划掩盖最新失败；状态合同见SCHEMAS。
 - 90 级以上的额外天赋珠宝槽审计保持核心天赋优先：Agent 先完成核心机制与重要支撑节点，再把这些
   精确节点 ID 作为 `protected_node_ids`，用 `evaluate_next_jewel_socket` 比较一颗已选珠宝在全部当前
   可达槽位的等点边际收益。工具只可替换当前安全单点叶节点，不向内拆分支、不重排树，也不以成熟
@@ -176,6 +216,9 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   familyPremiseCatalog`。选中 Family 的关键失败 premise 必须在 `ResearchMemoryUse` 中标记
   `resolved/caveated/not_applicable`；resolved 只能引用本轮 record-detail 回执实际深读的解决
   记录。caveated premise 不自动判 BD 失败，只降低采纳档位并把风险写入注意事项。
+- Create 的 Family 覆盖、索引、前提和实际深读共享来源／状态／可用性资格；待复核知识可供普通
+  Research 诊断，但不成为 Create 必读或采纳依据。分页回执逐页保存 coverage；旧资格版本或缺
+  coverage 的授权回执需要重新查询，不得通过补标记或继续旧会话获得新权限。
 - 联网页面、外部样本、普通图/语料查询只能补充 `toolReferences / rationaleSummary /
   unresolvedCaveats / toolFeedbackEvents`，不能写入 premise `resolutionRefs`；缺少本轮 deep-read
   解决记录时 premise 必须保持 `caveated` 或明确 `not_applicable`。
@@ -203,6 +246,11 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   rank_upgrades` 默认使用共享 `realistic_trade` 策略（每件最多五条显式词缀、最多两条深 T1）；
   `theoretical` 只能显式请求并作为升级目标。Checkpoint 使用同一可获得性审计；装备写入、暗金、
   Flask、Charm、Jewel、Rune、Soul Core、implicit 与 corruption 不套用普通黄装策略。
+  深 T1 计数必须按实际 roll 后的物品文本与最终 Checkpoint 同源判定；来源 T2 与 T1 区间重叠时
+  不能仅凭来源 tier 豁免。规划器继续寻找实际可用的低档词缀，并在完整成品上复核策略。
+- 换装搜索按卸除旧槽后的抗性剪枝，并将完整候选与原完整装备在同一精确输出和配置下比较。
+  测量不全、来源技能/辅助丢失或恢复失败不能当作无收益；`plan_gear` 的投影必须能从原状态按返回
+  物品重放。`recoveryRequired=true` 时停止后续搜索，完整测量合同见 `docs/SCHEMAS.md`。
 - `apply_combat_profile` 对自己拥有的 Boss tier 与六个战斗布尔条件使用完整替换语义，false 必须清除
   旧值；公共 `set_config` 仍是只修改调用方字段的 PATCH。两者都返回最新语义 state hash，并可用
   `expected_state_hash` 在写入前拒绝陈旧状态；不得改变内部 optimizer 对底层 `engine.set_config` 的用法。
@@ -228,6 +276,19 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   活动 lifecycle 必须显式复用该 attempt 的 offense group/name；artifact lifecycle 强制继承
   artifact Judge calculation context，不接受调用方改选其他技能。
   调参期间使用 `inspect_generation_checkpoint`，`detail=full` 只用于具名局部诊断。
+- lifecycle与checkpoint共享同engine/state/精确输出的typed机制声明，每次使用都从快照重新观察；
+  空声明或失配声明撤销旧判断，不能缓存caller布尔值为通过。省略artifact state时优先同session的
+  当前声明（含空撤销），缺session时读取artifact绑定的typed声明；旧无声明产物不能借旧pass授权。
+  保存可重算同Judge快照的lifecycle，其他质量只接受同state/输出的currentAdverseEvidence单向收紧；
+  missing/stale不是反证，新passed不提升旧unknown。交付以新manifest为准，不批量升级旧产物。
+- 跨Blueprint/Draft修订恢复passing baseline必须有Judge绑定的raw-free历史设计证据，并由进程内
+  精确快照锚定其指纹。保存、最终output与review沿用原Blueprint/Research决定，当前marker不回写；
+  可使用保存结果的`selectedDesignEvidence`完成原候选摘要。设计验证、Judge和保存共用run锁，
+  artifact发布后不再改该run设计或追加Judge。所有等级的快照恢复失败都必须停止保存。
+- 镶嵌完整比较同样绑定精确输出/来源配置；来源组需要时采用保留Item ID和其他XML字节的探针，
+  不能改测另一技能后签no_positive。精华/腐化等已验证非Rune来源在非Rune结构未变时受检派生，
+  不从文本补造来源。满孔槽位的历史检查也要核时效，当前可信装备已应用的计划不再报pending。
+  镶嵌和artifact入口取得引擎锁后复验恢复门禁，恢复失败置共享标记，不能用残态自恢复清掉它。
 - Create 查询使用紧凑 response profile，
   选定的重要 evidence、条件、失败场景、验证任务和未解决项写入本地有界 working checkpoint。
 - 目标与候选必须在保存前修复活动快照 lifecycle gate，并在保存后使用

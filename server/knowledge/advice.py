@@ -15,7 +15,8 @@ _DOC = Path(__file__).resolve().parents[1] / "BUILD_ADVICE.md"
 _AUTHORITY_NOTICE = (
     "This document contains planning heuristics, not versioned mechanical authority. "
     "For patch-sensitive facts, the current pinned PoB data, physical graph, and current corpus "
-    "take precedence."
+    "take precedence. A matched Research Family and its selected source lane remain design "
+    "authority; these heuristics do not set independent Create completion or damage thresholds."
 )
 
 

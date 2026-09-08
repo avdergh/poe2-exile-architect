@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import re
 
 from .models import (
     ClaimDimension,
@@ -165,12 +164,9 @@ def evaluate_freshness(manifest: FreshnessManifest) -> FreshnessReport:
 
 
 def _claim_comparison_value(claim: VersionClaim) -> str:
-    if claim.key is not ClaimDimension.GAME_PATCH:
-        return claim.value
-    parts = re.findall(r"\d+", claim.value)
-    if len(parts) < 2:
-        return claim.value
-    return ".".join(parts[:2])
+    # A content patch can change mechanics and start a concurrent league (0.5.5).
+    # Shared major/minor or unchanged tree IDs do not certify identical game rules.
+    return claim.value
 
 
 def _stale_official_tree_is_corroborated(

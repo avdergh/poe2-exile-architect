@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "patches": [
+    {
+      "gamePatch": "0.5.5",
+      "evidenceRef": "ggg:patch:0.5.5",
+      "sourceUrl": "https://www.pathofexile.com/forum/view-thread/4000864",
+      "verifiedAt": "2026-09-05",
+      "reviewScope": "补丁差异与历史知识适用条件；不认证旧 PoB 数值",
+      "upstreamGaps": [
+        "PoB 0.23.1 未包含 0.5.5 新增的 17 个灵魂核心与全部旧核心改动",
+        "RePoE 检测版本 4.5.5.1，实际导出版本仍为 4.5.4.11"
+      ],
+      "upstreamSources": [
+        "https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/tag/v0.23.1",
+        "https://raw.githubusercontent.com/repoe-fork/poe2/master/exported-version.txt"
+      ]
+    }
+  ]
+}

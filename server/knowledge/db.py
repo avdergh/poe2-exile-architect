@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import closing
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 from .. import paths
 
 _con: sqlite3.Connection | None = None
+_con_file_key: tuple[object, ...] | None = None
 
 
 def db_path() -> Path:
@@ -24,24 +26,44 @@ def db_path() -> Path:
 
 
 def _conn() -> sqlite3.Connection:
-    global _con
-    if _con is None:
-        p = db_path()
+    from .corpus_certification import corpus_guard
+
+    global _con, _con_file_key
+    # Keep an immutable in-memory read snapshot, not a file handle that prevents other
+    # MCP domains from replacing corpus.sqlite on Windows. A selected-file change reloads it.
+    with corpus_guard():
+        p = db_path().resolve()
         if not p.exists():
             raise FileNotFoundError(
                 f"corpus DB not found at {p}. Build it with: uv run python -m pipeline.build_corpus"
             )
-        _con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, check_same_thread=False)
-        _con.row_factory = sqlite3.Row
-    return _con
+        stat = p.stat()
+        key = (str(p), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+        if _con is None or _con_file_key != key:
+            snapshot = sqlite3.connect(":memory:", check_same_thread=False)
+            try:
+                with closing(sqlite3.connect(p.as_uri() + "?mode=ro", uri=True)) as source:
+                    source.backup(snapshot)
+                snapshot.execute("PRAGMA query_only=ON")
+                snapshot.row_factory = sqlite3.Row
+            except BaseException:
+                snapshot.close()
+                raise
+            # Existing readers own their previous immutable connection until they finish;
+            # replacing the cache reference must not close a connection in use by a thread.
+            _con = snapshot
+            _con_file_key = key
+        return _con
 
 
 def reset() -> None:
     """Drop the cached connection so a freshly-built/updated corpus is picked up."""
-    global _con
-    if _con is not None:
-        _con.close()
+    from .corpus_certification import corpus_guard
+
+    global _con, _con_file_key
+    with corpus_guard():
         _con = None
+        _con_file_key = None
 
 
 def _match(text: str) -> str:
@@ -701,21 +723,30 @@ def relevant_uniques(keywords: list[str], limit: int = 15) -> list[dict]:
     ]
 
 
-def get_unique(name: str) -> dict | None:
-    """Return a unique item's full readable text by name."""
+def get_unique(name: str, *, include_source: bool = False) -> dict | None:
+    """Return readable text and authoritative PoB choices; raw source is internal opt-in."""
+    from .unique_variants import parse_unique_source
+
     con = _conn()
     row = con.execute(
-        "SELECT name, base, item_type, text FROM uniques WHERE lower(name) = lower(?) LIMIT 1",
+        "SELECT name, base, item_type, text, raw FROM uniques WHERE lower(name) = lower(?) LIMIT 1",
         (name,),
     ).fetchone()
     if not row:
         return None
-    return {
+    result = {
         "name": row["name"],
         "base": row["base"],
         "item_type": row["item_type"],
         "text": row["text"],
     }
+    if row["raw"]:
+        source = parse_unique_source(row["raw"], name=row["name"], base=row["base"])
+        if source.labels:
+            result["variantSelection"] = source.public_contract()
+        if include_source:
+            result["pobSource"] = row["raw"]
+    return result
 
 
 # Tags shared by almost every base — too generic to mean "this mod rolls here".
@@ -834,7 +865,7 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
         # Dedup by (type, group, number-stripped text): collapses tier duplicates of the SAME mod
         # but KEEPS per-variant mods that share a group (e.g. +Fire vs +Lightning Spell Levels), so
         # the optimizer can pick the variant matching the build. Group exclusivity still applies.
-        norm = re.sub(r"\d+", "#", r["text"] or "")
+        norm = _norm_mod_line(r["text"] or "")
         key = (r["type"], group, norm)
         rl = r["required_level"] or 0
         tier_options.setdefault(key, []).append(

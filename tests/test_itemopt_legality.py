@@ -1,11 +1,14 @@
 from server.compute import itemopt
 from server.knowledge import db, itemparse
+from html import escape
+from types import SimpleNamespace
 
 
 class _SlotRegressionEngine:
     def __init__(self) -> None:
         self.changed = False
         self.restored = False
+        self.item = None
         self.before_gear = {
             slot: {"base": f"{slot} Base"}
             for slot in (
@@ -34,32 +37,53 @@ class _SlotRegressionEngine:
         }
 
     def get_xml(self):
+        if self.changed and self.item:
+            return (
+                '<PathOfBuilding><Build/><Items activeItemSet="1"><Item id="1">'
+                + escape(self.item)
+                + '</Item><ItemSet id="1"><Slot name="Amulet" itemId="1"/></ItemSet></Items></PathOfBuilding>'
+            )
         return "<PathOfBuilding><Build/></PathOfBuilding>"
 
     def get_stats(self, keys):
         return {"stats": {key: 100.0 for key in keys}}
 
     def get_defenses(self):
-        return {"resistMissing": {}}
+        return {
+            "resistMissing": {},
+            "resistances": {"fire": 0, "cold": 0, "lightning": 0, "chaos": 0},
+        }
 
-    def eval_items(self, slot, items, keys):
+    def eval_items(self, slot, items, keys, *, replacement_context=False):
         del slot
         return {
+            "contextVersion": "item_replacement_context_v1",
+            "rolledBack": True,
             "results": [
                 {key: (200.0 if "increased Damage" in raw else 100.0) for key in keys}
                 for raw in items
-            ]
+            ],
         }
 
     def add_item(self, raw, slot=None):
-        del raw, slot
+        del slot
+        self.item = raw
         self.changed = True
         return {"ok": True}
+
+    def unequip_item(self, slot):
+        self.changed = False
+        self.item = None
+        return {"ok": True}
+
+    def inspect_item_replacement_context(self, expected_context=None):
+        return {"ok": True, "contextStatus": "no_active_output"}
 
     def load_build_xml(self, xml):
         del xml
         self.changed = False
         self.restored = True
+        self.item = None
 
 
 def test_optimize_item_rejects_a_candidate_that_drops_an_equipped_slot(monkeypatch):
@@ -133,7 +157,9 @@ def test_rank_upgrades_keeps_rejected_illegal_candidates_in_the_response(monkeyp
         },
     )
 
-    result = itemopt.rank_upgrades(object(), slots=["Amulet"], top=1)
+    result = itemopt.rank_upgrades(
+        SimpleNamespace(get_xml=lambda: "<PathOfBuilding/>"), slots=["Amulet"], top=1
+    )
 
     assert result["ranked"] == []
     assert result["rejected"] == [
@@ -266,15 +292,11 @@ def test_flask_affix_pool_includes_subtype_and_domain_wide_mods():
 
 def test_flask_domain_empty_default_and_subtype_tags_share_one_applicability_rule():
     assert db.mod_tags_match_base("Ultimate Mana Flask", [], mod_domain="flask") is True
-    assert db.mod_tags_match_base(
-        "Ultimate Mana Flask", ["default"], mod_domain="flask"
-    ) is True
-    assert db.mod_tags_match_base(
-        "Ultimate Mana Flask", ["mana_flask"], mod_domain="flask"
-    ) is True
-    assert db.mod_tags_match_base(
-        "Ultimate Mana Flask", ["life_flask"], mod_domain="flask"
-    ) is False
+    assert db.mod_tags_match_base("Ultimate Mana Flask", ["default"], mod_domain="flask") is True
+    assert db.mod_tags_match_base("Ultimate Mana Flask", ["mana_flask"], mod_domain="flask") is True
+    assert (
+        db.mod_tags_match_base("Ultimate Mana Flask", ["life_flask"], mod_domain="flask") is False
+    )
     assert db.mod_tags_match_base("Ultimate Mana Flask", ["default"], mod_domain="item") is False
 
 
@@ -296,6 +318,9 @@ def test_magic_flask_single_line_header_round_trips_and_rare_is_rejected():
 
 def test_optimize_item_routes_flask_bases_to_specialized_tool():
     class Engine:
+        def get_xml(self):
+            return "<PathOfBuilding/>"
+
         def get_build(self):
             return {"gear": {}}
 
@@ -306,6 +331,9 @@ def test_optimize_item_routes_flask_bases_to_specialized_tool():
 
 def test_utility_flask_charm_is_not_routed_or_accepted_as_recovery_flask():
     class Engine:
+        def get_xml(self):
+            return "<PathOfBuilding/>"
+
         def get_build(self):
             return {"gear": {}}
 

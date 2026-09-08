@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Any, Callable
-from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -18,6 +16,7 @@ from server.knowledge import research_memory
 
 from . import (
     evaluation_snapshots,
+    mechanism_evidence,
     mechanism_signature,
     models,
     preflight,
@@ -129,6 +128,8 @@ def evaluate_generation_candidate(
         return _rejected("generation_evaluation_in_progress")
 
     try:
+        if bound_run.artifact_selection_path.exists():
+            return {**_rejected("final_artifact_already_exists"), "attemptConsumed": False}
         try:
             existing_receipts = run_store.read_trusted_evaluations_strict(bound_run)
         except run_store.RunStoreError as exc:
@@ -216,6 +217,25 @@ def evaluate_generation_candidate(
                     "attemptConsumed": False,
                     "attemptCount": len(existing_receipts),
                 }
+
+        try:
+            frozen_draft = (
+                mechanism_evidence.read_validated_draft(bound_run, candidate_id=candidate_id)
+                if draft_required
+                else None
+            )
+        except run_store.RunStoreError as exc:
+            return {**_rejected(exc.code), "attemptConsumed": False}
+        if draft_required and frozen_draft is None:
+            return {
+                **_rejected("generation_draft_evidence_required"),
+                "attemptConsumed": False,
+                "attemptCount": len(existing_receipts),
+                "detail": (
+                    "Revalidate the same Draft in this run to rebuild its process-local design "
+                    "evidence; the existing validation time and Research decisions stay fixed."
+                ),
+            }
 
         quality_checkpoint: dict[str, Any] = {}
         checkpoint_capable = all(
@@ -407,12 +427,23 @@ def evaluate_generation_candidate(
         }
         expected_attempt_index = len(existing_receipts)
         try:
+            historical_evidence = mechanism_evidence.bind_evaluation(
+                frozen_draft,
+                receipt,
+                run_id=bound_run.run_id,
+                attempt_index=expected_attempt_index,
+            )
+            if historical_evidence is not None:
+                receipt["mechanismEvidence"] = historical_evidence
             evaluation_snapshots.remember(
                 run_id=bound_run.run_id,
                 attempt_index=expected_attempt_index,
                 candidate_id=candidate_id,
                 source_hash=source_hash,
                 xml=xml,
+                mechanism_evidence_hash=(
+                    historical_evidence["bundleHash"] if historical_evidence is not None else None
+                ),
             )
             attempt_index = run_store.write_trusted_evaluation(bound_run, receipt)
         except (run_store.RunStoreError, ValueError) as exc:
@@ -443,17 +474,19 @@ def evaluate_generation_candidate(
             "subjectiveFeedbackSuppressed": not strict_mode,
             "attemptIndex": attempt_index,
             "attemptConsumed": True,
-            **receipt,
+            **{key: value for key, value in receipt.items() if key != "mechanismEvidence"},
+            **(
+                {"mechanismEvidenceHash": historical_evidence["bundleHash"]}
+                if historical_evidence is not None
+                else {}
+            ),
             "trustedEvaluation": True,
             "trustedEvaluationScope": "snapshot_and_judge_only",
             "versionContextTrusted": False,
             "noRawMaterial": True,
         }
     finally:
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        run_store.release_generation_lock(lock_path)
 
 
 def _parse_build_snapshot(
@@ -575,7 +608,7 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
                     or (
                         group.get("status") == "unknown"
                         and group.get("freshness") == "current"
-                        and group.get("auditVersion") == "support_audit_v2"
+                        and group.get("auditVersion") == "support_audit_v3"
                         and group.get("reasonClass") == "capability_gap"
                         and group.get("verificationRequired") is True
                         and (group.get("capability") or {}).get("capabilitySource") == "pob_runtime"
@@ -652,7 +685,7 @@ def _draft_validation_matches(
         blueprint = None
     return bool(
         isinstance(payload, dict)
-        and payload.get("schemaVersion") == 2
+        and payload.get("schemaVersion") in {2, 3}
         and payload.get("candidateId") == candidate_id
         and payload.get("researchMemoryRef") == research_memory_ref
         and premise_ready
@@ -666,6 +699,12 @@ def _draft_validation_matches(
             or payload.get("selectedFamilyKey") == family_binding.get("selectedFamilyKey")
         )
         and isinstance(blueprint, dict)
+        and isinstance(blueprint.get("evidenceAudit"), dict)
+        and isinstance(payload.get("evidenceAuditHash"), str)
+        and payload.get("evidenceAuditHash") == blueprint.get("evidenceAuditHash")
+        and isinstance(payload.get("designToolsHash"), str)
+        and isinstance(payload.get("designEvidenceUses"), dict)
+        and isinstance(payload.get("designEvidenceUsesHash"), str)
         and payload.get("mechanismBlueprintRef") == blueprint.get("blueprintRef")
         and payload.get("mechanismBlueprintHash") == blueprint.get("blueprintHash")
         and isinstance(payload.get("mechanismSignatureHash"), str)
@@ -1180,40 +1219,7 @@ def _valid_candidate_id(value: Any) -> bool:
 
 
 def _acquire_evaluation_lock(path: Path, *, timeout_seconds: float | None) -> bool:
-    try:
-        path.open("x", encoding="utf-8").close()
-        return True
-    except FileExistsError:
-        pass
-    except OSError:
-        return False
-
-    timeout_budget = max(float(timeout_seconds or 900.0), 1.0)
-    try:
-        age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
-    except OSError:
-        age_seconds = 0.0
-    if age_seconds <= timeout_budget + 60.0:
-        return False
-
-    abandoned = path.with_name(f".{path.name}.{uuid4().hex}.stale")
-    try:
-        path.replace(abandoned)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        return False
-    else:
-        try:
-            abandoned.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    try:
-        path.open("x", encoding="utf-8").close()
-        return True
-    except (FileExistsError, OSError):
-        return False
+    return run_store.acquire_generation_lock(path, timeout_seconds=timeout_seconds)
 
 
 def _judge_error_code(error_kind: str) -> str:

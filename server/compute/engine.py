@@ -302,6 +302,33 @@ class PobEngine:
     def paste_skill(self, text: str) -> dict[str, Any]:
         return self.call("paste_skill", text=normalize_skill_text(text, default_level=None))
 
+    def probe_regular_skill_group(
+        self,
+        *,
+        group_index: int,
+        group_xml: str,
+        active_skill_index: int,
+        expected_skill_name: str,
+        keys: list[str],
+        objective_keys: list[str],
+        expected_effect_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Probe one group; index is a hint, exact effect/name controls output selection.
+
+        The caller owns the complete restore guard and must handle requiresFullRebuild before
+        consuming measurements: that result deliberately has no statistics or capability proof.
+        """
+        return self.call(
+            "probe_regular_skill_group",
+            index=group_index,
+            groupXml=group_xml,
+            activeSkillIndex=active_skill_index,
+            expectedSkillName=expected_skill_name,
+            keys=keys,
+            objectiveKeys=objective_keys,
+            expectedEffectId=expected_effect_id,
+        )
+
     def add_skill_group(self, text: str, include_in_full_dps: bool = False) -> dict[str, Any]:
         return self.call(
             "add_skill_group",
@@ -353,10 +380,26 @@ class PobEngine:
         return self.call("add_item", raw=raw, slot=slot, keys=keys)
 
     def eval_items(
-        self, slot: str, items: list[str], keys: list[str] | None = None
+        self,
+        slot: str,
+        items: list[str],
+        keys: list[str] | None = None,
+        *,
+        isolate_each_item: bool = False,
+        replacement_context: bool = False,
     ) -> dict[str, Any]:
         """Batch-evaluate candidate items in a slot; returns each one's `keys` stats. Restores."""
-        return self.call("eval_items", slot=slot, items=items, keys=keys)
+        params = {"isolateEachItem": True} if isolate_each_item else {}
+        if replacement_context:
+            params["replacementContext"] = True
+        return self.call("eval_items", slot=slot, items=items, keys=keys, **params)
+
+    def inspect_item_replacement_context(
+        self, expected_context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Inspect/verify the exact PoB output and owning skill group for item probes."""
+        params = {"expectedContext": expected_context} if expected_context is not None else {}
+        return self.call("item_replacement_context", **params)
 
     def gem_level_requirements(self, gem_name: str) -> dict[str, Any]:
         """Read-only per-level requirements of a gem (levelRequirement per gem level).

@@ -1,307 +1,144 @@
-# Path of Exile 2 — build-optimization principles
+# Path of Exile 2 构筑优化原则
 
-Durable planning heuristics for making a PoE2 build stronger. They are not a meta list or
-versioned mechanical authority. **For patch-sensitive facts, the current pinned PoB data,
-physical graph, and current corpus take precedence over this prose.** The engine computes your
-build's actual numbers; use these rules to decide *what* to change, then verify the effect.
-Never quote a DPS/EHP/resist figure you didn't get from a compute tool.
+本文提供可检索的设计原则。Research 命中的 Family 与所选来源变体负责身份和设计依据；
+当前 pinned PoB（engine）、物理图与语料负责各自范围内的事实。补丁、技能、装备和具体机制
+需要逐项查证，本文不另设版本无关的数值门槛。实际 DPS、EHP、抗性和资源成本必须来自工具读回。
+普通 Create 的执行顺序和异常恢复以 `/poe-bd-create`、typed contract 与可信回执为准。
 
-## The optimization loop
+## 构筑优化循环（optimization loop）
 
-Always **create → validate → cost → present**. Make one change at a time, recompute on the
-engine (`get_build_stats` / `get_defenses`), and keep it only if it improves the goal. Use
-`compare_to` for A/B deltas. A build that fails `evaluate_build` is flagged, not recommended.
-Optimization is finding the build's *weakest layer* and spending the cheapest points/currency to
-raise it — not maximizing the number that's already highest.
+先明确目标、场景和机制职责，形成合法基础版本，再找影响最大的瓶颈。修正可以涉及配套组件；
+对照时固定精确输出、配置和比较目标，比较完整当前方案与完整候选。
 
-**Min/maxing a complete build** is the same loop pointed at marginal gain: once defense is
-complete and resists are capped, find where the *next* point/currency pays most rather than
-guessing. `rank_levers` measures each candidate stat's real Δ on the current build and ranks
-them, so you spend on the lever that actually moves the number (often penetration or attack/cast
-speed over raw "increased" damage). For concrete moves rather than abstract stats, `rank_upgrades`
-ranks which gear slot recrafts for the most gain, and `plan_gear` re-plans the whole set with
-resists kept capped. Confirm the magnitude with `solve_for`, apply the real gear/tree change, then
-re-verify defense — a min/maxed build never trades back below the "done" bar.
+`rank_levers` 的局部增益可用于发现方向，`rank_upgrades`、`optimize_item` 和
+`optimize_supports` 用于验证具体候选。局部探针不能替代完整机制组合的验证，也不授权全局重排
+天赋或调用默认禁用的 `optimize_build`。搜索应由机制差异、尚未覆盖的职责和验证结果决定何时结束。
 
-## What "done" looks like — targets, not vibes
+通过正式 Judge 的合法版本按 Create 工作流保护为 passing baseline。后续探索先验证实际增益和
+硬合法性；确认退化时按可信快照恢复合同选择原版本。价格在方案锁定后说明获取难度，不决定
+Family、必需暗金或普通优化方案的采用。
 
-A build is a **draft** until it clears this bar. Don't present one as finished until it does
-(check with `get_defenses` + `evaluate_build`):
+## 交付目标与检查（targets / done）
 
-- **Resistances capped.** Fire/Cold/Lightning at 75% (over-cap is buffer); chaos positive. Non-negotiable.
-- **A full gear set.** Every slot filled — weapon(s), helmet, body, gloves, boots, belt, amulet,
-  two rings. A build with 2 of ~10 slots is a *skeleton*, not a build.
-- **A real hit pool.** A meaningful Life and/or ES pool — thousands for endgame, not the few
-  hundred a fresh character starts with.
-- **Enough DPS for the target content.** "Enough" is relative: mapping needs far less than
-  pinnacle bosses. The test is *time-to-kill on the content the player wants*, not a fixed number.
-  If unsure, ask what content they're aiming at, or compare against a known-good reference build.
-- **Sustain.** The build can actually use its skill (mana/spirit covered by pool + regen/leech),
-  with recovery beyond flasks.
+- **身份和机制**：满足用户目标，落实所选 Family 的关键职责、必需组件和条件；无匹配 Family 时
+  如实记录无命中，并使用允许的知识来源设计。
+- **合法性和完整性**：用共享 checkpoint、正式 Judge 与 artifact-bound lifecycle 检查实际构筑。
+  应装备的槽位、技能辅助、天赋、资源和制作来源必须可读回；不得交付占位装备或非法组件。
+- **抗性目标**：80 级及以上新生成候选的 Judge 门槛是元素分别 60%、非 CI 混沌 30%；
+  CI 只豁免混沌。各等级 lifecycle 规则读取现行合同。90 级 softcore 普通优化达到 60/30 后
+  停止主动追加普通抗性投入，用户明确要求 75% 满抗时才覆盖该优化目标。
+- **输出与生存**：根据清图、Boss、恢复和操作职责判断方案是否成立。没有统一的 DPS/EHP 完成线，
+  也没有“纯黄装伤害上限”；同目标、同条件的 PoB 数值与机制证据共同支持判断。
+- **续航**：分别检查 Mana 与 Life 的实际支付、恢复和场景条件；Spirit 是独立的预留预算。
+  静态资源池不能证明持续覆盖，未建模恢复必须保留验证任务。
 
-**Reality check:** a from-scratch build with one weapon, a couple of notables, uncapped resists,
-and a few-hundred life pool is a skeleton that validates the *workflow* — it is **not** finished,
-and it's typically *orders of magnitude* behind a min-maxed meta build (DPS and EHP). Say so
-plainly; never present a skeleton as "done".
+默认 hard-only Judge 通过代表确定性检查通过。最终交付档位、未知项和限制沿用可信 artifact
+manifest；主动质量收尾仍须完成，不能把没有报警解释为已经达到最优。
 
----
+## 机制投入与输出（endgame DPS / scaling）
 
-## Reaching endgame DPS (orders of magnitude, not increments)
+先从 Research 的来源变体理解输出、清图、单体、触发宿主、资源和防御分别由谁负责。优先落实
+机制必需的技能、辅助、升华、核心连接与暗金，再补普通装备。
 
-Endgame content assumes very high DPS. If a build is far short, the fix is usually a **missing
-core multiplier**, not more small increases. Work in this order:
+伤害偏低时先检查选中了哪个实际输出、技能和辅助是否生效、必需条件是否开启且可维持，以及
+PoB 是否能够建模该数值。之后再提出暴击、等级、速率、穿透、异常或其他适用的投入方向。
+不存在适用于所有技能的固定增益排名。
 
-1. **Find THIS build's dominant multiplier and verify it with `rank_levers` — don't assume.**
-   Archetypes scale on different things; measure, don't reach for a favorite. The dominant lever
-   varies: it might be **crit** (chance × multi can be 3–7× — a meta crit nuke can run ~98% crit / 7× multi), a big
-   **"more"-multiplier** support stack, **ailment/DoT** (poison/ignite/bleed, or shock far exceeding
-   its 20% base), **minions**, **"+levels to skills"**, or **penetration/exposure**. There's no
-   universal answer — crit and mana-stacking are each just *one* option. Put whatever `rank_levers`
-   says dominates in *before* fine-tuning gear; look the skill up if unsure (`explain_mechanic`).
-   **Allocate the ascendancy early — its notables are often the biggest single multiplier** (a
-   conditional "more vs bosses/rares" can be +50%). A *conditional* "more" stays invisible in the
-   DPS read until you switch on its enemy-condition (`apply_combat_profile`, or `set_config` from
-   `list_config_options` — e.g. Open Weakness, Critical Weakness), so allocate it AND enable the
-   condition the build genuinely applies.
-2. **Pick ONE scaling identity and commit fully.** Either crit (commit to *both* chance and multi +
-   a *base*-crit source — half-invested crit is wasted, and "increased" crit does nothing from zero)
-   OR a non-crit lane (a "more"-multiplier stack, ailment/DoT, or minions). Don't half-do crit, and
-   don't bolt crit onto a skill/ascendancy that doesn't support it. Which lane is right depends on
-   the skill, ascendancy, and goal — not a default.
-3. **Match the skill to the goal — boss vs farm are often different skills.** A slow, high-damage
-   nuke (sometimes triggered by a crit/ailment trigger meta-gem) tends to be the single-target BOSS
-   engine; a fast multi-projectile or wide-AoE skill tends to be the CLEAR/farm engine. Don't
-   optimize the clear skill for boss DPS — strong setups often run a different skill for each. The
-   right skill is the player's call (or their stated goal); don't default to a particular one.
-4. **Stack the build's defining resource.** For a crit caster that's crit + the hit's base damage +
-   cast rate; for a mana-stacker it's ES/mana via **Eldritch Battery + Mind over Matter** (one stat
-   becomes both damage *and* EHP). Mana-stacking is ONE layer, **not automatically the master
-   lever** — `rank_levers` tells you which actually moves *this* build.
-5. **Don't skip jewels — or build-defining UNIQUES.** Finish the build's core and important support
-   passives first, then compare an evidence-backed jewel against the tree's replaceable margin;
-   neither a universal jewel count nor a mature build's count is a target. Build Time-Lost jewels
-   from exact current modifier ids and measure every reachable socket with the protected jewel
-   review; ordinary rare jewels still come from `optimize_jewel`. More broadly, a pile of
-   self-crafted RARES is the **from-scratch ceiling** (~100k) — the leap to pinnacle usually comes
-   from a **build-defining unique** (extra projectiles, "+levels to skills", a converted/enabled
-   mechanic) that rares simply can't roll. Use **`relevant_uniques`** to surface the uniques + unique
-   jewels that match the active build's scaling, read the full text (`get_unique`), then `equip_item`
-   / `equip_jewel` and **measure the delta on the engine** — uniques ENABLE mechanics, so verify, and
-   never quote their power from the corpus text.
-6. **Re-verify defense after each big swing.** Resists drift and silently break caps when you
-   reshuffle gear for damage — re-check `get_defenses` every time.
+配套机制可能在单组件探针中看起来很弱。使用完整候选比较其收益、成本和防御回归，保留必要
+的支撑组件；也不要仅因某种配套在其他 Family 成功就认定它适合当前构筑。
 
-A useful sanity check: realistic gear should reach high six figures on a strong archetype; if the
-engine shows far less, suspect either a missing core multiplier (above) or that a mechanic isn't
-being modeled — note the latter rather than trusting the low number.
+清图与 Boss 可以由不同输出负责。单体持续输出、条件爆发、多个技能的轮转和恢复空窗分别
+说明，不能把最高一项面板或所有临时效果之和当作完整循环。
 
-**Know what the engine can and can't model — and choose a modellable archetype.** The pinned PoB
-computes hits, ailments, auras, and supports faithfully, but it does **NOT** yet model **energy-based
-meta TRIGGERS** — Cast on Critical and the Invocation / Spell-on-Hit gems. A spell socketed into one
-computes as a weak **self-cast**, never the triggered nuke it is in game; the tools flag this as
-`engineLimitation` in their output. So the famous **Cast-on-Critical → Comet** pinnacle setup (and
-similar trigger-meta builds) **can't be honestly costed here yet** — never present a triggered
-skill's self-cast number as its real DPS. When the goal points at a trigger-meta archetype, say the
-engine can't model it yet and steer to one it CAN: a **directly cast/attacked** crit skill, an
-ailment/DoT, minions, or a "more"/penetration stack all compute faithfully and reach pinnacle DPS.
+## 模型能力与触发（modelability / triggers）
 
-**A multiplier reads weak until it's fully assembled.** Crit chance especially: "% increased" only
-scales a low base (~5–10%), so increased alone caps far short of the ~90%+ a nuke wants — real crit
-comes from **flat "+to Critical Hit Chance", a high-base-crit weapon/skill, or an ascendancy crit
-ENGINE** (e.g. an accuracy→crit conversion — which can have steep diminishing returns, so verify it
-on the engine, don't assume it scales linearly). Because a half-built multiplier reads weak *per
-slot*, judge crit (or any "more" lane) once it's **committed across the whole build** — tree plus
-several gear slots together — not from one slot's marginal Δ. Greedy per-slot tuning systematically
-under-rates a lane you're still assembling, which is why reaching pinnacle takes a deliberate
-archetype commitment, not slot-by-slot hill-climbing.
+PoB 的能力按当前 runtime、精确技能输出和指标检查，不从技能类别一概推断可计算或不可计算。
+触发宿主与载荷的辅助职责分别确认；自施法读数不能冒充未建模的触发 DPS。
 
-**Measure the right number, with the fight realistic.** For multi-projectile/multi-hit skills read
-**FullDPS** alongside `TotalDPS`. PoB defines `TotalDPS` as Hit DPS, while `FullDPS` rolls up the
-included skill actors and DoT components. Their difference is not automatically a lower/upper-bound
-interval: real single-target damage depends on uptime, rotation and per-skill projectile overlap.
-Verify the specific skill (`explain_mechanic`/`lookup_mechanic`/in-game) and compare like-for-like.
-Full-text mechanic hits are candidates only: read the selected exact page and judge whether its
-content actually supports the claim before using it.
-The engine's enemy
-conditions are **off by default**, so a bare stat read understates a real fight: use
-`apply_combat_profile` to switch on the shock/curse/charges/boss-tier the build actually maintains
-before judging DPS (turn off any it can't sustain — they'd inflate the number). The mana *pool*
-isn't automatically the master lever: some real meta million-DPS builds run only ~6–8k mana and get
-most of their damage from **crit + the hit + chase jewels**, not pool size — but that's *those*
-builds, not a rule (ailment/DoT/minion builds scale elsewhere). Never assume one recipe; let
-`rank_levers` find what actually moves *this* build.
-**To chase a specific meta build, import its PoB** (`import_build`) and read its keystones, crit,
-skill (including any trigger/meta-gem), and jewels — then build to that archetype and verify
-each layer on the engine; `compare_to` shows the per-stat gap. When the build looks done, gate it
-with `pinnacle_readiness` (resists + chaos + EHP + DPS) — note real ~1M-DPS builds run only
-~17–20k EHP and survive on Mageblood + charms + dodge, so breadth/recovery beats a huge pool.
+出现能力缺口时保留合法的用户目标与 Family 机制，查询 Research、图、语料及允许的外部证据，
+明确已验证事实和剩余问题。不能为了让面板可计算而更换流派、拆掉触发关系或改变主输出身份。
+只有实际证据否定前提、合法性无法修复等现行合同允许的原因，才能调整相应机制决定。
 
-## What verified endgame builds scale on — calibrate, don't copy
+辅助只有实际应用已验证、结构完整且唯一缺口为速率不可建模时，才能按受保护的 capability gap
+继续；已知 Mana/Spirit 超限、缺失读数和测量错误仍须处理。最终采纳档位遵循当前回执。
 
-Distilled from a diverse set of engine-VERIFIED high-end builds (the reference library:
-`list_reference_builds` / `benchmark_build`). These describe *how strong builds scale*, not *what to
-play* — they name no skill on purpose. Reference builds are **calibration only**: use them to
-range-check a number and spot the dominant lever; never copy or recommend one wholesale — build to
-the player's stated goal.
+## 参考构筑的使用（reference / benchmark）
 
-- **"+levels to skills" is the universal #1 damage lever.** Across every computable reference build —
-  spell, attack, projectile, minion, and ailment alike — the highest-value marginal lever is *+to
-  Level of all (relevant) Skills*. Chase it first and from every source (gem level/quality, `+to
-  Level of all [type] Skills` on weapon/amulet/focus, level-granting uniques/supports), then
-  fine-tune. Confirm with `rank_levers`; a *high* marginal % there means it's still under-invested
-  (headroom), not that it stopped mattering.
-- **The rest of the hierarchy is stable:** after +levels → **penetration/exposure** (once you've
-  committed to one element vs resistant bosses) → **"more" multipliers** (supports; ~1:1 with DPS) →
-  **flat `+%` critical damage bonus** (broadly useful even on "non-crit" builds) → **rate**
-  (attack-speed XOR cast-speed, whichever the skill uses). *"Increased" damage is near the bottom on
-  a finished build* — it diminishes fast; spend on the multipliers above it.
-- **Defense = convert one resource into both damage and EHP.** Strong builds pick one identity and
-  commit: **ES via Chaos Inoculation** (life→1; immune to chaos damage and Bleeding in the current
-  0.5 tree; tankiest, can exceed 30k EHP), **mana via Eldritch Battery + Mind over Matter** (mana is
-  the hit-buffer and often the damage), or **life + Mind over Matter**. Plain life/ES hybrid is fine
-  for attack builds. Pick one and stop paying for the stats it doesn't use.
-- **The verified endgame bar:** finished single-target builds cluster around **~1M+ DPS** (≈1M–6M) at
-  **~20–35k EHP** (CI/ES stackers higher), resists capped, chaos handled (capped or CI). Most run
-  modest pools + recovery + dodge, not a huge HP bar. Use `benchmark_build` to see where the active
-  build sits; if it's an order of magnitude short, a *multiplier* is missing (above), not margins.
+参考样本可帮助提出机制问题和检查数值是否处于可解释的范围，不能产生通用伤害上限、最低
+面板或适用于所有构筑的投入排名。比较必须注明目标等级、版本、输出、配置、模型覆盖和来源。
 
-## Defense: the survival checklist
+Research 在受管 quarantine 中分析成熟原材料，沉淀完整可复用的局部机制与条件。Create 使用
+获授权的 Research 记录和验证任务；不得把成熟整角色导入成自己的构筑模板。Blind Create 只接收
+锁定 packet，遵守来源、starter 与对照状态隔离。
 
-Survivability is **layered**: avoidance × mitigation × hit-pool × recovery, plus ailment and
-stun protection. A weakness in any one layer is what actually kills you, so breadth beats
-over-stacking one stat.
+## 防御与抗性（defense / resistances）
 
-1. **Cap elemental resistances at 75% — this is non-negotiable.** Maps are balanced around it.
-   Uncapped resist isn't "less reduction," it's *more damage taken*: at 50% fire res you take
-   **twice** the fire damage of someone at 75%. The campaign applies a stacking area penalty
-   (−10% per act, ending around −60% at endgame), so you must gear ~+125–150% elemental res to
-   sit at the cap. **Chaos resistance** has its own 75% cap and no area penalty, but its opportunity
-   cost is stage-dependent: get it non-negative for campaign completion, build toward roughly
-   20–40% in early maps, and pursue 60–75% only when endgame content, the defensive identity, or
-   available suffix budget justifies it. Do not sacrifice core damage, resource sustain, movement,
-   or required attributes merely to make every resistance read 75%.
-2. **Run at least one mitigation/avoidance layer, and know its weakness:**
-   - **Armour** reduces hit damage on a curve — roughly `reduction = Armour / (Armour + 12 ×
-     hit)`, capping near 90%. It's excellent against many small hits and **weak against single
-     big hits** (a hit large enough relative to your armour barely gets reduced). Don't rely on
-     armour alone to survive one-shots.
-   - **Evasion** gives a chance to avoid **strikes and projectiles** (mostly attacks). It does
-     little against spells and AoE. It's entropy-based, so it's consistent against many hits but
-     never a guarantee against the one that matters.
-   - **Energy Shield** is an extra hit pool that **recharges** after a short delay without
-     damage — great when you can avoid sustained damage. Without a relevant immunity, **chaos
-     damage is twice as effective against ES**, while **bleed and poison bypass ES**; **stun
-     ignores ES by default** (scale stun threshold if you go heavy ES). Current 0.5
-     `Chaos Inoculation` is the important exception: it grants immunity to chaos damage and
-     Bleeding. Its chaos-damage immunity prevents poison damage, but does not by itself prove
-     that poison cannot be applied. Evasion+ES is a strong hybrid: evasion buys the downtime ES
-     needs to recharge.
-3. **Build a real hit pool (EHP).** Avoidance and mitigation only matter if a pool sits behind
-   them. Don't glass-cannon. Life scales with level and Strength (+2 Life per Strength); ES
-   layers on top. Current 0.5 `Chaos Inoculation` (Life → 1, immune to chaos damage and
-   Bleeding) only makes sense once ES is the overwhelming majority of your effective HP.
-4. **Have recovery, not just a pool.** Keep life flasks upgraded, then add a sustained source:
-   regen, leech, or recoup (repays a portion of a hit over 8s). ES wants faster recharge *start*
-   and recharge *rate* (or convert life regen via Zealot's Oath).
-5. **Defend against ailments — they're a top killer.** Capped resistances reduce the chance and
-   magnitude; **ailment threshold** (scales with your pool) reduces it further; charms cleanse.
-   Watch **shock** (you take ~20% more damage), **freeze** (you can't act), and, unless the
-   current build is immune, **bleed** (physical DoT, *doubled while moving*).
-6. **Use your active defense.** The **dodge roll** is your strongest tool — i-frames against
-   strikes and projectiles (but **not** AoE). Good positioning and rolling beats raw stats.
-7. **Priority order when you're short:** ① cap resistances → ② ailment defense → ③ life pool +
-   recovery → ④ your main mitigation layer (armour/evasion/ES) → ⑤ supplementary (block, damage
-   shifting). For *damage-taken reduction*, "reduced" (additive) is stronger than "less"
-   (multiplicative).
+先核实际活动状态的抗性和适用目标。90 级 softcore 普通优化以元素 60%、非 CI 混沌 30% 为
+饱和目标；用户明确要求 75% 时才提高普通抗性目标。满抗与超抗读数仍可作为诊断，不能额外
+变成普通 Create 的交付门槛。Chaos Inoculation（CI）是否实际成立由快照和 PoB 确认。
 
-Use `get_defenses` to read resist over-cap and EHP; the weakest of the layers above is almost
-always the right place to spend next.
+抗性达标之后检查各伤害类型的 Max Hit、持续伤害、连续命中、恢复空窗、控制异常与护符覆盖。
+护甲、闪避、格挡、Life、Energy Shield 等层的价值取决于实际机制和场景，不按固定公式或统一
+面板顺序替代 PoB 与机制证据。单个很高的 EHP 数值不能遮盖其他短板。
 
----
+换装应按卸除旧槽后的实际条件搜索，再把完整候选与原装备比较；最终读回所有受影响的属性、
+抗性、技能与资源。强化防御时保留必要的输出和资源支撑，避免孤立堆叠已经充足的一层。
 
-## Offense: the damage checklist
+恢复来源应注明是否依赖命中、击杀、药剂、停手或其他条件。操作、站位和移动相关结论依赖
+可审查证据；没有实际验证的体验保持未知，不执行游戏内自动化。
 
-Damage is computed in this order — knowing it tells you what's worth buying:
-**base → added flat → increased (additive) → more (multiplicative) → enemy mitigation
-(resistance / penetration), applied last.**
+## 输出检查（offense / crit）
 
-1. **"More" beats "increased."** Increased modifiers add together (two +20% = ×1.4); "more"
-   modifiers each multiply (two 20% more = ×1.44). Your biggest "more" multipliers come from
-   **support gems** — picking the right supports is usually your largest single damage lever. The
-   corpus has no support magnitudes, so let `optimize_supports` pick the best set by measuring each
-   on the engine, rather than eyeballing it.
-2. **Stack flat added damage early.** It sits at the bottom of the order, so every increased /
-   more / crit / speed multiplier on top scales it. Early flat damage compounds as your
-   multipliers grow.
-3. **Mix your scaling layers.** Added + increased + more + crit + speed + penetration multiply
-   together; spreading investment across several layers vastly outperforms over-investing one
-   (e.g. dumping everything into "increased" hits hard diminishing returns).
-4. **Crit needs both halves.** Base critical damage bonus is +100% (a crit deals ~2×). Crit
-   chance and crit damage are useless without each other — balance them, don't stack one.
-5. **Match the enemy's resistance and lower it.** Damage is reduced by enemy resistance last, so
-   **penetration** and **exposure** (−% enemy resistance) are effectively "more" damage. Pick a
-   damage type and commit; don't split across types.
-6. **Respect conversion.** When a skill converts damage (e.g. physical → cold), **only modifiers
-   for the final type apply.** Scaling the pre-conversion type is wasted.
-7. **Hit rate is damage.** Attack/cast speed multiplies DPS directly — just budget the resource
-   (mana) cost. It won't show in a single-hit tooltip; check `TotalDPS`.
-8. **Read the skill's tags.** Only modifiers matching a skill's tags (Spell/Attack/Projectile/
-   element/…) affect it. Off-tag stats do nothing.
-9. **Gem level and quality** are cheap, durable damage — spells gain flat damage per level,
-   attacks scale better with weapon damage.
+检查精确输出的武器兼容、技能等级、辅助实际作用与条件是否满足，再比较可用的改进方向：
+相关等级、基础伤害、增加/更多伤害、速率、暴击、敌人减伤及技能特有联动。它们的适用性与收益
+由当前构筑决定，不固定宣称某一项对所有技能最优。
 
----
+暴击方案需要同时评估机会、效果、代价与配套；转换、异常、召唤和多段技能必须查清实际规则。
+不能仅按名字、标签相似或显示伤害类型猜测词缀作用。
 
-## Spirit, links, and budget
+`optimize_supports` 按同一精确输出比较完整当前组合与完整候选，每个辅助应实际作用于组内至少
+一个职责。候选允许只移除辅助；收益必须结合资源约束与完整角色合法性，单辅助读数不替代组合。
 
-**Spirit** is a separate resource that pays for *persistent* effects — auras/buffs, minions,
-and meta/trigger gems. Treat it like a budget: spend it on the persistent effects with the
-highest impact for your build, and scale it with +Spirit gear (sceptres, amulets, body armour)
-when you need more reservation. Don't leave a big chunk of spirit unspent.
+`TotalDPS`、`FullDPS`、单次命中和条件爆发分别按 PoB 的实际计算上下文解释。涉及重复命中、
+投射物重叠、多个技能或持续效果时，核实计数、可同时生效条件和轮转，避免重复相加。
 
----
+## 资源与常驻效果（Spirit / sustain / mana / life / links / budget）
 
-## Design patterns of strong builds
+从实际快照读取 Mana 与 Life 的每次、百分比、每秒及百分比每秒成本，并区分主动与触发支付。
+命中、击杀和条件恢复只用于能够维持该条件的场景；未建模 Mana 恢复不能覆盖确定性的 Life 失败。
+`*LeechGainRate` 已包含 On-Hit，不能再与 `*OnHitRate` 相加。
 
-Structural patterns strong builds share — stated as durable design, **not** as any current pick
-(no specific skill/item/ascendancy is "the answer"). Use them to shape a build, then verify on
-the engine.
+Spirit 的容量、预留和开启状态由 PoB 读回。未使用容量是待评估机会，不是必须填满的目标；
+比较新增效果的实际职责、收益与其他资源代价。药剂和护符是否能够支撑方案需要对应证据。
 
-- **Defense is *completed*, not partial.** Strong builds reach a full defensive baseline before
-  chasing more damage: resistances capped, a real hit pool, every gear slot used. A build with
-  uncapped resists or a few-hundred pool is unfinished, however high its tooltip DPS.
-- **Commit to one damage type and scale it multiplicatively.** Pick a single damage type (often a
-  single ailment too) and stack it rather than splitting across types. Support gems are the
-  *backbone* — most of the damage comes from the multiplicative ("more") supports on the main
-  skill (`optimize_supports` finds the best set by engine-measuring each); gear and tree add
-  flat/increased on top.
-- **Crit is all-or-nothing.** If a build goes crit, it commits to *both* crit chance and crit
-  damage (plus a crit support) — half-invested crit is wasted. Builds that don't commit scale
-  hit/ailment damage instead. Pick one lane.
-- **Pick one defensive archetype and let it reshape the build.** Life, energy shield, or a hybrid
-  — the choice changes which stats matter. An ES-only identity such as current 0.5
-  `Chaos Inoculation` (Life → 1, immune to chaos damage and Bleeding) makes life *and* chaos
-  resistance irrelevant; an evasion/ES hybrid wants recharge uptime; an armour/life build wants
-  flat life and big-hit mitigation. Choose, then stop paying for stats your archetype doesn't use.
-- **Use every slot.** Complete builds fill gear *and* jewels, and cover ailments with charms — not
-  just resistances. Empty slots and missing ailment coverage are unfinished work.
-- **Solve "tax" stats on suffixes; spend prefixes on the payoff.** Resistances and attributes are
-  typically suffixes, so prefixes can carry the build's defining stats (life/ES, added damage —
-  the things that scale it).
+配置只开启构筑实际能够维持的条件，并分别检查 Boss 无击杀、移动停手和其他关键场景。
+切换战斗场景后重新核对当前状态；此前的 Support、Jewel、Socket 回执不能自动沿用。
 
-None of these prescribe *what* to play — they describe what *coherent* looks like. The skill,
-items, and ascendancy are the player's call; these are the structural discipline that turns any
-of those choices into a working build.
+## 机制包与职责设计（design patterns / uniques / jewels / sockets）
 
-## Common red flags (cheap wins hiding here)
+一个可复用的机制包应说明组件关系、启动和维持条件、收益、成本、失败边界与验证方式。
+Create 先落实所选来源中必需的 unique_enabler，再评估普通候选暗金；按组件记录采用、保留
+风险或受允许原因支持的拒绝。暗金并不天然优于黄装，价格不作为拒绝理由。
 
-- Uncapped elemental resistance, or negative chaos resistance.
-- A single defensive layer and nothing else (e.g. big life pool, zero mitigation/avoidance).
-- No recovery beyond flasks.
-- No ailment-threshold or charm coverage for shock/freeze/bleed.
-- Damage split across two types, or scaling a pre-conversion damage type.
-- Over-investing "increased" damage while owning no "more" multipliers (supports).
-- A high tooltip hit with low attack/cast speed (low sustained DPS).
+普通黄装通过工具的 realistic_trade 策略生成和验证，默认每件最多五条显式词缀、最多两条深 T1；
+制作、Rune、Soul Core、精华和腐化来源按专门回执验证，不能把普通词缀规则套到全部组件。
 
-When you spot one of these, it's usually the highest-return change available — propose it, then
-**verify the delta on the engine** before recommending it.
+完成核心与重要支撑天赋后，再按当前等级评估珠宝与额外槽位；保留受保护节点，不以成熟样本
+的槽数作为目标。radius/Time-Lost 必须位置化验证，普通黄珠宝再做适用优化。
+
+所有可镶嵌装备均评估适用的 Rune/Soul Core，说明采用或不采用的机制理由。增量镶嵌保留原件的
+非 Rune 结构和已验证来源；使用返回的制作回执可信装备后，才算计划已应用。
+
+## 常见问题（red flags）
+
+- 应读的关键 Research 记录没有深读，或失败前提没有作出明确决定。
+- 核心机制缺少必要组件、辅助未实际生效，或测量选错技能输出。
+- 把击杀、短时或互斥配置当作常驻收益。
+- 资源池很大但持续支付、恢复条件或 Spirit 预留没有验证。
+- 抗性低于当前适用目标，或达标后仍有伤害类型、恢复和控制方面的明显短板。
+- 换装后丢失来源技能、辅助、属性或配置，却仍把测量解释为无收益。
+- 把不可建模或测量失败当作机制已经失败，或当作无需处理的问题。
+- 只看单组件边际与某个最高面板，没有比较完整机制方案。
+- 历史回执已失效、正收益尚未应用，或用新通过结论抬高旧的未知结论。
+
+按实际影响选择下一项修正，用同目标的工具证据确认效果。问题未解决时如实保留限制与后续任务。

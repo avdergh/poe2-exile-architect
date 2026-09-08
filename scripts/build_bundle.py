@@ -18,6 +18,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 try:
     from .package_physical_graph_seed import package_graph_seed
@@ -53,6 +54,26 @@ def _copy(src: Path, dst: Path, skip_art: bool = False) -> None:
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*patterns))
     else:
         shutil.copy2(src, dst)
+
+
+def _copy_research_seed(src: Path, dst: Path) -> None:
+    """Package a validated seed input; only its installed user copy is migrated."""
+    from server.knowledge import mature_learning
+
+    if not src.is_file():
+        raise FileNotFoundError(
+            "Research Memory release seed missing; release bundles require a validated global seed"
+        )
+    mature_learning.validate_release_seed(src, allow_legacy_schema=True)
+    temp = dst.with_name(f".{dst.name}.{uuid4().hex}.validating")
+    try:
+        _copy(src, temp)
+        # Validate the bytes that will ship, even if the source changed after the
+        # first check. Keep a previous validated destination intact on failure.
+        mature_learning.validate_release_seed(temp, allow_legacy_schema=True)
+        temp.replace(dst)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -115,24 +136,16 @@ def main() -> int:
     # Bundled seed data
     _copy(corpus, stage / "data" / "corpus.sqlite")
     _copy(
-        ROOT / "data" / "compatibility" / "pob.json",
-        stage / "data" / "compatibility" / "pob.json",
+        ROOT / "data" / "compatibility",
+        stage / "data" / "compatibility",
     )
     (stage / "data" / "VERSION").write_text(args.version)
 
     research_seed = ROOT / "data" / "mature_build_learning" / "release.sqlite"
-    if research_seed.is_file():
-        from server.knowledge import mature_learning
-
-        mature_learning.validate_release_seed(research_seed)
-        _copy(
-            research_seed,
-            stage / "data" / "mature_build_learning" / "release.sqlite",
-        )
-    else:
-        raise FileNotFoundError(
-            "Research Memory release seed missing; release bundles require a validated global seed"
-        )
+    _copy_research_seed(
+        research_seed,
+        stage / "data" / "mature_build_learning" / "release.sqlite",
+    )
 
     learning_seed = ROOT / "data" / "comparative_learning" / "learning-memory.seed.jsonl"
     if learning_seed.is_file():

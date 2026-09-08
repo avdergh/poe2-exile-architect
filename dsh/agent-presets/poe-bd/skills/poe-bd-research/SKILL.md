@@ -15,101 +15,97 @@ description: Use when the user wants to collect, queue, analyze, or store mature
 
 # /poe-bd-research
 
-把成熟 PoE2 BD 样本转成 copy-safe、resolver-backed、planner-advisory 的研究记忆。当前会话只负责
-建立/恢复队列、编排显式 Research Worker、汇总与清理；每个案例都由独立 Subagent 使用
-`$poe-bd-research-worker` 完成。
+把成熟 PoE2 BD 样本转成 copy-safe、resolver-backed、planner-advisory 的研究记忆。当前会话建立/恢复
+队列、编排显式 `$poe-bd-research-worker`、汇总与清理；每个案例由独立 Subagent 研究。
 
 ## Controller Boundary
 
 - 主会话永不 claim、读取案例证据、编辑 review 或 accept，也不提供串行 fallback。
-- queue 前确认宿主的 Subagent 能共享 Research MCP 工具面和 opaque `runRef`。产品态运行不依赖当前
-  checkout/cwd，也不把 queue/review/quarantine 写入项目或插件缓存。
-- 目标宿主容量是 6 个活动槽位：Controller 占 1 个，Research Worker、回访和其他
-  Subagent 共享剩余 5 个，超出部分排队。Research Worker 的业务并发上限仍为 5；宿主实际
-  总容量低于 6 时按可用槽位降级，并向用户报告实际 Worker 数，不得宣称已启用 5 Worker。
-  只在 `status.dispatchableCount > 0` 时创建新 Worker；该值包含 queued 与 lease 已过期、可由
-  claim 原子回收的 claimed 案例。
-- 这是产品运行态，不得修改源码、测试、文档、schema、安装脚本或 plugin manifest。collector、运行
-  绑定或 queue 失败时只报告 safe error 并停止，不在本次运行临场修代码。
-- 用户在会话中输入 `/poe-bd-research` / `$poe-bd-research` 是请求 Agent 执行 workflow，不是 shell
-  命令；不要要求用户复制内部 PowerShell/Python 命令。
-- queue/status/cleanup 和 Worker 返回必须保持 safe-only。原始 PoB code/XML、账号/角色明细和完整 URL
-  不得进入普通聊天、Research Memory 或 Git。
+- queue 前确认宿主 Subagent 能共享 Research MCP 工具和 opaque `runRef`。运行态位于 user-data，
+  不依赖 checkout/cwd，不把 queue/review/quarantine 写入项目或插件缓存。
+- 本次是产品运行，不修改源码、测试、文档、schema、安装脚本或 plugin manifest。collector、运行绑定
+  或 queue 失败时只报告 safe error 并停止，不临场修代码。
+- `/poe-bd-research` / `$poe-bd-research` 是执行 workflow 的请求，不是 shell 命令；不要要求用户复制
+  内部 PowerShell/Python 命令。queue/status/cleanup 与 Worker 返回保持 safe-only，原始 PoB/XML、
+  账号/角色明细和完整 URL 不得进入普通聊天、Research Memory 或 Git。
 
-## Options
+## 参数
 
-`$ARGUMENTS` 可包含：
+将 `$ARGUMENTS` 映射为 typed 参数：
 
-- `--limit N`：从 poe.ninja 当前 softcore trade league 取样；交互式无参时不得静默使用 CLI 的 50。
-- `--worker-count N`：Research Worker 数，范围 1–5，默认 5；宿主容量更低时自动降低实际并发。
-- `--league current|<league-url>`：poe.ninja league，默认 `current`。
-- `--ascendancy NAME`：可重复，对已渲染结果做本地升华筛选。
-- `--class NAME`：可重复，透传 poe.ninja 的 `class` 参数；`Blood+Mage` 先归一，不得二次编码。
-- `--level-min N` / `--level-max N`：默认 90–100；这是区间，精确等级需令两者相等。
-- `--source-file ABSOLUTE_PATH`：单个本地 PoB code/XML；产品态只接收绝对路径。
-- `--source-batch-file ABSOLUTE_PATH`：本地批量输入；每案由独立 Worker 处理；产品态只接收绝对路径。
-- `--expected-source-count N`：本地输入的预期案例数；不符时不创建队列。
-- `--resume --run-ref REF`：恢复新产品队列；仍由 Controller 派发全新的单案 Worker。
-- `--supplement-sample-id ID`：可重复；仅与既有 `runRef` 的补录同时使用，精确选择已 accepted
-  且 quarantine 可恢复的 sampleId；空、未知、未接受或不可恢复目标在创建新 run 前失败关闭。
-- `--dry-run`：只验证 collector，不建队列、不产生知识。
+| 用户选项 | 参数与含义 |
+|---|---|
+| `--limit N` | `limit`：当前 softcore trade league 样本数；无参按下节处理。 |
+| `--worker-count N` | `worker_count`：请求并发，默认 5，范围 1–5。 |
+| `--retention-days N` | `retention_days`：新run原料保留期限，默认7天，范围1–30；恢复不续期。 |
+| `--league current\|<league-url>` | `league`：默认 `current`。 |
+| `--ascendancy NAME` | `ascendancies` 列表：对渲染结果本地筛选，可重复。 |
+| `--class NAME` | `classes` 列表：透传 poe.ninja class，可重复；`Blood+Mage` 先归一，不得二次编码。 |
+| `--level-min N` / `--level-max N` | `level_min / level_max`：默认 90–100；精确等级令两者相等。 |
+| `--source-file ABSOLUTE_PATH` / `--source-batch-file ABSOLUTE_PATH` | `source_files / source_batch_files` 列表：本地单个/批量输入，只接收绝对路径。 |
+| `--expected-source-count N` | `expected_source_count`：本地输入预期数，不符不建队列。 |
+| `--source-game-patch PATCH` | `source_game_patch`：本地来源实际版本，见“来源版本”。 |
+| `--resume --run-ref REF` | 用 `mcp__poe_research__get_research_run_status(run_ref=REF)` 恢复调度。 |
+| `--supplement-sample-id ID` | 可重复的补录目标，条件与调用见“回访、补录与清理”。 |
+| `--dry-run` | `dry_run=true`：只验证 collector，不建队列、不产生知识。 |
 
-快速粘贴的裸 PoB code、pobb.in/pastebin 链接或 raw XML 先保存到 OS temp 文件，再替换成
-`--source-file <temp>`。不要把 code 原文放进命令行参数、run runtime 或仓库；链接先由宿主 fetch 后落临时
-文件，无法本地化时才请用户提供文件。
-
-角色级去重由本地 intake ledger 负责：queue 会跳过本 league 已研究角色并继续分页；正式 accept 后
-记录晋升为 accepted。本地 source-file/batch 不走该 ledger。
+用户粘贴的裸 PoB code/raw XML 先保存到 OS temp 文件，链接由宿主 fetch 后落临时文件，再用
+`source_files`；无法本地化时才请用户提供文件。不要把 code 原文放入命令行、run runtime 或仓库。
+工具接收URL时会在入队冻结已解析内容，之后claim不重新抓取该URL。旧URL-only队列或材料hash不符
+保持不可恢复诊断，不能拿新响应重标旧来源；重新研究走新来源流程。
+在线角色去重由本地 intake ledger 负责：跳过本 league 已入队角色并继续分页，accept 后晋升为 accepted；
+本地 source-file/batch 不走该 ledger。
 
 ## No-Argument Behavior
 
-如果 `$ARGUMENTS` 为空，在任何联网或 queue 操作前询问：
+`$ARGUMENTS` 为空时，在任何联网/queue 前询问：小批量 `limit=20`、大批量 `limit=50`、提供 runRef
+恢复，或链路预检 `limit=5 --dry-run`。预检只用于用户明确要求验证链路，不能替代真实研究。
+用户已给数量、输入或分析意图时直接 queue；`poe-bd-research-loop` 携带参数发起时不重复菜单。
 
-- 小批量提取：真实 `limit=20`；
-- 大批量提取：真实 `limit=50`；
-- 恢复已有队列：用户提供 runRef；
-- 链路预检：`limit=5 --dry-run`，仅在用户明确只想验证链路时使用。
+## Typed Tool Binding 与来源版本
 
-用户已给案例数量、输入或分析意图时直接执行真实 queue，不要用 dry-run 替代。由
-`poe-bd-research-loop` 发起且已经携带 `--limit` 等参数时也直接进入同一 Controller 流程，不再询问
-菜单；后续案例仍全部交给 Worker。
-
-## Typed Tool Binding
-
-产品态只使用 Research MCP 的 `mcp__poe_research__start_research_run / mcp__poe_research__get_research_run_status /
-mcp__poe_research__cleanup_research_run`。工具未显示时先按精确名做 tool discovery；缺失时停止，不搜索仓库、不解析
-插件安装路径，也不回退 shell CLI。工具返回的 `runRef` 是唯一运行身份；不得向 Worker 传 runDir、
+Controller 使用 `mcp__poe_research__start_research_run / mcp__poe_research__get_research_run_status / mcp__poe_research__cleanup_research_run` 管理运行态。
+工具未显示先精确 discovery；缺失时停止，不搜索仓库/插件路径，也不回退 shell CLI。
+`scripts/research_mature_builds.py` 仅供源码开发/legacy 兼容。向 Worker 只传 `runRef`，不传 runDir、
 reviewFile、插件 cache path 或 Research DB path。
 
-源码仓库的 `scripts/research_mature_builds.py` 只保留开发/legacy 兼容，不属于发布 Skill 流程。
+正常 Research 只研究最新版本 BD；历史知识用于召回和补丁对照。在线采样由服务端绑定官方当前
+patch/联盟。本地文件必须有 `source_game_patch`：复用用户已明确的版本，未知时补齐后再 queue，
+不能用本地 PoB 版本猜来源补丁。补录保持原队列来源版本；`modelGamePatch` 独立记录，来源与模型
+不同表示模型缺口，不能重标来源或把旧模型输出当作当期数值认证。
 
-## Queue
-
-调用 `mcp__poe_research__start_research_run` 并逐字段传入用户参数。定向补录传
-`re_research_run_ref + supplement_sample_ids + supplement_focus`；省略
-`supplement_sample_ids` 才保持全 run 补录。live collector 外层超时至少 10 分钟；超时后按
-runtime failure 停止，不在同一 turn 重复 queue。非 dry-run 返回 `runId + runRef` 与安全计数；保存
-runRef，后续 status/Worker 只使用它。`--resume` 调用
-`mcp__poe_research__get_research_run_status(run_ref=<runRef>)`。普通新任务始终创建独立 run；只有用户显式提供已有 runRef
-并要求 resume 时才复用，不能覆盖既有 queue 或把新任务写进旧 run。
+调用 `mcp__poe_research__start_research_run` 时按参数表传入请求。live collector 外层超时至少 10 分钟；超时按 runtime
+failure 停止，不在同一 turn 重复 queue。非 dry-run 保存返回的 `runId + runRef` 和安全计数。
+普通新任务始终创建独立 run；只有用户显式给出已有 runRef 并要求恢复时才复用，不能覆盖既有 queue
+或把新任务写进旧 run。
 
 ## Worker Scheduling
 
-每个 Worker 派发必须：
+目标宿主容量是 6 个活动槽位：Controller 占 1 个，Worker、回访和其他 Subagent 共享剩余槽位。
+Research Worker 的业务并发上限仍为 5；实际并发取 `dispatchableCount`、请求 worker-count 与宿主
+可用槽位的最小值，并报告实际 Worker 数。只在 `status.dispatchableCount > 0` 时创建新 Worker；
+该值含 queued 与 lease 已过期、可由 claim 原子回收的 claimed 案例，不得抢占或复制未过期 lease。
 
-- 显式点名 `$poe-bd-research-worker`；
-- 携带具名的 opaque `runRef`；
-- 不指定 sampleId，不复制 Worker Skill 或逐案研究步骤；自然语言措辞可按当前上下文调整；
+每个 assignment：
+
+- 显式点名 `$poe-bd-research-worker`，携带具名 opaque `runRef`；
+- 不指定 sampleId，不复制 Worker Skill 或逐案步骤；
 - 必须用 `subagent` 后台派发并在 assignment 中携带用户本次研究请求/授权上下文；
   不得创建缺少父任务信息的空上下文 Worker，也不能只由 Controller 转述授权。
 
-初始创建数取 `dispatchableCount`、有效 worker-count 与宿主可用 Subagent 槽位的最小值；
-目标 6 总槽位下可同时运行 5 个 Worker。维护活动 Research Worker 集合与待回访队列。任一 Worker
-返回后读取其 safe outcome 并重新查询 status：
+维护活动 Worker、待回访队列及 `sampleId → agent → acceptance → feedback`。Worker 返回后读取 safe
+outcome，再查 status；已完成 agent 不处理第二案，回访仍发原 agent。
 
-1. `dispatchableCount > 0` 时先用释放的槽位创建全新 Worker，再处理回访；
-2. 回访已启用时，把 `sampleId → 原 agent` 加入待回访队列，不在仍有待研究案例时占用槽位；
-3. 已完成 agent 不处理第二个 Research 案例；后续回访仍发送给该原 agent。
+| 事件/状态 | Controller 动作 |
+|---|---|
+| `dispatchableCount > 0` 且有空槽 | 先用释放的槽位创建全新 Worker，再处理回访；启用回访时把已完成 sampleId 与原 agent 加入待回访队列。 |
+| `worker_capacity_reached / no_pending_cases` | 无 sampleId 的调度结果，不记业务失败。 |
+| 原 Worker 正在 validate/retry | 保持单案归属，不释放为新案例。 |
+| `staleAcceptingCount > 0` | 不回收或复制；等待原 Worker 用同一 review/attempt 重放 accept，从 final write receipt 幂等完成 ledger/queue 收尾，即使 lease 过期也不重写 Memory。无对应 Worker 仍 stale 时，停止 cleanup/补位并报告恢复诊断。 |
+| 不可恢复的单案错误 | 结束该 Worker，保留 run/lease，继续其他 queued 案例，最终业务结果记失败。 |
+| 同一基础设施 safe error 在两个新 Worker 中连续重复 | 停止补位，升级为 run-level runtime failure。 |
+
+claim 后的 Worker 必须返回 `sampleId + safe outcome`；accepted 还需 safe acceptance 摘要。
 
 ### Waiting Cadence
 
@@ -117,63 +113,40 @@ runRef，后续 status/Worker 只使用它。`--resume` 调用
 - 只有 Worker 结算、发生 safe error、需要补位/验收恢复，或用户主动询问状态时才查询 status；
   无变化时不发送心跳或重复枚举相同 Worker/lease。
 
-- `worker_capacity_reached` / `no_pending_cases` 是无 sampleId 的调度结果，不记业务失败。
-- `staleAcceptingCount > 0` 只表示可能存在中断的验收；不得自动回收或复制。等待对应活动 Worker
-  结算；原 Worker 用同一 review/attempt 重放 accept 时，服务可从 final write receipt 幂等完成
-  ledger/queue 收尾，即使 lease 已过期也不重写 Memory。若已无对应 Worker 仍保持 stale，则停止
-  cleanup/补位并报告显式恢复所需诊断。
-- claim 后的 Worker 必须返回 `sampleId + safe outcome`；accepted 时还返回 safe acceptance 摘要。
-- 主会话保存 `sampleId → agent → acceptance → feedback`。
-- validate/retry 是原 Worker 的正常单案修复路径，不释放为新案例。
-- 不可恢复的单案错误结束该 Worker、保留 run/lease，Controller 继续其他 queued 案例，并把最终业务
-  结果标为失败。
-- 同一基础设施 safe error 若在两个新 Worker 中连续重复，停止补位并升级为 run-level runtime failure，
-  避免无限创建 Worker。不得抢占或复制未过期 lease。
+## 回访、补录与清理
 
-## Optional Revisit And Cleanup
+回访默认关闭。用户明确要求时记录到待回访队列，直到无 dispatchable 案例且所有活动 Worker 已结算，
+再按原 agent 续聊。只判断高价值内容是否充分入库、是否发现工具/流程缺陷；只反馈，不修改。
 
-回访默认关闭。用户明确要求时，在原 Worker 完成 Research 后记录到待回访队列；只有
-当前 run 已无 dispatchable 案例且所有活动 Research Worker 均已结算后，才按原 agent 续聊。每次回访
-只要求判断：高价值内容是否充分入库、是否发现工具/流程缺陷；只反馈，不修改。回访和其他
-Subagent 与 Research Worker 共享 5 个 Subagent 槽位，超出部分排队。
+无回访时，全部案例 accepted、`effectiveResearchCompleteCount == acceptedCount`、status 无
+queued/claimed/accepting/rejected 且计数一致后才调用
+`mcp__poe_research__cleanup_research_run(run_ref=<runRef>)`；还须确认 write receipt/legacy receipt 已保存并完成 ledger
+reconciliation。接受安全子集不等于整案完成。出现缺口、用户要求补研或原料到期时，先读
+[补研、重取与期限](references/followup-and-retention.md)，按工具返回的当前状态处理。
 
-无回访时，只有全部案例 accepted、status 无 queued/claimed/accepting/rejected 且计数一致后才调用
-`mcp__poe_research__cleanup_research_run(run_ref=<runRef>)`。cleanup 还必须确认 accepted 案例的 write receipt/legacy
-receipt 已保存并完成 ledger reconciliation；任一缺口都保留 run，不手工删目录。
+有回访时，反馈已返回不等于获得 cleanup 授权；等用户明确确认或放弃全部反馈：
 
-只有用户明确决定放弃一个未完成 run 时，才可对同一工具传
-`abandon_incomplete=true`。该路径只释放由本 run 精确拥有、仍为 `queued` 的 intake-ledger 占位，
-保留 `accepted` ledger、Research Memory、种子和用户导出；身份不匹配或目录删除失败时失败关闭并
-回滚已释放占位。不得用手工删目录或直接改 SQLite 代替。
+- 批准知识补录：结束旧 Worker assignment，通过 `mcp__poe_research__start_research_run` 传
+  `re_research_run_ref + supplement_sample_ids + supplement_focus`，从原 run quarantine 使用
+  完全相同的 PoB 只重建获批同 case。目标须已 accepted 且 quarantine 可恢复；空、未知、未接受或
+  不可恢复目标在建 run 前失败关闭。省略 `supplement_sample_ids` 才表示全 run 补录。
+  保持原 researchGroup/Family 身份，只补既有缺口，必须产生 `created+updated >= 1`。
+  将新 runRef 作为新 assignment 发原 agent，不让旧 assignment queue 或领取第二案。
+- 批准工具/流程修复：follow-up 明确 Worker 运行态已经结束，切换普通开发任务，不再加载 Worker Skill
+  或执行 Research queue/claim。
+- 修复与复核后再 cleanup；上下文或 agent 映射丢失时保留 runRef，不推断授权。
 
-有回访时，反馈已返回不等于获得 cleanup 授权：
-
-- 等用户明确确认或放弃全部反馈；
-- 批准知识补录时，Controller 结束旧 Worker assignment，使用原 runRef 通过
-  `re_research_run_ref + supplement_sample_ids + supplement_focus` 让服务从原 run quarantine
-  使用完全相同的 PoB 只重建用户批准的同 case；省略 sampleId 列表才表示重建全部案例。补录保持原 researchGroup/Family
-  身份并只补既有缺口；本轮必须产生
-  `created+updated >= 1`，否则补录无效。再把新 runRef 作为新的显式
-  Worker assignment 续发给
-  原 agent；不得要求旧 Worker 在原 assignment 中 queue 或领取第二案；
-- 批准工具/流程修复时，follow-up 必须明确 Worker 运行态已经结束，本轮切换为普通开发任务，不再
-  加载 Worker Skill 或执行 Research queue/claim；
-- 修复与复核完成后再 cleanup；上下文或 agent 映射丢失时保留 runRef，不推断授权。
+显式放弃才传 `abandon_incomplete=true`；到期使用普通cleanup由锁定策略判断。活动lease、accepting
+或待恢复状态不能绕过；清理保存安全审计，原runRef仍可查询。不得手工删目录或直接改SQLite。
 
 ## Final Status
 
-最终 status 和 Worker safe summaries 分别报告 accepted patterns、deep records、semantic edges、
-created/updated/evidence counts、acceptanceMode、deferred reasons、unresolved mention/unique component
-counts、`writeReceiptRef`、mechanic audit 与 unique-gem diagnostics。不要把
-partial_with_deferred 描述为 clean，也不要把
-同一 unresolved 组件的多次 mention 当成多个不同组件。
+分别报告 accepted patterns/deep records/semantic edges、created/updated/evidence counts、acceptanceMode、
+deferred reasons、unresolved mention/unique component counts、writeReceiptRef、mechanic audit 和 unique-gem
+diagnostics，并单列原始`researchCompletion`、当前`effectiveResearchCompletion`及未关闭缺口数。
+partial_with_deferred 不描述成原始clean，
+同一 unresolved 组件的多次 mention 不算多个组件。
 
-当调用方要求研究业务标记时，最终回答最后一行必须且只能包含一个：
-
-```text
-POE_RESEARCH_SUCCEEDED: yes
-POE_RESEARCH_SUCCEEDED: no
-```
-
-只有请求案例全部正式 accepted、status 无 queued/claimed/accepting/rejected、计数与持久化一致且没有
-run-level/单案不可恢复失败时才输出 `yes`；否则输出 `no`。
+调用方要求业务标记时，最终回答最后一行只能是 `POE_RESEARCH_SUCCEEDED: yes` 或
+`POE_RESEARCH_SUCCEEDED: no`。仅当请求案例全部正式 accepted、status 无 queued/claimed/accepting/rejected、
+计数与持久化一致、`effectiveResearchCompleteCount == acceptedCount` 且无 run-level/单案不可恢复失败时输出 yes，否则 no。

@@ -14,6 +14,8 @@ Learning Memory. PoB/Judge tooling lives in the build server.
    Research receipts fail closed.
 3. Judge scores are `advisoryOnly` attachments; the independent Comparator decides winners and
    the service never derives reward from Judge numbers.
+   Report v2 requires two-sided case-bound evidence for non-unknown dimensions and consistent
+   critical gaps. Unknown/legacy evidence cannot show progress; tradeoff is not automatic non-inferiority.
 4. Learning Memory is append-only: corrections append events and keep do-not-repeat history;
    never overwrite a prior lesson. Knowledge that fits a Research record kind must go to Research
    (`dbFit=false`).

@@ -2,6 +2,259 @@
 
 ## 阶段状态
 
+2026-09-08审查后优化状态：Create Skill主文905→110行，细节按阶段reference读取，全部Create文档
+UTF-8总量约减少16%；DSH同步，42项聚焦测试、quick与独立桌面场景推演通过。现已完成首例内部
+真实Create技术候选，尚未做发布安装验收或正式质量比较。Phase 4的R1–R4复审9项问题及同类遗漏已修，218项集成回归和quick通过后，
+已完成C1–C6分包实现；整体复审11项问题已修复并通过聚焦/交叉复核及Full/Compute/Quick验收。
+随后K1/D1已修复并通过3126项noncompute、132项quick及静态检查；存量知识内容初读已启动，
+当期来源采样因source_unavailable停止，未计研究成功。真实Create基线已保存并完成受管review，
+最后一项来源辅助选择修复的124项compute回归已通过。2026-09-09的D3/D4/E1代码与指令修复
+已完成，最终验证与边界见下节。
+
+### D4/E1/D3证据与运行指南收尾（2026-09-09）
+
+D4把ToolReference分成内部已核验Research来源、带reviewBasis的Agent审读声明与unverified。
+Blueprint grounded/inferred/rejected不能依赖未验证引用；hypothesis必须保留验证任务。
+Blueprint、Draft、Judge历史bundle及最终Review共同绑定原证据权限，baseline返回原引用与
+evidenceAudit。Judge后可新增合法旁证，但不能删换原证据或提权。summary改写和引用排序不刷新
+设计hash；数值/硬合法性仍独立由PoB/Judge证明。新输出合同v5要求旧受管run重启，不重标旧artifact。
+
+E1比较报告v2要求非unknown维度双方引用绑定本案例安全packet，critical flags与typed gaps一致，
+tradeoff单列。状态查询核对comparisonRef并重算比较指标；unknown、旧覆盖、缺失数值和中间案例
+证据缺口不能成为进步信号。十例全程具备可比较覆盖后才使用原前3/后3联合趋势，Comparator仍
+独立判断、Judge仍advisory。此修复不恢复历史Phase7批次，也不证明真实BD质量已经改善。
+
+D3将ASSISTANT_GUIDE从848行收敛为263行的路由、工具事实与边界索引，流程由已安装Skill维护。
+删除执行helper/禁止helper、拷贝成熟原BD及停在人工包等冲突；清楚标明Blueprint前置以及
+保存artifact、artifact-bound lifecycle、Review和选定导出的顺序。Create/学习Skill、DSH副本、
+工具说明与bootstrap已同步，未新增模型runner或工具数量。
+
+验证：原D4/E1反例已转为40项新增回归，恢复/旁证消费、比较趋势和文档路由的聚焦检查通过；quick
+132项通过，最终noncompute为3204项及19项子测试通过，ruff/mypy/manifest通过，固定六维复核完成。
+格式差异按现行policy仅warning。本包不改PoB/Lua/optimizer，不例行重跑compute；
+安装发布、真实库切换、当期Research来源诊断及新冻结批次效果验收另行推进。
+
+随后独立CR发现的两项P2已修复并再次独立复审通过：D4增加逐package/plan的来源关联与Draft
+指纹，禁止把原引用挪到其他决定下绕过保留要求，同一决定仍可追加旁证；旧活动Draft须完整
+重验，旧artifact只从受检Judge bundle的原计划读取关联，不补造或改写历史。E1统一安全引用
+字符合同，合法ASCII撇号原样通过，错侧/跨案/未知/重复引用仍拒绝。新增22项正式回归，原独立
+3项反例全部转绿，修复前旧artifact的只读兼容验证通过。quick 132项通过；本次最终noncompute
+3226项及19项子测试通过，ruff/mypy/manifest通过。没有执行用户构筑/研究实验、安装发布或恢复旧Phase7。
+
+### K1/D1之后的真实产物质量基线（2026-09-08，已实跑）
+
+用户已确认将首批真实Create与Research内容审计前移。K1和直接误导构筑的D1验收后启动，
+不等待全库整理、完整GUIDE重整或大型评估集。本例使用隔离打包runtime、冻结知识与PoB、当前
+任务模型设置和固定等级/目标，通过正常MCP Create合同形成artifact；不声称这批修复已改善最终BD。
+
+首例为95级Stormweaver Spark，0.5.5目标下召回并深读12条0.5.4 Family知识；模型兼容证据仍为
+0.5.4，未获当前版本认证。首个正式Judge通过、共享硬合法性通过，保存
+`final-build:d41da137-5cca-419b-915b-ec1d2f11476b`，artifact独立lifecycle及普通review已完成。
+档位为candidate：基础防御未达阶段要求，触发率、恢复覆盖、副手状态和受保护珠宝审计保留限制。
+单阶段lifecycle证据覆盖complete只表示已评估，不表示全部检查通过。没有公开上传。
+
+真实路径另复现并修复非主来源辅助探针的选择顺序：完整快照重载后先激活来源组，再校验精确
+效果；同一候选state hash的108项测量错误清零。聚焦/quick、打包MCP烟测及完整124项compute
+回归已通过。候选经公开MCP在内存恢复到同一run和同一state，未重新生成或刷新正式Judge额度。
+本轮包含工程修复与恢复，耗时不用于稳态性能比较；安全结果保存在本地基线验收目录。
+
+基线记录机制兑现、清图/Boss职责、启动与稳态、资源/防御短板、装备可获得性、工具成本与重试；
+逐项追踪Research召回、深读、决定和最终实装。参考材料与Create隔离，缺证据保留unknown。
+正式比较前完成D4证据等级与E1覆盖统计修复；Comparator独立逐维判断，Judge保持advisory。
+后续按真实产物的高影响根因开展定向优化，用新的独立批次验证收益，不重跑旧Phase7案例。
+
+D1将BUILD_ADVICE收敛为中文的可检索机制原则，保留英文主题检索；去除固定伤害门槛、默认75%
+满抗、通用投入排名及为可计算性换流派的指令，并同步相关MCP prompt/指南。其本身不另设
+完成门槛，普通Create继续以Family设计、共享硬合法性、主动质量收尾与artifact档位为准。
+
+### C1/C2本轮验收（2026-09-06）
+
+C1使用`support_audit_v3`比较完整当前组合与完整候选，保留当前辅助协同和所有活动技能设置。
+同组主动技能与精确输出共同发现候选；只有相同计算上下文、约束满足、硬合法性不回归且有净正
+收益才能要求换组合，包括只移除辅助。Checkpoint升级v6；应用后沿用只接受精确组指纹并重置
+当前基线，不能把旧delta当作新状态提升。两个语料/PoB名称差异由精确gem/effect ID解决，公开
+普通组与来源组应用均已接通；模型明确不可用的候选单列未覆盖，未知测量失败仍阻断。
+同条件完整复测的错误或反证撤销旧授权及其派生回执；缩窄范围、改变目标或约束不能洗掉已证明
+的正收益义务。历史诊断有界保留，重新成功测量后可获得新授权。
+普通辅助探针复用PoB原生LoadSkill，仅重建目标技能组，避免逐候选重载装备与天赋树；完整当前/
+候选比较和最终整态恢复不变。新增局部与整态导入的数值/语义hash对照。原来超过300秒的95级
+Tactician工具链用例现以214秒通过，未缩小候选范围或提高该用例超时门槛。
+PoB附属组变化走原snapshot的完整导入复核，避免按名称白名单放宽；附属effect增删造成输出序号
+变化时仍按effectId与精确名称锁定原输出。空辅助试探的真实操作失败必须阻断，裸技能缺少可建模
+数值与实际操作失败分开处理。
+整态回退另发现PoB多行配置的通用XML读取/hash碰撞，作为P1 V10同步修复（见Phase 4）；
+仅保留C1原XML字节不能替代共享状态身份修复。最终验收覆盖该新增阻断项。
+
+C2使用`item_socket_review_v2`区分完整无收益与测量失败/能力缺口，验证所有目标数值、完整原装备
+和候选成品、whole-build合法性及状态恢复。单槽与批量共用回执；计划只有经可信equip后才应用，
+重测失败撤销旧pending与派生证明。临时探针必须消除PoB同槽Rune继承并核实际读回，避免把旧镶嵌
+当作裸件基线或混入新候选；去除完整Rune来源tag链但保留非Rune词缀。满孔同样检查未应用正收益
+与最新失败；单槽重装不得覆盖其他槽在同一精确状态的失败证据。
+内部`eval_items`隔离由C2显式启用；其他装备候选路径的槽位继承与完整成品比较继续归C5/C6验收。
+
+交叉审查由非原作者执行，主agent核代码与复现。除主缺陷外，补入多active候选范围、规范名称
+推荐→应用、单槽回执缺失、失败后旧pending授权和真实PoB原Rune继承的回归。现有单元测试通过
+不能替代上述公开路径与真实引擎验收。主agent的C1整合85项、C2整合79项及工具/文档消费58项
+通过；性能修复后的整合185项、触发宿主/输出4参数及同顺序Research前缀2080项与11个subtest
+通过。首轮full被上述性能超时中断，此前另出现一项未保留完整详情的失败；该前缀复跑未复现，
+没有据此猜改知识实现。最终full/compute重跑使用逐项日志。每批计数独立，不累加重叠用例。
+最终full已通过2829项测试与14个subtest、ruff/mypy/manifest、迁移回放、发布种子验证、DSH一致性、
+bundle/插件构建及分域MCP/PoB Research烟测（`tmp/c12-v10-full.log`，测试783.91秒）。
+该轮此前全部失败路径均通过。compute全套123项分批覆盖通过：首批103项通过后，仅因旧测试
+替身未实现新增身份查询接口而停止；补齐替身、保留原静默丢失回滚断言后，其余20项全部通过。
+生产实现未在两批之间改变，未重复已过重型用例；`tmp/c12-compute-coverage.json`核对123项唯一
+用例全部覆盖，无缺失或额外项。原日志为`tmp/c12-v10-compute.log`与
+`tmp/c12-v10-compute-remaining.log`。R1–R4复审修复、追加V10与C1/C2至此完成本轮代码验收。
+
+| 改动范围 | 验证对应 |
+| --- | --- |
+| Research写入/模型/召回、显式修订传输、种子构建与校验 | claim revision guards、revision transport、seed safety及full；见Phase 4复审修复表 |
+| Research queue/workflow、packet/readback、缺口关闭 | source material binding、runtime races、resume protection、followups、packet selection及真实PoB readback smoke |
+| supportopt、skillgroups、Checkpoint/evaluation | combination oracle、support checkpoint/runtime identity、group probe、generation fast path/evaluation及full；source技能与Tactician真实PoB集成 |
+| craftopt、engine、Lua隔离测量与Checkpoint | socket measurement/checkpoint/eval isolation、craft receipts及compute；真实Rune替换与正式equip |
+| AGENTS、GUIDE、SCHEMAS、阶段文档与Skills | 文档合同测试、Skill校验、DSH再生成一致性、ruff/diff检查及full打包/MCP烟测 |
+
+本轮证明工具测量与授权合同的正确性；没有运行真实Create/Research/campaign、迁移用户知识库
+或更新已安装插件，也不据测试通过宣称最终BD质量已有统计提升。C5/C6后续验收见下节；
+其后C3/C4、K1与离线提取/召回及Create成果评估按滚动计划推进。
+
+### C5/C6装备候选优化（2026-09-07，已验收）
+
+按候选质量与工具链关联性先做C5/C6，再做交付/回退的C3/C4；编号为问题编号，二者之间没有
+必须先后的技术依赖。C5/C6已接入共享换槽测量与有约束的联合词缀选择，交叉复验发现已逐项修复。
+
+- C5的整套规划按卸除旧槽后的PoB抗性筛选；单件优化复用同一受锁探针，检查实际卸槽与恢复。
+  单项、全套和完整制作共用严格数值/上下文校验，不能用另一技能的DPS或缺失数值完成排名。
+- C6按已测边际分数对全局group、3前/3后、总显式与实际深T1预算做联合选择，避免先填前缀偏置。
+  线性选择不宣称组合全局最优；完整成品仍由PoB复测，并与当前完整装备比较。
+- `plan_gear`仅让实际验证并返回的物品进入投影，逐槽检查全角色和其他装备，并重放最终计划。
+  缺属性等新/加重非法状态不能作为已通过装备采用；原baseline已有问题仍如实报告。
+- `craft_item`在临时底材上读制作选项后恢复原装备，再做普通词缀搜索；Rune/corruption与最终
+  装备读回接入同一测量合同，成功恢复后才保存来源回执。`rank_upgrades`保留具体失败原因。
+- 换 source 物品导致输出/辅助配置丢失时明确拒绝，不能自动改测另一输出。原生未配置派生源
+  可以随词缀增删，手动配置与原精确数值目标保持保护。来源配置迁移不是本包自动完成的能力。
+- 从空活动主手开始的攻击构筑允许原`TotalDPS/FullDPS`保持unknown，但必须由PoB武器检查与
+  精确输出证明适用；新成品仍须可测且兼容。防御缺值、错误武器、NaN不能借此放行，未知基线
+  不生成净增益或参与升级排名。PoB重载补充的默认组选择值按其实际语义比较，显式选择仍保护。
+
+C5/C6的具体验收：
+
+- C5按卸除待换槽后的角色判断抗性饱和，保持其他槽与配置不变，再用完整成品复核；覆盖原火抗60、
+  旧戒指贡献30时仍能发现补足抗性的替换方案，并核实Rune/隐式继承是否符合所测物品。
+- C6在现行前后缀、五显式和深T1预算内联合选择；合成线性反例中，不能因先填前缀而错过更高收益
+  的2前3后方案。最后仍由PoB完整测量和共享合法性/可获得性审计决定是否采用。
+- 两项共用现有工具与审计，不扩大Family、不引入数值引擎或价格决策；补充候选顺序独立性、
+  完整原装备比较与失败恢复。
+
+验收证据：联合选择有穷举oracle与候选顺序测试，覆盖203→302的原反例；真实PoB覆盖旧戒指
+贡献抗性、Rune继承、source输出/辅助变化、派生Thorns、未选中诅咒组的默认值读回与空武器基线。
+宽池整套规划、normal/scaffold升级属性约束、阶段抗性与完整craft共5项通过
+（`tmp/c56-wide2.log`，573.06秒）。独立review逐项复验，主agent核源码与反例；最后143项聚焦
+通过（`tmp/c56-focused-final.log`，79.28秒），最终quick的132项与静态检查通过。各批有重叠，
+不将测试计数相加。
+
+`full`已通过2935项与14个subtest，以及ruff/mypy/manifest、迁移回放、发布种子校验、DSH、
+bundle/插件构建、分域MCP与PoB Research烟测（`tmp/c56-full.log`，pytest873.48秒）。
+该次pytest之后的空武器兼容及组默认值增补，另用最终聚焦与compute验收；不将较早的全量
+日志当作新增反例也已在该次运行中的证明。未更新安装、执行真实Create/Research或整理用户数据。
+
+compute的124项唯一用例已分批覆盖通过。整套中122项通过，两项旧维护optimizer烟测因缺少
+显式属性前提未达抗性目标；独立实机确认四件防具被正确拒绝，力量分别短缺9/29/23/16，
+不是C5误剪或计划投影失真。仅给这两个合成烟测补齐属性前提，保留原DPS、抗性与读回断言，
+分别复跑通过（444.27秒、1403.01秒）；生产门槛不变，负例仍验证属性不足必须拒绝。
+这不证明默认禁用的整体optimizer已成为普通Create入口或能生成可交付BD。
+日志为`tmp/c56-compute-final.log`、`tmp/c56-compute-legacy-smoke.log`与
+`tmp/c56-compute-legacy-crafting.log`；`tmp/c56-compute-coverage.json`核对124项全部覆盖、
+无缺失/额外项，不声称单次全套零失败。C5/C6至此完成本轮代码验收，真实BD成果收益仍待离线评估。
+
+### C3/C4交付与历史基线（2026-09-07，已验收）
+
+C3以`lifecycle_mechanism_observation_v1`统一正式lifecycle与checkpoint v7的机制观察；声明
+按engine、语义state hash、group/activeIndex/精确技能隔离，只存有界内存。cache hit也重新观察，
+缺声明保持unknown，空声明或失配新声明撤销旧结论。实际等级、药剂与技能来自快照，不能用
+caller布尔值授权。保存时允许同Judge快照/输出的lifecycle新证据更新新manifest，其他quality
+限制仍锁原receipt；原Judge receipt与已经保存的旧artifact不改。
+
+C4在成功Draft后冻结raw-free Blueprint/Draft/Research设计证据，Judge将它与run、candidate、
+attempt、source/semantic hash和完整输出绑定，进程内精确XML同时锚定bundle指纹。恢复仍要求
+passing+同hash合法性、活快照、选择理由与`candidate_delta_only`。旧无bundle回执不能跨修订
+恢复。保存后output/review只通过artifact+selection+receipt取得历史context，再执行原Blueprint、
+Research来源/决策/稳定结构与selected-attempt校验；不回写current marker。恢复回包仅投影
+`selectedDesignEvidence`供Agent填原候选，不返回整candidate或XML、不自动合成构筑。
+
+交叉复核发现并修复：Judge完整activeIndex绑定、Pydantic目标别名导致刷新被跳过、保存与
+Judge追加链及Draft/Blueprint写marker的竞态。三类操作共用run锁，artifact发布后不再改变
+该run设计或追加Judge。roundtrip恢复异常/错hash在80/90等所有等级停止发布，结构检查的原等级
+策略不变。旧Python直接传入的派生布尔只丢弃后重读实物，其他字段仍严格typed验证。
+
+验证：主整合256项中唯一回包元数据raw-safety误报已移除冗余字段，随后该路径与文档/DSH合同
+23项通过；独立review12项通过。matched Research消费8项及原执行合同15项通过，保留真实plan
+validator，provenance使用受控测试接口，不能称为真实Research任务。真实pinned PoB的80/92级
+公开lifecycle→checkpoint两项通过，未替换数值、技能选择或gate，仅隔离无关quality清单。
+最终`full`一次通过3019项测试与14个subtest（890.81秒），并通过ruff、mypy、manifest、迁移
+回放、发布种子验证、DSH一致性、bundle/插件构建及分域MCP/PoB Research烟测，日志为
+`tmp/c34-full.log`。最终quick的132项及静态检查通过（`tmp/c34-quick.log`）；Create Skill格式
+校验通过。上述全量覆盖所有本包新增反例；各批测试有重叠，不相加成独立用例总数。
+
+本包不修改PoB/Lua/optimizer，不重跑已在C5/C6完成的重型compute；不运行真实Create/Research、
+迁移用户知识或更新已安装插件。原计划C3/C4之后进入K1，现先完成下节整体复审问题的修复。
+
+### C1–C6整体复审（2026-09-08，修复前记录）
+
+在分包验证后，按辅助/装备/历史基线/工作流/共享状态五条交叉路径完成固定六维审查。
+主agent核对各组发现，并重跑有界反例；另补80/90/91/92级artifact lifecycle默认调用的真实PoB
+对照。确认9项C新逻辑或跨模块接线问题（CR01–CR09），以及2项HEAD已存在的同链遗漏（CE01/CE02）。
+完整报告及各项当前代码定位：[C系列整体复审](../../tmp/c-series-review-20260908/REVIEW.md)。
+
+- P1优先：C2来源技能清槽后改测另一输出仍签no_positive；满孔pending在state变更后stale被漏检；
+  artifact保存忽略同快照的新质量反证、仍沿用旧passed/recommended。
+- 其他C问题：preflight遗漏真实active序号、默认artifact lifecycle丢关键声明、同状态合法Research
+  修订被Draft去重卡住、Draft缓存丢失后Judge静默缺bundle、镶嵌排队恢复竞态、artifact恢复失败
+  未设置后续入口依赖的引擎门禁。
+- 既有遗漏单列：精华成品再镶嵌丢原来源，以及速率capability_gap快路跳过可读资源上限检查；
+  不将它们伪装成本包新增行引入的回归。K1/D1/D3/D4继续保留原编号，不重复计数。
+
+该次复审只审查及复现，未改生产代码/既有测试，也未运行full/compute或真实Create/Research。
+当时安排先修测量、撤权、输出身份和恢复门禁，再闭合Draft/交付的合法推进路径；把反例转换为正式正确
+行为回归并复核后，再恢复K1。上文分包通过计数是历史记录，不代表这些新组合场景已经验收。
+
+### 整体复审修复（2026-09-08，已修复并验收）
+
+用户明确要求修复后，CR01–CR09及CE01/CE02全部实施，保留原复审证据，不重写旧反例。
+
+| 条目 | 实现与验收边界 |
+| --- | --- |
+| CR01/CE01 | socket普通测量复用完整replacement context，来源组使用保留Item ID/非目标XML字节的PoB探针；精华/腐化来源在同槽/版本/非Rune结构核验后派生，不猜来源。真实Molten Shower收益308.354775→315.7165875、精华Rune组合可信装备读回通过 |
+| CR02 | checkpoint v8将仍装备槽位的历史审计资格纳入检查；full socket stale需重测，已应用的current计划不再误报pending，卸槽不残留义务。真实正收益/失败→配置变更→重测→public equip→passed闭环通过 |
+| CR03 | 同Judge快照重观察质量的currentAdverseEvidence只可单向收紧旧限制；missing/stale不否决旧baseline、新passed不提升旧unknown。真实public socket撤权→quality→保存降档通过，原Judge receipt不改 |
+| CR04/CE02 | preflight投影核实的完整runtime输出序号，缺失/歧义失败关闭；纯速率缺口仍核可读Mana/Spirit约束，明确超限/缺值/测量错误不得按rate gap放行。真实Command及次组Comet序号、资源边界通过 |
+| CR05 | artifact保存typed lifecycleDeclarationBinding；省略state优先同session当前声明，无session才读取绑定输入，显式空撤销不被默认值覆盖；旧无声明不借旧pass授权。80/90/91/92真实PoB公开路径和坏binding/异target/state负例通过 |
+| CR06/CR07 | Draft v3用researchDecisionHash统一实质身份；同PoB的合法新深读/决定可修订，纯叙述/无序引用不刷；丢缓存完整重验可重建且不续期。所有要求Blueprint的新Judge缺bundle非消耗拒绝，旧v2 marker在原run重验升级，旧receipt不补造历史权限 |
+| CR08/CR09 | 单槽/批量镶嵌及artifact持锁后再查恢复门禁，恢复失败置共享标记；等待线程不接管残态、后续探针/保存拒绝。仅明确恢复可解除门禁 |
+
+实施由四路分工，主agent整合checkpoint/main、将真实交接反例加入正式tests；独立reviewer核对
+全部条目及旧证据兼容。修复整合时另消除了已应用socket被新历史集合误报pending的遗漏，并将
+旧v2 marker缺bundle的新Judge路径一并收紧；没有降低来源、属性、版本、目标或历史快照要求。
+
+新增/相关focused已覆盖来源测量、非Rune来源派生、双线程门禁、真实输出投影、资源约束、
+Research修订/容量淘汰/旧marker重建、历史质量单向收紧、artifact声明继承与撤销。原作者批次
+有168/146/114项，独立聚合110项，主交接整合61项；批次重叠，不相加。
+
+最终Full通过3115项测试、静态检查、迁移回放、Research种子内容校验、DSH同步、插件打包、
+四域MCP烟测和pinned PoB Research读回；Quick通过132项测试及静态检查。Skill格式验证与
+`git diff --check`通过，ruff format仅按现行规则报告warning。首次Full在三处旧测试夹具停止：
+runtime输出缺序号、Research实质修订仍断言unchanged，以及手写preflight缺输出身份；修正夹具
+后，相关文件14/35/41项聚焦通过（第三组另含3个subtest），随后完整Full复跑通过，未修改生产
+校验或跳过失败项。首次日志保留`tmp/c-review-fixes-20260908/full.log`，最终记录见同目录的
+`full-final.log`、`quick.log`与各项聚焦日志。
+
+Compute一次通过全部124项，耗时3225.92秒（53分45秒），日志为同目录`compute.log`。
+源码未改Lua/engine，但socket optimizer行为已变，因此本包手动运行compute；未缩减候选搜索或
+跳过重型制作测试。十一项复审修复至此完成代码验收。未执行真实Create/Research/campaign、
+安装发布或用户知识库迁移；本轮不启动K1，后续按原计划另行推进。
+
+### 原型阶段既有验收
+
 已完成。旧的重型 Phase 5 设计已归档，当前交付的是经过真实会话人工验收的轻量原型路线。
 
 已完成：
@@ -23,6 +276,11 @@
 旧 P5.1/P5.2/P5.3 重型实现不再代表当前主线设计。
 
 ## 方向调整
+
+发布Create的执行骨架维护在 `poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md`，进入阶段时才读取
+同目录references中的Research使用、Blueprint、构筑精修、验证恢复、提交合同与交付规则；Blind只
+覆盖模式差异。字段骨架以typed工具返回为准，不在入口再次维护整套schema。DSH从插件源生成同样的
+reference结构；验证同时检查入口链接可达与生成副本一致性，不要求全部规则挤回主Skill。
 
 上一版 Phase 5 设计过重，最大问题是把用户需求理解、上下文选择和候选方案收束过早交给
 程序。PoE2 BD 生成的高价值部分是机制选择、阶段取舍、失败解释和搜索方向调整，这些不适合
@@ -161,6 +419,8 @@ Agent 负责：
    普通暗金候选放在基础黄装之后。`plan_gear / optimize_item / craft_item / rank_upgrades` 的黄装
    候选默认共用 `realistic_trade`（每件最多五条显式词缀、最多两条深 T1），显式
    `theoretical` 仅作升级上限；该质量策略不限制装备写入、暗金、药剂、护符、珠宝或镶嵌。
+   tier 按实际 roll 后文本与 Checkpoint 同源判定；来源低档词缀若仍落入深 T1 区间，继续寻找
+   实际低档候选。完整成品和制作后的 PoB 读回另作策略复核，镶嵌及隐式不占普通词缀预算。
    90 级默认以三槽腰带和三护符为
    质量目标，有效容量读取最终 PoB `CharmLimit`；缺属性为 unknown，只有超容量是硬失败。
    所有可镶嵌装备都要评估 `optimize_item_sockets`，但无机制收益或机制不适用可以明确不用；价格
@@ -173,7 +433,7 @@ Agent 负责：
    重新审计；不再按固定轮数或成熟案例槽数停止。`policy_limited/inconclusive` 可进入 Judge，但
    交付保持 candidate。
    在元素 60%、非 CI 混沌 30% 后停止继续购买普通抗性，用户明确要求时可覆盖为 75%。
-6. Agent 先调用 `inspect_generation_checkpoint` v5。该工具按语义 build-state hash 合并
+6. Agent 先调用 `inspect_generation_checkpoint` v6。该工具按语义 build-state hash 合并
    completeness、preflight、有界 stats 和 defenses，并分别返回
    `hardLegalityReady / mechanismReady / qualityAdvisories / readyForJudge`。共享、无评分的
    `HardLegalityAudit` 检查属性需求、装备等级、主动宝石等级、PoB 武器兼容、Spirit、普通/
@@ -182,8 +442,9 @@ Agent 负责：
    同一物品审计，普通前后缀、Perfect Essence、符文和腐化不会再由两套检查器分别判断。同一状态
    不重复执行，状态修改后自动形成新检查。主动宝石
    检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
-   Support 逐组记录 `reasonClass`；只有 PoB runtime 已验证辅助作用到精确 active effect、结构检查
+   Support 逐组记录 `reasonClass`；只有 PoB runtime 已逐辅助验证其组内实际作用目标、结构检查
    完整且唯一缺口为触发率不可建模的 `capability_gap` 可作为 unknown 进入 Judge，并保持 candidate。
+   宿主辅助和输出辅助可分别作用于同组不同 active effect，数值能力仍绑定精确选中输出。
    `evidence_gap / measurement_error / actionable_gap` 继续在 Judge 前阻断且不消耗 attempt。
    Research 深读和最终候选摘要完成，且装备、天赋、珠宝、Rune、辅助与 config 冻结后，Agent 先
    完成 state-bound Support/Jewel/Socket 检查与 checkpoint，再调用

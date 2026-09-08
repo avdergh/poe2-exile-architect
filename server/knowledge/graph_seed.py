@@ -6,11 +6,37 @@ import hashlib
 import json
 import os
 import shutil
+import threading
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
 from .. import paths
 from . import physical_graph
+
+_INSTALL_LOCK = threading.RLock()
+
+
+def _file_signature(path: Path) -> tuple[object, ...]:
+    try:
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+    except FileNotFoundError:
+        return (str(path.resolve()), None)
+
+
+def _validation_state(index_path: Path, manifest_path: Path) -> tuple[object, ...]:
+    rows = physical_graph.list_registered_snapshots(index_path)
+    latest = next((row for row in rows if row["is_latest"]), rows[0] if rows else None)
+    local = (json.dumps(latest, sort_keys=True),
+             _file_signature(Path(latest["snapshot_path"]))) if latest else None
+    if manifest_path.is_file():
+        manifest = _read_manifest(manifest_path)
+        bundled = (json.dumps(manifest, sort_keys=True), _file_signature(manifest_path),
+                   _file_signature(manifest_path.parent / manifest["snapshotFile"]))
+    else:
+        bundled = _file_signature(manifest_path)
+    return (local, bundled)
 
 
 def ensure_installed() -> Path:
@@ -18,13 +44,27 @@ def ensure_installed() -> Path:
 
     graph_root = paths.user_data_dir() / "physical_graph"
     index_path = graph_root / "snapshot_index.sqlite"
+    manifest_path = paths.physical_graph_seed_manifest_path()
+    with _INSTALL_LOCK:
+        return _ensure_validated(str(index_path.resolve()), str(manifest_path.resolve()),
+                                 _validation_state(index_path, manifest_path))
+
+
+@lru_cache(maxsize=8)
+def _ensure_validated(index: str, manifest_file: str, state: tuple[object, ...]) -> Path:
+    # Cache only successful validations. A registry/file/manifest change takes the cold path.
+    del state
+    index_path = Path(index)
+    graph_root = index_path.parent
+    manifest_path = Path(manifest_file)
+    installed_snapshot = None
     try:
-        physical_graph.load_latest_snapshot(index_path)
-        return index_path
+        installed_snapshot = physical_graph.load_latest_snapshot(index_path)
     except (FileNotFoundError, OSError, ValueError, KeyError):
         pass
 
-    manifest_path = paths.physical_graph_seed_manifest_path()
+    if installed_snapshot is not None and not manifest_path.is_file():
+        return index_path
     manifest = _read_manifest(manifest_path)
     bundled_snapshot = manifest_path.parent / manifest["snapshotFile"]
     expected_hash = manifest["sha256"]
@@ -33,6 +73,8 @@ def ensure_installed() -> Path:
     snapshot = physical_graph.load_snapshot(bundled_snapshot)
     if snapshot.snapshot_id != manifest["snapshotId"]:
         raise ValueError("bundled physical graph seed identity mismatch")
+    if installed_snapshot is not None and installed_snapshot.created_at >= snapshot.created_at:
+        return index_path
 
     target = graph_root / "snapshots" / bundled_snapshot.name
     target.parent.mkdir(parents=True, exist_ok=True)

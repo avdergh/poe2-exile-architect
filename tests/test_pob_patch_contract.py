@@ -95,6 +95,7 @@ end
             PATCH_ROOT / "0003-isolate-item-source-supports.patch",
             PATCH_ROOT / "0004-coming-calamity-no-base-reservation.patch",
             PATCH_ROOT / "0005-refresh-synthetic-no-supports.patch",
+            PATCH_ROOT / "0006-augment-limit-metadata.patch",
         ]
         for patch in patches:
             self.assertTrue(patch.is_file(), patch)
@@ -103,6 +104,7 @@ end
             Path("src/Classes/Item.lua"),
             Path("src/Modules/CalcSetup.lua"),
             Path("src/Modules/CalcActiveSkill.lua"),
+            Path("src/Data/ModRunes.lua"),
         )
         with tempfile.TemporaryDirectory() as temp_name:
             replay_root = Path(temp_name)

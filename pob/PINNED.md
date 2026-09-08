@@ -8,7 +8,7 @@ Compute 层通过 headless 方式驱动 Path of Building Community 的 **PoE2** 
 | --- | --- |
 | Repo | https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2 |
 | Branch | `dev` |
-| Pinned commit | `860f4268299739ce9df87c4f373abe35824101cf`（2026-07-01，正式版 `0.22.0`，对应游戏赛季大版本 `0.5`） |
+| Pinned commit | `7d6f530cbdab20389ff8bc6ba97a37ac27f74e41`（2026-07-28，正式版 `0.23.1`；0.5.5 新核心尚缺上游数据） |
 | License | MIT |
 | Game data | game patch `0.5.4`，passive tree version `0_5` |
 
@@ -22,7 +22,7 @@ git clone --filter=blob:none --no-checkout \
   https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git \
   pob/PathOfBuilding-PoE2
 git -C pob/PathOfBuilding-PoE2 config core.autocrlf false   # 保持 LF，方便 Windows 上应用 LF patch
-git -C pob/PathOfBuilding-PoE2 checkout 860f4268299739ce9df87c4f373abe35824101cf
+git -C pob/PathOfBuilding-PoE2 checkout 7d6f530cbdab20389ff8bc6ba97a37ac27f74e41
 # 然后应用我们 tracked 的 fork patches（见下方 "Local patches"）
 (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 ```
@@ -41,6 +41,7 @@ vendored copy 被 git-ignore，因此任何不可避免的 PoB-core 改动都应
 | `0003-isolate-item-source-supports.patch` | 同一装备授予多个技能时，`CalcSetup.lua` 会把一个来源技能组的直属辅助传播到同槽的其他来源技能，导致辅助效果与 Spirit 重复计算。shim 无法改变 PoB 导入码在标准 PoB 中的计算语义；本补丁保持无来源同槽辅助组的既有共享语义，只隔离各来源技能自己的辅助。 |
 | `0004-coming-calamity-no-base-reservation.patch` | The Coming Calamity 的三种物品来源 Herald 不支付基础 Spirit，但辅助自身的 Spirit 费用仍需计算。该规则仅绑定此物品，不推广到其他授予技能的装备。 |
 | `0005-refresh-synthetic-no-supports.patch` | Explode、Thorns等PoB合成来源组从XML恢复后必须重新标记为不可安装辅助，避免质量检查把合法合成效果误判为缺少辅助审计。 |
+| `0006-augment-limit-metadata.patch` | 补齐当前物品说明中的镶嵌单件/共享上限，使 `crafting_options`、换装和 Judge 使用真实限制。上限证据独立标为 0.5.5；没有修改任何符文效果数值，也不把原 0.5.4 数值模型改标为 0.5.5。 |
 
 ## Runtime requirements（M0 spike 已验证）
 

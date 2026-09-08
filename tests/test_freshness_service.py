@@ -296,7 +296,8 @@ def test_validated_release_is_shaped_as_local_component_evidence():
             "game_patch": "0.5.3",
             "passive_tree": "0_5",
         },
-        corpus_info={"schema_version": 4, "built_at": "2026-06-23T04:00:00+00:00"},
+        corpus_info={"schema_version": 4, "built_at": "2026-06-23T04:00:00+00:00",
+                     "certifiedCompatibility": {"game_patch": "0.5.3", "passive_tree": "0_5"}},
         observed_at=NOW,
         compatibility=providers.LocalCompatibility(
             game_patch="0.5.3",
@@ -362,8 +363,8 @@ def test_application_pob_version_enum_normalizes_unknown_version_and_commit():
     current = providers.current_local_compatibility()
 
     assert current is not None
-    assert current.pob_version == "0.22.0"
-    assert providers.resolve_pob_version_enum("unknown") == "0.22.0"
+    assert current.pob_version == "0.23.1"
+    assert providers.resolve_pob_version_enum("unknown") == "0.23.1"
     assert (
         providers.resolve_pob_version_enum("860f4268299739ce9df87c4f373abe35824101cf") == "0.22.0"
     )
@@ -583,4 +584,7 @@ def test_local_provider_degrades_on_sqlite_read_error(monkeypatch):
 
     monkeypatch.setattr(providers.db, "corpus_info", fail_corpus_read)
 
-    assert providers.collect_local_evidence(NOW) == ()
+    evidence = {item.component: item for item in providers.collect_local_evidence(NOW)}
+    assert evidence[Component.CORPUS].status is SourceStatus.UNKNOWN
+    assert evidence[Component.CORPUS].claims == ()
+    assert evidence[Component.POB_ENGINE].status is SourceStatus.CURRENT

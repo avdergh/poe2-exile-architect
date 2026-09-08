@@ -15,6 +15,11 @@ from typing import Any, Iterable
 from . import copy_safety
 from . import graph_tools
 from . import mature_learning
+from . import patch_reviews
+from . import research_claims
+from . import research_claim_writes
+from . import research_completion
+from . import research_content
 from . import research_identity
 from . import research_models
 from . import research_contracts
@@ -46,6 +51,7 @@ TRANSFER_CONFIDENCE_WEIGHTS = {
     "likely_pattern": 1.0,
 }
 PREMISE_AUDIT_VERSION = 1
+DEEP_RECORD_ELIGIBILITY_VERSION = 1
 MECHANISM_RECORD_KINDS = {
     "mechanic_chain",
     "rotation",
@@ -59,6 +65,58 @@ MECHANISM_RECORD_KIND_PRIORITY = (
     "failure_mode",
 )
 ScopedFamilyRef = tuple[str, str]
+
+
+def _deep_record_read_predicates(
+    *,
+    create_authorizing: bool,
+    knowledge_scope: str | None,
+    source_case_ref: str | None,
+    exact_diagnostic_read: bool = False,
+) -> tuple[list[str], list[Any]]:
+    """Keep Family obligations and actual deep reads on the same scoped eligibility rules."""
+
+    where = [
+        "visibility = 'creator_visible'",
+        "split = 'train_context'",
+        "copy_safety_state = 'passed'",
+    ]
+    if not create_authorizing:
+        where.append("status IN ('valid', 'needs_revalidation')")
+        if not exact_diagnostic_read:
+            where.append(
+                "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
+                "!= 'source_specific_random'"
+            )
+        return where, []
+    if not knowledge_scope or not source_case_ref:
+        return ["0"], []
+    where.extend(
+        [
+            "status = 'valid'",
+            "superseded_by_id IS NULL",
+            "knowledge_scope = ?",
+            "record_schema_version = 2",
+            "source_state_scope IN ('active_state', 'state_agnostic')",
+            "projection_hash IS NOT NULL",
+            "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') = 'standard'",
+            "EXISTS (SELECT 1 FROM deep_research_record_evidence AS evidence "
+            "WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope "
+            "AND evidence.knowledge_key = deep_research_records.knowledge_key "
+            "AND evidence.source_case_ref = ? "
+            "AND evidence.accepted_projection_hash = deep_research_records.projection_hash "
+            "AND evidence.record_id = deep_research_records.record_id "
+            "AND evidence.binding_issue IS NULL "
+            "AND evidence.source_state_scope IN ('active_state', 'state_agnostic') "
+            "AND EXISTS (SELECT 1 FROM research_source_provenance AS provenance "
+            "WHERE provenance.source_case_ref = evidence.source_case_ref "
+            "AND provenance.knowledge_scope = evidence.knowledge_scope))",
+            "EXISTS (SELECT 1 FROM research_build_families AS family "
+            "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
+            "AND family.build_family_key = deep_research_records.build_family_key)",
+        ]
+    )
+    return where, [knowledge_scope, source_case_ref]
 
 
 def _normalize_deep_record_version_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -211,14 +269,14 @@ class ResearchMemoryService:
                     """
                 ).fetchone()[0]
             )
-            if unsafe_v5_rows or unsafe_v5_evidence:
+            if unsafe_v5_rows or unsafe_v5_evidence or research_claims.has_variants(con):
                 return {
                     "status": "blocked_scope_unsafe",
                     "version": BUILD_FAMILY_BACKFILL_VERSION,
                     "recordCount": unsafe_v5_rows,
                     "evidenceCount": unsafe_v5_evidence,
                     "repair": (
-                        "Legacy family backfill cannot run across schema-2 or non-global lanes; "
+                        "Legacy family backfill cannot run across schema-2, non-global lanes or condition variants; "
                         "use v3 supplement/revalidation instead."
                     ),
                 }
@@ -914,6 +972,7 @@ class ResearchMemoryService:
                         JOIN deep_research_record_evidence AS evidence
                           ON evidence.knowledge_scope = record.knowledge_scope
                          AND evidence.knowledge_key = record.knowledge_key
+             AND evidence.record_id = record.record_id
                         JOIN research_source_provenance AS provenance
                           ON provenance.source_case_ref = evidence.source_case_ref
                          AND provenance.knowledge_scope = evidence.knowledge_scope
@@ -928,6 +987,7 @@ class ResearchMemoryService:
                           AND record.source_state_scope IN ('active_state', 'state_agnostic')
                           AND record.projection_hash IS NOT NULL
                           AND evidence.accepted_projection_hash = record.projection_hash
+              AND evidence.binding_issue IS NULL
                         LIMIT 1
                         """,
                         (str(row["build_family_key"]),),
@@ -935,6 +995,7 @@ class ResearchMemoryService:
                     is not None
                 ]
             selected_family_keys = [str(row["build_family_key"]) for row in family_rows]
+            correction_family_refs = [(str(row["knowledge_scope"]), str(row["build_family_key"])) for row in family_rows]
             source_case_lane: dict[str, Any] | None = None
             selected_lane_scope: str | None = None
             selected_lane_case: str | None = None
@@ -1018,6 +1079,24 @@ class ResearchMemoryService:
                 self._deep_record_result(row, include_content=detail_level == "record")
                 for row in record_rows
             ]
+            if detail_level == "record":
+                for result, record_row in zip(deep_records, record_rows):
+                    result["sourceClaims"] = [
+                        {"sourceCaseRef": claim["source_case_ref"],
+                         "sourceClaimKey": claim["source_claim_key"],
+                         "bindingIssue": claim["binding_issue"]}
+                        for claim in con.execute(
+                            "SELECT source_case_ref,source_claim_key,binding_issue "
+                            "FROM deep_research_record_evidence WHERE record_id=? "
+                            "AND knowledge_scope=? AND accepted_projection_hash=? "
+                            "ORDER BY source_case_ref,source_claim_key",
+                            (record_row["record_id"], record_row["knowledge_scope"], record_row["projection_hash"]),
+                        ).fetchall()
+                        if response_profile != "create_compact" or claim["source_case_ref"] == selected_lane_case
+                    ]
+            if game_patch:
+                for result, row in zip(deep_records, record_rows):
+                    result["targetApplicability"] = patch_reviews.applicability(con, row, game_patch)
             if not explicit_family_filter and not family_discovery:
                 selected_family_keys = sorted(
                     {str(row["build_family_key"]) for row in record_rows if row["build_family_key"]}
@@ -1147,6 +1226,17 @@ class ResearchMemoryService:
                 if include_transferable and not family_discovery
                 else []
             )
+            if game_patch:
+                for kind, items, public_id in (
+                    ("fragment", results, "memoryItemId"),
+                    ("semantic_edge", semantic_edges, "edgeId"),
+                    ("build_pattern", [*build_patterns, *transferable_patterns], "patternId"),
+                ):
+                    table, id_column = patch_reviews.TARGETS[kind]
+                    for item in items:
+                        source_row = con.execute(f"SELECT * FROM {table} WHERE {id_column}=?", (item.get(public_id),)).fetchone()
+                        if source_row is not None:
+                            item["targetApplicability"] = patch_reviews.applicability(con, source_row, game_patch, kind=kind)
             if response_profile == "create_compact" and source_case_lane is not None:
                 # These knowledge kinds do not carry per-source content projections.  They remain
                 # available to full Research queries but cannot authorize a lane-specific Create.
@@ -1180,8 +1270,14 @@ class ResearchMemoryService:
                 "claimRef": claim_ref,
                 "blindGlobalOnly": bool(blind_global_only),
             }
+            patch_corrections = patch_reviews.family_corrections(
+                con, [(scope, key) for scope, key in correction_family_refs
+                      if not selected_lane_scope or scope == selected_lane_scope], game_patch
+            ) if game_patch else []
             result_contract = {
+                "patchCorrections": patch_corrections,
                 "queryContractVersion": 2 if response_profile == "create_compact" else 1,
+                "deepRecordEligibilityVersion": DEEP_RECORD_ELIGIBILITY_VERSION,
                 "responseProfile": response_profile,
                 "selectedKnowledgeScope": selected_lane_scope,
                 "selectedSourceCaseRef": selected_lane_case,
@@ -1214,6 +1310,9 @@ class ResearchMemoryService:
                     key=lambda item: item["buildFamilyKey"],
                 ),
                 "deepRecordIds": sorted(item["recordId"] for item in deep_records),
+                "recordApplicability": {
+                    item["recordId"]: item.get("targetApplicability") for item in deep_records
+                },
                 "deepReadRecordIds": (
                     sorted(item["recordId"] for item in deep_records)
                     if detail_level == "record"
@@ -1253,8 +1352,10 @@ class ResearchMemoryService:
         return {
             "status": "known",
             "dedupeQueryRef": dedupe_ref,
+            "deepRecordEligibilityVersion": DEEP_RECORD_ELIGIBILITY_VERSION,
             "results": results,
             "deepResearchRecords": deep_records,
+            "patchCorrections": patch_corrections,
             "buildFamilies": build_families,
             "semanticEdges": semantic_edges,
             "buildPatterns": build_patterns,
@@ -1311,7 +1412,8 @@ class ResearchMemoryService:
                             if len(build_families) >= 2
                             else "insufficient"
                         ),
-                        "exactVersionOnly": True,
+                        "exactVersionOnly": len(patch_reviews.recall_patches(game_patch or "")) == 1,
+                        "historicalRecallEnabled": len(patch_reviews.recall_patches(game_patch or "")) > 1,
                         "didNotBackfillWithStaleFamilies": True,
                     }
                 }
@@ -1359,6 +1461,13 @@ class ResearchMemoryService:
         if not isinstance(request, dict) or not isinstance(result, dict) or not request:
             # Historical receipts remain valid for query-before-propose dedupe, but they cannot
             # authorize a new Create target.
+            return None
+        if (row["create_authorizing"] or result.get("createAuthorizing")) and (
+            result.get("deepRecordEligibilityVersion") != DEEP_RECORD_ELIGIBILITY_VERSION
+            or not isinstance(result.get("familyRecordCoverage"), list)
+        ):
+            # Older page receipts cannot recover missing obligations by changing a version label.
+            # A new scoped query must recompute eligibility and deliver its complete page set.
             return None
         receipt = {
             "dedupeQueryRef": row["dedupe_query_ref"],
@@ -1423,12 +1532,13 @@ class ResearchMemoryService:
                 not raw_dedupe_ref
                 or int(raw_result.get("queryContractVersion") or 0) < 2
                 or raw_result.get("responseProfile") != "create_compact"
+                or raw_result.get("deepRecordEligibilityVersion") != DEEP_RECORD_ELIGIBILITY_VERSION
                 or source_revision != current_revision
             ):
                 con.rollback()
                 return research_models.public_error(
                     "research_query_session_stale",
-                    ["Research Memory changed; restart from the first compact query"],
+                    ["Research Memory or its coverage contract changed; restart from the first compact query"],
                 )
             now = _now()
             memory_revision = source_revision
@@ -1440,6 +1550,7 @@ class ResearchMemoryService:
             )
             request_contract = {
                 "responseProfile": response_profile,
+                "deepRecordEligibilityVersion": raw_result["deepRecordEligibilityVersion"],
                 "detailLevel": payload.get("detailLevel"),
                 "classKey": payload.get("requestedClassKey"),
                 "ascendancyKey": payload.get("requestedAscendancyKey"),
@@ -1481,7 +1592,7 @@ class ResearchMemoryService:
             )
             try:
                 pages, manifest_hash = self._bounded_retrieval_pages(
-                    payload,
+                    {**payload, "deepRecordEligibilityVersion": raw_result["deepRecordEligibilityVersion"]},
                     retrieval_ref=retrieval_ref,
                     memory_revision=memory_revision,
                 )
@@ -1574,6 +1685,15 @@ class ResearchMemoryService:
                     "research_query_continuation_complete", ["retrieval session is complete"]
                 )
             request_contract = _loads(row["request_contract"], {})
+            if (
+                not isinstance(request_contract, dict)
+                or request_contract.get("deepRecordEligibilityVersion") != DEEP_RECORD_ELIGIBILITY_VERSION
+            ):
+                con.rollback()
+                return research_models.public_error(
+                    "research_query_continuation_stale",
+                    ["Research coverage contract changed; restart from the first page"],
+                )
             now = _now()
             page = self._record_retrieval_page(
                 con,
@@ -1618,6 +1738,7 @@ class ResearchMemoryService:
             "familyRecordIndex",
             "familyPremiseCatalog",
             "criticalPremiseDigest",
+            "patchCorrections",
         )
         base = {key: value for key, value in payload.items() if key not in section_names}
         base.pop("dedupeQueryRef", None)
@@ -1692,6 +1813,7 @@ class ResearchMemoryService:
         page = json.loads(json.dumps(pages[page_index], ensure_ascii=False))
         result_contract = {
             "queryContractVersion": 2,
+            "deepRecordEligibilityVersion": request_contract.get("deepRecordEligibilityVersion"),
             "retrievalRef": retrieval_ref,
             "pageIndex": page_index,
             "pageCount": len(pages),
@@ -1732,10 +1854,16 @@ class ResearchMemoryService:
                 for item in page.get("deepResearchRecords") or []
                 if isinstance(item, dict) and item.get("content") and item.get("recordId")
             ],
+            "recordApplicability": {
+                str(item["recordId"]): item.get("targetApplicability")
+                for item in page.get("deepResearchRecords") or [] if item.get("recordId")
+            },
             "patternIds": [],
             "semanticEdgeIds": [],
             "memoryItemIds": [],
+            "familyRecordCoverage": deepcopy(page.get("familyRecordCoverage") or []),
             "familyPremiseCatalog": page.get("familyPremiseCatalog") or [],
+            "patchCorrections": page.get("patchCorrections") or [],
             "premiseAuditVersion": page.get("premiseAuditVersion"),
         }
         dedupe_ref = (
@@ -1919,7 +2047,12 @@ class ResearchMemoryService:
             key = research_identity.knowledge_key(record, family) if family else None
             if key:
                 same_batch.setdefault((record.knowledge_scope, key), []).append((index, record))
-        collision = next((item for item in same_batch.items() if len(item[1]) > 1), None)
+        collision = next(
+            (item for item in same_batch.items()
+             if research_claim_writes.has_source_claim_collision(
+                 [record for _index, record in item[1]], item[0][1]
+             )), None,
+        )
         if collision is not None:
             (scope, key), indexed_records = collision
             return research_models.rejection(
@@ -1931,6 +2064,26 @@ class ResearchMemoryService:
                     "candidateTitles": [item[1].title for item in indexed_records],
                 },
             )
+        revision_records = [
+            (record, research_identity.knowledge_key(record, resolved_families[record.research_group_id])
+             if resolved_families.get(record.research_group_id) else None)
+            for record in output.deep_research_records
+        ]
+        if any(record.source_claim_revision is not None for record, _key in revision_records):
+            con = None
+            try:
+                if self.db_path and os.path.exists(self.db_path):
+                    con = mature_learning.connect(self.db_path)
+                revision_error = research_claim_writes.validate_source_claim_revisions(
+                    con, revision_records
+                )
+            except sqlite3.Error:
+                revision_error = "source_claim_revision_binding_missing"
+            finally:
+                if con is not None:
+                    con.close()
+            if revision_error:
+                return research_models.rejection(revision_error)
         if family_keys and self.db_path and os.path.exists(self.db_path):
             try:
                 con = mature_learning.connect(self.db_path)
@@ -1938,32 +2091,6 @@ class ResearchMemoryService:
                     sibling_hints = _sibling_family_hints(con, family_refs)
                     for index, record in enumerate(output.deep_research_records):
                         family = resolved_families.get(record.research_group_id)
-                        key = research_identity.knowledge_key(record, family) if family else None
-                        if key:
-                            existing = con.execute(
-                                "SELECT * FROM deep_research_records WHERE knowledge_scope = ? "
-                                "AND knowledge_key = ? AND superseded_by_id IS NULL LIMIT 1",
-                                (record.knowledge_scope, key),
-                            ).fetchone()
-                            if (
-                                existing is not None
-                                and (
-                                    set(record.source_case_refs)
-                                    - set(_loads(existing["source_case_refs"], []))
-                                )
-                                and research_runtime.projection_hash(existing)
-                                != research_runtime.projection_hash(record.model_dump(mode="json"))
-                            ):
-                                return research_models.rejection(
-                                    "duplicate_knowledge_identity_conflict",
-                                    facts={
-                                        "recordIndex": index,
-                                        "recordTitle": record.title,
-                                        "knowledgeScope": record.knowledge_scope,
-                                        "knowledgeKey": key,
-                                        "existingRecordId": str(existing["record_id"]),
-                                    },
-                                )
                         duplicate_advisories.extend(
                             self._cross_family_duplicate_advisories(con, record, family)
                         )
@@ -2198,6 +2325,8 @@ class ResearchMemoryService:
         owns_connection = _con is None
         con = _con or mature_learning.connect(self.db_path)
         try:
+            if not con.in_transaction:
+                con.execute("BEGIN IMMEDIATE")
             now = _now()
             record_ids: list[str] = []
             record_writes: list[dict[str, Any]] = []
@@ -2265,7 +2394,7 @@ class ResearchMemoryService:
             collisions = [
                 (scope, key, records)
                 for (scope, key), records in same_batch_identities.items()
-                if len(records) > 1
+                if research_claim_writes.has_source_claim_collision(records, key)
             ]
             if collisions:
                 scope, key, records = collisions[0]
@@ -2274,8 +2403,8 @@ class ResearchMemoryService:
                 return research_models.rejection(
                     "duplicate_knowledge_identity_in_payload",
                     caveats=[
-                        "Multiple deep records in one acceptance resolve to the same scoped "
-                        "knowledge identity; merge them or add typed identity subjects."
+                        "Multiple records revise the same source claim in one acceptance. "
+                        "Use a stable sourceClaimKey for distinct conditions, or submit one revision."
                     ],
                     facts={
                         "knowledgeScope": scope,
@@ -2288,6 +2417,20 @@ class ResearchMemoryService:
                         ],
                     },
                 )
+
+            revision_error = research_claim_writes.validate_source_claim_revisions(
+                con,
+                [
+                    (record, research_identity.knowledge_key(
+                        record, resolved_family_targets[record.research_group_id]
+                    ) if resolved_family_targets.get(record.research_group_id) else None)
+                    for record in output.deep_research_records
+                ],
+            )
+            if revision_error:
+                if owns_connection:
+                    con.rollback()
+                return research_models.rejection(revision_error)
 
             families_by_group = resolved_family_targets
             for group_id, target in families_by_group.items():
@@ -2431,6 +2574,19 @@ class ResearchMemoryService:
                             else "unchanged"
                         ),
                         "writtenSourceCaseRefs": sorted(set(record.source_case_refs)),
+                        "sourceClaimKey": record.source_claim_key,
+                        "sourceClaimRevision": (
+                            {
+                                "knowledgeKey": record.source_claim_revision.knowledge_key,
+                                "recordId": record.source_claim_revision.record_id,
+                                "projectionHash": record.source_claim_revision.projection_hash,
+                            }
+                            if record.source_claim_revision is not None else None
+                        ),
+                        "sourceGamePatch": record.game_patch,
+                        "sourcePassiveTreeVersion": record.passive_tree_version,
+                        "sourcePobVersionOrCommit": record.pob_version_or_commit,
+                        "sourceStateScope": record.source_state_scope,
                         "beforeProjectionHash": persisted.get("before_projection_hash"),
                         "afterProjectionHash": canonical["projection_hash"],
                         "availability": str(
@@ -2539,6 +2695,8 @@ class ResearchMemoryService:
         pattern_payload: dict[str, Any],
         deep_payload: dict[str, Any],
         edge_payload: dict[str, Any],
+        acceptance_diagnostics: dict[str, Any] | None = None,
+        source_context: dict[str, Any] | None = None,
         supplement: bool = False,
         _fault_after_step: str | None = None,
     ) -> dict[str, Any]:
@@ -2579,6 +2737,7 @@ class ResearchMemoryService:
                 summary = _loads(existing_receipt["acceptance_summary"], {})
                 return {
                     **summary,
+                    **research_completion.completion_summary(summary),
                     "status": "accepted",
                     "writeReceiptRef": receipt_ref,
                     "idempotentReplay": True,
@@ -2647,6 +2806,10 @@ class ResearchMemoryService:
                 else revision_before
             )
             acceptance_summary = {
+                "sourceContext": dict(source_context or {}),
+                **research_completion.completion_summary(
+                    acceptance_diagnostics, supplement=supplement
+                ),
                 "patternWrite": pattern_result,
                 "deepRecordWrite": deep_result,
                 "semanticEdgeWrite": edge_result,
@@ -2664,6 +2827,9 @@ class ResearchMemoryService:
                 "memoryRevisionAfter": revision,
                 "memoryRevision": revision,
             }
+            if _copy_safety_error(acceptance_summary) is not None:
+                con.rollback()
+                return research_models.rejection("unsafe_research_acceptance_context")
             con.execute(
                 """
                 INSERT INTO research_record_write_receipts(
@@ -2735,9 +2901,54 @@ class ResearchMemoryService:
                     or (head["knowledge_scope"] if head is not None else "")
                 )
                 for source_ref in source_refs:
-                    eligible, reasons = self._record_lane_eligibility(
+                    source_head = None
+                    claim_rows = con.execute(
+                        "SELECT * FROM deep_research_record_evidence WHERE knowledge_scope=? "
+                        "AND knowledge_key=? AND source_case_ref=? AND source_claim_key=? "
+                        "AND game_patch=? AND passive_tree_version=?",
+                        (knowledge_scope, str(item.get("knowledgeKey") or ""), str(source_ref),
+                         str(item.get("sourceClaimKey") or "default"),
+                         str(item.get("sourceGamePatch") or (head["game_patch"] if head is not None else "")),
+                         str(item.get("sourcePassiveTreeVersion") or (head["passive_tree_version"] if head is not None else ""))),
+                    ).fetchall()
+                    if len(claim_rows) == 1 and claim_rows[0]["record_id"]:
+                        source_head = con.execute(
+                            "SELECT * FROM deep_research_records WHERE record_id=?", (claim_rows[0]["record_id"],)
+                        ).fetchone()
+                    claim = claim_rows[0] if len(claim_rows) == 1 else None
+                    binding_reasons: list[str] = []
+                    if claim is None:
+                        binding_status = "missing"
+                        binding_reasons.append("source_claim_missing")
+                    elif not claim["record_id"]:
+                        binding_status = "unbound"
+                        binding_reasons.append("source_claim_unbound")
+                    elif (
+                        source_head is None
+                        or claim["binding_issue"] is not None
+                        or not claim["accepted_projection_hash"]
+                        or claim["accepted_projection_hash"] != source_head["projection_hash"]
+                        or research_runtime.projection_hash(source_head) != source_head["projection_hash"]
+                        or claim["knowledge_key"] != source_head["knowledge_key"]
+                        or claim["knowledge_scope"] != source_head["knowledge_scope"]
+                        or claim["game_patch"] != source_head["game_patch"]
+                        or claim["passive_tree_version"] != source_head["passive_tree_version"]
+                        or claim["pob_version_or_commit"] != source_head["pob_version_or_commit"]
+                        or claim["source_state_scope"] != source_head["source_state_scope"]
+                    ):
+                        binding_status = "invalid"
+                        binding_reasons.append("source_claim_binding_mismatch")
+                    else:
+                        binding_status = (
+                            "current"
+                            if claim["record_id"] == original_id
+                            and claim["accepted_projection_hash"] == item.get("afterProjectionHash")
+                            else "revised"
+                        )
+                    lane_head = source_head if source_head is not None else head
+                    lane_eligible, lane_reasons = self._record_lane_eligibility(
                         con,
-                        head=head,
+                        head=lane_head,
                         knowledge_scope=knowledge_scope,
                         source_case_ref=str(source_ref),
                     )
@@ -2745,15 +2956,23 @@ class ResearchMemoryService:
                         {
                             "writtenRecordId": original_id,
                             "currentRecordId": (
-                                str(head["record_id"]) if head is not None else None
+                                str(source_head["record_id"]) if source_head is not None else None
                             ),
                             "knowledgeScope": knowledge_scope or None,
                             "sourceCaseRef": str(source_ref) or None,
-                            "currentStatus": str(head["status"]) if head is not None else None,
-                            "currentEligibility": eligible,
-                            "currentExclusionReasons": reasons,
+                            "sourceClaimKey": str(item.get("sourceClaimKey") or "default"),
+                            "claimBindingStatus": binding_status,
+                            "currentStatus": str(source_head["status"]) if source_head is not None else None,
+                            "currentEligibility": lane_eligible and not binding_reasons,
+                            "currentExclusionReasons": [*binding_reasons, *lane_reasons],
+                            "recordLaneRecordId": (
+                                str(lane_head["record_id"]) if lane_head is not None else None
+                            ),
+                            "recordLaneEligibility": lane_eligible,
+                            "recordLaneExclusionReasons": lane_reasons,
                         }
                     )
+            acceptance_summary = _loads(row["acceptance_summary"], {})
             receipt = {
                 "status": "ok",
                 "writeReceiptRef": row["receipt_ref"],
@@ -2761,7 +2980,10 @@ class ResearchMemoryService:
                 "sampleId": row["sample_id"],
                 "acceptAttemptKey": row["accept_attempt_key"],
                 "provenance": row["provenance"],
-                "acceptanceSummary": _loads(row["acceptance_summary"], {}),
+                "acceptanceSummary": {
+                    **acceptance_summary,
+                    **research_completion.completion_summary(acceptance_summary),
+                },
                 "writtenMapping": writes,
                 "currentProjection": current,
                 "createdAt": row["created_at"],
@@ -2814,8 +3036,13 @@ class ResearchMemoryService:
         evidence = con.execute(
             "SELECT accepted_projection_hash, source_state_scope "
             "FROM deep_research_record_evidence "
-            "WHERE knowledge_scope = ? AND knowledge_key = ? AND source_case_ref = ?",
-            (knowledge_scope, str(head["knowledge_key"] or ""), source_case_ref),
+            "WHERE knowledge_scope = ? AND knowledge_key = ? AND source_case_ref = ? "
+            "AND record_id = ? AND binding_issue IS NULL AND accepted_projection_hash = ? "
+            "AND game_patch = ? AND passive_tree_version = ? AND pob_version_or_commit = ? "
+            "AND source_state_scope = ?",
+            (knowledge_scope, str(head["knowledge_key"] or ""), source_case_ref,
+             head["record_id"], head["projection_hash"], head["game_patch"],
+             head["passive_tree_version"], head["pob_version_or_commit"], head["source_state_scope"]),
         ).fetchone()
         if evidence is None:
             reasons.append("record_evidence")
@@ -2847,6 +3074,10 @@ class ResearchMemoryService:
         now: str,
     ) -> dict[str, Any]:
         knowledge_key = research_identity.knowledge_key(record, family) if family else None
+        if knowledge_key is not None:
+            return research_claim_writes.persist_record(
+                self, con, record=record, family=family, now=now
+            )
         existing = None
         if knowledge_key:
             existing = con.execute(
@@ -3243,7 +3474,9 @@ class ResearchMemoryService:
                     "pob_version_or_commit": record.pob_version_or_commit,
                 }
             ),
-            "projection_hash": research_runtime.projection_hash(record.model_dump(mode="json")),
+            "projection_hash": research_runtime.projection_hash({
+                **record.model_dump(mode="json"), "component_keys": sorted(set(record.component_keys))
+            }),
             "source_state_scope": record.source_state_scope,
             "created_at": now,
             "last_seen_at": now,
@@ -3428,46 +3661,31 @@ class ResearchMemoryService:
             knowledge_key = row["knowledge_key"]
             if knowledge_key:
                 occupant = con.execute(
-                    """
-                    SELECT record_id, status FROM deep_research_records
-                    WHERE knowledge_scope = ? AND knowledge_key = ? AND build_family_key = ?
-                      AND status IN ('valid', 'needs_revalidation')
-                    LIMIT 1
-                    """,
-                    (knowledge_scope, knowledge_key, dst_key),
+                    "SELECT * FROM deep_research_records WHERE knowledge_scope=? AND knowledge_key=? "
+                    "AND build_family_key=? AND record_id<>? AND projection_hash=? "
+                    "AND status IN ('valid','needs_revalidation') AND superseded_by_id IS NULL "
+                    "ORDER BY record_id LIMIT 1",
+                    (knowledge_scope, knowledge_key, dst_key, record_id, row["projection_hash"]),
                 ).fetchone()
-                if occupant is not None and str(occupant["record_id"]) != record_id:
-                    occupant_row = con.execute(
-                        "SELECT * FROM deep_research_records WHERE record_id = ?",
-                        (str(occupant["record_id"]),),
-                    ).fetchone()
-                    candidate = research_identity.record_quality(row)
-                    incumbent = research_identity.record_quality(occupant_row)
-                    if candidate > incumbent:
-                        con.execute(
-                            """
-                            UPDATE deep_research_records
-                            SET status = 'deprecated', superseded_by_id = ?
-                            WHERE record_id = ?
-                            """,
-                            (record_id, str(occupant["record_id"])),
-                        )
-                        con.execute(
-                            "UPDATE deep_research_records SET build_family_key = ? WHERE record_id = ?",
-                            (dst_key, record_id),
-                        )
-                        deprecated += 1
-                        moved += 1
-                    else:
-                        con.execute(
-                            """
-                            UPDATE deep_research_records
-                            SET status = 'deprecated', superseded_by_id = ?, build_family_key = ?
-                            WHERE record_id = ?
-                            """,
-                            (record_id, str(occupant["record_id"]), dst_key),
-                        )
-                        deprecated += 1
+                if occupant is not None and research_runtime.projection_hash(occupant) == research_runtime.projection_hash(row):
+                    target_id = str(occupant["record_id"])
+                    con.execute(
+                        "UPDATE deep_research_record_evidence SET record_id=? WHERE record_id=? "
+                        "AND accepted_projection_hash=? AND knowledge_scope=? AND knowledge_key=?",
+                        (target_id, record_id, row["projection_hash"], knowledge_scope, knowledge_key),
+                    )
+                    con.execute(
+                        "UPDATE deep_research_record_evidence SET record_id=NULL,binding_issue='record_retired' "
+                        "WHERE record_id=?", (record_id,),
+                    )
+                    con.execute(
+                        "UPDATE deep_research_records SET status='deprecated',superseded_by_id=?,"
+                        "build_family_key=?,source_case_refs='[]',safe_evidence_refs='[]',evidence_count=0 "
+                        "WHERE record_id=?", (target_id, dst_key, record_id),
+                    )
+                    research_claim_writes.refresh_record_evidence(con, target_id, now)
+                    deprecated += 1
+                    moved += 1
                     continue
             con.execute(
                 "UPDATE deep_research_records SET build_family_key = ? WHERE record_id = ?",
@@ -3846,9 +4064,9 @@ class ResearchMemoryService:
                     observed_component_keys, observed_component_mentions, conditions,
                     failure_conditions, game_patch, passive_tree_version,
                     pob_version_or_commit, accepted_projection_hash, source_state_scope,
-                    first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref) DO UPDATE SET
+                    first_seen_at, last_seen_at, source_claim_key, binding_issue
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(knowledge_scope, knowledge_key, source_case_ref, source_claim_key, game_patch, passive_tree_version) DO UPDATE SET
                     safe_evidence_refs = excluded.safe_evidence_refs,
                     observed_component_keys = excluded.observed_component_keys,
                     observed_component_mentions = excluded.observed_component_mentions,
@@ -3859,7 +4077,7 @@ class ResearchMemoryService:
                     pob_version_or_commit = excluded.pob_version_or_commit,
                     accepted_projection_hash = excluded.accepted_projection_hash,
                     source_state_scope = excluded.source_state_scope,
-                    last_seen_at = excluded.last_seen_at
+                    last_seen_at = excluded.last_seen_at, record_id = NULL, binding_issue = excluded.binding_issue
                 """,
                 (
                     record.knowledge_scope,
@@ -3879,6 +4097,8 @@ class ResearchMemoryService:
                     record.source_state_scope,
                     now,
                     now,
+                    record.source_claim_key,
+                    "maintenance_requires_revalidation",
                 ),
             )
         return added
@@ -3893,8 +4113,10 @@ class ResearchMemoryService:
             SELECT record_id, title, source_case_refs
             FROM deep_research_records
             WHERE research_group_id = ? AND record_kind = ? AND knowledge_scope = ?
+              AND game_patch = ? AND passive_tree_version = ?
             """,
-            (record.research_group_id, record.record_kind, record.knowledge_scope),
+            (record.research_group_id, record.record_kind, record.knowledge_scope,
+             record.game_patch, record.passive_tree_version),
         ).fetchall()
         wanted_title = _normalize_text(record.title)
         wanted_sources = sorted(set(record.source_case_refs))
@@ -4430,6 +4652,10 @@ class ResearchMemoryService:
         changed_component_keys: list[str],
         new_version_context: dict[str, str],
     ) -> dict[str, Any]:
+        if new_version_context.get("game_patch") in patch_reviews.RECALL_PREDECESSORS:
+            return {"status": "review_required", "sourcePreserved": True,
+                    "nextTool": "inspect_research_patch_review_targets",
+                    "reason": "Target-patch decay requires reviewed applicability; historical status is preserved."}
         changed = set(changed_component_keys)
         con = mature_learning.connect(self.db_path)
         try:
@@ -4555,6 +4781,26 @@ class ResearchMemoryService:
             "patternsUpdated": patterns_updated,
         }
 
+    def inspect_patch_review_targets(self, **kwargs: Any) -> dict[str, Any]:
+        con = mature_learning.connect(self.db_path)
+        try:
+            return patch_reviews.inspect_targets(con, **kwargs)
+        finally:
+            con.close()
+
+    def submit_patch_review(self, payload: dict[str, Any]) -> dict[str, Any]:
+        con = mature_learning.connect(self.db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            result = patch_reviews.submit(con, payload)
+            con.commit()
+            return result
+        except (ValueError, TypeError):
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
     def submit_revalidation_result(
         self,
         *,
@@ -4565,6 +4811,8 @@ class ResearchMemoryService:
         safe_evidence_refs: list[str],
         affected_component_keys: list[str],
     ) -> dict[str, Any]:
+        if new_version_context.get("game_patch") in patch_reviews.RECALL_PREDECESSORS:
+            return research_models.rejection("target_patch_review_required", suggested_repair="Use submit_research_patch_review with independent review evidence.")
         if target_kind not in VALID_REVALIDATION_TARGET_KINDS:
             return research_models.rejection("invalid_revalidation_target_kind")
         if outcome not in VALID_REVALIDATION_OUTCOMES:
@@ -4842,7 +5090,8 @@ class ResearchMemoryService:
         where = [
             "(records.class_key = ? OR "
             "(records.class_key IS NULL AND families.ascendancy_key LIKE ?))",
-            "records.game_patch = ?",
+            "research_patch_matches(records.game_patch, ?)",
+            "research_patch_adoptable(records.record_id, records.projection_hash, ?)",
             "records.passive_tree_version = ?",
             "records.visibility = 'creator_visible'",
             "records.split = 'train_context'",
@@ -4854,6 +5103,7 @@ class ResearchMemoryService:
         params: list[Any] = [
             class_key,
             f"ascendancy:{class_token}:%",
+            game_patch,
             game_patch,
             passive_tree_version,
         ]
@@ -4894,23 +5144,26 @@ class ResearchMemoryService:
             params.extend(build_family_keys)
         sql = f"""
             SELECT families.*,
-                   COUNT(records.record_id) AS eligible_record_count,
+                   COUNT(DISTINCT CASE WHEN records.game_patch = ? THEN {research_content.unit_key_sql('records')} END) AS current_patch_count,
+                   COUNT(DISTINCT {research_content.unit_key_sql('records')}) AS eligible_record_count,
                    COUNT(DISTINCT records.record_kind) AS eligible_record_kind_count,
-                   COALESCE(SUM(records.evidence_count), 0) AS eligible_evidence_count
+                   COUNT(DISTINCT sources.value) AS eligible_evidence_count,
+                   json_group_array(DISTINCT records.game_patch) AS source_game_patches
             FROM research_build_families AS families
             JOIN deep_research_records AS records
               ON records.knowledge_scope = families.knowledge_scope
              AND records.build_family_key = families.build_family_key
+            LEFT JOIN json_each(records.source_case_refs) AS sources
             WHERE {" AND ".join(where)}
             GROUP BY families.knowledge_scope, families.build_family_key
-            ORDER BY eligible_evidence_count DESC,
+            ORDER BY current_patch_count DESC, eligible_evidence_count DESC,
                      eligible_record_kind_count DESC,
                      eligible_record_count DESC,
                      families.build_family_key
             LIMIT ?
         """
         params.append(min(max(1, limit), 10))
-        return list(con.execute(sql, params).fetchall())
+        return list(con.execute(sql, [game_patch, *params]).fetchall())
 
     def _build_discovery_family_results(
         self,
@@ -4937,12 +5190,10 @@ class ResearchMemoryService:
             "_",
             class_key.split(":", 1)[-1].strip().casefold().replace(" ", "_"),
         ).strip("_")
-        record_rows = con.execute(
+        record_rows = research_content.select_distinct(
+            con,
             f"""
-            SELECT records.record_id, records.knowledge_scope, records.build_family_key,
-                   records.record_kind,
-                   records.summary, records.conditions, records.failure_conditions,
-                   records.evidence_count
+            SELECT records.*
             FROM deep_research_records AS records
             JOIN research_build_families AS families
               ON families.knowledge_scope = records.knowledge_scope
@@ -4955,7 +5206,8 @@ class ResearchMemoryService:
                         AND families.ascendancy_key LIKE ?
                     )
                   )
-              AND records.game_patch = ?
+              AND research_patch_matches(records.game_patch, ?)
+              AND research_patch_adoptable(records.record_id, records.projection_hash, ?)
               AND records.passive_tree_version = ?
               AND records.visibility = 'creator_visible'
               AND records.split = 'train_context'
@@ -4971,9 +5223,11 @@ class ResearchMemoryService:
                 class_key,
                 f"ascendancy:{class_token}:%",
                 game_patch,
+                game_patch,
                 passive_tree_version,
             ],
-        ).fetchall()
+            target_patch=game_patch,
+        )
         grouped: dict[ScopedFamilyRef, list[sqlite3.Row]] = {
             family_ref: [] for family_ref in family_refs
         }
@@ -5019,7 +5273,10 @@ class ResearchMemoryService:
                     ),
                     "secondarySkillKeys": _loads(family["secondary_skill_keys"], []),
                     "classKey": class_key,
-                    "gamePatch": game_patch,
+                    "gamePatch": (game_patch if all(row["game_patch"] == game_patch for row in records)
+                                  and records else None),
+                    "requestedGamePatch": game_patch,
+                    "sourceGamePatches": sorted(_loads(family["source_game_patches"], [])),
                     "passiveTreeVersion": passive_tree_version,
                     "evidenceCount": int(family["eligible_evidence_count"] or 0),
                     "deepRecordCount": int(family["eligible_record_count"] or 0),
@@ -5031,7 +5288,7 @@ class ResearchMemoryService:
                         str(row["record_id"]) for row in representative_records[:4]
                     ],
                     "eligibility": {
-                        "exactVersion": True,
+                        "exactVersion": bool(records) and all(row["game_patch"] == game_patch for row in records),
                         "creatorVisible": True,
                         "trainContext": True,
                         "copySafetyPassed": True,
@@ -5057,23 +5314,26 @@ class ResearchMemoryService:
                    record.projection_hash, record.status,
                    evidence.accepted_projection_hash,
                    evidence.source_state_scope AS evidence_state_scope,
+                   evidence.binding_issue,
                    provenance.source_case_ref AS provenance_source_case_ref
             FROM deep_research_records AS record
             LEFT JOIN deep_research_record_evidence AS evidence
               ON evidence.knowledge_scope = record.knowledge_scope
              AND evidence.knowledge_key = record.knowledge_key
+             AND evidence.record_id = record.record_id
             LEFT JOIN research_source_provenance AS provenance
               ON provenance.knowledge_scope = evidence.knowledge_scope
              AND provenance.source_case_ref = evidence.source_case_ref
             WHERE record.knowledge_scope = ?
               AND record.build_family_key = ?
-              AND record.game_patch = ?
+              AND research_patch_matches(record.game_patch, ?)
+              AND research_patch_adoptable(record.record_id, record.projection_hash, ?)
               AND record.passive_tree_version = ?
               AND record.visibility = 'creator_visible'
               AND record.split = 'train_context'
               AND record.copy_safety_state = 'passed'
             """,
-            (knowledge_scope, build_family_key, game_patch, passive_tree_version),
+            (knowledge_scope, build_family_key, game_patch, game_patch, passive_tree_version),
         ).fetchall()
         authorizing_states = {"active_state", "state_agnostic"}
         authorized = any(
@@ -5083,6 +5343,7 @@ class ResearchMemoryService:
             and row["evidence_state_scope"] in authorizing_states
             and row["projection_hash"]
             and row["accepted_projection_hash"] == row["projection_hash"]
+            and row["binding_issue"] is None
             and row["provenance_source_case_ref"]
             for row in rows
         )
@@ -5136,7 +5397,8 @@ class ResearchMemoryService:
         )
         count_rows = con.execute(
             f"""
-            SELECT knowledge_scope, build_family_key, record_kind, COUNT(*) AS record_count
+            SELECT knowledge_scope, build_family_key, record_kind,
+                   COUNT(DISTINCT {research_content.unit_key_sql('deep_research_records')}) AS record_count
             FROM deep_research_records
             WHERE ({family_filter})
               AND visibility = 'creator_visible'
@@ -5238,8 +5500,9 @@ class ResearchMemoryService:
             filter_clauses.append(f"record.record_kind IN ({record_kind_placeholders})")
             filter_params.extend(record_kinds)
         if game_patch:
-            filter_clauses.append("record.game_patch = ?")
-            filter_params.append(game_patch)
+            filter_clauses.append("research_patch_matches(record.game_patch, ?)")
+            filter_clauses.append("research_patch_adoptable(record.record_id, record.projection_hash, ?)")
+            filter_params.extend([game_patch, game_patch])
         if passive_tree_version:
             filter_clauses.append("record.passive_tree_version = ?")
             filter_params.append(passive_tree_version)
@@ -5247,13 +5510,15 @@ class ResearchMemoryService:
         rows = con.execute(
             f"""
             SELECT evidence.knowledge_scope, evidence.source_case_ref,
+                   COUNT(DISTINCT CASE WHEN record.game_patch = ? THEN {research_content.unit_key_sql('record')} END) AS current_count,
                    count(DISTINCT record.record_kind) AS kind_count,
-                   count(DISTINCT record.record_id) AS record_count,
+                   count(DISTINCT {research_content.unit_key_sql('record')}) AS record_count,
                    json_group_array(DISTINCT record.build_family_key) AS family_keys
             FROM deep_research_record_evidence AS evidence
             JOIN deep_research_records AS record
               ON record.knowledge_scope = evidence.knowledge_scope
              AND record.knowledge_key = evidence.knowledge_key
+             AND evidence.record_id = record.record_id
             JOIN research_source_provenance AS provenance
               ON provenance.source_case_ref = evidence.source_case_ref
              AND provenance.knowledge_scope = evidence.knowledge_scope
@@ -5272,11 +5537,12 @@ class ResearchMemoryService:
               AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
               AND record.projection_hash IS NOT NULL
               AND evidence.accepted_projection_hash = record.projection_hash
+              AND evidence.binding_issue IS NULL
               AND COALESCE(json_extract(record.typed_payload, '$.availability'), 'standard') = 'standard'
               {filtered_where}
             GROUP BY evidence.knowledge_scope, evidence.source_case_ref
             """,
-            [*family_keys, *allowed_scopes, *filter_params],
+            [game_patch, *family_keys, *allowed_scopes, *filter_params],
         ).fetchall()
         available = [
             {
@@ -5284,6 +5550,7 @@ class ResearchMemoryService:
                 "sourceCaseRef": str(row["source_case_ref"]),
                 "eligibleRecordKindCount": int(row["kind_count"] or 0),
                 "eligibleRecordCount": int(row["record_count"] or 0),
+                "currentPatchRecordCount": int(row["current_count"] or 0),
                 "eligibleBuildFamilyKeys": sorted(
                     str(value) for value in _loads(row["family_keys"], []) if str(value)
                 ),
@@ -5304,6 +5571,7 @@ class ResearchMemoryService:
         scope_rank = {"local_user": 0, "global_seed": 1}
         candidates.sort(
             key=lambda item: (
+                -item["currentPatchRecordCount"],
                 -item["eligibleRecordKindCount"],
                 -item["eligibleRecordCount"],
                 scope_rank.get(item["knowledgeScope"], 9),
@@ -5354,18 +5622,13 @@ class ResearchMemoryService:
             family_ref: {"storedRecordCount": 0, "exclusionReasonCounts": {}}
             for family_ref in family_refs
         }
-        where = [
-            f"({family_filter})",
-            "visibility = 'creator_visible'",
-            "split = 'train_context'",
-            "copy_safety_state = 'passed'",
-            "status IN ('valid', 'needs_revalidation')",
-            (
-                "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
-                "!= 'source_specific_random'"
-            ),
-        ]
-        params: list[Any] = [value for family_ref in family_refs for value in family_ref]
+        where, params = _deep_record_read_predicates(
+            create_authorizing=create_authorizing,
+            knowledge_scope=knowledge_scope,
+            source_case_ref=source_case_ref,
+        )
+        where.append(f"({family_filter})")
+        params.extend(value for family_ref in family_refs for value in family_ref)
         if create_authorizing:
             if not knowledge_scope or not source_case_ref:
                 return (
@@ -5387,27 +5650,6 @@ class ResearchMemoryService:
                     [],
                     [],
                 )
-            where.extend(
-                [
-                    "knowledge_scope = ?",
-                    "record_schema_version = 2",
-                    "source_state_scope IN ('active_state', 'state_agnostic')",
-                    "projection_hash IS NOT NULL",
-                    "EXISTS (SELECT 1 FROM deep_research_record_evidence AS evidence "
-                    "WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope "
-                    "AND evidence.knowledge_key = deep_research_records.knowledge_key "
-                    "AND evidence.source_case_ref = ? "
-                    "AND evidence.accepted_projection_hash = deep_research_records.projection_hash "
-                    "AND evidence.source_state_scope IN ('active_state', 'state_agnostic') "
-                    "AND EXISTS (SELECT 1 FROM research_source_provenance AS provenance "
-                    "WHERE provenance.source_case_ref = evidence.source_case_ref "
-                    "AND provenance.knowledge_scope = evidence.knowledge_scope))",
-                    "EXISTS (SELECT 1 FROM research_build_families AS family "
-                    "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
-                    "AND family.build_family_key = deep_research_records.build_family_key)",
-                ]
-            )
-            params.extend([knowledge_scope, source_case_ref])
             storage_summary = self._source_lane_storage_summary(
                 con,
                 family_keys=sorted({key for _scope, key in family_refs}),
@@ -5417,25 +5659,17 @@ class ResearchMemoryService:
                 passive_tree_version=passive_tree_version,
             )
         if game_patch:
-            where.append("game_patch = ?")
+            where.append("research_patch_matches(game_patch, ?)")
             params.append(game_patch)
+            if create_authorizing:
+                where.append("research_patch_adoptable(record_id, projection_hash, ?)")
+                params.append(game_patch)
         if passive_tree_version:
             where.append("passive_tree_version = ?")
             params.append(passive_tree_version)
-        rows = list(
-            con.execute(
-                """
-                SELECT record_id, knowledge_scope, build_family_key, record_kind, title, summary,
-                       component_keys, conditions, failure_conditions, evidence_count,
-                       typed_payload
-                FROM deep_research_records
-                WHERE """
-                + " AND ".join(where)
-                + """
-                ORDER BY build_family_key, evidence_count DESC, last_validated_at DESC, record_id
-                """,
-                params,
-            ).fetchall()
+        rows = research_content.select_distinct(
+            con, "SELECT * FROM deep_research_records WHERE " + " AND ".join(where),
+            params, target_patch=game_patch,
         )
         grouped: dict[ScopedFamilyRef, list[sqlite3.Row]] = {
             family_ref: [] for family_ref in family_refs
@@ -5528,13 +5762,17 @@ class ResearchMemoryService:
                 storage_summary.get((family_scope, family_key), {}).get("exclusionReasonCounts")
                 or {}
             )
+            duplicate_count = max(0, int(
+                storage_summary.get((family_scope, family_key), {}).get("eligibleBindingCount", eligible_count)
+            ) - eligible_count)
             coverage.append(
                 {
                     "buildFamilyKey": family_key,
                     "knowledgeScope": family_scope,
                     "storedRecordCount": stored_count,
                     "eligibleRecordCount": eligible_count,
-                    "excludedRecordCount": max(0, stored_count - eligible_count),
+                    "excludedRecordCount": max(0, stored_count - eligible_count - duplicate_count),
+                    "deduplicatedRecordCount": duplicate_count,
                     "exclusionReasonCounts": exclusion_reason_counts,
                     "returnedRecordCount": returned_count,
                     "unreturnedRecordCount": eligible_count - returned_count,
@@ -5566,24 +5804,26 @@ class ResearchMemoryService:
         ]
         params: list[Any] = [*family_keys, knowledge_scope, source_case_ref]
         if game_patch:
-            where.append("record.game_patch = ?")
+            where.append("research_patch_matches(record.game_patch, ?)")
             params.append(game_patch)
         if passive_tree_version:
             where.append("record.passive_tree_version = ?")
             params.append(passive_tree_version)
         rows = con.execute(
             """
-            SELECT record.build_family_key, record.visibility, record.split,
+            SELECT record.record_id, record.build_family_key, record.visibility, record.split,
                    record.copy_safety_state, record.status, record.record_schema_version,
                    record.source_state_scope, record.projection_hash, record.typed_payload,
                    evidence.accepted_projection_hash,
                    evidence.source_state_scope AS evidence_state_scope,
+                   evidence.binding_issue,
                    provenance.source_case_ref AS provenance_source_case_ref,
                    family.build_family_key AS scoped_family_key
             FROM deep_research_records AS record
             JOIN deep_research_record_evidence AS evidence
               ON evidence.knowledge_scope = record.knowledge_scope
              AND evidence.knowledge_key = record.knowledge_key
+             AND evidence.record_id = record.record_id
             LEFT JOIN research_source_provenance AS provenance
               ON provenance.source_case_ref = evidence.source_case_ref
              AND provenance.knowledge_scope = evidence.knowledge_scope
@@ -5615,8 +5855,8 @@ class ResearchMemoryService:
                 reason = "copy_safety"
             elif row["status"] != "valid":
                 reason = "status"
-            elif int(row["record_schema_version"] or 1) < 2:
-                reason = "legacy_schema"
+            elif int(row["record_schema_version"] or 1) != 2:
+                reason = "legacy_schema" if int(row["record_schema_version"] or 1) < 2 else "unsupported_schema"
             elif (
                 str((_loads(row["typed_payload"], {}) or {}).get("availability") or "standard")
                 != "standard"
@@ -5633,13 +5873,22 @@ class ResearchMemoryService:
                 row["accepted_projection_hash"] != row["projection_hash"]
             ):
                 reason = "projection_provenance"
+            elif row["binding_issue"]:
+                reason = "record_binding"
             elif not row["provenance_source_case_ref"]:
                 reason = "source_provenance"
             elif not row["scoped_family_key"]:
                 reason = "scoped_family"
+            elif game_patch and not con.execute(
+                "SELECT research_patch_adoptable(?, ?, ?)",
+                (row["record_id"], row["projection_hash"], game_patch),
+            ).fetchone()[0]:
+                reason = "target_patch"
             if reason:
                 counts = summary["exclusionReasonCounts"]
                 counts[reason] = int(counts.get(reason) or 0) + 1
+            else:
+                summary["eligibleBindingCount"] = int(summary.get("eligibleBindingCount", 0)) + 1
         return result
 
     def _query_deep_record_rows(
@@ -5659,37 +5908,15 @@ class ResearchMemoryService:
         knowledge_scope: str | None = None,
         source_case_ref: str | None = None,
     ) -> list[sqlite3.Row]:
-        where = [
-            "visibility = 'creator_visible'",
-            "split = 'train_context'",
-            "copy_safety_state = 'passed'",
-            "status IN ('valid', 'needs_revalidation')",
-        ]
+        where, params = _deep_record_read_predicates(
+            create_authorizing=create_authorizing,
+            knowledge_scope=knowledge_scope,
+            source_case_ref=source_case_ref,
+            exact_diagnostic_read=bool(record_ids),
+        )
         if create_authorizing:
             if not knowledge_scope or not source_case_ref:
                 return []
-            where.extend(
-                [
-                    "status = 'valid'",
-                    "knowledge_scope = ?",
-                    "record_schema_version = 2",
-                    "source_state_scope IN ('active_state', 'state_agnostic')",
-                    "projection_hash IS NOT NULL",
-                    "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') = 'standard'",
-                    "EXISTS (SELECT 1 FROM deep_research_record_evidence AS evidence "
-                    "WHERE evidence.knowledge_scope = deep_research_records.knowledge_scope "
-                    "AND evidence.knowledge_key = deep_research_records.knowledge_key "
-                    "AND evidence.source_case_ref = ? "
-                    "AND evidence.accepted_projection_hash = deep_research_records.projection_hash "
-                    "AND evidence.source_state_scope IN ('active_state', 'state_agnostic') "
-                    "AND EXISTS (SELECT 1 FROM research_source_provenance AS provenance "
-                    "WHERE provenance.source_case_ref = evidence.source_case_ref "
-                    "AND provenance.knowledge_scope = evidence.knowledge_scope))",
-                    "EXISTS (SELECT 1 FROM research_build_families AS family "
-                    "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
-                    "AND family.build_family_key = deep_research_records.build_family_key)",
-                ]
-            )
         if record_ids:
             # Explicit record IDs are deep-read anchors that may have been issued before a
             # relocation (backfill/migration moves a unit to id = hash(knowledge_key) and
@@ -5714,14 +5941,6 @@ class ResearchMemoryService:
                     ).fetchone()
                     head_id = head["superseded_by_id"] if head is not None else None
             record_ids = resolved_ids
-        if not record_ids and not create_authorizing:
-            where.append(
-                "COALESCE(json_extract(typed_payload, '$.availability'), 'standard') "
-                "!= 'source_specific_random'"
-            )
-        params: list[Any] = []
-        if create_authorizing:
-            params.extend([knowledge_scope, source_case_ref])
         if record_ids:
             placeholders = ",".join("?" for _ in record_ids)
             where.append(f"record_id IN ({placeholders})")
@@ -5737,8 +5956,11 @@ class ResearchMemoryService:
             where.append(f"record_kind IN ({placeholders})")
             params.extend(record_kinds)
         if game_patch:
-            where.append("game_patch = ?")
+            where.append("research_patch_matches(game_patch, ?)")
             params.append(game_patch)
+            if create_authorizing:
+                where.append("research_patch_adoptable(record_id, projection_hash, ?)")
+                params.append(game_patch)
         if passive_tree_version:
             where.append("passive_tree_version = ?")
             params.append(passive_tree_version)
@@ -5798,11 +6020,18 @@ class ResearchMemoryService:
                 )
                 params.extend([*group, *group, *group, *group, *group])
         sql = "SELECT * FROM deep_research_records WHERE " + " AND ".join(where)
-        sql += " ORDER BY evidence_count DESC, last_validated_at DESC, record_id"
-        if not query_is_preference:
-            sql += " LIMIT ?"
-            params.append(limit)
-        rows = list(con.execute(sql, params).fetchall())
+        if game_patch:
+            sql += " ORDER BY (game_patch = ?) DESC, evidence_count DESC, last_validated_at DESC, record_id"
+            params.append(game_patch)
+        else:
+            sql += " ORDER BY evidence_count DESC, last_validated_at DESC, record_id"
+        if record_ids:
+            rows = list(con.execute(sql, params).fetchall())
+        else:
+            rows = research_content.select_distinct(
+                con, sql, params, target_patch=game_patch,
+                limit=None if query_is_preference else limit,
+            )
         if query_is_preference:
             # Explicit record IDs are a caller-authored deep-read set.  Never silently discard
             # one because an ordinary summary limit is smaller than that exact set.
@@ -5846,26 +6075,38 @@ class ResearchMemoryService:
             "(knowledge_scope = ? AND build_family_key = ?)" for _ in family_refs
         )
         id_placeholders = ",".join("?" for _ in existing_ids)
-        expanded = con.execute(
+        expanded = research_content.select_distinct(
+            con,
             f"""
             SELECT * FROM deep_research_records
             WHERE ({family_filter})
               AND record_id NOT IN ({id_placeholders})
+              AND (? IS NULL OR research_patch_matches(game_patch, ?))
+              AND (? IS NULL OR passive_tree_version = ?)
               AND visibility = 'creator_visible'
               AND split = 'train_context'
               AND copy_safety_state = 'passed'
               AND status IN ('valid', 'needs_revalidation')
               AND COALESCE(json_extract(typed_payload, '$.availability'), 'standard') != 'source_specific_random'
             ORDER BY evidence_count DESC, last_validated_at DESC, record_id
-            LIMIT ?
             """,
             [
                 *(value for family_ref in family_refs for value in family_ref),
                 *sorted(existing_ids),
-                limit - len(rows),
+                game_patch, game_patch, passive_tree_version, passive_tree_version,
             ],
-        ).fetchall()
-        return [*rows, *expanded]
+            target_patch=game_patch,
+        )
+        selected_content = {
+            (row["knowledge_scope"], row["build_family_key"], row["record_kind"],
+             row["source_state_scope"], row["status"], research_content.content_ref(row))
+            for row in rows
+        }
+        additions = [row for row in expanded if (
+            row["knowledge_scope"], row["build_family_key"], row["record_kind"],
+            row["source_state_scope"], row["status"], research_content.content_ref(row)
+        ) not in selected_content]
+        return [*rows, *additions[:max(0, limit - len(rows))]]
 
     @staticmethod
     def _balanced_deep_record_rows(
@@ -6257,6 +6498,8 @@ class ResearchMemoryService:
 
     def _deep_record_result(self, row: sqlite3.Row, *, include_content: bool) -> dict[str, Any]:
         result = {
+            "contentRevisionRef": research_content.content_ref(row),
+            "knowledgeConceptKey": research_identity.knowledge_concept_key(row, str(row["build_family_key"] or "")),
             "recordId": row["record_id"],
             "researchGroupId": row["research_group_id"],
             "buildFamilyKey": row["build_family_key"],
@@ -6288,6 +6531,7 @@ class ResearchMemoryService:
         if include_content:
             result["content"] = row["content"]
             result["typedPayload"] = _loads(row["typed_payload"], {})
+            result["projectionHash"] = row["projection_hash"]
         return result
 
     def _duplicate_fragment(
@@ -6616,6 +6860,7 @@ class ResearchMemoryService:
               AND knowledge_scope = ?
               AND directionality = 'directional'
               AND planner_visible = 1
+              AND research_semantic_patch_adoptable(edge_id, ?, ?)
             LIMIT 1
             """,
             (
@@ -6625,6 +6870,8 @@ class ResearchMemoryService:
                 edge.visibility,
                 edge.split,
                 edge.knowledge_scope,
+                edge.game_patch,
+                edge.passive_tree_version,
             ),
         ).fetchone()
         if inverse:
@@ -6654,6 +6901,7 @@ class ResearchMemoryService:
                   AND knowledge_scope = ?
                   AND directionality = 'directional'
                   AND planner_visible = 1
+                  AND research_semantic_patch_adoptable(edge_id, ?, ?)
                 UNION ALL
                 SELECT e.target_key, walk.depth + 1, walk.path || '>' || e.target_key
                 FROM research_semantic_edges e
@@ -6665,6 +6913,7 @@ class ResearchMemoryService:
                   AND e.knowledge_scope = ?
                   AND e.directionality = 'directional'
                   AND e.planner_visible = 1
+                  AND research_semantic_patch_adoptable(e.edge_id, ?, ?)
             )
             SELECT path, depth FROM walk WHERE node = ? ORDER BY depth ASC LIMIT 1
             """,
@@ -6674,11 +6923,15 @@ class ResearchMemoryService:
                 edge.visibility,
                 edge.split,
                 edge.knowledge_scope,
+                edge.game_patch,
+                edge.passive_tree_version,
                 SHORT_CYCLE_MAX_DEPTH,
                 edge.edge_type,
                 edge.visibility,
                 edge.split,
                 edge.knowledge_scope,
+                edge.game_patch,
+                edge.passive_tree_version,
                 edge.source_key,
             ),
         ).fetchone()
@@ -7272,6 +7525,8 @@ def _deep_record_id(record: research_models.DeepResearchRecordProposal) -> str:
                 "visibility": record.visibility,
                 "split": record.split,
                 "knowledge_scope": record.knowledge_scope,
+                **({"game_patch": record.game_patch, "passive_tree_version": record.passive_tree_version}
+                   if record.game_patch in patch_reviews.RECALL_PREDECESSORS else {}),
             }
         )[:16]
     )

@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 import sqlite3
 
-import pytest
-
 from scripts import create_build
 from server import main as server_main
 from server.knowledge import mature_learning
@@ -354,7 +352,7 @@ def test_resource_knowledge_identity_uses_structured_mechanisms_without_graph_no
     ]
 
 
-def test_structured_resource_identity_upgrades_same_unkeyed_record(tmp_path):
+def test_structured_resource_identity_preserves_unbound_legacy_record(tmp_path):
     service = research_memory.ResearchMemoryService(
         db_path=tmp_path / "mature.sqlite", graph_service=_graph_service()
     )
@@ -380,15 +378,15 @@ def test_structured_resource_identity_upgrades_same_unkeyed_record(tmp_path):
 
     con = mature_learning.connect(tmp_path / "mature.sqlite")
     try:
-        con.execute("UPDATE deep_research_records SET typed_payload = '{}' ")
+        con.execute("UPDATE deep_research_records SET typed_payload = '{}' WHERE knowledge_key IS NOT NULL")
         con.commit()
     finally:
         con.close()
     repaired_payload = service.propose_deep_research_records(payload)
 
     assert unkeyed["unkeyedRecordCount"] == 1
-    assert upgraded["createdRecordCount"] == 0
-    assert upgraded["updatedRecordCount"] == 1
+    assert upgraded["createdRecordCount"] == 1
+    assert upgraded["updatedRecordCount"] == 0
     assert upgraded["unkeyedRecordCount"] == 0
     assert upgraded["evidenceAddedCount"] == 1
     assert repaired_payload["createdRecordCount"] == 0
@@ -396,7 +394,8 @@ def test_structured_resource_identity_upgrades_same_unkeyed_record(tmp_path):
     con = mature_learning.connect(tmp_path / "mature.sqlite")
     try:
         row = con.execute(
-            "SELECT knowledge_key, evidence_count, typed_payload FROM deep_research_records"
+            "SELECT knowledge_key, evidence_count, typed_payload FROM deep_research_records "
+            "WHERE knowledge_key IS NOT NULL"
         ).fetchone()
         assert row["knowledge_key"] is not None
         assert row["evidence_count"] == 1
@@ -404,7 +403,13 @@ def test_structured_resource_identity_upgrades_same_unkeyed_record(tmp_path):
             "mana_leech",
             "mana_flask",
         ]
-        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 2
+        legacy = con.execute(
+            "SELECT knowledge_key,record_schema_version FROM deep_research_records WHERE record_id=?",
+            (unkeyed["recordIds"][0],),
+        ).fetchone()
+        assert legacy["knowledge_key"] is None
+        assert legacy["record_schema_version"] == 1
     finally:
         con.close()
 
@@ -711,7 +716,7 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
     mature_learning.initialize_store(db_path)
     con = mature_learning.connect(db_path)
     try:
-        assert mature_learning.schema_version(con) == 5
+        assert mature_learning.schema_version(con) == mature_learning.SCHEMA_VERSION
         assert {
             "research_fragments",
             "research_fragment_evidence",
@@ -719,11 +724,13 @@ def test_initialize_store_adds_phase4_schema_with_colon_safe_fts(tmp_path):
             "research_semantic_edges",
             "research_rejected_proposals",
             "research_revalidation_events",
-            "deep_research_records",
+            "deep_research_record_bindings",
+            "research_content_revisions",
             "deep_research_record_evidence",
             "research_build_families",
             "research_build_family_evidence",
         } <= _tables(con)
+        assert con.execute("SELECT type FROM sqlite_master WHERE name='deep_research_records'").fetchone()[0] == "view"
         columns = {
             str(row["name"]) for row in con.execute("PRAGMA table_info(deep_research_records)")
         }
@@ -1573,7 +1580,7 @@ def test_family_join_preserves_authoritative_legacy_key(tmp_path):
         con.close()
 
 
-def test_cross_source_non_equivalent_canonical_record_is_rejected(tmp_path):
+def test_cross_source_non_equivalent_records_coexist_in_one_family(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
     first = _deep_record_payload(
@@ -1593,7 +1600,7 @@ def test_cross_source_non_equivalent_canonical_record_is_rejected(tmp_path):
             "resolution_status": "resolved",
         }
     ]
-    first_record["title"] = "最终保留的 canonical 标题"
+    first_record["title"] = "第一个来源的聚焦机制标题"
     first_record["source_case_refs"] = ["source-hash:canonical"]
     second = json.loads(json.dumps(first))
     second_record = second["deep_research_records"][0]
@@ -1604,9 +1611,24 @@ def test_cross_source_non_equivalent_canonical_record_is_rejected(tmp_path):
     second_record["source_case_refs"] = ["source-hash:submitted"]
 
     first_result = service.propose_deep_research_records(first)
-    with pytest.raises(ValueError, match="duplicate_knowledge_identity_conflict"):
-        service.propose_deep_research_records(second)
+    second_result = service.propose_deep_research_records(second)
+    assert first_result["status"] == second_result["status"] == "accepted"
     assert first_result["createdRecordCount"] == 1
+    assert second_result["createdRecordCount"] == 1
+    assert second_result["buildFamilyKeys"] == first_result["buildFamilyKeys"]
+    result = service.query_research_memory(
+        "", build_family_keys=first_result["buildFamilyKeys"], detail_level="record"
+    )
+    assert len(result["buildFamilies"]) == 1
+    rows = result["deepResearchRecords"]
+    assert len(rows) == 2
+    assert {row["content"] for row in rows} == {
+        first_record["content"], second_record["content"]
+    }
+    assert all(row["evidenceCount"] == 1 for row in rows)
+    assert {tuple(row["sourceCaseRefs"]) for row in rows} == {
+        ("source-hash:canonical",), ("source-hash:submitted",)
+    }
 
 
 def test_same_source_accepted_revision_can_replace_longer_canonical_prose(tmp_path):
@@ -1839,8 +1861,10 @@ def test_same_source_identity_revision_replaces_old_evidence_key(tmp_path):
     db_path = tmp_path / "mature.sqlite"
     service = research_memory.ResearchMemoryService(db_path=db_path, graph_service=_graph_service())
     first = _deep_record_payload("原始轮转把一个组件记录为普通辅助。")
+    first["schema_version"] = 6
     record = first["deep_research_records"][0]
     record["record_kind"] = "rotation"
+    record.update(record_schema_version=2, source_state_scope="active_state")
     record["ascendancy_key"] = "ascendancy:monk:martial_artist"
     record["component_mentions"] = [
         {
@@ -1862,13 +1886,23 @@ def test_same_source_identity_revision_replaces_old_evidence_key(tmp_path):
             "resolution_status": "resolved",
         },
     ]
+    record["typed_payload"]["supportPackages"] = [{
+        "skillKey": "skill:LightningArrowPlayer", "supportKeys": ["support:Scattershot"],
+    }]
     first_result = service.propose_deep_research_records(first)
+    assert first_result["status"] == "accepted", first_result
     old_key = first_result["knowledgeKeys"][0]
 
     corrected = json.loads(json.dumps(first))
     corrected_record = corrected["deep_research_records"][0]
     corrected_record["content"] = "同一来源复审后确认该组件承担触发载荷职责。"
     corrected_record["component_mentions"][1]["role"] = "triggered_payload"
+    written = first_result["recordWrites"][0]
+    corrected_record["source_claim_revision"] = {
+        "knowledge_key": written["knowledgeKey"],
+        "record_id": written["recordId"],
+        "projection_hash": written["afterProjectionHash"],
+    }
     corrected_result = service.propose_deep_research_records(corrected)
     new_key = corrected_result["knowledgeKeys"][0]
 
@@ -2142,7 +2176,7 @@ def test_deep_record_normalizes_unknown_to_application_current_version(tmp_path)
         ).fetchone()
         assert row["game_patch"] == "0.5.4"
         assert row["passive_tree_version"] == "0_5"
-        assert row["pob_version_or_commit"] == "0.22.0"
+        assert row["pob_version_or_commit"] == "0.23.1"
     finally:
         con.close()
 
@@ -3924,8 +3958,10 @@ def test_family_discovery_returns_top_ten_and_persists_exact_typed_receipt(tmp_p
     try:
         for index, record_id in enumerate(record_ids):
             con.execute(
-                "UPDATE deep_research_records SET evidence_count = ? WHERE record_id = ?",
-                (index + 1, record_id),
+                "UPDATE deep_research_records SET evidence_count = ?, source_case_refs = ? WHERE record_id = ?",
+                (index + 1, research_memory._json([
+                    f"case:family-discovery-{index:02d}-{source}" for source in range(index + 1)
+                ]), record_id),
             )
         con.commit()
     finally:
@@ -3945,6 +3981,7 @@ def test_family_discovery_returns_top_ten_and_persists_exact_typed_receipt(tmp_p
         "outcome": "known_family_not_authorized",
         "coverage": "sufficient",
         "exactVersionOnly": True,
+        "historicalRecallEnabled": False,
         "didNotBackfillWithStaleFamilies": True,
     }
     assert [row["evidenceCount"] for row in result["buildFamilies"]] == list(range(12, 2, -1))
@@ -4369,7 +4406,9 @@ def test_family_secondary_metadata_reconciles_additions_and_removals(tmp_path):
         group="research:secondary-explicit",
         sources=("case:secondary-explicit",),
     )
+    explicit["schema_version"] = 6
     explicit_record = explicit["deep_research_records"][0]
+    explicit_record.update(record_schema_version=2, source_state_scope="active_state")
     explicit_record["record_kind"] = "mechanic_chain"
     explicit_record["component_keys"] = [
         "skill:LightningArrowPlayer",
@@ -4406,6 +4445,37 @@ def test_family_secondary_metadata_reconciles_additions_and_removals(tmp_path):
     explicit_record["typed_payload"].pop("familyCoreSkillKeys")
     service.propose_deep_research_records(explicit)
 
+    con = mature_learning.connect(tmp_path / "mature.sqlite")
+    try:
+        row = con.execute(
+            "SELECT secondary_skill_keys FROM research_build_families WHERE build_family_key = ?",
+            (family_key,),
+        ).fetchone()
+        assert "skill:LightningRodPlayer" in json.loads(row["secondary_skill_keys"])
+    finally:
+        con.close()
+
+    def source_lane(source_ref):
+        result = service.query_research_memory(
+            "", build_family_keys=[family_key], game_patch="0.5.4",
+            passive_tree_version="0_5", knowledge_scope="global_seed",
+            source_case_ref=source_ref, detail_level="record", response_profile="create_compact",
+        )
+        assert result["selectedSourceCaseRef"] == source_ref
+        assert len(result["deepResearchRecords"]) == 1
+        return result["deepResearchRecords"][0]
+
+    revised_a = source_lane("case:secondary-explicit")
+    retained_b = source_lane("case:secondary-explicit-b")
+    assert "familyCoreSkillKeys" not in revised_a["typedPayload"]
+    assert retained_b["typedPayload"]["familyCoreSkillKeys"] == ["skill:LightningRodPlayer"]
+    assert revised_a["sourceCaseRefs"] == ["case:secondary-explicit"]
+    assert retained_b["sourceCaseRefs"] == ["case:secondary-explicit-b"]
+
+    corroborating_record["typed_payload"].pop("familyCoreSkillKeys")
+    assert service.propose_deep_research_records(corroborating)["status"] == "accepted"
+    for source_ref in ("case:secondary-explicit", "case:secondary-explicit-b"):
+        assert "familyCoreSkillKeys" not in source_lane(source_ref)["typedPayload"]
     con = mature_learning.connect(tmp_path / "mature.sqlite")
     try:
         row = con.execute(
@@ -4468,7 +4538,9 @@ def test_family_identity_revision_removes_unreferenced_old_family(tmp_path):
         ),
     )
     payload = _family_deep_payload()
+    payload["schema_version"] = 6
     record = payload["deep_research_records"][0]
+    record.update(record_schema_version=2, source_state_scope="active_state")
     record["component_keys"].append("skill:ClearSkillPlayer")
     record["component_mentions"].append(
         {
@@ -4482,6 +4554,7 @@ def test_family_identity_revision_removes_unreferenced_old_family(tmp_path):
         }
     )
     first = service.propose_deep_research_records(payload)
+    assert first["status"] == "accepted", first
     old_family_key = first["buildFamilyKeys"][0]
     pattern_result = service.propose_build_patterns(
         _as_transfer_candidate(
@@ -4545,6 +4618,12 @@ def test_family_identity_revision_removes_unreferenced_old_family(tmp_path):
         }
     )
     record["typed_payload"]["supportPackages"][0]["skillKey"] = "skill:OtherPrimaryPlayer"
+    written = first["recordWrites"][0]
+    record["source_claim_revision"] = {
+        "knowledge_key": written["knowledgeKey"],
+        "record_id": written["recordId"],
+        "projection_hash": written["afterProjectionHash"],
+    }
     revised = service.propose_deep_research_records(payload)
     new_family_key = revised["buildFamilyKeys"][0]
 

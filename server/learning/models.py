@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from server.knowledge import copy_safety
+from server.knowledge import copy_safety, research_contracts
 
 
 def _camel(value: str) -> str:
@@ -79,7 +79,13 @@ COMPARISON_DIMENSIONS: tuple[str, ...] = (
 )
 
 _STABLE_KEY = re.compile(r"^[A-Za-z0-9_.:/\-']+$")
-_SAFE_REF = re.compile(r"^[A-Za-z0-9_.:/\-]{3,240}$")
+_SAFE_REF = re.compile(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN)
+
+
+def _safe_evidence_refs(values: list[str]) -> list[str]:
+    if len(values) != len(set(values)) or any(not _SAFE_REF.fullmatch(value) for value in values):
+        raise ValueError("evidence references must be unique safe bounded references")
+    return values
 
 
 class LearningVersionContext(StrictModel):
@@ -126,11 +132,7 @@ class FamilyTarget(StrictModel):
     @field_validator("safe_evidence_refs")
     @classmethod
     def _safe_refs(cls, values: list[str]) -> list[str]:
-        if len(values) != len(set(values)) or any(
-            not _SAFE_REF.fullmatch(value) for value in values
-        ):
-            raise ValueError("safe_evidence_refs must be unique safe references")
-        return values
+        return _safe_evidence_refs(values)
 
     @model_validator(mode="after")
     def _consistent(self) -> "FamilyTarget":
@@ -209,6 +211,16 @@ class SafeBuildEvidence(StrictModel):
     judge_advisory: JudgeAdvisoryAttachment | None = None
     no_raw_material: Literal[True] = True
 
+    @field_validator("evidence_ref")
+    @classmethod
+    def _safe_packet_ref(cls, value: str) -> str:
+        return _safe_evidence_refs([value])[0]
+
+    @field_validator("safe_evidence_refs")
+    @classmethod
+    def _safe_refs(cls, values: list[str]) -> list[str]:
+        return _safe_evidence_refs(values)
+
     @model_validator(mode="after")
     def _safe_and_bounded(self) -> "SafeBuildEvidence":
         if any(key not in COMPARISON_DIMENSIONS for key in self.dimension_notes):
@@ -227,6 +239,14 @@ class DimensionComparison(StrictModel):
     reference_evidence_refs: list[str] = Field(default_factory=list, max_length=12)
     critical_gap: bool = False
 
+    @model_validator(mode="after")
+    def _two_sided_evidence(self) -> "DimensionComparison":
+        for refs in (self.generated_evidence_refs, self.reference_evidence_refs):
+            _safe_evidence_refs(refs)
+            if self.verdict != "unknown" and not refs:
+                raise ValueError("non-unknown dimensions require evidence from both sides")
+        return self
+
 
 class ComparisonGap(StrictModel):
     gap_id: str = Field(min_length=1, max_length=100)
@@ -236,9 +256,14 @@ class ComparisonGap(StrictModel):
     critical: bool
     safe_evidence_refs: list[str] = Field(min_length=1, max_length=12)
 
+    @field_validator("safe_evidence_refs")
+    @classmethod
+    def _safe_refs(cls, values: list[str]) -> list[str]:
+        return _safe_evidence_refs(values)
+
 
 class BuildComparisonReport(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     comparison_id: str = Field(min_length=1, max_length=100)
     case_id: str = Field(min_length=1, max_length=80)
     family_match: bool
@@ -263,6 +288,13 @@ class BuildComparisonReport(StrictModel):
             raise ValueError("comparison must contain each required dimension exactly once")
         if self.overall_verdict == "reference_stronger" and not self.gaps:
             raise ValueError("reference_stronger requires typed gaps")
+        gap_ids = [item.gap_id for item in self.gaps]
+        if len(gap_ids) != len(set(gap_ids)):
+            raise ValueError("comparison gap IDs must be unique")
+        flagged = {item.dimension for item in self.dimensions if item.critical_gap}
+        critical = {item.dimension for item in self.gaps if item.critical}
+        if flagged != critical:
+            raise ValueError("dimension critical_gap flags must match critical typed gaps")
         ensure_safe_durable_payload(self.model_dump(mode="json", by_alias=True))
         return self
 

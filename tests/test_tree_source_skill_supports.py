@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import unittest
 from unittest import mock
+from xml.etree import ElementTree as ET
 
 from server.compute.engine import PobEngine
 from server.compute import skillgroups, supportopt
@@ -45,12 +46,14 @@ Grants Skill: Level 14 Life Remnants
 Skills Gain 100% of Mana Cost as Extra Life Cost"""
 
 
-def _complete_support_measurement(*keys: str) -> dict:
+def _complete_support_measurement(*keys: str, current=(), recommended=()) -> dict:
     objective_keys = list(keys or ("TotalDPS",))
+    positive = sorted(current) != sorted(recommended)
     return {
         "status": "complete",
         "checkpointEligible": True,
         "baseMeasurable": True,
+        "currentCombinationMeasurable": True,
         "coverageComplete": True,
         "classificationComplete": True,
         "supportCapacity": 5,
@@ -69,13 +72,29 @@ def _complete_support_measurement(*keys: str) -> dict:
         "objectiveKeys": objective_keys,
         "objectiveDirections": {key: "higher" for key in objective_keys},
         "measurementKeys": objective_keys,
+        "combinationComparison": {
+            "status": "complete",
+            "baselineSupports": list(current),
+            "candidateSupports": list(recommended),
+            "baselineMetrics": {key: 100 for key in objective_keys},
+            "candidateMetrics": {key: 110 if positive else 100 for key in objective_keys},
+            "baselineScore": 100.0,
+            "candidateScore": 110.0 if positive else 100.0,
+            "netGain": 10.0 if positive else 0.0,
+            "baselineMeasurable": True,
+            "candidateMeasurable": True,
+            "candidateConstraintsSatisfied": True,
+            "candidateLegalityNonRegressing": True,
+            "sameContext": True,
+            "positiveGainProven": positive,
+        },
     }
 
 
 class _AuditProbeEngine:
     def __init__(self, stats_by_support: dict[str, dict]) -> None:
         self.stats_by_support = stats_by_support
-        self.xml = "<PathOfBuilding2><Build level='95'/><Skills/><Items/></PathOfBuilding2>"
+        self.xml = "<PathOfBuilding2><Build level='95'/><Skills><Skill><Gem nameSpec='Spark' level='20' quality='20'/></Skill></Skills><Items/></PathOfBuilding2>"
 
     @contextmanager
     def transaction_lock(self):
@@ -84,14 +103,24 @@ class _AuditProbeEngine:
     def get_xml(self) -> str:
         return self.xml
 
-    def load_build_xml(self, *_: object, **__: object) -> None:
-        return None
+    def load_build_xml(self, xml: str, **__: object) -> None:
+        self.xml = xml
 
     def get_build(self) -> dict:
         return {"mainSkillGroup": [{"name": "Spark", "level": 20, "quality": 20}]}
 
-    def call(self, method: str, **_: object) -> dict:
+    def call(self, method: str, **params: object) -> dict:
+        if method == "resolve_support_gem_identity":
+            return {
+                "ok": True,
+                "status": "resolved",
+                "name": params["requestedName"],
+                "gemId": "oracle:" + str(params["requestedName"]),
+                "effectId": "effect:" + str(params["requestedName"]),
+                "naturalMaxLevel": 1,
+            }
         if method == "list_skill_groups":
+            gems = ET.fromstring(self.xml).findall("./Skills/Skill/Gem")
             return {
                 "mainGroupIndex": 1,
                 "groups": [
@@ -103,18 +132,53 @@ class _AuditProbeEngine:
                         "activeSkill": "Spark",
                         "gems": [
                             {
-                                "name": "Spark",
-                                "level": 20,
-                                "quality": 20,
-                                "isSupport": False,
+                                "name": gem.get("nameSpec"),
+                                "level": int(gem.get("level")),
+                                "quality": int(gem.get("quality")),
+                                "isSupport": gem.get("nameSpec") != "Spark",
                             }
+                            for gem in gems
                         ],
                     }
                 ],
             }
         if method == "set_skill_group_state":
             return {"ok": True}
+        if method == "inspect_support_evaluation_capability":
+            return {
+                "ok": True,
+                "applicationCheck": "verified",
+                "numericRanking": "supported",
+                "triggerRate": "not_applicable",
+                "capabilitySource": "pob_runtime",
+            }
         raise AssertionError(method)
+
+    def get_stats(self, _keys=None) -> dict:
+        return self.paste_skill(self.xml)
+
+    def probe_regular_skill_group(
+        self,
+        *,
+        group_index,
+        group_xml,
+        active_skill_index,
+        expected_skill_name,
+        keys,
+        objective_keys,
+        expected_effect_id=None,
+    ):
+        root = ET.fromstring(self.xml)
+        skills = root.find("Skills")
+        skills.remove(skills.findall("Skill")[group_index - 1])
+        skills.insert(group_index - 1, ET.fromstring(group_xml))
+        self.xml = ET.tostring(root, encoding="unicode")
+        return {
+            "ok": True,
+            "state": self.call("list_skill_groups"),
+            "capability": self.call("inspect_support_evaluation_capability"),
+            **self.get_stats(keys),
+        }
 
     def paste_skill(self, text: str) -> dict:
         for support, stats in self.stats_by_support.items():
@@ -587,6 +651,15 @@ Grants Skill: Level 20 Herald of Ash""",
     def test_replacing_source_item_invalidates_supports_and_current_audit(self) -> None:
         listed = self._new_calamity()
         before_hash = listed["stateHash"]
+        before_xml = self.engine.get_xml()
+        self._configure(1, ["Precision I"])
+        measured_group = skillgroups.list_skill_groups(self.engine)["groups"][0]
+        self.engine.load_build_xml(before_xml)
+        before_hash = build_state_hash(self.engine.get_xml())
+        measurement = _complete_support_measurement("TotalDPS", recommended=["Precision I"])
+        measurement["combinationComparison"]["candidateGroupFingerprint"] = (
+            supportopt._comparison_group_fingerprint(measured_group)
+        )
         supportopt._record_support_audit(
             engine=self.engine,
             state_hash=before_hash,
@@ -595,12 +668,26 @@ Grants Skill: Level 20 Herald of Ash""",
             current_supports=[],
             recommended_supports=["Precision I"],
             constraints={},
-            measurement=_complete_support_measurement("TotalDPS"),
+            measurement=measurement,
         )
         configured = self._configure(1, ["Precision I"])
         self.assertTrue(configured["ok"], configured)
         configured_hash = configured["stateHash"]
-        self.assertEqual((configured["supportAudit"] or {}).get("status"), "passed")
+        self.assertEqual(
+            (configured["supportAudit"] or {}).get("status"),
+            "passed",
+            {
+                "expectedFingerprint": measurement["combinationComparison"][
+                    "candidateGroupFingerprint"
+                ],
+                "actualFingerprint": supportopt._comparison_group_fingerprint(
+                    skillgroups.list_skill_groups(self.engine)["groups"][0]
+                ),
+                "expectedGroup": measured_group,
+                "actualGroup": skillgroups.list_skill_groups(self.engine)["groups"][0],
+                "beforeAudit": supportopt.support_audit_for_state(self.engine, before_hash, 1),
+            },
+        )
         self.assertIsNotNone(supportopt.support_audit_for_state(self.engine, configured_hash, 1))
 
         replaced = self.engine.add_item(COMING_CALAMITY, slot="Body Armour")
@@ -676,7 +763,7 @@ Grants Skill: Level 20 Herald of Ash""",
         self.assertEqual(
             result["measurement"]["candidateRejectionCodes"],
             {
-                "invalid_support_gem": 1,
+                "support_model_unavailable": 1,
                 "source_command_unsupported": 1,
                 "source_group_count_changed": 1,
                 "source_support_not_applied": 1,
@@ -687,6 +774,7 @@ Grants Skill: Level 20 Herald of Ash""",
             supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
             "passed",
         )
+        inspected = preflight.inspect_generation_snapshot(self.engine, self.engine.get_xml())
         checklist = validation_checkpoint._create_quality_checklist(
             engine=self.engine,
             xml=self.engine.get_xml(),
@@ -701,16 +789,11 @@ Grants Skill: Level 20 Herald of Ash""",
             },
             preflight_result={
                 "skillGroups": [
-                    {
-                        "groupIndex": 1,
-                        "source": listed["groups"][0]["source"],
-                        "sourceKind": "item",
-                        "noSupports": False,
-                    }
+                    group for group in inspected["skillGroups"] if group["groupIndex"] == 1
                 ]
             },
         )
-        self.assertEqual(checklist["skillSupportAudit"]["status"], "passed")
+        self.assertEqual(checklist["skillSupportAudit"]["status"], "passed", checklist)
         self.assertEqual(state_hash, build_state_hash(self.engine.get_xml()))
 
     def test_known_infeasible_combination_is_not_a_measurement_failure(self) -> None:
@@ -794,7 +877,12 @@ Grants Skill: Level 20 Herald of Ash""",
         listed = skillgroups.list_skill_groups(self.engine)
         state_hash = listed["stateHash"]
         original_call = self.engine.call
-        rejected_id = str(db.get_gem("Precision I")["id"])
+        rejected_id = str(
+            self.engine.call(
+                "resolve_support_gem_identity",
+                **supportopt._support_identity_subject("Precision I"),
+            )["gemId"]
+        )
 
         def fail_one_configuration(method: str, **params: object) -> dict:
             if method == "configure_source_skill_supports" and params.get("supportGemIds") == [
@@ -943,6 +1031,18 @@ Grants Skill: Level 20 Herald of Ash""",
 
 class SupportAuditIntegrityTests(unittest.TestCase):
     def setUp(self) -> None:
+        original_subject = supportopt._support_identity_subject
+        subject_patch = mock.patch.object(
+            supportopt,
+            "_support_identity_subject",
+            side_effect=lambda name: (
+                {"gemIds": ["oracle:" + name], "effectIds": ["effect:" + name]}
+                if name in {"Good", "Broken"}
+                else original_subject(name)
+            ),
+        )
+        subject_patch.start()
+        self.addCleanup(subject_patch.stop)
         self.engine = PobEngine()
         self.engine.new_build()
         self.engine.set_class("Sorceress", "Stormweaver")
@@ -966,7 +1066,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             current_supports=[],
             recommended_supports=["Acceleration I"],
             constraints={},
-            measurement=_complete_support_measurement("TotalDPS"),
+            measurement=_complete_support_measurement("TotalDPS", recommended=["Acceleration I"]),
         )
         self.assertEqual(
             supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
@@ -1049,7 +1149,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
 
         assert result["ok"] is False
         assert result["reasonCode"] == "trigger_rate_unmodelled"
-        assert result["supportAudit"]["auditVersion"] == "support_audit_v2"
+        assert result["supportAudit"]["auditVersion"] == "support_audit_v3"
         assert result["supportAudit"]["reasonClass"] == "capability_gap"
         assert result["supportAudit"]["verificationRequired"] is True
         assert result["measurement"]["screenedCandidates"] == 0
@@ -1190,7 +1290,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         )
         self.assertTrue(initial["ok"], initial)
         self.assertTrue(initial["supports"])
-        self.assertEqual(initial["supportAudit"]["status"], "failed")
+        self.assertEqual(initial["supportAudit"]["status"], "failed", initial)
         applied = skillgroups.set_main_skill(
             self.engine,
             "Spark 20/20  1\n" + "\n".join(initial["supports"]),
@@ -1591,7 +1691,9 @@ class SourceSupportBoundaryTests(unittest.TestCase):
             current_supports=["Bidding III"],
             recommended_supports=["Bidding III"],
             constraints={},
-            measurement=_complete_support_measurement("TotalDPS"),
+            measurement=_complete_support_measurement(
+                "TotalDPS", current=["Bidding III"], recommended=["Bidding III"]
+            ),
         )
         supportopt._record_support_audit(
             engine=engine,
@@ -1601,7 +1703,9 @@ class SourceSupportBoundaryTests(unittest.TestCase):
             current_supports=["Precision I"],
             recommended_supports=["Precision I"],
             constraints={},
-            measurement=_complete_support_measurement("TotalDPS"),
+            measurement=_complete_support_measurement(
+                "TotalDPS", current=["Precision I"], recommended=["Precision I"]
+            ),
         )
         checklist = validation_checkpoint._create_quality_checklist(
             engine=engine,
@@ -1617,12 +1721,18 @@ class SourceSupportBoundaryTests(unittest.TestCase):
                         "source": "Tree:34207",
                         "sourceKind": "tree",
                         "noSupports": False,
+                        "activeSkills": ["Command"],
+                        "mainActiveSkillCalcs": 1,
+                        "activeSkillSelectionError": None,
                     },
                     {
                         "groupIndex": 2,
                         "source": "Item:Example",
                         "sourceKind": "item",
                         "noSupports": False,
+                        "activeSkills": ["Herald of Ash"],
+                        "mainActiveSkillCalcs": 1,
+                        "activeSkillSelectionError": None,
                     },
                 ]
             },
@@ -1670,7 +1780,15 @@ class SourceSupportBoundaryTests(unittest.TestCase):
             completeness_result={"passiveJewels": {}, "runes": {}, "charms": {}, "flasks": {}},
             preflight_result={
                 "skillGroups": [
-                    {"groupIndex": 1, "source": None, "sourceKind": None, "noSupports": False}
+                    {
+                        "groupIndex": 1,
+                        "source": None,
+                        "sourceKind": None,
+                        "noSupports": False,
+                        "activeSkills": ["Spark"],
+                        "mainActiveSkillCalcs": 1,
+                        "activeSkillSelectionError": None,
+                    }
                 ]
             },
         )

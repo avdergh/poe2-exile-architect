@@ -117,6 +117,9 @@ def audit_build(
         required=require_create_completion,
     )
     failures.extend(create_completion["hardFailures"])
+    socket_limits = build.get("socketLimits") or {"ok": True, "violations": []}
+    if not socket_limits.get("ok"):
+        failures.append("augment_limit_exceeded")
 
     if source_context == "trusted_reference":
         relaxed = {
@@ -154,6 +157,7 @@ def audit_build(
             "weaponSetBudget": weapon_set_budget,
             "equippedItemAffixes": item_affixes,
             "generatedItemDelivery": generated_item_delivery,
+            "socketLimits": socket_limits,
         },
         "sourceContext": source_context,
         "noRawMaterial": True,
@@ -357,6 +361,9 @@ def augment_build_with_snapshot_gear(
     item_legality_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     output = dict(build) if isinstance(build, dict) else {}
+    from server.compute import socket_limits
+
+    output["socketLimits"] = socket_limits.audit(xml)
     try:
         gear = completeness.equipped_item_metadata(
             xml,

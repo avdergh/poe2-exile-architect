@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
-from ..knowledge import db
+from ..knowledge import db, corpus_certification
 
 MANIFEST_URL = os.environ.get(
     "POE2_MCP_MANIFEST_URL",
@@ -98,7 +98,7 @@ def check_for_updates() -> dict[str, Any]:
     app_current = _bundle_app_version()
     return {
         # data (corpus/engine) update — applies automatically via apply_updates/auto_update
-        "available": _vkey(latest) > _vkey(current),
+        "available": _vkey(latest) > _vkey(current) or _needs_corpus_repair(manifest, current),
         "current_version": current,
         "latest_version": latest,
         # new tools/code need a fresh .mcpb (no auto-installer); only true on real app releases
@@ -115,6 +115,14 @@ def _verify(blob: bytes, sha: str | None) -> bool:
     return bool(sha) and hashlib.sha256(blob).hexdigest() == sha
 
 
+def _needs_corpus_repair(manifest: dict[str, Any], current: str) -> bool:
+    corpus = manifest.get("corpus") or {}
+    if _vkey(str(manifest.get("version", "0"))) != _vkey(current) or not corpus.get("url"):
+        return False
+    with corpus_certification.corpus_guard():
+        return corpus_certification.active_certificate() is None
+
+
 def apply_updates(
     force: bool = False,
     *,
@@ -127,7 +135,7 @@ def apply_updates(
         return {"updated": False, "reason": "no release manifest reachable"}
     latest = str(manifest.get("version", "0"))
     current = installed_version()
-    if not force and _vkey(latest) <= _vkey(current):
+    if not force and _vkey(latest) <= _vkey(current) and not _needs_corpus_repair(manifest, current):
         return {"updated": False, "reason": "already up to date", "version": current}
 
     data_dir = paths.user_data_dir()
@@ -162,6 +170,8 @@ def apply_updates(
         "game_patch": manifest.get("game_patch") or prev.get("game_patch"),
         "passive_tree": manifest.get("passive_tree") or prev.get("passive_tree"),
         "engine_sha256": engine_sha or prev.get("engine_sha256"),
+        "corpus_sha256": prev.get("corpus_sha256"),
+        "corpus_certificate_sha256": prev.get("corpus_certificate_sha256"),
     }
 
     try:
@@ -178,7 +188,25 @@ def apply_updates(
                     return {"updated": False, "error": "corpus checksum missing or mismatched"}
                 staged_corpus = stage / "corpus.sqlite"
                 staged_corpus.write_bytes(blob)
+                corpus_sha = hashlib.sha256(blob).hexdigest()
+                certificate = corpus.get("certificate")
+                if certificate is None:
+                    # Legacy manifests can reuse an existing certificate only for identical bytes.
+                    with corpus_certification.corpus_guard():
+                        certificate = corpus_certification.certificate_for_hash(corpus_sha)
+                if certificate is None:
+                    return {"updated": False, "error": "corpus compatibility certificate missing"}
+                try:
+                    certificate = corpus_certification.validate(certificate, corpus_sha256=corpus_sha)
+                except ValueError as exc:
+                    return {"updated": False, "error": str(exc)}
+                certificate_bytes = corpus_certification.encode(certificate)
+                staged_certificate = stage / corpus_certification.CERTIFICATE_FILENAME
+                staged_certificate.write_bytes(certificate_bytes)
+                metadata["corpus_sha256"] = corpus_sha
+                metadata["corpus_certificate_sha256"] = hashlib.sha256(certificate_bytes).hexdigest()
                 replacements.append((staged_corpus, data_dir / "corpus.sqlite"))
+                replacements.append((staged_certificate, data_dir / corpus_certification.CERTIFICATE_FILENAME))
 
             if replace_engine:
                 blob = _http(engine["url"])
@@ -209,7 +237,9 @@ def apply_updates(
             context = (
                 install_context(replace_engine) if install_context is not None else nullcontext()
             )
-            with context:
+            with context, corpus_certification.corpus_guard():
+                if not force and _vkey(installed_version()) > _vkey(latest):
+                    return {"updated": False, "reason": "a newer release was installed during download"}
                 if corpus.get("url"):
                     db.reset()
                 _install_replacements(replacements, stage / "backups")

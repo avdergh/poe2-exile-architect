@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -16,6 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from ..compute.pob_xml_input import (
+    XML_INPUT_SEMANTICS_VERSION,
+    parse_pob_xml,
+    requires_preserved_input_semantics,
+)
+from ..compute.state import build_state_hash
 
 PACKET_PREFIX = "poe-bd-creator-research-packet-"
 MAX_TTL_SECONDS = 24 * 60 * 60
@@ -25,6 +32,7 @@ RESEARCH_SECTIONS = (
     "jewels",
     "passives",
     "config",
+    "config-sets",
     "build",
     "pob-readback",
 )
@@ -35,6 +43,7 @@ RESEARCH_READ_ORDER = (
     "jewels",
     "passives",
     "config",
+    "config-sets",
     "build",
     "pob-readback",
 )
@@ -53,6 +62,8 @@ SAFE_METADATA_KEYS = (
     "gamePatch",
     "passiveTreeVersion",
     "pobVersionOrCommit",
+    "modelGamePatch",
+    "versionContextStatus",
     "visibility",
     "split",
     "knowledgeScope",
@@ -184,21 +195,6 @@ def cleanup_packets_by_safe_hashes(
     return {"removed": removed}
 
 
-def _spec_id(spec: ET.Element, index: int) -> str:
-    """Stable spec identifier: the XML ``id`` attribute when present, else the 1-based index.
-
-    Real PoB exports never write a Spec ``id`` attribute (PassiveSpec:Save), so the index is
-    the normal case and aligns with ``<Tree activeSpec="1">``; the attribute path only serves
-    third-party XML.
-    """
-    raw = str(spec.get("id") or "")
-    return raw if raw else str(index)
-
-
-def _active_spec_id(tree: ET.Element) -> str:
-    return str(tree.get("activeSpec") or "1")
-
-
 def _tree_metadata_status(root: ET.Element) -> str:
     """Return whether passive-node metadata (tree.json) is available for the active spec.
 
@@ -206,17 +202,10 @@ def _tree_metadata_status(root: ET.Element) -> str:
     means the packet cannot tell allocated jewel sockets apart, so a zero count is not
     trustworthy. A packet without Tree/Spec has no socket concept and returns ``ok``.
     """
-    tree = root.find("Tree")
-    if tree is None:
-        return "ok"
-    specs = tree.findall("Spec")
-    active_spec = _active_spec_id(tree)
-    spec = next(
-        (s for index, s in enumerate(specs, start=1) if _spec_id(s, index) == active_spec),
-        None,
-    )
-    if spec is None:
-        spec = next(iter(specs), None)
+    axis = _selection_axis(root, "passiveSpec")
+    if axis["issues"]:
+        return "tree_data_missing"
+    spec = next((s for s, _sid, active in axis["containers"] if active), None)
     if spec is None:
         return "ok"
     tree_version = str(spec.get("treeVersion") or "")
@@ -239,24 +228,18 @@ def _jewel_socket_map(root: ET.Element) -> dict[str, dict[str, Any]]:
     that actually exists in the item list are kept (mirrors the loader's stale defence).
     When the same item id is referenced by several specs, the active spec wins.
     """
-    tree = root.find("Tree")
-    if tree is None:
-        return {}
-    active_spec = _active_spec_id(tree)
     items = root.find("Items")
     if items is None:
         return {}
-    item_ids = {str(item.get("id")) for item in items.findall("Item") if item.get("id")}
+    item_ids = {_config_id(item.get("id")) for item in items.findall("Item") if item.get("id")}
     item_map: dict[str, dict[str, Any]] = {}
-    for index, spec in enumerate(tree.findall("Spec"), start=1):
-        spec_id = _spec_id(spec, index)
-        is_active = spec_id == active_spec
+    for spec, spec_id, is_active in _selection_axis(root, "passiveSpec")["containers"]:
         sockets = spec.find("Sockets")
         if sockets is None:
             continue
         for socket in sockets.findall("Socket"):
             node_id = str(socket.get("nodeId") or "").strip()
-            item_id = str(socket.get("itemId") or "").strip()
+            item_id = _config_id(socket.get("itemId"))
             if not node_id or not item_id:
                 continue
             try:
@@ -286,22 +269,19 @@ def _jewel_socket_map(root: ET.Element) -> dict[str, dict[str, Any]]:
 def _jewel_socket_assignments(root: ET.Element) -> list[dict[str, Any]]:
     """Return every valid tree-jewel socket assignment without collapsing passive specs."""
 
-    tree = root.find("Tree")
     items = root.find("Items")
-    if tree is None or items is None:
+    if items is None:
         return []
-    active_spec = _active_spec_id(tree)
-    item_ids = {str(item.get("id")) for item in items.findall("Item") if item.get("id")}
+    item_ids = {_config_id(item.get("id")) for item in items.findall("Item") if item.get("id")}
     assignments: list[dict[str, Any]] = []
-    for index, spec in enumerate(tree.findall("Spec"), start=1):
-        spec_id = _spec_id(spec, index)
+    for spec, spec_id, is_active in _selection_axis(root, "passiveSpec")["containers"]:
         sockets = spec.find("Sockets")
         if sockets is None:
             continue
         for socket in sockets.findall("Socket"):
             node_id = str(socket.get("nodeId") or "").strip()
-            item_id = str(socket.get("itemId") or "").strip()
-            if not node_id or item_id not in item_ids:
+            item_id = _config_id(socket.get("itemId"))
+            if not node_id or not item_id or item_id not in item_ids:
                 continue
             try:
                 if int(item_id) <= 0:
@@ -313,7 +293,7 @@ def _jewel_socket_assignments(root: ET.Element) -> list[dict[str, Any]]:
                     "nodeId": node_id,
                     "specId": spec_id,
                     "itemId": item_id,
-                    "activeSpec": spec_id == active_spec,
+                    "activeSpec": is_active,
                 }
             )
     return sorted(
@@ -323,12 +303,8 @@ def _jewel_socket_assignments(root: ET.Element) -> list[dict[str, Any]]:
 
 
 def _jewel_socket_kinds(root: ET.Element) -> dict[tuple[str, str], str]:
-    tree = root.find("Tree")
-    if tree is None:
-        return {}
     kinds: dict[tuple[str, str], str] = {}
-    for index, spec in enumerate(tree.findall("Spec"), start=1):
-        spec_id = _spec_id(spec, index)
+    for spec, spec_id, _is_active in _selection_axis(root, "passiveSpec")["containers"]:
         metadata = _passive_node_metadata(str(spec.get("treeVersion") or ""))
         sockets = spec.find("Sockets")
         if sockets is None:
@@ -404,7 +380,7 @@ def jewel_counts(
     root: ET.Element | None = None
     if xml:
         try:
-            root = ET.fromstring(xml)
+            root = parse_pob_xml(xml)
         except ET.ParseError:
             root = None
         if root is not None:
@@ -553,6 +529,7 @@ def inspect_packet(packet: dict[str, Any]) -> dict[str, Any]:
             for name in RESEARCH_READ_ORDER
         },
         "activeSets": _active_sets(normalized),
+        "configIdentity": _configuration_summary(normalized),
         "jewelCounts": jewel_counts(packet, sections=sections),
         "jewelAdvisories": jewel_advisories(packet, sections=sections),
         **_unslotted_summary(normalized),
@@ -722,6 +699,7 @@ def read_packet_section(
     limit: int = DEFAULT_PAGE_SIZE,
     node_type: str | None = None,
     exclude_routing: bool = False,
+    response_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read one structured packet section with stable, character-bounded pagination.
 
@@ -738,28 +716,13 @@ def read_packet_section(
     page_size = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     if normalized_section == "skill-groups":
         manifest = build_skill_evidence_manifest(packet)
-        groups = [
+        items = [
             _public_skill_group(group)
             for group in manifest.get("activeSkillGroups") or []
             if isinstance(group, dict)
         ]
-        page, next_cursor = _bounded_page(groups, start=start, limit=page_size)
-        result: dict[str, Any] = {
-            "status": "ok",
-            "section": normalized_section,
-            "cursor": start,
-            "limit": page_size,
-            "items": page,
-            "returnedCount": len(page),
-            "totalCount": len(groups),
-            "nextCursor": next_cursor,
-            "complete": next_cursor is None,
-            "noRawMatureBuildMaterial": True,
-        }
-        _attach_continuity_warning(result, start=start, limit=page_size, next_cursor=next_cursor)
-        result["advisories"] = _cross_axis_advisories(packet)
-        return result
-    items = _packet_sections(_unwrap_packet(packet))[normalized_section]
+    else:
+        items = _packet_sections(_unwrap_packet(packet))[normalized_section]
     if normalized_section == "passives" and str(node_type or "").strip():
         items = _filter_passive_items(items, str(node_type).strip())
     if (
@@ -768,22 +731,93 @@ def read_packet_section(
         and exclude_routing
     ):
         items = [item for item in items if not _is_pure_routing_passive(item)]
-    page, next_cursor = _bounded_page(items, start=start, limit=page_size)
-    result: dict[str, Any] = {
+    source_count = len(items)
+    if normalized_section in {"config", "config-sets"}:
+        items = _fragment_configuration_items(items)
+    envelope: dict[str, Any] = {
+        **(response_metadata or {}),
         "status": "ok",
         "section": normalized_section,
         "cursor": start,
         "limit": page_size,
-        "items": page,
-        "returnedCount": len(page),
         "totalCount": len(items),
-        "nextCursor": next_cursor,
-        "complete": next_cursor is None,
         "noRawMatureBuildMaterial": True,
     }
-    _attach_continuity_warning(result, start=start, limit=page_size, next_cursor=next_cursor)
+    if normalized_section in {"config", "config-sets", "build", "pob-readback"}:
+        envelope["configIdentity"] = _configuration_summary(packet)
+    if source_count != len(items):
+        envelope["sourceItemCount"] = source_count
+        envelope["fragmentPolicy"] = (
+            "For evidence_fragment rows, concatenate jsonFragment by sourceItemIndex and "
+            "fragmentIndex, then parse JSON to recover the exact source item. Follow nextCursor."
+        )
     if normalized_section in {"passives", "gear", "skills"}:
-        result["advisories"] = [*_cross_axis_advisories(packet), *jewel_advisories(packet)]
+        envelope["advisories"] = [*_cross_axis_advisories(packet), *jewel_advisories(packet)]
+    elif normalized_section == "skill-groups":
+        envelope["advisories"] = _cross_axis_advisories(packet)
+    return _bounded_response(
+        items, start=start, limit=page_size, envelope=envelope,
+        allow_item_truncation=normalized_section not in {"config", "config-sets"},
+    )
+
+
+def _bounded_response(
+    items: list[dict[str, Any]], *, start: int, limit: int, envelope: dict[str, Any],
+    allow_item_truncation: bool = True,
+) -> dict[str, Any]:
+    """Budget the final response, including metadata, identity summaries and warnings."""
+    def response(page: list[dict[str, Any]], index: int) -> dict[str, Any]:
+        next_cursor = index if index < len(items) else None
+        result = {
+            **envelope, "items": page, "returnedCount": len(page),
+            "nextCursor": next_cursor, "complete": next_cursor is None,
+        }
+        _attach_continuity_warning(result, start=start, limit=limit, next_cursor=next_cursor)
+        return result
+
+    page: list[dict[str, Any]] = []
+    index = min(start, len(items))
+    while index < len(items) and len(page) < limit:
+        candidate = response([*page, items[index]], index + 1)
+        if _response_chars(candidate) > MAX_RESPONSE_CHARS:
+            if not page:
+                # Legacy sections retain their existing single-item bounded view. Config
+                # sections were losslessly fragmented before pagination and never use it.
+                if not allow_item_truncation:
+                    raise ValueError("transient research response metadata exceeds the bounded output limit")
+                truncated = _truncate_item(items[index])
+                candidate = response([truncated], index + 1)
+                candidate["itemDetailTruncated"] = True
+                if _response_chars(candidate) > MAX_RESPONSE_CHARS:
+                    raise ValueError("transient research response metadata exceeds the bounded output limit")
+                return candidate
+            break
+        page.append(items[index])
+        index += 1
+    result = response(page, index)
+    if _response_chars(result) > MAX_RESPONSE_CHARS:
+        raise ValueError("transient research response metadata exceeds the bounded output limit")
+    return result
+
+
+def _response_chars(value: dict[str, Any]) -> int:
+    return len(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2))
+
+
+def _fragment_configuration_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Losslessly page oversized config identities or inputs without limiting set count."""
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if _response_chars(item) <= 4_000:
+            result.append(item)
+            continue
+        serialized = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        fragments = [serialized[offset:offset + 1_200] for offset in range(0, len(serialized), 1_200)]
+        result.extend({
+            "kind": "evidence_fragment", "sourceItemIndex": index,
+            "fragmentIndex": fragment_index, "fragmentCount": len(fragments),
+            "jsonFragment": fragment,
+        } for fragment_index, fragment in enumerate(fragments))
     return result
 
 
@@ -872,6 +906,7 @@ def search_packet(
     query: str,
     section: str | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
+    response_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Search structured transient evidence without fuzzy inference or raw XML output."""
     needle = str(query or "").strip().casefold()
@@ -891,17 +926,18 @@ def search_packet(
             searchable = json.dumps(item, ensure_ascii=False, sort_keys=True).casefold()
             if needle in searchable:
                 matches.append({"section": section_name, "index": index, "item": item})
-    page, _ = _bounded_page(matches, start=0, limit=max_results)
-    return {
+    result = _bounded_response(matches, start=0, limit=max_results, envelope={
+        **(response_metadata or {}),
         "status": "ok",
         "query": str(query).strip(),
         "section": str(section or "all"),
-        "matches": page,
-        "returnedCount": len(page),
         "totalMatchCount": len(matches),
-        "truncated": len(page) < len(matches),
         "noRawMatureBuildMaterial": True,
-    }
+    })
+    result["matches"] = result.pop("items")
+    result["truncated"] = not result.pop("complete")
+    result.pop("nextCursor", None)
+    return result
 
 
 def _unwrap_packet(packet: dict[str, Any]) -> dict[str, Any]:
@@ -913,7 +949,7 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     raw_context = packet.get("rawContext")
     raw_context = raw_context if isinstance(raw_context, dict) else {}
     xml = str(raw_context.get("rawXml") or "")
-    readback = packet.get("pobReadback")
+    readback = validated_pob_readback(packet)
     readback_items = [dict(readback)] if isinstance(readback, dict) and readback else []
     if not xml:
         return {
@@ -921,7 +957,7 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
             "pob-readback": readback_items,
         }
     try:
-        root = ET.fromstring(xml)
+        root = parse_pob_xml(xml)
     except ET.ParseError as exc:
         raise ValueError("transient research packet contains invalid PoB XML") from exc
     gear_items = _gear_items(root)
@@ -930,6 +966,7 @@ def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         "gear": gear_items,
         "passives": _passive_items(root),
         "config": _config_items(root),
+        "config-sets": config_set_identity(root)["configSets"],
         "build": _build_items(root),
         "jewels": _tree_socket_jewels(gear_items),
         "pob-readback": readback_items,
@@ -949,23 +986,9 @@ def _skill_items(root: ET.Element) -> list[dict[str, Any]]:
     skills = root.find("Skills")
     if skills is None:
         return []
-    active_set = str(skills.get("activeSkillSet") or "1")
-    skill_sets = skills.findall("SkillSet")
-    containers: list[tuple[str, bool, list[ET.Element]]] = []
-    if skill_sets:
-        containers = [
-            (
-                str(skill_set.get("id") or index),
-                str(skill_set.get("id") or index) == active_set,
-                skill_set.findall("Skill"),
-            )
-            for index, skill_set in enumerate(skill_sets, start=1)
-        ]
-    else:
-        containers = [(active_set, True, skills.findall("Skill"))]
     result: list[dict[str, Any]] = []
-    for skill_set_id, active, groups in containers:
-        for group_index, group in enumerate(groups, start=1):
+    for skill_set, skill_set_id, active in _selection_axis(root, "skillSet")["containers"]:
+        for group_index, group in enumerate(skill_set.findall("Skill"), start=1):
             gems = []
             for gem in group.findall("Gem"):
                 name = str(
@@ -997,6 +1020,7 @@ def _skill_items(root: ET.Element) -> list[dict[str, Any]]:
             result.append(
                 {
                     "skillSetId": skill_set_id,
+                    "sourceSkillSetId": str(skill_set.get("id") or ""),
                     "activeSkillSet": active,
                     "groupIndex": group_index,
                     "enabled": _xml_bool(group.get("enabled"), default=True),
@@ -1014,17 +1038,12 @@ def _gear_items(root: ET.Element) -> list[dict[str, Any]]:
     items = root.find("Items")
     if items is None:
         return []
-    active_set = str(items.get("activeItemSet") or "1")
-    by_id = {str(item.get("id")): item for item in items.findall("Item") if item.get("id")}
-    item_sets = items.findall("ItemSet")
-    if not item_sets:
-        item_sets = [items]
+    by_id = {_config_id(item.get("id")): item for item in items.findall("Item") if _config_id(item.get("id"))}
     referenced: set[str] = set()
     result: list[dict[str, Any]] = []
-    for set_index, item_set in enumerate(item_sets, start=1):
-        set_id = str(item_set.get("id") or set_index)
+    for item_set, set_id, active in _selection_axis(root, "itemSet")["containers"]:
         for slot in item_set.findall("Slot"):
-            item_id = str(slot.get("itemId") or "0")
+            item_id = _config_id(slot.get("itemId")) or "0"
             referenced.add(item_id)
             node = by_id.get(item_id)
             if node is None:
@@ -1033,7 +1052,8 @@ def _gear_items(root: ET.Element) -> list[dict[str, Any]]:
             result.append(
                 {
                     "itemSetId": set_id,
-                    "activeItemSet": set_id == active_set,
+                    "sourceItemSetId": str(item_set.get("id") or ""),
+                    "activeItemSet": active,
                     "slot": str(slot.get("name") or ""),
                     "itemId": item_id,
                     **parsed,
@@ -1075,17 +1095,17 @@ def _unslotted_summary(normalized: dict[str, Any]) -> dict[str, Any]:
     if not raw_xml:
         return {"unslottedItemCount": 0, "unslottedItemNames": []}
     try:
-        root = ET.fromstring(raw_xml)
+        root = parse_pob_xml(raw_xml)
     except ET.ParseError:
         return {"unslottedItemCount": 0, "unslottedItemNames": []}
     items = root.find("Items")
     if items is None:
         return {"unslottedItemCount": 0, "unslottedItemNames": []}
-    by_id = {str(item.get("id")): item for item in items.findall("Item") if item.get("id")}
+    by_id = {_config_id(item.get("id")): item for item in items.findall("Item") if _config_id(item.get("id"))}
     referenced: set[str] = set()
-    for item_set in items.findall("ItemSet"):
+    for item_set, _set_id, _active in _selection_axis(root, "itemSet")["containers"]:
         for slot in item_set.findall("Slot"):
-            referenced.add(str(slot.get("itemId") or "0"))
+            referenced.add(_config_id(slot.get("itemId")) or "0")
     socket_map = _jewel_socket_map(root)
     unslotted: list[dict[str, str]] = []
     for item_id, node in sorted(by_id.items()):
@@ -1144,14 +1164,8 @@ def _parse_item_text(raw: str) -> dict[str, Any]:
 
 
 def _passive_items(root: ET.Element) -> list[dict[str, Any]]:
-    tree = root.find("Tree")
-    if tree is None:
-        return []
-    active_spec = _active_spec_id(tree)
     result: list[dict[str, Any]] = []
-    for index, spec in enumerate(tree.findall("Spec"), start=1):
-        spec_id = _spec_id(spec, index)
-        is_active = spec_id == active_spec
+    for spec, spec_id, is_active in _selection_axis(root, "passiveSpec")["containers"]:
         tree_version = str(spec.get("treeVersion") or "")
         node_metadata = _passive_node_metadata(tree_version)
         # Weapon-set members come from the <WeaponSet1/2 nodes=...> child elements that
@@ -1172,6 +1186,7 @@ def _passive_items(root: ET.Element) -> list[dict[str, Any]]:
             {
                 "kind": "spec",
                 "specId": spec_id,
+                "sourceSpecId": str(spec.get("id") or ""),
                 "activeSpec": is_active,
                 "treeVersion": tree_version,
                 "classId": str(spec.get("classId") or ""),
@@ -1265,34 +1280,255 @@ def _passive_node_metadata(tree_version: str) -> dict[str, dict[str, Any]]:
     return result
 
 
+def config_set_identity(root: ET.Element) -> dict[str, Any]:
+    """Describe source configuration identity without applying PoB's fallback selection.
+
+    ConfigTab.Load maps legacy inputs to set 1, while explicit ConfigSets are identified
+    numerically. Its fallback to the first set is not evidence of author intent.
+    """
+    configs = root.findall("Config")
+    config = configs[0] if configs else None
+    containers = config.findall("ConfigSet") if config is not None else []
+    explicit = bool(containers)
+    issues: list[str] = []
+    if len(configs) > 1:
+        issues.append("multiple_config_sections")
+    declared = str(config.get("activeConfigSet") or "") if config is not None else ""
+    if explicit and not declared:
+        issues.append("missing_active_config_set")
+    active = _config_id(declared) if declared else (None if explicit else "1")
+    if declared and active is None:
+        issues.append("invalid_active_config_set")
+    if explicit and any(child.tag in {"Input", "Placeholder"} for child in config):
+        issues.append("mixed_legacy_and_config_sets")
+    if not explicit:
+        containers = [config] if config is not None else []
+    sets: list[dict[str, Any]] = []
+    for index, container in enumerate(containers, start=1):
+        set_id = _config_id(container.get("id")) if explicit else "1"
+        if set_id is None:
+            issues.append("invalid_config_set_id")
+        sets.append({
+            "configSetId": set_id,
+            "configSetIndex": index,
+            "title": str(container.get("title") or "Default") if explicit else "Default",
+        })
+        seen: set[tuple[str, str]] = set()
+        for child in container:
+            if child.tag not in {"Input", "Placeholder"}:
+                continue
+            name = str(child.get("name") or "")
+            key = (child.tag, name)
+            if not name:
+                issues.append("missing_config_input_name")
+            if key in seen:
+                issues.append("duplicate_config_input")
+            seen.add(key)
+            value_type, value = _config_value(child)
+            if value_type == "unknown":
+                issues.append("invalid_config_input_type")
+            elif value_type == "boolean" and value not in {"true", "false"}:
+                issues.append("invalid_config_boolean")
+            elif value_type == "number":
+                try:
+                    finite = math.isfinite(float(value))
+                except ValueError:
+                    finite = False
+                if not finite:
+                    issues.append("invalid_config_number")
+    ids = [item["configSetId"] for item in sets]
+    if len(ids) != len(set(ids)):
+        issues.append("duplicate_config_set_id")
+    if active is not None and active not in (ids or ["1"]):
+        issues.append("active_config_set_not_found")
+    status = "resolved" if explicit else "legacy_default" if config is not None else "implicit_default"
+    if issues:
+        active = None
+        status = "invalid"
+    for item in sets:
+        item["isActive"] = item["configSetId"] == active if active is not None else None
+    return {
+        "status": status,
+        "activeConfigSet": active,
+        "issues": sorted(set(issues)),
+        "configSets": sets,
+    }
+
+
+def _config_id(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[0-9]{1,9}", text) or int(text) < 1:
+        return None
+    return str(int(text))
+
+
+def _config_value(node: ET.Element) -> tuple[str, str]:
+    types = [key for key in ("number", "string", "boolean") if node.get(key) is not None]
+    if len(types) != 1:
+        return "unknown", ""
+    value_type = types[0]
+    return value_type, str(node.get(value_type) or "")
+
+
+def configuration_manifest(packet: dict[str, Any]) -> dict[str, Any]:
+    normalized = _unwrap_packet(packet)
+    raw = normalized.get("rawContext") or {}
+    xml = str(raw.get("rawXml") or "") if isinstance(raw, dict) else ""
+    if not xml:
+        return {"status": "unavailable", "activeConfigSet": None, "issues": ["missing_source_xml"], "configSets": []}
+    try:
+        return config_set_identity(parse_pob_xml(xml))
+    except ET.ParseError as exc:
+        raise ValueError("transient research packet contains invalid PoB XML") from exc
+
+
+def _configuration_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    identity = configuration_manifest(packet)
+    return {
+        key: value for key, value in identity.items() if key != "configSets"
+    } | {
+        "configSetCount": len(identity["configSets"]),
+        "configSetsSection": "config-sets",
+    }
+
+
+def active_set_identity(root: ET.Element) -> dict[str, Any]:
+    """Bind independent PoB selection axes; Spec identity is its one-based list position."""
+    config = config_set_identity(root)
+    active: dict[str, str | None] = {"configSet": config["activeConfigSet"]}
+    issues = [f"config:{issue}" for issue in config["issues"]]
+    for field in ("skillSet", "itemSet", "passiveSpec"):
+        axis = _selection_axis(root, field)
+        active[field] = axis["activeId"]
+        issues.extend(f"{field}:{issue}" for issue in axis["issues"])
+    return {"activeSets": active, "issues": issues}
+
+
+def _selection_axis(root: ET.Element, field: str) -> dict[str, Any]:
+    """Locate source instances using the same identities as the pinned PoB loaders.
+
+    Explicit skill/item sets use numeric IDs. TreeTab appends Specs in document order
+    and ignores their extra id attributes; the legacy root Spec is its only first spec.
+    Invalid selectors preserve readable containers, but never mark one authoritative.
+    """
+    section, child_tag, selector = {
+        "skillSet": ("Skills", "SkillSet", "activeSkillSet"),
+        "itemSet": ("Items", "ItemSet", "activeItemSet"),
+        "passiveSpec": ("Tree", "Spec", "activeSpec"),
+    }[field]
+    parents = root.findall(section)
+    parent = parents[0] if parents else None
+    children = parent.findall(child_tag) if parent is not None else []
+    explicit = bool(children)
+    declared = str(parent.get(selector) or "") if parent is not None else ""
+    chosen = _config_id(declared) if declared else "1"
+    issues: list[str] = []
+    if len(parents) > 1:
+        issues.append("multiple_sections")
+    if len(children) > 1 and not declared:
+        issues.append("missing_active_selector")
+    if field == "passiveSpec":
+        legacy = root.findall("Spec")
+        if len(legacy) > 1 or (legacy and parent is not None):
+            issues.append("ambiguous_legacy_spec")
+        if parent is None:
+            children = legacy
+        ids = [str(index) for index in range(1, len(children) + 1)]
+    else:
+        ids = [_config_id(child.get("id")) for child in children]
+        if None in ids or len(ids) != len(set(ids)):
+            issues.append("invalid_or_duplicate_set_id")
+        legacy_tag = "Skill" if field == "skillSet" else "Slot"
+        if explicit and parent.findall(legacy_tag):
+            issues.append("mixed_legacy_and_sets")
+        if not explicit and parent is not None:
+            children, ids = [parent], ["1"]
+    if chosen is None or chosen not in (ids or ["1"]):
+        issues.append("active_selector_not_found")
+    active_id = None if issues else chosen
+    return {
+        "activeId": active_id,
+        "issues": issues,
+        "containers": [
+            (child, set_id, active_id is not None and set_id == active_id)
+            for child, set_id in zip(children, ids, strict=True)
+        ],
+    }
+
+
+def source_snapshot_hash(xml: str) -> str:
+    """Fingerprint the exact transient source, including configuration placeholders."""
+    return "sha256:" + hashlib.sha256(xml.encode("utf-8")).hexdigest()
+
+
+def validated_pob_readback(packet: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep old or mismatched numeric receipts from being treated as active-config evidence."""
+    normalized = _unwrap_packet(packet)
+    readback = normalized.get("pobReadback")
+    if not isinstance(readback, dict) or not readback:
+        return None
+    if readback.get("status") != "available":
+        return dict(readback)
+    identity = configuration_manifest(normalized)
+    binding = readback.get("stateBinding") or {}
+    raw = normalized.get("rawContext") or {}
+    xml = str(raw.get("rawXml") or "") if isinstance(raw, dict) else ""
+    sets = active_set_identity(parse_pob_xml(xml)) if xml else {"activeSets": {}, "issues": ["missing_source_xml"]}
+    metadata = normalized.get("safeMetadata") or {}
+    source_ref = str(metadata.get("sourceRef") or "") if isinstance(metadata, dict) else ""
+    if (
+        identity["activeConfigSet"] is None
+        or not isinstance(binding, dict)
+        or binding.get("activeConfigSet") != identity["activeConfigSet"]
+        or binding.get("sourceActiveConfigSet") != identity["activeConfigSet"]
+        or binding.get("configScope") != "source_active_config_set"
+        or sets["issues"]
+        or binding.get("activeSets") != sets["activeSets"]
+        or binding.get("sourceActiveSets") != sets["activeSets"]
+        or binding.get("sourceSnapshotHash") != source_snapshot_hash(xml)
+        or (
+            requires_preserved_input_semantics(xml)
+            and (
+                binding.get("xmlInputSemanticsVersion") != XML_INPUT_SEMANTICS_VERSION
+                or binding.get("sourceInputStateHash") != build_state_hash(xml)
+            )
+        )
+        or not source_ref
+        or readback.get("sourceHashRef") != source_ref
+    ):
+        return {
+            "status": "unavailable",
+            "errorCode": "config_readback_binding_missing_or_mismatched",
+            "noRawMatureBuildMaterial": True,
+        }
+    return dict(readback)
+
+
 def _config_items(root: ET.Element) -> list[dict[str, Any]]:
     config = root.find("Config")
     if config is None:
         return []
+    identity = config_set_identity(root)
+    containers = config.findall("ConfigSet") or [config]
     result: list[dict[str, Any]] = []
-    for input_node in config.findall(".//Input"):
-        value = next(
-            (
-                input_node.get(key)
-                for key in ("boolean", "number", "string")
-                if input_node.get(key) is not None
-            ),
-            "",
-        )
-        result.append(
-            {
+    for container, set_identity in zip(containers, identity["configSets"], strict=True):
+        for input_node in container:
+            if input_node.tag not in {"Input", "Placeholder"}:
+                continue
+            value_type, value = _config_value(input_node)
+            result.append({
+                **set_identity,
+                "kind": input_node.tag.lower(),
                 "name": str(input_node.get("name") or ""),
-                "value": str(value),
-            }
-        )
+                "value": value,
+                "valueType": value_type,
+            })
     return result
 
 
 def _build_items(root: ET.Element) -> list[dict[str, Any]]:
     build = root.find("Build")
-    skills = root.find("Skills")
-    items = root.find("Items")
-    tree = root.find("Tree")
+    active_sets = active_set_identity(root)["activeSets"]
     if build is None:
         return []
     return [
@@ -1301,48 +1537,27 @@ def _build_items(root: ET.Element) -> list[dict[str, Any]]:
             "ascendancy": str(build.get("ascendClassName") or ""),
             "level": _optional_int(build.get("level")),
             "mainSocketGroup": str(build.get("mainSocketGroup") or ""),
-            "activeSkillSet": str(skills.get("activeSkillSet") or "") if skills is not None else "",
-            "activeItemSet": str(items.get("activeItemSet") or "") if items is not None else "",
-            "activeSpec": str(tree.get("activeSpec") or "") if tree is not None else "",
+            "activeSkillSet": active_sets["skillSet"],
+            "activeItemSet": active_sets["itemSet"],
+            "activeSpec": active_sets["passiveSpec"],
+            "activeConfigSet": active_sets["configSet"],
         }
     ]
 
 
-def _active_sets(packet: dict[str, Any]) -> dict[str, str]:
-    sections = _packet_sections(packet)
-    build = sections["build"][0] if sections["build"] else {}
-    return {
-        "skillSet": str(build.get("activeSkillSet") or ""),
-        "itemSet": str(build.get("activeItemSet") or ""),
-        "passiveSpec": str(build.get("activeSpec") or ""),
-    }
-
-
-def _bounded_page(
-    items: list[dict[str, Any]], *, start: int, limit: int
-) -> tuple[list[dict[str, Any]], int | None]:
-    page: list[dict[str, Any]] = []
-    index = min(start, len(items))
-    while index < len(items) and len(page) < limit:
-        candidate = [*page, items[index]]
-        envelope = {"items": candidate, "nextCursor": index + 1}
-        if (
-            len(json.dumps(envelope, ensure_ascii=False, sort_keys=True, indent=2))
-            > MAX_RESPONSE_CHARS - 750
-        ):
-            if not page:
-                page.append(_truncate_item(items[index]))
-                index += 1
-            break
-        page.append(items[index])
-        index += 1
-    return page, index if index < len(items) else None
+def _active_sets(packet: dict[str, Any]) -> dict[str, str | None]:
+    normalized = _unwrap_packet(packet)
+    raw = normalized.get("rawContext") or {}
+    xml = str(raw.get("rawXml") or "") if isinstance(raw, dict) else ""
+    if not xml:
+        return dict.fromkeys(("skillSet", "itemSet", "passiveSpec", "configSet"))
+    return active_set_identity(parse_pob_xml(xml))["activeSets"]
 
 
 def _continuity_warning(*, start: int, limit: int, next_cursor: int | None) -> str | None:
     """Return an explicit warning when the character budget truncated a page.
 
-    ``_bounded_page`` stops as soon as the next item would exceed the response budget, so
+    ``_bounded_response`` stops as soon as the next item would exceed the response budget, so
     a page can return fewer than ``limit`` items with ``complete=false`` and a
     ``nextCursor`` strictly below ``cursor + limit``. Callers that resume at
     ``cursor + limit`` (instead of the returned ``nextCursor``) silently skip the items in

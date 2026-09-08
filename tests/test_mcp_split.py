@@ -2,7 +2,7 @@
 
 The full tool surface stays in ``server.main`` (single fact source). Each domain server
 re-registers its own subset with its own short bootstrap; the legacy aggregate server keeps all
-160 tools so tests, smoke scripts and old host configurations keep working.
+registered tools so tests, smoke scripts and old host configurations keep working.
 """
 
 from __future__ import annotations
@@ -75,6 +75,9 @@ def test_key_tools_land_in_the_right_server():
     assert {
         "start_research_run",
         "get_research_run_status",
+        "get_research_followup_status",
+        "submit_research_gap_review",
+        "reacquire_research_source",
         "claim_research_case",
         "cleanup_research_run",
         "inspect_research_case",

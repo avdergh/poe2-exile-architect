@@ -20,7 +20,7 @@ from . import models
 
 
 RUN_TTL = timedelta(hours=4)
-CURRENT_AGENT_OUTPUT_CONTRACT_VERSION = "generation-agent-output-v4"
+CURRENT_AGENT_OUTPUT_CONTRACT_VERSION = "generation-agent-output-v5"
 
 
 class RunStoreError(RuntimeError):
@@ -30,11 +30,12 @@ class RunStoreError(RuntimeError):
 
 
 def generation_contract_upgrade_required(manifest: dict[str, Any]) -> bool:
-    """Old memory-assisted runs restart instead of silently changing Research obligations."""
+    """Old governed runs restart instead of silently upgrading design evidence authority."""
 
     memory_mode = str((manifest.get("experimentContext") or {}).get("memoryMode") or "")
     return (
-        memory_mode == "memory_assisted"
+        (memory_mode == "memory_assisted"
+         or (manifest.get("experimentContext") or {}).get("mechanismBlueprintRequired") is True)
         and manifest.get("agentOutputContractVersion") != CURRENT_AGENT_OUTPUT_CONTRACT_VERSION
     )
 
@@ -67,6 +68,18 @@ _MECHANISM_BINDING_KEYS = (
 )
 
 
+def draft_mechanism_binding(draft: dict[str, Any]) -> dict[str, Any]:
+    """Preserve legacy receipt shape; v3 also freezes the Research decision identity."""
+
+    binding = {key: draft.get(key) for key in _MECHANISM_BINDING_KEYS}
+    if draft.get("schemaVersion") == 3:
+        binding["researchDecisionHash"] = draft.get("researchDecisionHash")
+    for key in ("evidenceAuditHash", "designToolsHash", "designEvidenceUsesHash"):
+        if key in draft:
+            binding[key] = draft[key]
+    return binding
+
+
 def current_mechanism_binding(bound_run: BoundRun) -> dict[str, Any] | None:
     """Return the exact current Draft/Blueprint binding for one generation run."""
 
@@ -81,13 +94,19 @@ def current_mechanism_binding(bound_run: BoundRun) -> dict[str, Any] | None:
         return None
     if not isinstance(draft, dict) or not isinstance(blueprint, dict):
         return None
-    binding = {key: draft.get(key) for key in _MECHANISM_BINDING_KEYS}
+    binding = draft_mechanism_binding(draft)
     if (
         not isinstance(binding["mechanismBlueprintRef"], str)
         or not isinstance(binding["mechanismBlueprintHash"], str)
         or not isinstance(binding["mechanismSignatureHash"], str)
         or binding["mechanismBlueprintRef"] != blueprint.get("blueprintRef")
         or binding["mechanismBlueprintHash"] != blueprint.get("blueprintHash")
+        or ("evidenceAuditHash" in binding
+            and binding["evidenceAuditHash"] != blueprint.get("evidenceAuditHash"))
+        or (
+            draft.get("schemaVersion") == 3
+            and not re.fullmatch(r"[a-f0-9]{64}", str(binding.get("researchDecisionHash") or ""))
+        )
     ):
         return None
     return binding
@@ -268,6 +287,11 @@ def write_trusted_evaluation(bound_run: BoundRun, payload: dict[str, Any]) -> in
             if isinstance(payload.get("mechanismBinding"), dict)
             else {}
         ),
+        **(
+            {"mechanismEvidence": payload["mechanismEvidence"]}
+            if isinstance(payload.get("mechanismEvidence"), dict)
+            else {}
+        ),
         **({"hardLegalityAudit": payload["hardLegalityAudit"]} if schema_version in {2, 3} else {}),
         **(
             {
@@ -327,6 +351,20 @@ def _valid_trusted_evaluation_receipt(
         return False
     if schema_version == 3 and not _valid_quality_checkpoint(receipt):
         return False
+    # Pre-v3 Draft receipts remain readable, but a new evaluated attempt cannot lose the
+    # required bundle and silently become a legacy receipt without restoration authority.
+    if (
+        isinstance(receipt.get("mechanismBinding"), dict)
+        and "researchDecisionHash" in receipt["mechanismBinding"]
+        and (receipt.get("judgeAdvisoryReport") or {}).get("status") == "evaluated"
+        and "mechanismEvidence" not in receipt
+    ):
+        return False
+    if "mechanismEvidence" in receipt:
+        from . import mechanism_evidence
+
+        if not mechanism_evidence.valid_evaluation_evidence(receipt):
+            return False
     return True
 
 
@@ -417,6 +455,14 @@ def write_artifact_selection(bound_run: BoundRun, payload: dict[str, Any]) -> bo
         "laterFindingsScope": payload["laterFindingsScope"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "containsRawPob": False,
+        **(
+            {
+                key: payload.get(key)
+                for key in ("mechanismEvidenceHash", "sourceHash", "semanticStateHash")
+            }
+            if payload.get("mechanismEvidenceHash") is not None
+            else {}
+        ),
     }
     return write_json_atomic(bound_run.artifact_selection_path, receipt)
 
@@ -436,6 +482,7 @@ def read_artifact_selection(bound_run: BoundRun) -> dict[str, Any] | None:
         payload.get("schemaVersion") != 1
         or payload.get("runId") != bound_run.run_id
         or not isinstance(selected_index, int)
+        or isinstance(selected_index, bool)
         or selected_index not in {0, 1, 2}
         or not isinstance(payload.get("artifactId"), str)
         or not payload["artifactId"].startswith("final-build:")
@@ -471,6 +518,13 @@ def read_artifact_selection(bound_run: BoundRun) -> dict[str, Any] | None:
         or payload.get("containsRawPob") is not False
     ):
         return None
+    if any(key in payload for key in ("mechanismEvidenceHash", "sourceHash", "semanticStateHash")):
+        if (
+            not re.fullmatch(r"[a-f0-9]{64}", str(payload.get("mechanismEvidenceHash") or ""))
+            or not re.fullmatch(r"[a-f0-9]{16}", str(payload.get("sourceHash") or ""))
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", str(payload.get("semanticStateHash") or ""))
+        ):
+            return None
     return payload
 
 
@@ -487,6 +541,49 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> bool:
             pass
         return False
     return True
+
+
+def acquire_generation_lock(path: Path, *, timeout_seconds: float | None = 900.0) -> bool:
+    """Share the existing Judge lease with artifact selection to freeze the attempt chain."""
+
+    try:
+        path.open("x", encoding="utf-8").close()
+        return True
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    timeout_budget = max(float(timeout_seconds or 900.0), 1.0)
+    try:
+        age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+    except OSError:
+        age_seconds = 0.0
+    if age_seconds <= timeout_budget + 60.0:
+        return False
+    abandoned = path.with_name(f".{path.name}.{uuid4().hex}.stale")
+    try:
+        path.replace(abandoned)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    else:
+        try:
+            abandoned.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        path.open("x", encoding="utf-8").close()
+        return True
+    except OSError:
+        return False
+
+
+def release_generation_lock(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def canonical_run_id(value: str) -> str | None:

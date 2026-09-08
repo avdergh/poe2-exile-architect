@@ -322,6 +322,18 @@ def query_memory(
             )
             continue
         if requested_version is not None and not _version_matches(entry, requested_version):
+            from server.knowledge.patch_reviews import recall_patches
+
+            source_version = entry.get("versionContext") or {}
+            if (source_version.get("gamePatch") in recall_patches(requested_version.game_patch)
+                    and source_version.get("passiveTreeVersion") == requested_version.passive_tree_version):
+                eligible.append({**entry, "targetApplicability": {
+                    "status": "historical_unreviewed",
+                    "sourceVersionContext": source_version,
+                    "targetVersionContext": requested_version.model_dump(mode="json", by_alias=True),
+                    "verificationRequired": True,
+                }})
+                continue
             contextual_stale.append(
                 {
                     "lessonId": entry["lessonId"],
@@ -335,6 +347,7 @@ def query_memory(
     scope_rank = {"family": 0, "level_band": 1, "global": 2}
     eligible.sort(key=lambda item: (item.get("updatedAt", ""), item["lessonId"]), reverse=True)
     eligible.sort(key=lambda item: scope_rank.get(item["scope"], 9))
+    eligible.sort(key=lambda item: bool(item.get("targetApplicability")))
     selected = eligible[:bounded_limit]
     for entry in selected:
         corrections.extend(
@@ -411,6 +424,8 @@ def _safe_entry(entry: dict[str, Any], *, corrections: list[dict[str, Any]]) -> 
         "updatedAt",
     )
     safe = {key: entry.get(key) for key in keys}
+    if entry.get("targetApplicability"):
+        safe["targetApplicability"] = entry["targetApplicability"]
     safe["correctionRefs"] = [item.get("correctionId") for item in corrections]
     return safe
 
@@ -444,11 +459,11 @@ def _version_matches(entry: dict[str, Any], requested: models.LearningVersionCon
     if not isinstance(stored, dict):
         return False
     stored_patch = str(stored.get("gamePatch") or "")
-    if _season_family(stored_patch) != _season_family(requested.game_patch):
+    if stored_patch != requested.game_patch:
         return False
     if str(stored.get("passiveTreeVersion") or "") != requested.passive_tree_version:
         return False
-    return True
+    return str(stored.get("pobVersionOrCommit") or "") == requested.pob_version_or_commit
 
 
 def _season_family(value: str) -> str:

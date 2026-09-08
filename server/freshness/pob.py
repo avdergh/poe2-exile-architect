@@ -657,9 +657,9 @@ def _local_metadata_with_pinned_fallback(
 
 
 def _default_local_metadata() -> Mapping[str, Any]:
-    from ..live.update import installed_meta
+    from .providers import active_runtime_metadata
 
-    return _local_metadata_with_pinned_fallback(installed=installed_meta())
+    return active_runtime_metadata()
 
 
 def _duration_ms(started: float, finished: float) -> int:

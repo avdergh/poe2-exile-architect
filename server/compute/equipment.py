@@ -100,6 +100,8 @@ def _equip_item_verified_locked(
         )
     except Exception:  # noqa: BLE001
         verified = {"ok": False}
+    if verified.get("errorCode") == "augment_limit_exceeded":
+        return _rollback_failure(engine, snapshot, input_hash, "augment_limit_exceeded")
     if verified.get("ok"):
         carried = _carry_socket_decision(
             engine,
@@ -187,6 +189,10 @@ def _verify_actual_item(
     )
     if not audit.get("ok"):
         return {"ok": False, "errorCode": "item_readback_provenance_mismatch"}
+    from . import socket_limits
+
+    if not socket_limits.audit(engine.get_xml()).get("ok"):
+        return {"ok": False, "errorCode": "augment_limit_exceeded"}
     if craft_receipt_ref is None:
         same_item = requested_structure.get("itemFingerprint") == actual_structure.get(
             "itemFingerprint"
@@ -231,8 +237,8 @@ def _same_unique_identity(requested_text: str, actual_text: str) -> bool:
         and str(requested.get("base") or "").strip().casefold()
         == str(actual.get("base") or "").strip().casefold()
         and itemparse._unique_modifiers_match(
-            itemparse._unique_modifier_lines(actual_text),
-            itemparse._unique_modifier_lines(requested_text),
+            itemparse._unique_modifier_lines(actual_text, include_implicit=True),
+            itemparse._unique_modifier_lines(requested_text, include_implicit=True),
         )
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -12,6 +13,7 @@ from uuid import uuid4
 
 from server import paths
 from server.knowledge import itemparse
+from server.knowledge.item_socket_text import without_socketed_runes
 from server.live import update as live_update
 
 
@@ -33,7 +35,9 @@ def option_fingerprint(value: Any) -> str:
 
 
 def current_runtime_context(engine_info: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = live_update.installed_meta()
+    from server.freshness.providers import active_runtime_metadata
+
+    metadata = active_runtime_metadata()
     info = engine_info if isinstance(engine_info, dict) else {}
     return {
         "dataVersion": str(live_update.installed_version() or "unknown"),
@@ -133,6 +137,72 @@ def persist_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def derive_socket_receipt(
+    original_item_text: str,
+    item_text: str,
+    *,
+    canonical_item_text: str | None = None,
+    slot: str,
+    item_level: int,
+    runes: list[dict[str, Any]],
+    runtime_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry only verified non-Rune sources across an otherwise identical socket edit."""
+    fingerprint = itemparse.semantic_item_structure(without_socketed_runes(original_item_text))[
+        "itemFingerprint"
+    ]
+    for candidate in (item_text, canonical_item_text):
+        if (
+            candidate is not None
+            and itemparse.semantic_item_structure(without_socketed_runes(candidate))[
+                "itemFingerprint"
+            ]
+            != fingerprint
+        ):
+            raise ValueError("socket_source_non_rune_item_mismatch")
+    resolution = resolve_receipt(original_item_text, slot=slot, runtime_context=runtime_context)
+    if resolution.get("status") == "rejected":
+        raise ValueError(str(resolution.get("errorCode") or "socket_source_receipt_rejected"))
+    inherited = None
+    if resolution.get("status") == "verified":
+        inherited = resolution["receipt"]
+        if any(
+            _optional_text(inherited["runtimeVersion"].get(key))
+            != _optional_text(runtime_context.get(key))
+            for key in _VERSION_FIELDS
+        ):
+            raise ValueError("socket_source_version_evidence_incomplete")
+        audit = itemparse.audit_item_legality(
+            original_item_text, trusted_provenance=inherited, require_special_provenance=True
+        )
+        if audit.get("ok") is not True:
+            raise ValueError("socket_source_original_item_illegal")
+    prepared = prepare_receipt(
+        item_text,
+        canonical_item_text=canonical_item_text,
+        slot=slot,
+        item_level=item_level,
+        runes=runes,
+        runtime_context=runtime_context,
+    )
+    if inherited is not None:
+        for key in ("perfectEssences", "corruption"):
+            prepared["sources"][key] = deepcopy(inherited["sources"].get(key))
+        prepared["sourceDerivation"] = {
+            "operation": "replace_runes",
+            "sourceReceiptRef": inherited["receiptRef"],
+            "sourceItemFingerprint": itemparse.semantic_item_structure(original_item_text)[
+                "itemFingerprint"
+            ],
+            "nonRuneItemFingerprint": fingerprint,
+        }
+        body = {key: value for key, value in prepared.items() if key != "receiptRef"}
+        prepared["receiptRef"] = (
+            "craft-legality:" + hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
+        )
+    return prepared
+
+
 def resolve_receipt(
     item_text: str,
     *,
@@ -211,10 +281,13 @@ def _rune_source(entry: dict[str, Any]) -> dict[str, Any]:
     lines = [str(line) for line in (entry.get("lines") or []) if str(line).strip()]
     if not name or not lines:
         raise ValueError("invalid rune source")
+    from server.compute.socket_limits import constraints
+
     return {
         "name": name,
         "lineFingerprints": [itemparse.line_fingerprint(line) for line in lines],
         "optionFingerprint": option_fingerprint(entry.get("option") or {}),
+        "constraints": constraints(entry.get("option") or {}),
     }
 
 

@@ -2,12 +2,47 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import pytest
 from contextlib import closing
 from datetime import datetime, timezone
 
 from scripts import build_research_release_seed as release_seed
 from server.knowledge import mature_learning
 from server.knowledge import research_runtime
+
+
+@pytest.mark.parametrize("fail_validation", [False, True])
+def test_v5_publication_leaves_no_private_snapshot_in_output_directory(tmp_path, monkeypatch, fail_validation):
+    source = tmp_path / "private-source.sqlite"
+    con = mature_learning.connect(source)
+    con.executescript(mature_learning._SCHEMA_SQL)
+    con.executescript(mature_learning._PHASE4_SCHEMA_SQL)
+    mature_learning._migrate_phase4_additive_schema(con)
+    mature_learning._migrate_research_memory_v5(con)
+    con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','5')")
+    con.commit()
+    con.close()
+    _insert_family_and_record(source, scope="global_seed", suffix="public")
+    _insert_family_and_record(source, scope="local_user", suffix="private")
+    marker = "唯一私有正文不得进入发布目录"
+    with sqlite3.connect(source) as con:
+        con.execute("UPDATE deep_research_records SET content=? WHERE knowledge_scope='local_user'", (marker,))
+    before = source.read_bytes()
+    output = tmp_path / "publication" / "release.sqlite"
+    if fail_validation:
+        def reject(_path):
+            raise ValueError("intentional validation failure")
+        monkeypatch.setattr(release_seed, "_validate_seed", reject)
+        with pytest.raises(ValueError, match="intentional"):
+            release_seed.build_release_seed(source=source, output=output, release_version="test")
+        assert list(output.parent.iterdir()) == []
+    else:
+        release_seed.build_release_seed(source=source, output=output, release_version="test")
+        assert list(output.parent.iterdir()) == [output]
+        assert marker.encode("utf-8") not in output.read_bytes()
+        with sqlite3.connect(output) as con:
+            assert con.execute("SELECT count(*) FROM research_content_revisions").fetchone()[0] == 1
+    assert source.read_bytes() == before
 
 
 def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
@@ -92,6 +127,12 @@ def _insert_family_and_record(db_path, *, scope: str, suffix: str) -> None:
             "accepted_projection_hash = ? WHERE knowledge_scope = ? AND knowledge_key = ?",
             (projection, scope, f"knowledge:{suffix}"),
         )
+        if "record_id" in {row[1] for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")}:
+            con.execute(
+                "UPDATE deep_research_record_evidence SET record_id = ?, binding_issue = NULL "
+                "WHERE knowledge_scope = ? AND knowledge_key = ?",
+                (f"record:{suffix}", scope, f"knowledge:{suffix}"),
+            )
         con.commit()
 
 

@@ -964,7 +964,7 @@ def test_extract_technique_candidates_preserves_manual_promotion_status(tmp_path
     )
 
 
-def test_existing_v4_release_store_migrates_atomically_to_v5(tmp_path, monkeypatch):
+def test_existing_v4_release_store_migrates_atomically_to_current_schema(tmp_path, monkeypatch):
     db_path = tmp_path / "legacy-v4.sqlite"
     mature_learning.initialize_store(db_path)
     con = sqlite3.connect(db_path)
@@ -1013,7 +1013,7 @@ def test_existing_v4_release_store_migrates_atomically_to_v5(tmp_path, monkeypat
     mature_learning.initialize_store(db_path)
     con = mature_learning.connect(db_path)
     try:
-        assert mature_learning.schema_version(con) == 5
+        assert mature_learning.schema_version(con) == mature_learning.SCHEMA_VERSION
         assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         columns = {
             row[1] for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")
@@ -1029,28 +1029,29 @@ def test_existing_v4_release_store_migrates_atomically_to_v5(tmp_path, monkeypat
     assert db_path.with_name(db_path.name + ".pre-schema-4.sqlite").is_file()
 
 
-def test_concurrent_initializers_converge_on_one_v5_store(tmp_path):
+def test_concurrent_initializers_converge_on_one_current_store(tmp_path):
     db_path = tmp_path / "concurrent.sqlite"
     with ThreadPoolExecutor(max_workers=4) as pool:
         paths = list(pool.map(lambda _index: mature_learning.initialize_store(db_path), range(4)))
     assert paths == [db_path] * 4
     con = mature_learning.connect(db_path)
     try:
-        assert mature_learning.schema_version(con) == 5
+        assert mature_learning.schema_version(con) == mature_learning.SCHEMA_VERSION
         assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert con.execute("SELECT count(*) FROM research_record_write_receipts").fetchone()[0] == 0
     finally:
         con.close()
 
 
-def test_partial_v5_store_repairs_missing_structure_without_semantic_repair(tmp_path, monkeypatch):
+def test_partial_store_repairs_missing_structure_without_semantic_repair(tmp_path, monkeypatch):
     db_path = tmp_path / "partial-v5.sqlite"
     mature_learning.initialize_store(db_path)
     con = mature_learning.connect(db_path)
     try:
         con.execute("DROP TABLE research_source_provenance")
         con.commit()
-        assert mature_learning.schema_version(con) == 5
+        assert mature_learning.schema_version(con) == mature_learning.SCHEMA_VERSION
+        original_revision = research_runtime.get_memory_revision(con)
     finally:
         con.close()
 
@@ -1066,7 +1067,7 @@ def test_partial_v5_store_repairs_missing_structure_without_semantic_repair(tmp_
         assert mature_learning._v5_structure_complete(con) is True
         assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert con.execute("SELECT count(*) FROM research_source_provenance").fetchone()[0] == 0
-        assert research_runtime.get_memory_revision(con) == 0
+        assert research_runtime.get_memory_revision(con) == original_revision
     finally:
         con.close()
-    assert db_path.with_name(db_path.name + ".pre-schema-5.sqlite").is_file()
+    assert db_path.with_name(db_path.name + f".pre-schema-{mature_learning.SCHEMA_VERSION}.sqlite").is_file()

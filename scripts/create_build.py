@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from functools import wraps
 import json
 import os
 import secrets
@@ -19,6 +20,8 @@ if str(ROOT) not in sys.path:
 from server import paths  # noqa: E402
 from server.generation import (  # noqa: E402
     canonicalize,
+    evidence_authority,
+    mechanism_evidence,
     mechanism_signature,
     models,
     progression_provenance,
@@ -28,6 +31,33 @@ from server.generation import (  # noqa: E402
 )
 from server.knowledge import component_keys, research_execution, research_memory  # noqa: E402
 from server.knowledge import db as knowledge_db  # noqa: E402
+
+
+def _serialized_design_validation(function):
+    """Keep validated design markers stable across Judge and artifact publication."""
+
+    @wraps(function)
+    def guarded(run_id, run_token, *args, **kwargs):
+        try:
+            bound_run = run_store.load_bound_run(run_id, run_token)
+        except run_store.RunStoreError as exc:
+            return models.rejected(exc.code)
+        lock_path = bound_run.run_dir / "evaluation-lock"
+        if not run_store.acquire_generation_lock(lock_path):
+            return models.rejected("generation_evaluation_in_progress")
+        try:
+            # A saved artifact has frozen its selection; new design revisions belong to a new run.
+            if bound_run.artifact_selection_path.exists():
+                return models.rejected("final_artifact_already_exists")
+            try:
+                run_store.load_bound_run(run_id, run_token)
+            except run_store.RunStoreError as exc:
+                return models.rejected(exc.code)
+            return function(run_id, run_token, *args, **kwargs)
+        finally:
+            run_store.release_generation_lock(lock_path)
+
+    return guarded
 
 
 def start_generation_run(memory_mode: str = "memory_assisted") -> dict[str, Any]:
@@ -42,6 +72,7 @@ def start_generation_run(memory_mode: str = "memory_assisted") -> dict[str, Any]
     return payload
 
 
+@_serialized_design_validation
 def validate_generation_blueprint(
     run_id: str,
     run_token: str,
@@ -83,6 +114,10 @@ def validate_generation_blueprint(
     tool_references = [
         item.model_dump(mode="json", by_alias=True) for item in draft.tool_references
     ]
+    try:
+        evidence_authority.normalized_refs(tool_references)
+    except ValueError:
+        return models.rejected("invalid_tool_evidence_reference")
     if research_use is not None:
         research_payload = research_use.model_dump(mode="json", by_alias=True)
         premise_error, _summary, caveats = progression_provenance.validate_research_use_receipts(
@@ -129,31 +164,23 @@ def validate_generation_blueprint(
             if subject_error:
                 return models.rejected(subject_error, caveats=subject_caveats)
 
-    if execution_contract is not None and research_use is not None:
-        allowed_evidence_refs = _execution_evidence_refs(
-            tool_references=tool_references,
-            research_use=research_use.model_dump(mode="json", by_alias=True),
-            contract=execution_contract,
-        )
-    else:
-        allowed_evidence_refs = {
-            str(item.get("queryRef") or "") for item in tool_references if item.get("queryRef")
-        }
-    claimed_evidence_refs = {
-        ref for claim in draft.mechanism_blueprint.claims for ref in claim.source_refs
-    }
-    unknown_evidence_refs = sorted(claimed_evidence_refs - allowed_evidence_refs)
-    if unknown_evidence_refs:
-        return models.rejected(
-            "mechanism_blueprint_evidence_unresolved",
-            caveats=unknown_evidence_refs[:20],
-        )
+    evidence_error, evidence_audit = evidence_authority.blueprint_audit(
+        draft.mechanism_blueprint, tool_references,
+        _research_evidence_refs(
+            research_use.model_dump(mode="json", by_alias=True) if research_use else {},
+            execution_contract or {},
+        ),
+    )
+    if evidence_error:
+        return models.rejected(evidence_error)
 
     blueprint_hash = models.mechanism_blueprint_hash(draft.mechanism_blueprint)
     blueprint_ref = f"gbp-{blueprint_hash[:16]}"
     validated_at = datetime.now(timezone.utc).isoformat()
     payload = {
         "schemaVersion": 1,
+        "evidenceAudit": evidence_audit,
+        "evidenceAuditHash": evidence_authority.audit_hash(evidence_audit),
         "blueprintRef": blueprint_ref,
         "blueprintHash": blueprint_hash,
         "candidateId": draft.candidate_id,
@@ -180,6 +207,7 @@ def validate_generation_blueprint(
         "blueprintRef": blueprint_ref,
         "blueprintHash": blueprint_hash,
         "coverage": {item.axis: item.status for item in draft.mechanism_blueprint.coverage},
+        "evidenceAudit": evidence_audit,
         "unresolvedQuestionCount": len(draft.mechanism_blueprint.unresolved_questions),
         "researchExecutionContractRef": marker["researchExecutionContractRef"],
         "noRawMaterial": True,
@@ -202,6 +230,7 @@ def validate_generation_output(
     )
 
 
+@_serialized_design_validation
 def validate_generation_draft(
     run_id: str,
     run_token: str,
@@ -245,6 +274,10 @@ def validate_generation_draft(
     except models.ValidationError as exc:
         return models.schema_error(exc, max_errors=20)
 
+    try:
+        evidence_authority.normalized_refs(draft.prototype_build_candidate.tool_references)
+    except ValueError:
+        return models.rejected("invalid_tool_evidence_reference")
     research_use = draft.prototype_build_candidate.research_memory_use
     family_binding = _read_family_discovery_binding(run_dir)
     memory_mode = str((manifest.get("experimentContext") or {}).get("memoryMode") or "")
@@ -315,6 +348,15 @@ def validate_generation_draft(
     else:
         execution_contract = None
         execution_summary = None
+    evidence_error = evidence_authority.validate_internal_claims(
+        draft.prototype_build_candidate.tool_references,
+        _research_evidence_refs(
+            research_use.model_dump(mode="json", by_alias=True) if research_use else {},
+            execution_contract or {},
+        ),
+    )
+    if evidence_error:
+        return models.rejected(evidence_error)
     blueprint_error, blueprint_marker = _validate_candidate_blueprint_use(
         draft.prototype_build_candidate,
         run_dir=run_dir,
@@ -361,8 +403,9 @@ def validate_generation_draft(
         )
         if adoption_error:
             return models.rejected(adoption_error)
+    evidence_uses = evidence_authority.design_evidence_uses(draft.prototype_build_candidate.research_execution_plan)
     marker = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "candidateId": draft.prototype_build_candidate.candidate_id,
         "researchMemoryRef": draft.prototype_build_candidate.version_context.research_memory_ref,
         "validatedAt": datetime.now(timezone.utc).isoformat(),
@@ -376,12 +419,22 @@ def validate_generation_draft(
         "researchExecutionStructureHash": (
             (execution_summary or {}).get("structureHash") if execution_summary else None
         ),
+        "researchDecisionHash": mechanism_evidence.research_decision_hash(
+            research_use, draft.prototype_build_candidate.research_execution_plan
+        ),
         "mechanismBlueprintRef": (
             blueprint_marker.get("blueprintRef") if blueprint_marker else None
         ),
         "mechanismBlueprintHash": (
             blueprint_marker.get("blueprintHash") if blueprint_marker else None
         ),
+        "evidenceAuditHash": (
+            blueprint_marker.get("evidenceAuditHash") if blueprint_marker else None
+        ),
+        "designToolsHash": evidence_authority.design_tools_hash(draft.prototype_build_candidate),
+        "designToolRefs": [row["queryRef"] for row in evidence_authority.design_tool_refs(draft.prototype_build_candidate)],
+        "designEvidenceUses": evidence_uses,
+        "designEvidenceUsesHash": evidence_authority.audit_hash(evidence_uses),
         "mechanismSignatureHash": observed_signature["signatureHash"],
         "mechanismSignature": observed_signature["signature"],
         "calculationContext": observed_signature["calculationContext"],
@@ -393,27 +446,53 @@ def validate_generation_draft(
         "noRawMaterial": True,
     }
     existing_marker = _read_json(run_dir / "draft-validation.json")
+    bound_run = run_store.BoundRun(run_id=canonical, run_dir=run_dir, manifest=manifest)
+    evidence_rebuilt = False
     if isinstance(existing_marker, dict) and all(
         existing_marker.get(key) == marker.get(key)
-        for key in (
-            "candidateId",
-            "mechanismBlueprintHash",
-            "mechanismSignatureHash",
-            "buildStateHash",
-        )
+        for key in marker
+        if key not in {"validatedAt", "researchExecutionPlanHash"}
     ):
-        return models.rejected("generation_draft_unchanged")
-    if not _write_json_atomic(run_dir / "draft-validation.json", marker):
+        # Every provenance, source authority, execution-plan and PoB check above still runs.
+        # A semantic duplicate never refreshes markers or an existing bundle. Cache loss is
+        # recoverable from the same validated identity, with the original marker and lifetime.
+        try:
+            frozen = mechanism_evidence.read_validated_draft(
+                bound_run, candidate_id=draft.prototype_build_candidate.candidate_id
+            )
+        except run_store.RunStoreError as exc:
+            return models.rejected(exc.code)
+        if (
+            frozen is not None
+            or not marker.get("mechanismSignatureHash")
+            or blueprint_marker is None
+        ):
+            return models.rejected("generation_draft_unchanged")
+        marker = existing_marker
+        evidence_rebuilt = True
+    elif not _write_json_atomic(run_dir / "draft-validation.json", marker):
         return models.rejected("run_state_write_failed")
+    if marker.get("mechanismSignatureHash"):
+        try:
+            mechanism_evidence.remember_validated_draft(
+                bound_run,
+                draft.prototype_build_candidate,
+                marker,
+                blueprint_marker,
+            )
+        except run_store.RunStoreError as exc:
+            return models.rejected(exc.code)
     return {
         "status": "accepted",
         "validationOnly": True,
+        "evidenceRebuilt": evidence_rebuilt,
         "candidateId": draft.prototype_build_candidate.candidate_id,
         "promptId": draft.agent_refined_build_prompt.prompt_id,
         "researchPremiseAuditReady": research_use is not None,
         "researchExecutionContractRef": marker["researchExecutionContractRef"],
         "researchExecutionPlanHash": marker["researchExecutionPlanHash"],
         "researchExecutionStructureHash": marker["researchExecutionStructureHash"],
+        "researchDecisionHash": marker["researchDecisionHash"],
         "mechanismBlueprintRef": marker["mechanismBlueprintRef"],
         "mechanismBlueprintHash": marker["mechanismBlueprintHash"],
         "mechanismSignatureHash": marker["mechanismSignatureHash"],
@@ -779,11 +858,21 @@ def _run_review_packet(
         return canonical
 
     canonical_payload = canonical["payload"]
+    try:
+        evidence_context = mechanism_evidence.review_context(
+            bound_run,
+            trusted_receipts,
+            artifact_selection,
+            canonical_payload.get("prototypeBuildCandidate") or {},
+        )
+    except run_store.RunStoreError as exc:
+        return models.rejected(exc.code)
     premise_error, premise_caveats = _validate_candidate_research_use(
         canonical_payload,
         receipt_reader=research_memory.ResearchMemoryService().read_query_receipt,
         not_before=manifest["startedAt"],
         run_dir=run_dir,
+        evidence_context=evidence_context,
     )
     if premise_error:
         detail_hints = {
@@ -812,6 +901,7 @@ def _run_review_packet(
         run_dir=run_dir,
         manifest=manifest,
         require_draft_binding=True,
+        evidence_context=evidence_context,
     )
     if blueprint_error:
         return models.rejected(blueprint_error)
@@ -834,6 +924,7 @@ def _run_review_packet(
             bound_run,
             trusted_receipts,
             retry_result.get("retryComparisonReport"),
+            evidence_context=evidence_context,
         )
         if mechanism_error is not None:
             return models.rejected(mechanism_error)
@@ -867,6 +958,8 @@ def _selected_attempt_mechanism_binding_error(
     bound_run: run_store.BoundRun,
     trusted_receipts: list[dict[str, Any]],
     retry_report: dict[str, Any] | None,
+    *,
+    evidence_context: dict[str, Any] | None = None,
 ) -> str | None:
     required = bool(
         ((bound_run.manifest or {}).get("experimentContext") or {}).get(
@@ -875,7 +968,11 @@ def _selected_attempt_mechanism_binding_error(
     )
     if not required:
         return None
-    current = run_store.current_mechanism_binding(bound_run)
+    current = (
+        evidence_context.get("mechanismBinding")
+        if evidence_context is not None
+        else run_store.current_mechanism_binding(bound_run)
+    )
     if current is None:
         return "generation_draft_validation_required"
     selected = (retry_report or {}).get("selectedAttemptIndex")
@@ -885,6 +982,11 @@ def _selected_attempt_mechanism_binding_error(
         else len(trusted_receipts) - 1
     )
     if selected_index < 0 or selected_index >= len(trusted_receipts):
+        return "trusted_evaluation_mismatch"
+    if (
+        evidence_context is not None
+        and evidence_context.get("selectedAttemptIndex") != selected_index
+    ):
         return "trusted_evaluation_mismatch"
     if trusted_receipts[selected_index].get("mechanismBinding") != current:
         return "generation_attempt_mechanism_binding_mismatch"
@@ -934,6 +1036,7 @@ def _validate_candidate_research_use(
     receipt_reader: Any,
     not_before: str | None = None,
     run_dir: Path | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> tuple[str | None, list[str]]:
     """Apply the shared receipt/premise audit to ordinary single-stage Create.
 
@@ -943,11 +1046,16 @@ def _validate_candidate_research_use(
     """
 
     candidate = canonical_payload.get("prototypeBuildCandidate") or {}
+    tool_refs = list(candidate.get("toolReferences") or candidate.get("tool_references") or [])
+    try:
+        evidence_authority.normalized_refs(tool_refs)
+    except ValueError:
+        return "invalid_tool_evidence_reference", []
     research_use = candidate.get("researchMemoryUse")
     if not isinstance(research_use, dict):
         research_use = candidate.get("research_memory_use")
     if not isinstance(research_use, dict):
-        return None, []
+        return evidence_authority.validate_internal_claims(tool_refs, set()), []
     premise_error, _premise_summary, premise_caveats = (
         progression_provenance.validate_research_use_receipts(
             research_memory_use=research_use,
@@ -961,7 +1069,9 @@ def _validate_candidate_research_use(
         research_use.get("retrievalOutcome") or research_use.get("retrieval_outcome") or ""
     )
     if retrieval_outcome != "matched":
-        return None, []
+        return evidence_authority.validate_internal_claims(
+            tool_refs, _research_evidence_refs(research_use, {})
+        ), []
     version = candidate.get("versionContext") or candidate.get("version_context") or {}
     contract = research_execution.construct_from_research_use(
         research_use,
@@ -975,6 +1085,11 @@ def _validate_candidate_research_use(
             str(contract.get("errorCode") or "research_execution_contract_unavailable"),
             list(contract.get("caveats") or []),
         )
+    evidence_error = evidence_authority.validate_internal_claims(
+        tool_refs, _research_evidence_refs(research_use, contract)
+    )
+    if evidence_error:
+        return evidence_error, []
     execution_plan = candidate.get("researchExecutionPlan")
     if not isinstance(execution_plan, dict):
         execution_plan = candidate.get("research_execution_plan")
@@ -1003,9 +1118,11 @@ def _validate_candidate_research_use(
     if subject_error:
         return subject_error, subject_caveats
     if run_dir is not None:
-        try:
-            marker = json.loads((run_dir / "draft-validation.json").read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        if evidence_context is not None:
+            marker = evidence_context.get("draftMarker")
+        else:
+            marker = _read_json(run_dir / "draft-validation.json")
+        if not isinstance(marker, dict):
             return "generation_draft_validation_required", []
         structure_hash_matches = (
             marker.get("researchExecutionStructureHash") == (summary or {}).get("structureHash")
@@ -1026,6 +1143,7 @@ def _validate_candidate_blueprint_use(
     run_dir: Path,
     manifest: dict[str, Any],
     require_draft_binding: bool,
+    evidence_context: dict[str, Any] | None = None,
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Bind the candidate's free-form blueprint to its pre-build validation receipt."""
 
@@ -1062,14 +1180,19 @@ def _validate_candidate_blueprint_use(
         )
     except models.ValidationError:
         return "generation_mechanism_blueprint_invalid", None
-    try:
-        marker = json.loads(
-            (run_dir / "mechanism-blueprint-validation.json").read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return "generation_blueprint_validation_required", None
+    marker = (
+        evidence_context.get("blueprintMarker")
+        if evidence_context is not None
+        else _read_json(run_dir / "mechanism-blueprint-validation.json")
+    )
     if not isinstance(marker, dict) or marker.get("schemaVersion") != 1:
         return "generation_blueprint_validation_required", None
+    candidate_tools = (
+        candidate.tool_references if isinstance(candidate, models.PrototypeBuildCandidate)
+        else candidate.get("toolReferences") or candidate.get("tool_references") or []
+    )
+    if not evidence_authority.audit_matches(marker, blueprint_model, candidate_tools):
+        return "generation_blueprint_evidence_binding_mismatch", None
     blueprint_hash = models.mechanism_blueprint_hash(blueprint_model)
     if (
         marker.get("blueprintRef") != blueprint_ref
@@ -1079,17 +1202,44 @@ def _validate_candidate_blueprint_use(
     ):
         return "generation_mechanism_blueprint_binding_mismatch", None
     if require_draft_binding:
-        try:
-            draft_marker = json.loads(
-                (run_dir / "draft-validation.json").read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        draft_marker = (
+            evidence_context.get("draftMarker")
+            if evidence_context is not None
+            else _read_json(run_dir / "draft-validation.json")
+        )
+        if not isinstance(draft_marker, dict):
             return "generation_draft_validation_required", None
+        try:
+            parsed_candidate = (candidate if isinstance(candidate, models.PrototypeBuildCandidate)
+                                else models.PrototypeBuildCandidate.model_validate(candidate))
+            if not evidence_authority.design_tools_match(
+                parsed_candidate, draft_marker,
+                original_evidence_uses=(evidence_context or {}).get("designEvidenceUses"),
+            ):
+                return "generation_tool_evidence_changed_after_draft", None
+        except ValueError:
+            return "invalid_tool_evidence_reference", None
         if (
             draft_marker.get("mechanismBlueprintRef") != blueprint_ref
             or draft_marker.get("mechanismBlueprintHash") != blueprint_hash
+            or draft_marker.get("evidenceAuditHash") != marker.get("evidenceAuditHash")
         ):
             return "generation_mechanism_blueprint_changed_after_draft", None
+        if draft_marker.get("schemaVersion") == 3:
+            try:
+                research_hash = mechanism_evidence.research_decision_hash(
+                    candidate.research_memory_use
+                    if isinstance(candidate, models.PrototypeBuildCandidate)
+                    else candidate.get("researchMemoryUse") or candidate.get("research_memory_use"),
+                    candidate.research_execution_plan
+                    if isinstance(candidate, models.PrototypeBuildCandidate)
+                    else candidate.get("researchExecutionPlan")
+                    or candidate.get("research_execution_plan"),
+                )
+            except models.ValidationError:
+                return "generation_research_decisions_invalid", None
+            if draft_marker.get("researchDecisionHash") != research_hash:
+                return "generation_research_decisions_changed_after_draft", None
     return None, marker
 
 
@@ -1099,11 +1249,12 @@ def _execution_evidence_refs(
     research_use: dict[str, Any],
     contract: dict[str, Any],
 ) -> set[str]:
-    refs = {
-        str(item.get("queryRef") or item.get("query_ref") or "")
-        for item in tool_references
-        if isinstance(item, dict)
-    }
+    return _research_evidence_refs(research_use, contract) | _execution_external_evidence_refs(tool_references)
+
+
+def _research_evidence_refs(research_use: dict[str, Any], contract: dict[str, Any]) -> set[str]:
+    # Call only after run-fresh receipt validation and construction of the typed contract.
+    refs: set[str] = set()
     refs.update(
         str(value)
         for key in (
@@ -1182,21 +1333,7 @@ def _adopted_primary_skill_package_error(
 def _execution_external_evidence_refs(
     tool_references: list[dict[str, Any]],
 ) -> set[str]:
-    excluded_suffixes = {
-        "query_research_memory",
-        "construct_research_execution_contract",
-        "query_public_learning_memory",
-        "get_freshness_report",
-        "get_prices",
-    }
-    return {
-        str(item.get("queryRef") or item.get("query_ref") or "")
-        for item in tool_references
-        if isinstance(item, dict)
-        and str(item.get("toolName") or item.get("tool_name") or "").casefold().split("__")[-1]
-        not in excluded_suffixes
-        and str(item.get("queryRef") or item.get("query_ref") or "")
-    }
+    return evidence_authority.external_refs(tool_references)
 
 
 def _compact_review_result(

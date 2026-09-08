@@ -166,6 +166,8 @@ class MechanismBlueprintTests(unittest.TestCase):
                         "toolName": "graph_tool_query",
                         "queryRef": EVIDENCE_REF,
                         "summary": "Current graph evidence for the blueprint test.",
+                        "evidenceKind": "agent_reviewed",
+                        "reviewBasis": "Agent inspected the selected graph result and its mechanism conditions.",
                     }
                 ],
                 "mechanismBlueprint": _blueprint(),
@@ -189,6 +191,7 @@ class MechanismBlueprintTests(unittest.TestCase):
                     "versionContext": draft["versionContext"],
                     "mechanismBlueprintRef": result["blueprintRef"],
                     "mechanismBlueprint": draft["mechanismBlueprint"],
+                    "toolReferences": draft["toolReferences"],
                 },
                 run_dir=run_dir,
                 manifest=manifest,

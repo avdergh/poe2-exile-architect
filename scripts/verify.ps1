@@ -5,16 +5,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $VerificationTempRoot = if ($env:POE_VERIFY_TEMP_ROOT) {
     $env:POE_VERIFY_TEMP_ROOT
 }
 else {
-    Join-Path ([System.IO.Path]::GetTempPath()) ("poe-bd-verify-" + $PID)
+    Join-Path ([System.IO.Path]::GetTempPath()) ("pv-" + $PID)
 }
 New-Item -ItemType Directory -Force -Path $VerificationTempRoot | Out-Null
-$env:TEMP = Join-Path $VerificationTempRoot "temp-$PID"
+# Hash-addressed receipts/quarantine can exceed Win32 MAX_PATH under pytest's nested default.
+# Keep one short process-owned base; profiles invoke pytest sequentially.
+$VerificationPytestBase = Join-Path $VerificationTempRoot "pt"
+$env:PYTEST_ADDOPTS = (($env:PYTEST_ADDOPTS + ' --basetemp="' + $VerificationPytestBase + '"').Trim())
+$env:TEMP = $VerificationTempRoot
 $env:TMP = $env:TEMP
 $env:POE2_MCP_DATA = Join-Path $VerificationTempRoot "user-data-$PID"
 if (-not $env:UV_CACHE_DIR) {
@@ -97,7 +102,7 @@ function Invoke-ReleaseContractChecks {
         Invoke-Uv "research release seed validation" @(
             "python",
             "-c",
-            "from pathlib import Path; from server.knowledge import mature_learning; mature_learning.validate_release_seed(Path('data/mature_build_learning/release.sqlite')); print('RESEARCH SEED OK')"
+            "from pathlib import Path; from server.knowledge import mature_learning; mature_learning.validate_release_seed(Path('data/mature_build_learning/release.sqlite'), allow_legacy_schema=True); print('RESEARCH SEED OK')"
         )
         Invoke-Uv "research release seed content" @(
             "python",
@@ -130,7 +135,12 @@ function Invoke-ReleaseContractChecks {
     }
     finally {
         if (Test-Path -LiteralPath $VerifyRoot) {
-            Remove-Item -LiteralPath $VerifyRoot -Recurse -Force
+            $ReleaseCleanupPath = [System.IO.Path]::GetFullPath($VerifyRoot)
+            $ReleaseCleanupParent = [System.IO.Path]::GetFullPath($VerificationTempRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $ReleaseCleanupPath.StartsWith($ReleaseCleanupParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Release cleanup path escaped its verification directory: $ReleaseCleanupPath"
+            }
+            Remove-Item -LiteralPath $ReleaseCleanupPath -Recurse -Force
         }
     }
 }

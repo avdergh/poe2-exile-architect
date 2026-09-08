@@ -101,7 +101,9 @@ class _SelectableLeague:
     url: str
 
 
-def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapshot:
+def parse_ninja_snapshot(
+    index_json: Any, build_index_json: Any, *, target_league: str | None = None
+) -> NinjaSnapshot:
     """Select the newest current softcore trade snapshot from poe.ninja indexes."""
 
     index = _mapping(index_json, "index")
@@ -131,6 +133,14 @@ def parse_ninja_snapshot(index_json: Any, build_index_json: Any) -> NinjaSnapsho
         ):
             continue
 
+        if target_league is not None:
+            from .leagues import league_token
+
+            if league_token(target_league) not in {
+                league_token(league_name),
+                league_token(league_url),
+            }:
+                continue
         selectable_leagues.append(_SelectableLeague(name=league_name, url=league_url))
 
     selectable_urls = {league.url for league in selectable_leagues}
@@ -409,6 +419,7 @@ class NinjaSnapshotProvider:
         refresh_coordinator: RefreshCoordinator,
         cache_runner: CacheRunner = run_cached,
         timer: Callable[[], float] = monotonic,
+        target_league: str | None = None,
     ) -> None:
         self._index_store = index_store
         self._build_index_store = build_index_store
@@ -417,6 +428,7 @@ class NinjaSnapshotProvider:
         self._refresh_coordinator = refresh_coordinator
         self._cache_runner = cache_runner
         self._timer = timer
+        self.target_league = target_league
 
     def collect(
         self,
@@ -489,6 +501,7 @@ class NinjaSnapshotProvider:
             snapshot = parse_ninja_snapshot(
                 _index_from_payload(index_result.envelope.payload),
                 _build_index_from_payload(build_index_result.envelope.payload),
+                target_league=self.target_league,
             )
         except NinjaParseError as exc:
             diagnostics.append(f"cached payload invalid: {exc}")

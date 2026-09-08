@@ -8,6 +8,7 @@ must satisfy before facts can enter a durable physical graph snapshot.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import closing
 from datetime import UTC, datetime
 import gzip
 import hashlib
@@ -3182,7 +3183,7 @@ def register_snapshot(
 
     db_path = Path(index_path)
     json_path = str(Path(snapshot_path).resolve())
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         _ensure_snapshot_index_schema(conn)
         conn.execute("UPDATE snapshot_index SET is_latest = 0")
         conn.execute(
@@ -3223,7 +3224,7 @@ def list_registered_snapshots(index_path: str | Path) -> list[dict[str, Any]]:
     db_path = Path(index_path)
     if not db_path.exists():
         return []
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         _ensure_snapshot_index_schema(conn)
         rows = conn.execute(
             """

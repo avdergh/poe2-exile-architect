@@ -87,6 +87,13 @@ Create 完成后必须：
 单维结论只允许 `generated_advantage`、`reference_advantage`、`tradeoff`、`tie`、`unknown`；
 总结果只允许 `generated_stronger`、`reference_stronger`、`tradeoff`、`incomparable`。
 
+比较合同 v2 要求非 unknown 维度绑定本案例双方安全 evidence packet 的引用，错侧、跨案例和
+不存在引用均拒绝。criticalGap 标记与 typed critical gaps 必须一致；unknown 明确计数。
+tradeoff 单列，不自动算作 not-weaker。服务端核对引用身份，结论仍由独立 Comparator 审读判断。
+独立CR后的引用兼容修复使FamilyTarget、SafeBuildEvidence、DimensionComparison、ComparisonGap
+共用3–240字符安全引用合同；canonical ASCII撇号原样保留，生产者接受的合法key可直接用于
+本侧比较，不需要删字符或换成泛化引用，精确成员和copy-safety检查继续执行。
+
 当生成 BD 更弱时，gap 必须至少归入一个 typed 根因：
 
 - `missing_critical_technique`；
@@ -159,13 +166,17 @@ Reference/Profile 与 Comparator 绑定同一个可见任务；Create 必须绑�
 维度数、critical gap 数、Memory 召回/采用/拒绝/污染/修正、Create/Research 缺陷分类、Judge/
 modelability 可用率，以及各阶段和每案例耗时。
 
-只有最初/最后 3 例都具备完整 Comparator 报告，且最后 3 例相对最初 3 例同时满足下列条件，才
+只有全部十例具备 v2、双方证据绑定、十维可比较与已知合法性，且最后 3 例相对最初 3 例同时满足下列条件，才
 报告“出现初步进步信号”：
 
-- not-weaker 比例上升；
+- not-weaker（当前只计 generated_stronger）比例上升；tradeoff 比例单列；
 - reference-advantage 中位数下降；
 - critical gap 不增加；
-- 合法性和 Family 匹配不退化。
+- 合法性、Family 和等级匹配不退化。
+
+状态查询从已保存报告和当前案例双方证据重新校验并派生比较指标。旧报告保留诊断但不自动取得
+新覆盖权限；缺失数值为 null，不以 0 表示无优势/无缺口，也不把证据减少当作改善。
+工程合同修复不恢复历史暂停批次，也不重跑任何已比较案例。
 
 10 个案例且没有 A/B 只能提供方向性证据，不能声明因果证明。如果趋势没有改善，Phase 7 标记为
 “功能实现完成、学习效果未证实”，保留全部根因和 Memory correction，再决定下一批案例或

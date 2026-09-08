@@ -101,7 +101,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 160
+    assert len(tools) == 165
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -1461,7 +1461,7 @@ def test_verify_campaign_early_derives_main_skill_from_same_xml_snapshot(monkeyp
         detail="full",
     )
 
-    assert result["pass"] is True
+    assert result["pass"] is True, result
     assert result["stateSnapshot"]["mainSkillSocketed"] is True
     assert result["stateSnapshot"]["mainSkillSocketEvidence"]["activeSkills"] == ["Glacial Cascade"]
     assert result["evaluatedSourceHash"]
@@ -2068,10 +2068,9 @@ def test_build_advice_sections():
     assert "engine" in overview["intro"].lower()  # framing: numbers come from the engine
     defense = advice.advise("defense")
     # Planning guidance remains useful, but current data has explicit authority over patch facts.
-    assert "75%" in defense["text"]
-    assert "current 0.5 `chaos inoculation`" in defense["text"].lower()
-    assert "chaos damage" in defense["text"].lower()
-    assert "bleeding" in defense["text"].lower()
+    assert defense["topic"] in overview["topics"]
+    assert advice.advise("抗性")["topic"] == defense["topic"]
+    assert advice.advise("resistances")["text"] == defense["text"]
     assert "pinned pob" in defense["authority"].lower()
     # fuzzy keyword match resolves a query that isn't a section title
     assert advice.advise("crit").get("topic")

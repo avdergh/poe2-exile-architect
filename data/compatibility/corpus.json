@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "sha256": "f9d35fca0ae25e617d8cf730ab80e7425808901bb1f47162e27ba5ae039c89c3",
+  "game_patch": "0.5.4",
+  "passive_tree": "0_5",
+  "repoeExportedVersion": "4.5.4.11",
+  "repoeSourceCommit": "bceeaab125a98eec6a8887a8d677222498b61116",
+  "pobCommit": "7d6f530cbdab20389ff8bc6ba97a37ac27f74e41",
+  "verifiedAt": "2026-09-05T05:11:52Z",
+  "scope": "静态组件与0_5天赋版本；wiki是参考资料；不认证0.5.5数值"
+}

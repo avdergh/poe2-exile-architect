@@ -9,6 +9,7 @@ from typing import Any
 from server.knowledge import item_legality, itemparse
 from server.judge import rules
 
+from . import attainability
 from .engine import PobEngine
 
 _FLASK_SLOTS = ("Flask 1", "Flask 2")
@@ -325,7 +326,8 @@ def _parse_item_text(
     required_level = _matched_int(lines, r"^LevelReq:\s*(\d+)")
     charm_slots = _matched_int(lines, r"^Charm Slots:\s*(\d+)")
     socket_line = _matched_value(lines, r"^Sockets:\s*(.*)") or ""
-    runes = [value for line in lines if (value := _line_value(line, r"^Rune:\s*(.+)"))]
+    structure = itemparse.semantic_item_structure(raw)
+    runes = structure["runeNames"]
     legality = item_legality.audit_item(
         raw,
         slot=slot,
@@ -339,13 +341,7 @@ def _parse_item_text(
         if legality.get("provenanceStatus") == "verified"
         else 0
     )
-    top_tier_affixes = sum(
-        1
-        for affix in parsed.get("affixes") or []
-        if isinstance(affix, dict)
-        and affix.get("tier") == 1
-        and int(affix.get("totalTiers") or 0) >= 4
-    )
+    attainability_evidence = attainability.item_evidence(parsed, legality=legality)
     return {
         "name": name,
         "base": base,
@@ -356,13 +352,11 @@ def _parse_item_text(
         "runes": runes,
         "verifiedRuneCount": verified_rune_count,
         "runeProvenanceStatus": legality.get("provenanceStatus"),
-        "itemFingerprint": itemparse.semantic_item_structure(raw).get("itemFingerprint"),
+        "itemFingerprint": structure.get("itemFingerprint"),
         "charmSlots": charm_slots,
         "isScaffold": name.startswith("Scaffold "),
-        "affixPrefixes": int(legality.get("prefixes") or 0),
-        "affixSuffixes": int(legality.get("suffixes") or 0),
+        **attainability_evidence,
         "affixLegality": legality,
-        "topTierAffixes": top_tier_affixes,
     }
 
 

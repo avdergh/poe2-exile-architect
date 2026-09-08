@@ -38,8 +38,40 @@ def public_policy(profile: str) -> dict[str, Any]:
     return asdict(policy_for(profile))
 
 
-def rare_item_reasons(item: dict[str, Any], *, profile: str = "realistic_trade") -> list[str]:
-    policy = policy_for(profile)
+def is_deep_top_tier(affix: dict[str, Any]) -> bool:
+    return affix.get("tier") == 1 and int(affix.get("totalTiers") or 0) >= 4
+
+
+def item_evidence(
+    parsed: dict[str, Any], *, legality: dict[str, Any] | None = None
+) -> dict[str, int]:
+    """Project actual item text into the evidence shared by planning and final checkpoints.
+
+    Source-aware legality owns affix counts when supplied. Rune, implicit and corruption effects
+    do not spend the ordinary explicit-affix tier budget.
+    """
+
+    counts = legality if legality is not None else parsed
+    return {
+        "affixPrefixes": int(counts.get("prefixes") or 0),
+        "affixSuffixes": int(counts.get("suffixes") or 0),
+        "topTierAffixes": sum(
+            is_deep_top_tier(affix)
+            for affix in parsed.get("affixes") or []
+            if isinstance(affix, dict)
+            and affix.get("kind") == "explicit"
+            and affix.get("type") in {"prefix", "suffix"}
+        ),
+    }
+
+
+def rare_item_reasons(
+    item: dict[str, Any],
+    *,
+    profile: str = "realistic_trade",
+    policy: GearAttainabilityPolicy | None = None,
+) -> list[str]:
+    policy = policy if policy is not None else policy_for(profile)
     affix_count = int(item.get("affixPrefixes") or 0) + int(item.get("affixSuffixes") or 0)
     top_tier_count = int(item.get("topTierAffixes") or 0)
     reasons: list[str] = []

@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import db
+from .unique_variants import UniqueSource, parse_unique_source
 
 # A numeric roll or a (signed) "(min-max)" range token -> a single placeholder, so an item line
 # like "118% increased Physical Damage" normalizes to the same template as the corpus mod
@@ -255,7 +256,9 @@ def semantic_item_structure(text: str) -> dict[str, Any]:
     info = _header(stripped)
     effects = _structured_effect_lines(lines, info)
     rune_names = [
-        value for line in stripped if (value := _property_value(line, r"^Rune:\s*(.+)")) is not None
+        value
+        for line in stripped
+        if (value := _property_value(line, r"^Rune:\s*(.+)")) is not None and value != "None"
     ]
     socket_line = next(
         (
@@ -344,7 +347,16 @@ def _structured_effect_lines(
             kind = suffix.group(1).lower()
             value = _MARKER.sub("", value).strip()
 
-        if index not in implicit_indices and ":" in value and prefix is None and suffix is None:
+        if (
+            index not in implicit_indices
+            and ":" in value
+            and prefix is None
+            and suffix is None
+            and not (
+                str(info.get("rarity") or "").casefold() == "unique"
+                and value.startswith("Grants Skill:")
+            )
+        ):
             continue
         if not value:
             continue
@@ -441,16 +453,19 @@ def parse_item(text: str) -> dict[str, Any]:
     return out
 
 
-def _unique_modifier_lines(text: str) -> list[str]:
+def _unique_modifier_lines(text: str, *, include_implicit: bool = False) -> list[str]:
     """Return only unique-owned modifier lines from one PoB/readable item block."""
 
     lines = [line.rstrip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
     info = _header([line.strip() for line in lines])
+    if any(line.strip().startswith("Variant:") for line in lines):
+        source = parse_unique_source(text, name=info["name"], base=info["base"])
+        return source.project(source.selected, include_implicit=include_implicit)
     output: list[str] = []
     for entry in _structured_effect_lines(lines, info):
         kind = str(entry.get("kind") or "explicit")
         value = str(entry.get("text") or "").strip()
-        if not value or kind in {"implicit", "enchant", "rune"}:
+        if not value or kind in {"enchant", "rune"} or (kind == "implicit" and not include_implicit):
             continue
         if value.casefold().startswith("requires level "):
             continue
@@ -475,23 +490,118 @@ def _unique_modifier_line_matches(actual: str, expected: str) -> bool:
 def _unique_modifiers_match(actual: list[str], expected: list[str]) -> bool:
     if len(actual) != len(expected):
         return False
-    remaining = list(expected)
-    for actual_line in actual:
-        match_index = next(
-            (
-                index
-                for index, expected_line in enumerate(remaining)
-                if _unique_modifier_line_matches(actual_line, expected_line)
-            ),
-            None,
+    # Overlapping roll ranges require a one-to-one match, independent of item-line order.
+    assigned: dict[int, int] = {}
+
+    def assign(actual_index: int, visited: set[int]) -> bool:
+        for expected_index, expected_line in enumerate(expected):
+            if expected_index in visited or not _unique_modifier_line_matches(
+                actual[actual_index], expected_line
+            ):
+                continue
+            visited.add(expected_index)
+            if expected_index not in assigned or assign(assigned[expected_index], visited):
+                assigned[expected_index] = actual_index
+                return True
+        return False
+
+    return all(assign(index, set()) for index in range(len(actual)))
+
+
+def _unique_variant_combination_matches(actual: list[str], source: UniqueSource) -> bool:
+    """Match a complete legal choice, pruning by actual lines before searching combinations."""
+    if not source.labels:
+        return _unique_modifiers_match(actual, source.project(()))
+
+    # Large generated jewels have hundreds of choices. Only variants whose entire effect set
+    # occurs in the actual item can participate. Equal sets are grouped, without a search cap.
+    grouped: dict[tuple[int, ...], int] = {}
+    for variant in range(1, len(source.labels) + 1):
+        indices = tuple(
+            index for index, modifier in enumerate(source.modifiers) if variant in modifier.variants
         )
-        if match_index is None:
+        if any(
+            not any(_unique_modifier_line_matches(line, source.modifiers[index].text) for line in actual)
+            for index in indices
+        ):
+            continue
+        grouped[indices] = grouped.get(indices, 0) + 1
+    groups = list(grouped.items())
+    fixed = tuple(1 if not modifier.variants else 0 for modifier in source.modifiers)
+    failed: set[tuple[int, int, tuple[int, ...]]] = set()
+
+    def choose(position: int, slots: int, counts: tuple[int, ...]) -> bool:
+        state = (position, slots, counts)
+        if state in failed or sum(counts) > len(actual):
             return False
-        remaining.pop(match_index)
-    return not remaining
+        if not slots:
+            return _unique_modifiers_match(
+                actual,
+                [modifier.text for modifier, count in zip(source.modifiers, counts, strict=True)
+                 for _ in range(count)],
+            )
+        if position == len(groups):
+            return False
+        if sum(counts) + slots * max(len(indices) for indices, _ in groups[position:]) < len(actual):
+            return False
+        indices, available = groups[position]
+        for count in range(min(slots, slots if source.duplicates else available), -1, -1):
+            updated = list(counts)
+            if count:
+                for index in indices:
+                    updated[index] = updated[index] + count if source.duplicates else 1
+            if choose(position + 1, slots - count, tuple(updated)):
+                return True
+        failed.add(state)
+        return False
+
+    return choose(0, source.slots, fixed)
 
 
-def _unique_modifier_issue(text: str, unique: dict[str, Any]) -> str | None:
+def _unique_modifier_issue(
+    text: str, unique: dict[str, Any], *, trusted_provenance: dict[str, Any] | None = None
+) -> str | None:
+    # A verified corruption can add an implicit to a unique. Its source/fingerprint is still
+    # checked by the shared provenance audit below; it does not become a natural unique mod.
+    sources = (trusted_provenance or {}).get("sources") or {}
+    corruption = sources.get("corruption") if isinstance(sources, dict) else None
+    corruption_hash = str(corruption.get("lineFingerprint") or "") if isinstance(corruption, dict) else ""
+
+    def natural(lines: list[str]) -> list[str]:
+        remaining = list(lines)
+        if corruption_hash:
+            index = next((index for index, line in enumerate(remaining)
+                          if line_fingerprint(line) == corruption_hash), None)
+            if index is not None:
+                remaining.pop(index)
+        return remaining
+
+    if unique.get("pobSource"):
+        try:
+            source = parse_unique_source(
+                unique["pobSource"], name=unique["name"], base=unique["base"]
+            )
+            if re.search(r"(?m)^Variant:|\{variant:", text):
+                actual_source = parse_unique_source(text, name=unique["name"], base=unique["base"])
+                if (
+                    actual_source.labels != source.labels
+                    or actual_source.alt_slots != source.alt_slots
+                    or actual_source.duplicates != source.duplicates
+                    or any(value < 1 or value > len(source.labels) for value in actual_source.selected)
+                    or (not source.duplicates and len(set(actual_source.selected)) != source.slots)
+                ):
+                    return "unique_variant_selection_invalid"
+                matches = _unique_modifiers_match(
+                    natural(actual_source.project(actual_source.selected)),
+                    source.project(actual_source.selected),
+                )
+            else:
+                matches = _unique_variant_combination_matches(
+                    natural(_unique_modifier_lines(text, include_implicit=True)), source
+                )
+        except (TypeError, ValueError):
+            return "unique_variant_source_invalid"
+        return None if matches else "unique_modifier_mismatch"
     corpus_text = "Rarity: Unique\n" + str(unique.get("text") or "")
     return (
         None
@@ -519,7 +629,7 @@ def audit_item_legality(
     craft_profile = db.craft_profile(str(parsed.get("base") or ""))
     unique_issue: str | None = None
     if rarity == "unique":
-        unique = db.get_unique(str(parsed.get("name") or ""))
+        unique = db.get_unique(str(parsed.get("name") or ""), include_source=True)
         if not isinstance(unique, dict):
             unique_issue = "unique_item_unknown"
         elif (
@@ -528,7 +638,7 @@ def audit_item_legality(
         ):
             unique_issue = "unique_item_base_mismatch"
         else:
-            unique_issue = _unique_modifier_issue(text, unique)
+            unique_issue = _unique_modifier_issue(text, unique, trusted_provenance=trusted_provenance)
     domain_rarity_issue = bool(
         craft_profile
         and str(craft_profile.get("domain") or "") == "flask"

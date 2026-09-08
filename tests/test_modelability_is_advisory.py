@@ -67,9 +67,10 @@ class ModelabilityAdvisoryTests(unittest.TestCase):
                         {
                             "index": 1,
                             "rootSkillId": "Ruzhan,theBlazingSword",
+                            "mainActiveSkillCalcs": 2,
                             "activeSkills": [
-                                {"name": "Ruzhan, the Blazing Sword"},
-                                {"name": "Command"},
+                                {"index": 1, "name": "Ruzhan, the Blazing Sword"},
+                                {"index": 2, "name": "Command"},
                             ],
                         }
                     ]
@@ -85,6 +86,8 @@ class ModelabilityAdvisoryTests(unittest.TestCase):
             "Command",
         ])
         self.assertEqual(group["socketedActiveNames"], ["Ruzhan, the Blazing Sword"])
+        self.assertEqual(group["mainActiveSkillCalcs"], 2)
+        self.assertIsNone(group["activeSkillSelectionError"])
         self.assertTrue(preflight._socket_composition_valid(group))  # noqa: SLF001
 
     def test_current_payload_hosts_are_structurally_accepted(self) -> None:

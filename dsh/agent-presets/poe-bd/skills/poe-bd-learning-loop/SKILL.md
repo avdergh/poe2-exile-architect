@@ -138,6 +138,11 @@ Create 提交成功后，回到 Reference 任务 claim `compare`：
    - gear effort/attainability。
 4. 每维只用 `generated_advantage/reference_advantage/tradeoff/tie/unknown`；总结果只用
    `generated_stronger/reference_stronger/tradeoff/incomparable`。
+   使用 schemaVersion=2。非unknown维度填写双方非空引用，须来自当前案例已保存的对应
+   SafeBuildEvidence的evidenceRef/safeEvidenceRefs；gap引用同样绑定双方packet。缺证据保留
+   unknown，不以tie替代。criticalGap须与该维度的critical typed gaps一致，gapId不得重复。
+   工具只核对引用身份，Comparator仍须审读证据是否支持结论。
+   安全引用共用3–240字符合同，canonical key中的ASCII撇号原样保留；不得改写key来绕过校验。
 5. reference 更强时，把 gap 分类为固定七类之一。每个 Judge 附件必须
    `advisoryOnly=true`；comparison report 顶层必须是 `noAutomaticWinner=true`、
    `noRewardWrite=true`。
@@ -179,6 +184,10 @@ Create 提交成功后，回到 Reference 任务 claim `compare`：
 
 每案例完成后调用 `mcp__poe_learning__get_learning_campaign_status`，只报告阶段、任务 ID、终态和累计安全指标。完成
 十例后使用工具返回的固定趋势结论：
+
+tradeoff单列，不自动计为not-weaker；后者当前只计generated_stronger。十例全程须有当前v2、
+双方绑定、十维可比较的报告才可支持初步进步信号。unknown显式计数，旧证据不升级、缺失数值
+不补0；状态服务会从报告和双方安全packet重新派生比较指标。不得为凑趋势重跑旧案例。
 
 - `initial_progress_signal`：只能表述“出现初步进步信号”；
 - `function_complete_learning_unproven`：表述“功能实现完成、学习效果未证实”。

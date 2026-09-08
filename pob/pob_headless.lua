@@ -164,6 +164,35 @@ local function mainSkillName()
 	return skillNameAt(build.mainSocketGroup or 1)
 end
 
+-- Only PoB's synthesized first gem, bound to the currently equipped item and its
+-- exact parsed grant, may use an item-granted level instead of the gem level cap.
+-- XML source labels and caller-supplied gem metadata are not source authority.
+local function itemGrantedLevelForSocketGroup(sg, gem)
+	if not sg or not gem or gem.fromItem ~= true or sg.gemList[1] ~= gem then
+		return nil
+	end
+	local item = sg.sourceItem
+	local slot = sg.slot and build.itemsTab.slots[sg.slot]
+	if not item or not slot or build.itemsTab.items[slot.selItemId] ~= item then
+		return nil
+	end
+	for _, grant in ipairs(item.grantedSkills or {}) do
+		if grant.source == sg.source and grant.skillId == gem.skillId then
+			local effect = build.data.skills[grant.skillId]
+			if effect and effect.levels and next(effect.levels) ~= nil then
+				-- PoB normalizes sparse item effects (e.g. a logical level 1 grant
+				-- with only a level 20 model). Reuse that exact read-only routine.
+				local normalized = { grantedEffect = effect, level = grant.level }
+				calcLib.validateGemLevel(normalized)
+				if normalized.level == gem.level and effect.levels[gem.level] then
+					return asNumber(normalized.level)
+				end
+			end
+		end
+	end
+	return nil
+end
+
 local function gemSummaryForSocketGroup(groupIndex)
 	local gems = {}
 	local sg = build.skillsTab.socketGroupList[groupIndex or build.mainSocketGroup or 1]
@@ -179,8 +208,13 @@ local function gemSummaryForSocketGroup(groupIndex)
 				local naturalMaxLevel = g.gemData and asNumber(g.gemData.naturalMaxLevel) or 0
 				local levelData = ge and ge.levels and ge.levels[asNumber(g.level)] or nil
 				local requiredLevel = levelData and asNumber(levelData.levelRequirement) or nil
+				local itemGrantedLevel = not isSupport and itemGrantedLevelForSocketGroup(sg, g) or nil
+				local unverifiedItemGrant = not isSupport and g.fromItem == true and not itemGrantedLevel
 				local maximumLegalLevel = nil
-				if ge and ge.levels and naturalMaxLevel > 0 then
+				if itemGrantedLevel then
+					maximumLegalLevel = requiredLevel and requiredLevel <= asNumber(build.characterLevel)
+						and itemGrantedLevel or 0
+				elseif ge and ge.levels and naturalMaxLevel > 0 then
 					maximumLegalLevel = 0
 					for level = 1, naturalMaxLevel do
 						local candidate = ge.levels[level]
@@ -191,7 +225,11 @@ local function gemSummaryForSocketGroup(groupIndex)
 				end
 				local levelRequirementMet = true
 				if not isSupport then
-					if requiredLevel == nil then
+					if unverifiedItemGrant then
+						levelRequirementMet = false
+					elseif itemGrantedLevel then
+						levelRequirementMet = requiredLevel ~= nil and requiredLevel <= asNumber(build.characterLevel)
+					elseif requiredLevel == nil then
 						levelRequirementMet = nil
 					else
 						levelRequirementMet = requiredLevel <= asNumber(build.characterLevel)
@@ -210,6 +248,7 @@ local function gemSummaryForSocketGroup(groupIndex)
 					requiredLevel = requiredLevel,
 					naturalMaxLevel = naturalMaxLevel > 0 and naturalMaxLevel or nil,
 					maximumLegalLevel = maximumLegalLevel,
+					levelAuthority = itemGrantedLevel and "item_grant" or unverifiedItemGrant and "unverified_item_grant" or "gem",
 					levelRequirementMet = levelRequirementMet,
 				})
 			end
@@ -223,7 +262,11 @@ local function activeGemLevelViolationsForSocketGroup(groupIndex)
 	for _, gem in ipairs(gemSummaryForSocketGroup(groupIndex)) do
 		if gem.isActive and gem.levelRequirementMet == false then
 			local reason = "character_level_below_gem_requirement"
-			if gem.naturalMaxLevel and asNumber(gem.level) > asNumber(gem.naturalMaxLevel) then
+			if gem.levelAuthority == "unverified_item_grant" then
+				reason = "item_granted_skill_source_unverified"
+			elseif gem.levelAuthority == "item_grant" and gem.requiredLevel == nil then
+				reason = "item_granted_skill_level_unmodelled"
+			elseif gem.levelAuthority ~= "item_grant" and gem.naturalMaxLevel and asNumber(gem.level) > asNumber(gem.naturalMaxLevel) then
 				reason = "base_gem_level_exceeds_natural_maximum"
 			end
 			violations[#violations + 1] = {
@@ -234,6 +277,7 @@ local function activeGemLevelViolationsForSocketGroup(groupIndex)
 				characterLevel = asNumber(build.characterLevel),
 				maximumLegalLevel = gem.maximumLegalLevel,
 				naturalMaxLevel = gem.naturalMaxLevel,
+				levelAuthority = gem.levelAuthority,
 				reason = reason,
 			}
 		end
@@ -1098,9 +1142,11 @@ local function skillGroupState()
 	for index, group in ipairs(list) do
 		local activeSkills = {}
 		for activeIndex, _ in ipairs(group.displaySkillList or {}) do
+			local active = group.displaySkillList[activeIndex]
 			activeSkills[#activeSkills + 1] = {
 				index = activeIndex,
 				name = skillNameAt(index, activeIndex),
+				effectId = active.activeEffect and active.activeEffect.grantedEffect and active.activeEffect.grantedEffect.id,
 			}
 		end
 		groups[#groups + 1] = {
@@ -1458,7 +1504,6 @@ function methods.inspect_support_evaluation_capability(p)
 	end
 
 	local reasons = {}
-	local selectedName = skillNameAt(index, activeIndex)
 	local application = supportApplicationForGroup(group)
 	local supportCount = math.max(0, #(group.gemList or {}) - 1)
 	local applicationCheck = "verified"
@@ -1466,11 +1511,10 @@ function methods.inspect_support_evaluation_capability(p)
 		applicationCheck = "not_applicable"
 	elseif supportCount > 0 then
 		for _, applied in ipairs(application) do
-			local selectedSupported = false
-			for _, activeName in ipairs(applied.activeSkills or {}) do
-				if activeName == selectedName then selectedSupported = true end
-			end
-			if not selectedSupported then applicationCheck = "failed" end
+			-- A support may serve the meta host or a payload in this same group. PoB's
+			-- application map must prove that it affects at least one actual effect;
+			-- numerical capability below still belongs to the exact selected effect.
+			if #(applied.activeSkills or {}) == 0 then applicationCheck = "failed" end
 		end
 	end
 	if applicationCheck == "failed" then reasons[#reasons + 1] = "current_support_not_applied" end
@@ -1529,12 +1573,53 @@ function methods.inspect_support_evaluation_capability(p)
 	return {
 		ok = true,
 		applicationCheck = applicationCheck,
+		selectedEffectId = ge and ge.id,
 		numericRanking = numericRanking,
 		triggerRate = triggerRate,
 		reasonCodes = reasons,
 		capabilitySource = "pob_runtime",
 		supportApplication = application,
 	}
+end
+
+-- Read-only support identity lookup. Corpus IDs bind the runtime identity. A separate exact
+-- runtime-name discovery path lets Python verify canonical labels against corpus IDs afterwards.
+function methods.resolve_support_gem_identity(p)
+	p = p or {}
+	local gemIds, effectIds = {}, {}
+	for _, id in ipairs(p.gemIds or {}) do gemIds[tostring(id)] = true end
+	for _, id in ipairs(p.effectIds or {}) do effectIds[tostring(id)] = true end
+	local nameOnly = next(gemIds) == nil and next(effectIds) == nil
+	local runtimeName = type(p.runtimeName) == "string" and p.runtimeName or ""
+	if nameOnly and runtimeName == "" then
+		return { ok = false, errorCode = "support_identity_required" }
+	end
+	local matches = {}
+	for id, gem in pairs((build.data and build.data.gems) or {}) do
+		local effect = gem.grantedEffect
+		if effect and effect.support then
+			local effectId = gem.grantedEffectId or effect.id
+			if gemIds[tostring(id)] or gemIds[tostring(gem.gameId)]
+				or effectIds[tostring(effectId)] or (nameOnly and gem.name == runtimeName) then
+				matches[#matches + 1] = {
+					name = gem.name,
+					gemId = tostring(id),
+					gameId = gem.gameId,
+					effectId = effectId,
+					naturalMaxLevel = gem.naturalMaxLevel,
+				}
+			end
+		end
+	end
+	if #matches == 0 then return { ok = true, status = "model_unavailable" } end
+	if #matches > 1 then
+		table.sort(matches, function(a, b) return a.gemId < b.gemId end)
+		return { ok = true, status = "ambiguous", candidates = matches }
+	end
+	local result = matches[1]
+	result.ok = true
+	result.status = "resolved"
+	return result
 end
 
 function methods.configure_source_skill_supports(p)
@@ -1750,6 +1835,124 @@ end
 -- Replace exactly one user-owned group while preserving its position and group-level state.  The
 -- Python layer guards the index with a content fingerprint; this low-level method snapshots again
 -- so parse/legality failures never leave a partial group behind.
+-- Internal support-search probe. LoadSkill is PoB's own complete Gem/settings reader; only
+-- the requested ordinary group is rebuilt. Tree/items/config stay live between probes.
+-- Python owns the enclosing read-only transaction and restores the original complete build.
+-- activeSkillIndex seeds the first frame; the exact effect ID/name uniquely selects the final
+-- output because support-granted effects may move its index. Topology changes return no stats
+-- and require the caller to rebuild the candidate from its immutable complete snapshot.
+function methods.probe_regular_skill_group(p)
+	p = p or {}
+	local index = math.floor(tonumber(p.index) or 0)
+	local activeIndex = math.floor(tonumber(p.activeSkillIndex) or 0)
+	local tab = build.skillsTab
+	local list = tab.socketGroupList or {}
+	local previous = list[index]
+	if not previous or previous.source ~= nil then
+		return { ok = false, errorCode = "ordinary_skill_group_required" }
+	end
+	if activeIndex < 1 or type(p.expectedSkillName) ~= "string" or p.expectedSkillName == "" then
+		return { ok = false, errorCode = "support_probe_target_required" }
+	end
+	local parsed, parseError = common.xml.ParseXML(tostring(p.groupXml or ""))
+	local node = parsed and parsed[1]
+	if parseError or not node or node.elem ~= "Skill" or #parsed ~= 1
+		or (node.attrib.source and node.attrib.source ~= "") then
+		return { ok = false, errorCode = "support_probe_group_xml_invalid" }
+	end
+	-- Exact runtime variant IDs returned by resolve_support_gem_identity must not fall
+	-- through LoadSkill's legacy name search. Existing saved gameId/variantId pairs retain
+	-- their original meaning; new runtime IDs are converted to that native save format.
+	for _, gemNode in ipairs(node) do
+		if gemNode.elem ~= "Gem" then
+			return { ok = false, errorCode = "support_probe_group_xml_invalid" }
+		end
+		local direct = gemNode.attrib.gemId and build.data.gems[gemNode.attrib.gemId]
+		if direct then
+			gemNode.attrib.gemId = direct.gameId or gemNode.attrib.gemId
+			gemNode.attrib.variantId = direct.variantId
+		end
+	end
+	local beforeCount = #list
+	local beforeGroups = {}
+	for position, group in ipairs(list) do beforeGroups[position] = group end
+	local beforeSkills = { elem = "Skills" }
+	tab:Save(beforeSkills)
+	local function activeNodes(skills)
+		for _, child in ipairs(skills) do
+			if child.elem == "SkillSet" and tonumber(child.attrib.id) == tab.activeSkillSetId then return child end
+		end
+		return {}
+	end
+	local function sameNode(a, b)
+		if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+		if a.elem ~= b.elem or #a ~= #b then return false end
+		for key, value in pairs(a.attrib or {}) do if (b.attrib or {})[key] ~= value then return false end end
+		for key, value in pairs(b.attrib or {}) do if (a.attrib or {})[key] ~= value then return false end end
+		for position, child in ipairs(a) do if not sameNode(child, b[position]) then return false end end
+		return true
+	end
+	local snapshot = build:SaveDB("code")
+	local function rollback(code, message)
+		local restored = pcall(function()
+			loadBuildFromXML(snapshot)
+			runCallback("OnFrame")
+		end)
+		return { ok = false, errorCode = code, error = message, rolledBack = restored,
+			recoveryRequired = not restored }
+	end
+	local ok, result = pcall(function()
+		tab:LoadSkill(node, tab.activeSkillSetId)
+		if #list ~= beforeCount + 1 then
+			error("support probe must load exactly one socket group")
+		end
+		local replacement = table.remove(list, #list)
+		list[index] = replacement
+		if tab.displayGroup == previous then tab:SetDisplayGroup(replacement) end
+		selectMainSocketGroup(index, activeIndex)
+		local afterSkills = { elem = "Skills" }
+		tab:Save(afterSkills)
+		local beforeNodes, afterNodes = activeNodes(beforeSkills), activeNodes(afterSkills)
+		local requiresRebuild = #tab.socketGroupList ~= beforeCount
+		for position, group in ipairs(beforeGroups) do
+			if position ~= index and (tab.socketGroupList[position] ~= group
+				or not sameNode(beforeNodes[position], afterNodes[position])) then requiresRebuild = true end
+		end
+		if requiresRebuild then
+			-- No conclusion is returned from changed topology. The enclosing Python transaction
+			-- rebuilds this candidate from its immutable complete snapshot using PoB's full loader.
+			return { ok = true, requiresFullRebuild = true, reasonCode = "support_probe_topology_changed" }
+		end
+		local selected = tab.socketGroupList[index]
+		local matchedIndex
+		for candidateIndex, candidate in ipairs(selected and selected.displaySkillList or {}) do
+			local effect = candidate.activeEffect and candidate.activeEffect.grantedEffect
+			if skillNameAt(index, candidateIndex) == p.expectedSkillName
+				and (not p.expectedEffectId or (effect and effect.id == p.expectedEffectId)) then
+				if matchedIndex then return rollback("support_selected_effect_ambiguous") end
+				matchedIndex = candidateIndex
+			end
+		end
+		if not selected or selected.source ~= nil or not matchedIndex then
+			return rollback("support_selected_effect_changed")
+		end
+		if (selected.mainActiveSkillCalcs or selected.mainActiveSkill) ~= matchedIndex then
+			selectMainSocketGroup(index, matchedIndex)
+		end
+		return {
+			ok = true,
+			activeSkillIndex = matchedIndex,
+			state = skillGroupState(),
+			capability = methods.inspect_support_evaluation_capability({
+				index = index, activeIndex = matchedIndex, objectiveKeys = p.objectiveKeys or {},
+			}),
+			stats = collectStats(p.keys),
+		}
+	end)
+	if not ok then return rollback("support_probe_failed", tostring(result)) end
+	return result
+end
+
 function methods.replace_skill_group(p)
 	p = p or {}
 	local index = math.floor(tonumber(p.index) or 0)
@@ -2095,17 +2298,26 @@ function methods.crafting_options(p)
 	-- naive {baseType, specificType, itemType} would double-count a rune's mods on most items.
 	local runes = {}
 	for name, rdata in pairs(data.itemMods.Runes or {}) do
-		local mods, seen = {}, {}
+		local mods, seen, constraints = {}, {}, {}
 		for _, key in ipairs({ baseType, specificType }) do
 			if key and not seen[key] and rdata[key] then
 				seen[key] = true
+				local option = rdata[key]
+				if option.limit then
+					constraints[#constraints + 1] = {
+						group = option.limitId or name,
+						limit = option.limit,
+						evidencePatch = option.limitEvidencePatch,
+						evidenceRef = option.limitEvidenceRef,
+					}
+				end
 				for _, line in ipairs(rdata[key]) do
 					mods[#mods + 1] = line
 				end
 			end
 		end
 		if #mods > 0 then
-			runes[#runes + 1] = { name = name, mods = mods }
+			runes[#runes + 1] = { name = name, mods = mods, constraints = constraints }
 		end
 	end
 
@@ -2256,14 +2468,394 @@ function methods.equip_jewel(p)
 	return r
 end
 
+-- Item replacement probes bind a PoB output, not a display-group position. Source groups may
+-- disappear/reappear during replacement; in particular PoB drops their configured supports.
+-- A finite DPS from another group must never masquerade as a measurement of the original skill.
+local ITEM_REPLACEMENT_CONTEXT_VERSION = "item_replacement_context_v1"
+
+local function replacementSignature(value)
+	if type(value) ~= "table" then return type(value) .. ":" .. tostring(value) end
+	local keys, parts = {}, {}
+	for key in pairs(value) do keys[#keys + 1] = key end
+	table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+	for _, key in ipairs(keys) do
+		local name, child = replacementSignature(key), replacementSignature(value[key])
+		parts[#parts + 1] = #name .. ":" .. name .. #child .. ":" .. child
+	end
+	return "{" .. table.concat(parts) .. "}"
+end
+
+local function replacementSkillNodes()
+	local saved = { elem = "Skills" }
+	build.skillsTab:Save(saved)
+	for _, child in ipairs(saved) do
+		if child.elem == "SkillSet" and tonumber(child.attrib.id) == build.skillsTab.activeSkillSetId then
+			return child, saved
+		end
+	end
+	return {}, saved
+end
+
+local function replacementGroupSignature(node, sourceKind)
+	local normalized = copyTable(node, true)
+	-- LoadSkill uses these defaults for every group, including an ordinary secondary group
+	-- that has never been selected. Explicit non-first effect selections remain exact.
+	for _, key in ipairs({ "mainActiveSkill", "mainActiveSkillCalcs" }) do
+		if not normalized.attrib[key] or normalized.attrib[key] == "nil" then normalized.attrib[key] = "1" end
+	end
+	if sourceKind ~= "ordinary" then
+		-- Native derived groups are created before these save/load defaults are materialised.
+		if not normalized.attrib.includeInFullDPS or normalized.attrib.includeInFullDPS == "nil" then
+			normalized.attrib.includeInFullDPS = "false"
+		end
+	end
+	if sourceKind == "item" then
+		-- Item IDs/names belong to the replaced item. Its owning slot and stable root effect
+		-- are bound separately. A grant may legitimately change level; user support settings may not.
+		normalized.attrib.source = nil
+		if normalized[1] and normalized[1].attrib then normalized[1].attrib.level = nil end
+	end
+	for _, gem in ipairs(normalized) do
+		if gem.elem == "Gem" and (not gem.attrib.count or gem.attrib.count == "nil") then
+			gem.attrib.count = "1" -- PoB LoadSkill's documented count default
+		end
+		if gem.elem == "Gem" then
+			for _, key in ipairs({ "statSetIndex", "statSetIndexCalcs" }) do
+				if gem.attrib[key] == "nil" then gem.attrib[key] = nil end
+			end
+			for _, key in ipairs({ "corrupted", "enableGlobal2" }) do
+				if not gem.attrib[key] or gem.attrib[key] == "nil" then gem.attrib[key] = "false" end
+			end
+			if not gem.attrib.corruptLevel or gem.attrib.corruptLevel == "nil" then gem.attrib.corruptLevel = "0" end
+		end
+	end
+	return replacementSignature(normalized)
+end
+
+local function replacementGroupIdentity(group, ordinal)
+	local root = group.gemList and group.gemList[1]
+	local kind = group.sourceItem and "item" or group.sourceNode and "tree" or group.source and "other" or "ordinary"
+	return {
+		sourceKind = kind,
+		ordinaryGroupOrdinal = kind == "ordinary" and ordinal or nil,
+		ownerSlot = kind == "item" and group.slot or nil,
+		sourceIdentity = kind ~= "ordinary" and kind ~= "item" and group.source or nil,
+		rootSkillId = kind ~= "ordinary" and root and root.skillId or nil,
+	}
+end
+
+local function resolveItemReplacementContext(expected, selectTarget, allowUnselected)
+	local list = build.skillsTab.socketGroupList or {}
+	local nodes = replacementSkillNodes()
+	local mainIndex = build.mainSocketGroup or 1
+	local main = list[mainIndex]
+	if not expected then
+		if not main then return nil, "item_replacement_context_missing" end
+		if (main.mainActiveSkill or 1) ~= (main.mainActiveSkillCalcs or main.mainActiveSkill or 1)
+			or (build.calcsTab.input.skill_number and build.calcsTab.input.skill_number ~= mainIndex) then
+			return nil, "item_replacement_context_mismatch"
+		end
+		local activeIndex = main.mainActiveSkillCalcs or main.mainActiveSkill or 1
+		local active = main.displaySkillList and main.displaySkillList[activeIndex]
+		local effect = active and active.activeEffect and active.activeEffect.grantedEffect
+		if not effect or not effect.id then return nil, "item_replacement_context_missing" end
+		local ordinal = 0
+		for index, group in ipairs(list) do
+			if group.source == nil then ordinal = ordinal + 1 end
+			if index == mainIndex then break end
+		end
+		expected = replacementGroupIdentity(main, ordinal)
+		expected.contextVersion = ITEM_REPLACEMENT_CONTEXT_VERSION
+		expected.activeSkillSetId = build.skillsTab.activeSkillSetId
+		expected.effectId = effect.id
+		expected.skillName = skillNameAt(mainIndex, activeIndex)
+		expected.groupConfigSignature = replacementGroupSignature(nodes[mainIndex], expected.sourceKind)
+		expected.noSupports = main.noSupports and true or false
+	end
+	if expected.contextVersion ~= ITEM_REPLACEMENT_CONTEXT_VERSION
+		or expected.activeSkillSetId ~= build.skillsTab.activeSkillSetId
+		or type(expected.effectId) ~= "string" or type(expected.skillName) ~= "string"
+		or type(expected.groupConfigSignature) ~= "string" then
+		return nil, "item_replacement_context_mismatch"
+	end
+	local matchIndex, matchActive, ordinal = nil, nil, 0
+	for index, group in ipairs(list) do
+		if group.source == nil then ordinal = ordinal + 1 end
+		local identity = replacementGroupIdentity(group, ordinal)
+		local matches = identity.sourceKind == expected.sourceKind
+		for _, key in ipairs({ "ordinaryGroupOrdinal", "ownerSlot", "sourceIdentity", "rootSkillId" }) do
+			if identity[key] ~= expected[key] then matches = false end
+		end
+		if matches then
+			for activeIndex, active in ipairs(group.displaySkillList or {}) do
+				local effect = active.activeEffect and active.activeEffect.grantedEffect
+				if effect and effect.id == expected.effectId and skillNameAt(index, activeIndex) == expected.skillName then
+					if matchIndex then return nil, "item_replacement_context_ambiguous" end
+					matchIndex, matchActive = index, activeIndex
+				end
+			end
+		end
+	end
+	if not matchIndex then return nil, "item_replacement_context_mismatch" end
+	local selected = list[matchIndex]
+	if replacementGroupSignature(nodes[matchIndex], expected.sourceKind) ~= expected.groupConfigSignature
+		or (selected.noSupports and true or false) ~= expected.noSupports then
+		return nil, "item_replacement_group_config_changed"
+	end
+	if mainIndex ~= matchIndex or (selected.mainActiveSkill or 1) ~= matchActive
+		or (selected.mainActiveSkillCalcs or selected.mainActiveSkill or 1) ~= matchActive
+		or build.calcsTab.input.skill_number ~= matchIndex then
+		if selectTarget then
+			selectMainSocketGroup(matchIndex, matchActive)
+			-- Re-selection may itself refresh source groups. Verify again without mutating.
+			return resolveItemReplacementContext(expected, false)
+		elseif not allowUnselected then
+			return nil, "item_replacement_context_mismatch"
+		end
+	end
+	local resolved = copyTable(expected, true)
+	resolved.groupIndex, resolved.activeSkillIndex = matchIndex, matchActive
+	resolved.rootLevel = selected.source and selected.gemList and selected.gemList[1] and selected.gemList[1].level or nil
+	return resolved
+end
+
+-- Internal Python helper; intentionally not a public MCP tool. Never changes selection.
+function methods.item_replacement_context(p)
+	local context, code = resolveItemReplacementContext(p and p.expectedContext, false, p and p.expectedContext ~= nil)
+	if code == "item_replacement_context_missing" and not (p and p.expectedContext) then
+		return { ok = true, contextStatus = "no_active_output" }
+	end
+	return context and { ok = true, calculationContext = context } or { ok = false, errorCode = code }
+end
+
+local function isNativeDerivedReplacementGroup(group)
+	-- CalcSetup synthesises hidden, triggered, unsupported effects without an item/node
+	-- group owner. User groups and ordinary grants do not have this typed provenance.
+	if not group.source or group.sourceItem or group.sourceNode or not group.noSupports
+		or #(group.gemList or {}) == 0 then return false end
+	for _, gem in ipairs(group.gemList) do
+		local effect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+		if not gem.triggered or not gem.noSupports or gem.fromItem or gem.fromNode
+			or not effect or not effect.hidden then return false end
+	end
+	return true
+end
+
+local function replacementDerivedPolicy(snapshot)
+	local known, defaults = {}, {}
+	local nodes = replacementSkillNodes()
+	for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+		if isNativeDerivedReplacementGroup(group) then
+			local key = replacementSignature(replacementGroupIdentity(group))
+			if known[key] then return nil, "item_replacement_derived_identity_ambiguous" end
+			known[key] = replacementGroupSignature(nodes[index], "other")
+		end
+	end
+	if next(known) == nil then return { known = known, defaults = defaults } end
+	-- Ask pinned PoB to recreate its own default groups once. Their labels and flags are
+	-- engine data, not skill-name heuristics. No generated settings are copied into user groups.
+	local calibrated = pcall(function()
+		local list = build.skillsTab.socketGroupList
+		for index = #list, 1, -1 do
+			if isNativeDerivedReplacementGroup(list[index]) then table.remove(list, index) end
+		end
+		build.buildFlag, build.modFlag = true, true
+		runCallback("OnFrame")
+		local regeneratedNodes = replacementSkillNodes()
+		for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+			if isNativeDerivedReplacementGroup(group) then
+				local key = replacementSignature(replacementGroupIdentity(group))
+				defaults[key] = known[key] == replacementGroupSignature(regeneratedNodes[index], "other")
+			end
+		end
+	end)
+	local restored = pcall(function() loadBuildFromXML(snapshot); runCallback("OnFrame") end)
+	if not calibrated or not restored then return nil, "item_replacement_derived_calibration_failed" end
+	return { known = known, defaults = defaults }
+end
+
+local function replacementInputGuard(targetSlot, derivedPolicy)
+	local nodes, skills = replacementSkillNodes()
+	local ordinary, sources = {}, {}
+	for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+		local derivedIsDefault = false
+		if targetSlot and derivedPolicy and isNativeDerivedReplacementGroup(group) then
+			local key = replacementSignature(replacementGroupIdentity(group))
+			-- A new native group can only have been generated by these item probes. Existing
+			-- groups are disposable only when PoB reproduced their exact default configuration.
+			derivedIsDefault = not derivedPolicy.known[key] or derivedPolicy.defaults[key] == true
+		end
+		if not group.source then
+			ordinary[#ordinary + 1] = replacementGroupSignature(nodes[index], "ordinary")
+		elseif not derivedIsDefault and (not targetSlot or group.slot ~= targetSlot or #(group.gemList or {}) > 1 or group.enabled == false
+			or (group.label and group.label ~= "") or group.includeInFullDPS or group.groupCount) then
+			-- Keep all non-target source groups and all user-configured target source groups.
+			-- New unconfigured grants from the replacement may be discovered by PoB normally.
+			local identity = replacementGroupIdentity(group)
+			local key = replacementSignature(identity)
+			if sources[key] then return nil end -- ambiguous source ownership cannot be carried
+			sources[key] = replacementGroupSignature(nodes[index], identity.sourceKind)
+		end
+	end
+	local inactive = {}
+	for _, set in ipairs(skills) do
+		if tonumber(set.attrib.id) ~= build.skillsTab.activeSkillSetId then
+			local savedSet = { attrib = set.attrib }
+			for _, node in ipairs(set) do savedSet[#savedSet + 1] = replacementGroupSignature(node, "ordinary") end
+			inactive[#inactive + 1] = savedSet
+		end
+	end
+	local slots = {}
+	for name, slot in pairs(build.itemsTab.slots) do
+		if name ~= targetSlot and slot.selItemId and slot.selItemId ~= 0 then
+			local item = build.itemsTab.items[slot.selItemId]
+			slots[name] = { id = slot.selItemId, active = slot.active and true or false, raw = item and item.raw }
+		end
+	end
+	local configs = {}
+	for id, config in pairs(build.configTab.configSets) do
+		configs[id] = {}
+		for key, value in pairs(config.input) do
+			if value ~= build.configTab:GetDefaultState(key, type(value)) then configs[id][key] = value end
+		end
+	end
+	local skillSettings = copyTable(skills.attrib, true)
+	if skillSettings.defaultGemQuality == "nil" then skillSettings.defaultGemQuality = "0" end
+	local allocated = {}
+	for nodeId in pairs(build.spec.allocNodes or {}) do allocated[#allocated + 1] = nodeId end
+	table.sort(allocated)
+	return replacementSignature({
+		ordinary = ordinary, sources = sources, inactiveSkills = inactive, skillSettings = skillSettings,
+		slots = slots, configs = configs, configSet = build.configTab.activeConfigSetId,
+		itemSet = build.itemsTab.activeItemSetId, secondWeaponSet = build.itemsTab.activeItemSet.useSecondWeaponSet and true or false,
+		allocatedNodes = allocated, specId = build.treeTab.activeSpec,
+	})
+end
+
+local function replacementDefenseOnly(keys)
+	-- These PoB outputs do not select an offensive effect. Unknown keys still require a target;
+	-- absence of a skill must not block pure defense/attribute searches on a new build.
+	local permitted = {
+		Life = true, LifeUnreserved = true, LifeReserved = true, LifeReservedPercent = true,
+		Mana = true, ManaUnreserved = true, ManaReserved = true, ManaReservedPercent = true,
+		EnergyShield = true, Armour = true, Evasion = true, Ward = true, TotalEHP = true,
+		Str = true, Dex = true, Int = true, ReqStr = true, ReqDex = true, ReqInt = true,
+		Spirit = true, SpiritReserved = true, SpiritUnreserved = true,
+		FireResist = true, ColdResist = true, LightningResist = true, ChaosResist = true,
+		FireResistTotal = true, ColdResistTotal = true, LightningResistTotal = true, ChaosResistTotal = true,
+		PhysicalMaximumHitTaken = true, FireMaximumHitTaken = true, ColdMaximumHitTaken = true,
+		LightningMaximumHitTaken = true, ChaosMaximumHitTaken = true,
+		LifeRegen = true, LifeRegenRecovery = true, ManaRegen = true, EnergyShieldRegen = true,
+		BlockChance = true, SpellBlockChance = true, EvadeChance = true,
+		MovementSpeedMod = true, EffectiveMovementSpeedMod = true,
+	}
+	if #keys == 0 then return false end
+	for _, key in ipairs(keys) do if not permitted[key] then return false end end
+	return true
+end
+
+local function evaluateItemReplacements(p)
+	local keys, snapshot = p.keys or { "TotalDPS" }, build:SaveDB("code")
+	local context, initialError = resolveItemReplacementContext(nil, false)
+	if initialError == "item_replacement_context_missing" and replacementDefenseOnly(keys) then initialError = nil end
+	local restoreGuard = replacementInputGuard(nil)
+	local derivedPolicy, derivedError = replacementDerivedPolicy(snapshot)
+	if not derivedError and replacementInputGuard(nil) ~= restoreGuard then
+		derivedError = "item_replacement_derived_restore_mismatch"
+	end
+	initialError = initialError or derivedError
+	local guard = replacementInputGuard(p.slot, derivedPolicy)
+	local out, failures, contexts = {}, {}, {}
+	local reloadNext, fallbackCount = false, 0
+	local function probe(raw, fullReload)
+		if fullReload then loadBuildFromXML(snapshot) end
+		local slot = build.itemsTab.slots[p.slot]
+		if not slot then return nil, "item_replacement_slot_missing" end
+		slot:SetSelItemId(0)
+		build.buildFlag, build.modFlag = true, true
+		runCallback("OnFrame")
+		local equipped = equipItemRaw(raw, p.slot)
+		if not equipped then return nil, "item_replacement_equip_failed" end
+		local jewelId = p.slot:match("^Jewel (%d+)$")
+		if jewelId then syncJewelSocket(tonumber(jewelId)) end
+		if p.isolateEachItem then loadBuildFromXML(build:SaveDB("code")) end
+		runCallback("OnFrame")
+		if not guard or replacementInputGuard(p.slot, derivedPolicy) ~= guard then
+			return nil, "item_replacement_input_changed"
+		end
+		local resolved, code
+		if context then
+			resolved, code = resolveItemReplacementContext(context, true)
+			if not resolved then return nil, code end
+		end
+		if replacementInputGuard(p.slot, derivedPolicy) ~= guard then return nil, "item_replacement_input_changed" end
+		return { stats = collectStats(keys), context = resolved }
+	end
+	local completed, exception = pcall(function()
+		for index, raw in ipairs(p.items) do
+			local result, code
+			if initialError then
+				code = initialError
+			else
+				result, code = probe(raw, p.isolateEachItem or reloadNext)
+				if not result and not p.isolateEachItem then
+					-- A previous candidate may have disabled another slot or removed a source group.
+					-- Retry from the immutable input once; never repair user skills or guess a target.
+					fallbackCount = fallbackCount + 1
+					result, code = probe(raw, true)
+				end
+			end
+			reloadNext = not result
+			out[index] = result and result.stats or false
+			failures[index] = code or false
+			if result and result.context then
+				local resolved = result.context
+				contexts[index] = {
+					groupIndex = resolved.groupIndex, activeSkillIndex = resolved.activeSkillIndex,
+					effectId = resolved.effectId, skillName = resolved.skillName,
+					sourceKind = resolved.sourceKind, ownerSlot = resolved.ownerSlot,
+				}
+			else
+				contexts[index] = false
+			end
+		end
+	end)
+	local restored = pcall(function() loadBuildFromXML(snapshot); runCallback("OnFrame") end)
+	if not completed then
+		for index in ipairs(p.items) do out[index], failures[index], contexts[index] = false, "item_replacement_probe_failed", false end
+	end
+	if restored then
+		local restoredContext = not context or resolveItemReplacementContext(context, false)
+		restored = restoredContext ~= nil and replacementInputGuard(nil) == restoreGuard
+	end
+	return {
+		ok = completed and restored, contextVersion = ITEM_REPLACEMENT_CONTEXT_VERSION,
+		calculationContext = context, results = out, failureCodes = failures, resolvedContexts = contexts,
+		fallbackCount = fallbackCount, rolledBack = restored, recoveryRequired = not restored,
+		errorCode = not completed and "item_replacement_probe_failed" or not restored and "item_replacement_restore_failed" or nil,
+		error = not completed and tostring(exception) or nil,
+	}
+end
+
 -- Batch-evaluate many candidate items in one slot, returning each one's requested stats. Used by
 -- the gear optimizer to score crafted candidates in a single round-trip. Restores the build after.
 function methods.eval_items(p)
 	assert(p and p.slot and type(p.items) == "table", "eval_items requires slot + items[]")
+	if p.replacementContext then return evaluateItemReplacements(p) end
 	local keys = p.keys or { "TotalDPS" }
 	local snapshot = build:SaveDB("code")
 	local out = {}
 	for i, raw in ipairs(p.items) do
+		if p.isolateEachItem then
+			-- Socket probes compare complete item texts. PoB otherwise inherits the previous
+			-- slot's runes, and repeated candidates can contaminate each other's modifiers.
+			loadBuildFromXML(snapshot)
+			local sc = build.itemsTab.slots[p.slot]
+			if sc then sc:SetSelItemId(0) end
+			build.buildFlag = true
+			build.modFlag = true
+			runCallback("OnFrame")
+		end
 		local ok = equipItemRaw(raw, p.slot)
 		if ok then
 			local _, slotId = p.slot:match("^Jewel (%d+)$")
@@ -2271,6 +2863,11 @@ function methods.eval_items(p)
 				-- register a jewel candidate in the tree so radius/Time-Lost grants are
 				-- actually computed (SetSelItemId alone may skip the path rebuild)
 				syncJewelSocket(tonumber(slotId))
+			end
+			if p.isolateEachItem then
+				-- Rebuild from actual persisted item data so stale Rune modifier caches cannot
+				-- survive the slot replacement even when the visible item text changed.
+				loadBuildFromXML(build:SaveDB("code"))
 			end
 			runCallback("OnFrame")
 			out[i] = collectStats(keys)

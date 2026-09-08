@@ -5,141 +5,128 @@ description: Internal explicit-only worker for one leased PoE2 mature-build Rese
 
 # PoE BD Research Worker
 
-本 Skill 只供 `poe-bd-research` Controller 显式派发。它从既有队列原子 claim 一案，完成证据读取、
-研究、safe review、校验和 accept，然后停止。
+只接受 `poe-bd-research` Controller 显式派发的既有 `runRef`，原子 claim 一案，完成证据读取、研究、
+safe review、校验和 accept 后停止。
 
-## Assignment Boundary
+## Assignment 与运行边界
 
-开始前必须收到 `runRef`：既有 Research run 的 opaque `research-run:...` 引用，并且当前 fork 必须
-包含用户本次研究请求/授权的真实上下文。
-
-缺少绑定/用户请求上下文，或当前任务不是 Controller 的显式 Worker 派发时，返回
-`worker_assignment_missing` 并停止。不得自行发现其他仓库、创建/恢复 queue、询问用户运行模式或
-回退为主会话研究。
-
-## Typed Tool Binding
-
-只使用 Research MCP 的 `claim_research_case / inspect_research_case / read_research_case /
-search_research_case / get_research_review_contract / initialize_research_review /
-validate_research_review / accept_research_review / retry_research_review`。工具未显示时先按精确名做 tool
-discovery；缺失时返回 safe failure，不搜索仓库、不解析插件路径，也不回退 shell CLI。
-
-## Runtime Boundary
+当前 fork 必须含用户本次研究请求/授权的真实上下文及 opaque `research-run:...` 引用。
+缺少任一项或不是 Controller 显式派发时，返回 `worker_assignment_missing` 并停止；
+不得自行发现其他仓库、创建/恢复 queue、询问运行模式或回退为主会话研究。
 
 - 只处理一个 claim；完成或失败后不得领取第二案、嵌套委派或执行 cleanup。
-- 这是产品运行态，不得修改源码、测试、文档、schema、安装配置、queue、review 文件或其他 run
-  artifact。`initialize_research_review` 返回 safe review 对象；只在模型工作状态中修改该对象，再把
-  完整对象传给 typed validation。不得用 shell/file tool 编辑运行态。
-- 原始 PoB/XML 只留在 quarantine 与 lease-bound transient packet；不得进入聊天、safe review 或
-  durable memory。
-- 工具未直接显示时先用宿主标准 tool discovery/search 查找 `query_research_memory` 与
-  `graph_tool_query`，不要根据首屏列表断言不可用。
+- 本次是产品运行，不修改源码、测试、文档、schema、安装配置、queue、review 文件或其他运行态。
+  `initialize_research_review` 返回 safe review 对象，只在模型工作状态中修改，再完整提交给 typed 工具；
+  不得用 shell/file tool 编辑运行态。
+- 原始 PoB/XML 只留在 quarantine 与 lease-bound transient packet，不进入聊天、safe review 或 durable memory。
 
-## Research Quality And Evidence
+## 工具表面
 
-- 研究质量优先于速度和上下文预算。必须完整读取全部要求的分区并盘点每个启用技能容器；Family
-  主技能、核心副技能和结论依赖的高影响容器保存根技能与 socketed items。每个启用容器都必须写一条
-  `sourceSkillGroupReviews`，明确研究处置、辅助处置、受影响记录和简短原因；真实
-  `source_coverage_gap` 保持 partial，不能伪装 clean。低影响、内部 ID 或无法唯一解析的组可保留为
-  `needs_followup`/caveat，但不得静默丢弃或机械否定整个案例。
-- 技能、天赋和装备效果必须来自当前案例证据或 typed 工具事实。允许保留有价值的推断，但必须明确
-  标为推断，不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实。
+案例运行态管理只用 Research MCP 的 `claim_research_case / inspect_research_case / read_research_case /
+search_research_case / get_research_review_contract / initialize_research_review / validate_research_review /
+accept_research_review / retry_research_review`。
+
+研究另用 `query_research_memory`、`graph_tool_query`、本地 `explain_mechanic/search_mechanics`
+和实时 `lookup_mechanic`。图组件发现与解析是同一MCP工具的两个子操作，依次调用
+`graph_tool_query(tool_name="search_graph_components", payload=...)` 和
+`graph_tool_query(tool_name="resolve_graph_component", payload=...)`。
+子操作名不是独立MCP工具，不能因其单独discovery未命中就报告缺工具。精确discovery只针对真实MCP
+工具名；实际入口缺失才返回safe failure，不根据首屏断言不可用，不搜索仓库/插件路径，也不回退 shell CLI。
+
+## 研究方法与证据
+
+- 研究质量优先于速度和上下文预算。完整读取要求的分区，并独立盘点每个启用容器，填写
+  `sourceSkillGroupReviews`。Family 主技能、核心副技能和结论依赖的高影响组保留根技能及 socketed
+  items；其他组也明确处置。真实 `source_coverage_gap` 保持 partial；低影响、内部 ID 或无法唯一解析
+  的组可 needs_followup/caveat，不静默丢弃或机械否定整案。
+- 技能、天赋与装备效果来自案例证据或 typed 事实。有价值的推断明确标为推断，
+  不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实。
 - PoB 字段语义：`enableGlobal1` / `enableGlobal2` 是单颗 gem 的 granted-effect 开关，绝不是
   武器组标志；`weaponSetScope` 才是技能组级字段，取值为 `global` / `weapon_set_1` /
   `weapon_set_2`。不得根据任一 gem 的 global-effect 开关推断武器切换、轮转状态或插槽关系。
-- 重建并分别记录：主/副伤害技能及其 supports 和触发/生成-兑现关系；可执行轮转、爆发窗口及
-  无小怪/Boss 变体；装备槽职责、暗金必要性、黄装替代和机会成本；核心天赋、升华、珠宝与武器组
-  局部结构；资源闭环、防御层、失效条件及 PoB/Judge 不可建模部分。不要只复述属性共现或“仍需验证”。
+- 分别重建主/副输出与辅助、触发/生成-兑现关系、可执行轮转/爆发窗口及无小怪/Boss 变体、装备槽职责、
+  暗金必要性/黄装替代/机会成本、核心天赋/升华/珠宝/武器组局部结构、资源闭环、防御层、失效条件和
+  PoB/Judge 未建模部分。不要只复述属性共现或“仍需验证”。
+- 保留跨版本 Family 稳定身份，正常 Research 只研究最新样本；历史知识照常召回并显示目标适用性。
+  来源 patch 与模型认证版本分开，不能重标历史样本、把历史样本数算作当期证据或把补丁兼容复核当作
+  新样本。相同正文/条件/typed payload 由服务共享；`contentRevisionRef` 不能替代记录身份或授权另一来源。
+  明确失效只限制目标版本，待核知识保留验证任务；新增或修正结论仍走本 Worker typed review/accept。
 
-## Single-Case Workflow
+## 单案流程
 
-1. 调用 `claim_research_case(run_ref=<runRef>)`。
+1. 调用 `claim_research_case(run_ref=<runRef>)`，保存同一 `sampleId + leaseToken`。
 
-   `worker_capacity_reached` / `no_pending_cases` 是无 sampleId 的调度结果，原样返回后停止。`claimed`
-   后保存 `sampleId` 与 `leaseToken`；后续所有工具都绑定同一 runRef/lease。若返回
-   `supplement=true`，按 `supplementContext` 聚焦：这是服务从原 run quarantine 以相同 PoB 重建的
-   同 case 补录，保持原 researchGroup/Family 身份，只补既有缺口；本轮必须产生
-   `created+updated >= 1`，否则补录无效。
+   `worker_capacity_reached / no_pending_cases` 无 sampleId，原样返回后停止。`claim_packet_failed`
+   已有 sampleId：返回 safe outcome；`leaseReleased=true` 表示回到可调度队列，`recoveryRequired=true`
+   时不得重试或猜状态，交 Controller 停止补位并报告。
+   `supplement=true` 时按 supplementContext，只补同 case 缺口；保持原 researchGroup/Family，
+   必须产生 `created+updated >= 1`。
+   focus包含gapRef时，返回每项实际解决范围与新writeReceipt中的记录映射；不因补录有增益就声明
+   父案完整。逐项关闭由Controller读证据后提交，Worker不领取或创建额外任务。
 
-   `claim_packet_failed` 已包含 sampleId：原样返回 safe outcome 后停止。`leaseReleased=true` 表示案例
-   已安全回到 dispatchable 队列；`recoveryRequired=true` 时不得重试或猜测状态，交给 Controller 停止
-   补位并报告。
+2. 同一 runRef/lease 先 `inspect_research_case`，按返回顺序分页 `read_research_case` 读完全部分区。
+   search 只定位线索，不能替代 read。`complete=false` 时只用返回的 `nextCursor` 续页，不能自行
+   `cursor+limit`：字符预算可能使本页条数少于 limit。先独立重建案例，再查询 Memory；
+   `config-sets`分页提供配置身份；若返回`evidence_fragment`，按同一源条目及fragment顺序完整重组
+   后再解释，片段或紧凑身份摘要不能当成完整配置证据。
+   身份组件经 `search_graph_components` → `resolve_graph_component` 确认 stable key 后用于比较。
 
-2. 先以同一 `run_ref + lease_token` 调用 `inspect_research_case`，再按返回顺序用可分页
-   `read_research_case` 读完全部分区；
-   `search_research_case`
-   只能定位具体线索，不能替代完整读取。响应 `complete=false` 时必须使用该页返回的
-   `nextCursor` 续页，不能用 `cursor+limit` 自行计算；字符预算截断会使实际返回条数小于 limit，
-   自算会跳过中间证据。先独立重建案例，再查询 Research Memory，并通过
-   `search_graph_components` → `resolve_graph_component` 确认 stable key。
-   Research 比较固定使用 `response_profile="full"`；`create_compact` 是 Create 专用的单案例授权
-   通道，会主动选择一条 `(knowledgeScope, sourceCaseRef)` lane，不能用来判断跨案例共有知识。
-   Family 首次身份宽查用 `detail_level="summary" + response_profile="full"`，并检查
-   `familyRecordCoverage / familyRecordIndex / familyPremiseCatalog`；选定 Family 后按 index 返回的
-   `record_ids` 使用 `detail_level="record" + response_profile="full"` 精确深读，直到关键
-   premise、失败条件和验证任务闭合，不设固定深读额度。Family 查询用
-   `primary_skill_key=skill:/gem:`；`build_family_keys` 只接收查询已返回的 `bf-...`，未知时省略，禁止
-   把技能 key 填进去。
+   Research 使用 `response_profile="full"`，不能用会选单案例授权 lane 的 `create_compact`。
+   Family 首查 `detail_level="summary"`，检查 `familyRecordCoverage / familyRecordIndex /
+   familyPremiseCatalog`；选定后按 index 的 record_ids 用
+   `detail_level="record" + response_profile="full"` 深读至关键 premise、失败条件和验证任务闭合，
+   不设固定深读额度。`primary_skill_key` 接收 skill:/gem:；`build_family_keys` 只接收查询已返回的 `bf-...`，
+   未知时省略，不能填技能 key。
 
-3. 初步研究完成后以同一 `run_ref + lease_token` 调用 `get_research_review_contract`，以其
-   `mandatoryChecks`、模板、枚举、兼容矩阵和 rules 为
-   当前 lease 的精确事实源；不得从本 Skill 猜字段或固定检查数量。
-   对改变因果链的高风险结论，先查本地 `explain_mechanic/search_mechanics`，再用
-   `lookup_mechanic` 查询实时 Wiki。机制全文搜索只提供候选；选中后按精确标题读取正文，由你在
-   `mechanicAudit.wiki` 填写
-   `matchKind`、`relevanceReason` 与 supports/contradicts/silent。Candidate Pattern 必须填写
-   `claimScopeReview`，用 typed scope 确认任何语言的正文只表达当前案例证据或条件迁移假设；不得依赖
-   关键词门禁。Wiki 只作校对，不能替代来源实例、PoB static、typed graph/support 或其他独立
-   corroboration。
+3. 初步研究后调用 `get_research_review_contract`，以当前 lease 的 mandatoryChecks、枚举、schema、
+   模板、兼容矩阵与 rules 为精确事实源，不从 Skill 猜字段或固定检查数量。
+   高风险因果结论先查本地 mechanics，再用 `lookup_mechanic` 校对。全文搜索只发现候选，选中后按
+   精确标题读正文，在 mechanicAudit 写 supports/contradicts/silent 与 relevanceReason；页面身份
+   不授权语义，Wiki 不替代来源实例或其他独立 corroboration。Candidate Pattern 按合同填写
+   `claimScopeReview`，确认当前案例证据/条件迁移范围，不依赖关键词门禁。
 
-4. 以同一 `run_ref + lease_token` 调用 `initialize_research_review` 获取骨架。`already_exists`
-   表示返回既有安全对象，不得清空重建。
-   在模型工作状态中补全 review，不写文件。按 review contract 的 v3 模板处理：
-   - `supportPackages` 从 `skill-groups` 分区复制精确 `sourceGroupRef`、`rootSkillRef`，并让
-     `supportKeys` 与 `socketedItemRefs` 按相同顺序逐项对应；`skillKey` 是根技能，`supportKeys` 是
-     实际插在该根技能插槽中的辅助，`deliveryRole` 只填 `direct`。同一种辅助出现在不同根技能下时，
-     使用各自的 `socketedItemRef` 表明它们是不同物理实例；不得把同一实例重复绑定。socketed active
-     payload 与 host/payload 机制通过组件角色和机制记录表达，不得把 PoB 计算影响对象改写成物理插槽
-     归属；schema2 的任何记录只要结构化列出 resolved support，就必须把这些 support 各自放入一个真实
-     根技能包；`sourceGroupRef`、`rootSkillRef`、`socketedItemRefs` 只用于当前 lease 验收，不进入
-     durable identity；
-   - 装备正文型记录用 canonical `gearSubjects` 区分槽位/珠宝主题；
-   - 每条 durable record 明确 `sourceStateScope`，副武器/未知状态不能写成 active 常驻收益；
-   - 阅读 `pob-readback` 分区并填写 `pobReadbackAudit`；`reviewed/unmodelled` 必须原样填写该分区的
-     `snapshotRef`，`unavailable` 必须对应分区真实状态；只把 active snapshot 的安全资源/防御读回
-     当作当前 case evidence，不外推为 Family 通用数值。
+4. 调用 `initialize_research_review`，在返回对象中填写研究。`already_exists` 返回既有工作，不能清空重建。
+   具体字段形状与枚举遵循合同，填写时守住以下语义：
 
-5. 调用
+   每条记录的`sourceClaimKey`默认`default`；同来源同主题的并存条件分支用稳定的不同key，修订时复用
+   原key，可从record-detail的`sourceClaims`核对。不要随机换key制造新分支，它不会增加独立来源证据。
+   同标题的不同knowledgeKey默认并存。跨主题纠正必须显式传`sourceClaimRevision`，其
+   `knowledgeKey/recordId/projectionHash`来自本来源当前记录深读；不能用标题、其他来源回执或旧指纹猜修订。
+
+   - supportPackages 表达真实物理插槽归属，不能把 PoB 计算作用对象当作根技能。按 skill-groups 的
+     sourceGroupRef、rootSkillRef 和 socketedItemRefs 绑定实际实例；host/payload 关系另用组件与机制记录表达。
+     逐记录执行合同的supportPackages覆盖要求，不能用另一条记录或研究组总体的包替代当前记录。
+   - gearResponsibilities 只归因组件静态文本直接提供的职责；实例词缀、插入物或转换归因真实来源。
+     无图节点的黄装按合同显式声明内容型装备证据，在正文写槽位、目标词条与档位。
+   - sourceStateScope 区分活动/副武器/未知状态，后两者不能当常驻收益。pobReadbackAudit 按合同绑定
+     pob-readback 的真实状态与精确 snapshotRef，数值只说明本 case 活动快照，不外推为 Family 通用值。
+     config 的 `configSetId/isActive/valueType` 保留场景归属；仅 `stateBinding.activeSets` 绑定的
+     活动组合支撑当前数值，非活动条件独立研究，身份无效或读回 unavailable 时不混用其他场景。
+   - 同主题修订沿用稳定来源声明；跨主题使用上述显式修订绑定。废弃旧结论说明失效理由，不能凭同名覆盖。
+
+5. 在 typed validation 和正式 accept 前复核每个最终对象的 title、summary、content、conditions、
+   failureConditions、typedPayload、applicability/exclusions、contextRequirements、plannerHint、
+   verificationTasks；未复核字段不得沿用。调用
    `validate_research_review(run_ref=<runRef>, lease_token=<leaseToken>, review=<review>)`。
-   结构、resolver、角色、因果或职责变化后，对完整对象重新复核；
-   按 validationIssues 有界修正。missing/ambiguous endpoint 最多进行两轮 repair，不能要求程序猜枚举
-   或自动选择端点。`readyForAccept=true` 只表示安全子集可接收；只有
-   `fullyResolvedForAccept=true` / `acceptanceMode=clean` 才表示没有覆盖、暂缓和组件缺口。
-   若 `durableWritePreflight.status=permission_required`，停止正式 accept 并向 Controller 返回安全权限
-   需求；`write_handle_ready` 只是当前句柄 advisory，不保证 SQLite 事务一定成功。
+   结构、resolver、角色、因果或职责变化后重审完整对象，按 validationIssues 有界修正；missing/ambiguous
+   endpoint 最多两轮 repair，不让程序猜枚举或端点。`readyForAccept=true` 仅说明安全子集可接收；
+   `fullyResolvedForAccept=true` / `acceptanceMode=clean` 才说明覆盖、暂缓与组件缺口全闭合。
+   `durableWritePreflight.status=permission_required` 时，在调用正式 accept 前停止并向 Controller 返回
+   安全权限需求；`write_handle_ready` 仅为句柄 advisory，不保证事务成功。
 
-6. Mandatory Checks 全部通过后调用
+6. Mandatory Checks 通过后调用
    `accept_research_review(run_ref=<runRef>, lease_token=<leaseToken>, review=<review>)`。
-   可修复的 `acceptance_rejected` 把修正后的 review 交给
-   `retry_research_review(run_ref=<runRef>, sample_id=<sampleId>, review=<review>)`；任何
-   deferred/unresolved/coverage gap/failure 都保留
-   完整诊断；只有 clean validation/accept 才可使用 compact 摘要。不要把 validation/retry 当成新案例。
-   不可恢复的 runtime 错误停止当前 Worker，保留 runRef/lease 状态并返回 safe failure。
-   `review_contract_upgrade_required` 发生在 queue CAS 前，案例仍是 claimed：把旧对象升级为 v3
-   并补齐新增字段后，用同一
-   lease 重新 validate 并调用普通 accept，不能改走只处理 rejected 案例的 retry。
+   按实际状态处理结果，不能把下列分支合并成通用 retry：
 
-7. claim 成功后的任何结束路径都返回 `sampleId + safe outcome`；accepted 时附 safe acceptance 摘要，
-   至少包含 `writeReceiptRef`、acceptanceMode、created/updated/evidence counts、semantic edge count、deferred reasons、
+   | 状态/结果 | 动作 |
+   |---|---|
+   | 可修复 `acceptance_rejected` | 修正 review 后用 `retry_research_review(run_ref=<runRef>, sample_id=<sampleId>, review=<review>)`。 |
+   | `review_contract_upgrade_required` | 发生在 CAS 前，案例仍是 claimed；升级对象并补齐字段，以同 lease 重新 validate 和普通 accept，不能改走只处理 rejected 案例的 retry。 |
+   | 不可恢复 runtime 错误 | 停止，保留 runRef/lease，返回 safe failure。 |
+
+   deferred/unresolved/coverage gap/failure 保留完整诊断；只有 clean validation/accept 可用 compact 摘要。
+   validation/retry 都是原单案，不创建新案例。
+
+7. claim 成功后的任何结束路径都返回 `sampleId + safe outcome`；accepted 时附 safe acceptance 摘要：
+   writeReceiptRef、acceptanceMode、researchCompletion、created/updated/evidence counts、semantic edge count、deferred reasons、
    unresolved mention/unique component counts 和 mechanic/unique-gem diagnostics。不得输出 raw material。
-
-## Supplemental Checks
-
-- 补充研究或更正既有知识时，优先以相同标题/知识构成更新原记录；不要制造新旧矛盾正文。确需废弃旧
-  结论时明确失效理由。
-- `gearResponsibilities` 只归因组件静态文本直接提供的职责；来源实例词缀、插入物或转换效果必须归因
-  到真实来源。无图节点的纯稀有/魔法装使用显式 `gearResponsibilities=[]`，并在 content 写槽位、目标
-  词条和档位追求。
-- 在 typed validation 和正式 accept 前复核每个最终对象的 title、summary、content、conditions、
-  failureConditions、typedPayload、applicability/exclusions、contextRequirements、plannerHint 与
-  verificationTasks；未复核字段不得沿用。

@@ -9,6 +9,7 @@ itself.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -312,6 +313,7 @@ def _cases_from_ninja(
     ninja_classes: list[str] | None = None,
     intake_ledger_path: str | Path | None = None,
     collector_stats: dict[str, Any] | None = None,
+    target_character_refs: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Collect cases from poe.ninja, paginating until the requested limit of
     *new* characters is reached.
@@ -321,7 +323,18 @@ def _cases_from_ninja(
     fetched, and the collector keeps fetching list pages until ``limit`` fresh
     cases exist or the list is exhausted (bounded by NINJA_LIST_MAX_PAGES).
     ``collector_stats`` (when provided) receives safe counts for queue reports.
+    ``target_character_refs`` is an internal, explicitly reserved reacquisition
+    scope. Only those identities can bypass the ledger; unrelated fresh samples
+    never fill a missing target. An empty scope performs no collection.
     """
+    targets = None if target_character_refs is None else set(target_character_refs)
+    if targets is not None and any(
+        not isinstance(ref, str) or not re.fullmatch(r"character-hash:[0-9a-f]{16}", ref)
+        for ref in targets
+    ):
+        raise ValueError("target_character_refs must contain safe character hashes")
+    if targets == set():
+        return []
     resolved_league = _resolve_league_url(league_url)
     browser = browser_driver or run_judge_ninja_samples.PlaywrightHtmlDriver()
     normalized_ninja_classes = _normalize_ninja_classes(ninja_classes or [])
@@ -337,7 +350,13 @@ def _cases_from_ninja(
     stats.setdefault("pagesFetched", 0)
     stats.setdefault("pageRowsSeen", 0)
     stats.setdefault("skippedAlreadyResearched", 0)
+    if targets is not None:
+        stats["requestedTargetCount"] = len(targets)
+        stats["matchedTargetCount"] = 0
+        stats["missingTargetCount"] = len(targets)
     target = None if limit is None else max(0, int(limit))
+    if targets is not None:
+        target = len(targets) if target is None else min(target, len(targets))
     if target == 0:
         return []
     cases: list[dict[str, Any]] = []
@@ -390,7 +409,9 @@ def _cases_from_ninja(
                 continue
             seen_characters.add(key)
             ref = research_intake_ledger.character_ref(key[0], key[1])
-            if ref in ledger_seen:
+            if targets is not None and ref not in targets:
+                continue
+            if ref in ledger_seen and targets is None:
                 stats["skippedAlreadyResearched"] = (
                     int(stats.get("skippedAlreadyResearched") or 0) + 1
                 )
@@ -417,6 +438,10 @@ def _cases_from_ninja(
                 case_start_index=len(cases) + 1,
             )
         )
+    if targets is not None:
+        matched = {str(case.get("characterRef") or "") for case in cases} & targets
+        stats["matchedTargetCount"] = len(matched)
+        stats["missingTargetCount"] = len(targets - matched)
     return cases
 
 
@@ -469,13 +494,8 @@ def _payload_cases_from_rows(
         if not extracted.get("ok"):
             continue
         source = str(extracted["importCode"]).strip()
-        identity_hash = _identity_hash(source)
-        if identity_hash in identity_hashes:
-            continue
-        identity_hashes.add(identity_hash)
         source_hash = _safe_hash(source)
-        cases.append(
-            _case_from_source(
+        case = _case_from_source(
                 source,
                 source_hash=source_hash,
                 sample_id=f"case:phase45-researcher-{next_index + len(cases):03d}",
@@ -486,7 +506,11 @@ def _payload_cases_from_rows(
                     research_intake_ledger.character_ref(account, name) if account and name else ""
                 ),
             )
-        )
+        identity_hash = _safe_hash(case["_rawXml"]) if case["status"] == "pending" else source_hash
+        if identity_hash in identity_hashes:
+            continue
+        identity_hashes.add(identity_hash)
+        cases.append(case)
     return cases
 
 
@@ -590,21 +614,16 @@ def _cases_from_sources(sources: list[str], *, sample_start_index: int = 1) -> l
     seen_identity_hashes: set[str] = set()
     next_index = max(1, int(sample_start_index))
     for source in sources:
-        identity_hash = _identity_hash(source)
+        case = _case_from_source(
+            source, source_hash=_safe_hash(source),
+            sample_id=f"case:phase45-researcher-{next_index:03d}",
+            source_type="local_pob_code_file", league="unknown", row={},
+        )
+        identity_hash = _safe_hash(case["_rawXml"]) if case["status"] == "pending" else _safe_hash(source)
         if identity_hash in seen_identity_hashes:
             continue
         seen_identity_hashes.add(identity_hash)
-        source_hash = _safe_hash(source)
-        cases.append(
-            _case_from_source(
-                source,
-                source_hash=source_hash,
-                sample_id=f"case:phase45-researcher-{next_index:03d}",
-                source_type="local_pob_code_file",
-                league="unknown",
-                row={},
-            )
-        )
+        cases.append(case)
         next_index += 1
     return cases
 
@@ -621,6 +640,13 @@ def _case_from_source(
 ) -> dict[str, Any]:
     try:
         xml = _source_to_xml(source)
+        if pob_code.is_link(source):
+            # A locator is not a snapshot. Resolve once and bind the frozen XML,
+            # never re-fetch the URL when the queued case is later claimed.
+            source = xml
+            source_hash = _safe_hash(source)
+        elif _safe_hash(source) != source_hash:
+            raise ValueError("source_material_hash_mismatch")
         attrs = _build_attributes(xml)
         status = "pending"
         safe_error = ""
@@ -878,9 +904,12 @@ def _safe_report_from_state(
 def _resolve_league_url(league_url: str) -> str:
     if league_url != "current":
         return _league_url_token(league_url)
+    from server.freshness.leagues import default_league
+
     snapshot = freshness_ninja.parse_ninja_snapshot(
         _fetch_json(freshness_ninja.NINJA_INDEX_URL),
         _fetch_json(freshness_ninja.NINJA_BUILD_INDEX_URL),
+        target_league=default_league(datetime.now(timezone.utc)),
     )
     return _league_url_token(snapshot.league_url)
 

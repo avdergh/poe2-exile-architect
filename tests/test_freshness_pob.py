@@ -588,7 +588,7 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     manifest = load_compatibility_manifest(Path("data/compatibility/pob.json"))
 
     assert manifest.schema_version == 1
-    assert len(manifest.entries) == 3
+    assert len(manifest.entries) == 4
 
     entries = {entry.commit: entry for entry in manifest.entries}
     release_entry = entries[REMOTE_COMMIT]

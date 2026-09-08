@@ -205,7 +205,7 @@ def test_cross_source_tree_claim_conflict_blocks_verification():
     assert any("passive_tree" in reason for reason in report.blockers)
 
 
-def test_patch_detail_changes_within_same_season_are_compatible():
+def test_uncertified_patch_details_within_same_season_are_not_compatible():
     manifest = current_manifest()
     newer_patch = evidence(
         Component.GAME_PATCH,
@@ -216,9 +216,8 @@ def test_patch_detail_changes_within_same_season_are_compatible():
 
     report = evaluate_freshness(replace_component(manifest, newer_patch, Component.GAME_PATCH))
 
-    assert report.decision is FreshnessDecision.VERIFIED_CURRENT
-    assert report.blockers == ()
-    assert any("compatible season" in warning for warning in report.warnings)
+    assert report.decision is FreshnessDecision.BLOCKED_CONFLICT
+    assert any("game_patch claims conflict" in blocker for blocker in report.blockers)
 
 
 def test_game_season_version_conflict_blocks_verification():

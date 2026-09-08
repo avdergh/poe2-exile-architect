@@ -17,7 +17,9 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from server.knowledge import copy_safety, mature_learning, research_contracts, research_memory
+from server.knowledge import (
+    copy_safety, mature_learning, patch_reviews, research_contracts, research_memory, research_content,
+)
 
 
 CONTRACT_VERSION = 2
@@ -502,6 +504,25 @@ def _construct(
             )
             for lane in lanes
         }
+        patch_applicability = {
+            record_id: decision
+            for receipt in [*auth_receipts, *comparison_receipts]
+            for record_id, decision in ((receipt.get("result") or {}).get("recordApplicability") or {}).items()
+        }
+        eligible_records = {
+            str(row["record_id"]): row for rows in rows_by_lane.values() for row in rows
+        }
+        exact_units = {
+            str(row["record_id"]): str(row["exact_unit"])
+            for row in con.execute(
+                "SELECT record.record_id, " + research_content.unit_key_sql("record")
+                + " AS exact_unit FROM deep_research_records AS record WHERE record.record_id IN ("
+                + ",".join("?" for _ in eligible_records) + ")",
+                list(eligible_records),
+            )
+        } if eligible_records else {}
+        for record_id, row in eligible_records.items():
+            patch_applicability.setdefault(record_id, patch_reviews.applicability(con, row, game_patch))
     finally:
         con.close()
     if not rows_by_lane[(selected_knowledge_scope, selected_source_case_ref)]:
@@ -524,18 +545,38 @@ def _construct(
         )
         for scope, case_ref in lanes
     ]
+    authoritative_lane = (selected_knowledge_scope, selected_source_case_ref)
+    authoritative_units = {
+        exact_units[str(row["record_id"])]: row
+        for row in rows_by_lane[authoritative_lane]
+    }
     package_rows: dict[str, dict[str, Any]] = {}
     for lane, records in rows_by_lane.items():
         for row in records:
-            record_id = str(row["record_id"])
+            # Fold presentation only toward an already authorized design record. A
+            # comparison record never supplies the authoritative record's deep read.
+            authoritative_row = (
+                authoritative_units.get(exact_units[str(row["record_id"])])
+                if lane != authoritative_lane else None
+            )
+            package_row = authoritative_row if authoritative_row is not None else row
+            record_id = str(package_row["record_id"])
             package = package_rows.get(record_id)
             if package is None:
                 package = _record_package(
-                    row,
+                    package_row,
                     build_family_key=build_family_key,
                     selected_case_ref=selected_source_case_ref,
                 )
                 package_rows[record_id] = package
+                package["targetApplicability"] = patch_applicability.get(record_id)
+            if authoritative_row is not None:
+                package.setdefault("comparisonRecordBindings", []).append({
+                    "recordId": str(row["record_id"]),
+                    "sourceCaseRef": lane[1],
+                    "sourceGamePatch": str(row["game_patch"]),
+                    "targetApplicability": patch_applicability.get(str(row["record_id"])),
+                })
             if lane[1] not in package["sourceCaseRefs"]:
                 package["sourceCaseRefs"].append(lane[1])
             if lane == (selected_knowledge_scope, selected_source_case_ref):
@@ -553,6 +594,10 @@ def _construct(
         )
     for package in packages:
         package["sourceCaseRefs"] = sorted(package["sourceCaseRefs"])
+        if "comparisonRecordBindings" in package:
+            package["comparisonRecordBindings"].sort(
+                key=lambda item: (item["sourceCaseRef"], item["sourceGamePatch"], item["recordId"])
+            )
     required_subjects = _required_insight_decision_subjects(
         packages,
         selected_source_case_ref=selected_source_case_ref,
@@ -579,6 +624,11 @@ def _construct(
         "packages": packages,
         "reviewRequiredPackageIds": review_ids,
         "requiredInsightDecisionSubjects": required_subjects,
+        "patchCorrections": list({
+            str(item.get("reviewRef")): item
+            for receipt in [*auth_receipts, *comparison_receipts]
+            for item in (receipt.get("result") or {}).get("patchCorrections") or []
+        }.values()),
     }
     contract_ref = (
         "rec-" + hashlib.sha256(_stable_json(contract_core).encode("utf-8")).hexdigest()[:16]
@@ -607,6 +657,7 @@ def _construct(
         "comparisonDeepReadRecordIds": comparison_deep_reads,
         "contractRules": {
             "everyPackageRequiresDecision": True,
+            "authoritativePackagesRequireDeepRead": True,
             "comparisonAdoptionRequiresCrossCasePlan": True,
             "crossCasePlanRequiresTargetCompanions": True,
             "sourceAuthorityMustBePreserved": True,
@@ -769,23 +820,24 @@ def _fetch_lane_records(
     game_patch: str,
     passive_tree_version: str,
 ) -> list[sqlite3.Row]:
-    return list(
-        con.execute(
+    return research_content.select_distinct(
+        con,
             """
-            SELECT DISTINCT record.record_id, record.record_kind, record.title, record.summary,
-                   record.component_keys, record.component_mentions, record.conditions,
-                   record.failure_conditions, record.typed_payload, record.projection_hash
+            SELECT DISTINCT record.*
             FROM deep_research_records AS record
             JOIN deep_research_record_evidence AS evidence
               ON evidence.knowledge_scope = record.knowledge_scope
              AND evidence.knowledge_key = record.knowledge_key
+             AND evidence.record_id = record.record_id
+             AND evidence.binding_issue IS NULL
             JOIN research_source_provenance AS provenance
               ON provenance.knowledge_scope = evidence.knowledge_scope
              AND provenance.source_case_ref = evidence.source_case_ref
             WHERE record.build_family_key = ?
               AND record.knowledge_scope = ?
               AND evidence.source_case_ref = ?
-              AND record.game_patch = ?
+              AND research_patch_matches(record.game_patch, ?)
+              AND research_patch_adoptable(record.record_id, record.projection_hash, ?)
               AND record.passive_tree_version = ?
               AND record.visibility = 'creator_visible'
               AND record.split = 'train_context'
@@ -805,9 +857,10 @@ def _fetch_lane_records(
                 knowledge_scope,
                 source_case_ref,
                 game_patch,
+                game_patch,
                 passive_tree_version,
             ),
-        ).fetchall()
+        target_patch=game_patch,
     )
 
 

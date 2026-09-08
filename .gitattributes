@@ -1,5 +1,6 @@
 # Patch files must stay LF + BOM-free so `git apply` works on Linux CI (CLAUDE.md §7 fork patches).
-*.patch text eol=lf
+# 保留 unified diff 的空白上下文前缀，不将其当作源码行尾空白。
+*.patch text eol=lf whitespace=-space-before-tab,-blank-at-eol
 
 # Python sources stay LF so whole-file CRLF flips never pollute diffs again.
 *.py text eol=lf

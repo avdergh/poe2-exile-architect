@@ -1,6 +1,6 @@
 [project]
 name = "poe2-build-mcp"
-version = "0.1.64"
+version = "0.1.67"
 description = "MCP server for Path of Exile 2: queryable game corpus + Path-of-Building-faithful calculations."
 requires-python = ">=3.11"
 dependencies = [

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
 from server.generation import preflight
 
 
@@ -350,3 +354,82 @@ Sapphire Ring</Item>
     assert equipped["matchedName"] == "Choir of the Storm"
     assert equipped["slot"] == "Amulet"
     assert inactive["verified"] is False
+
+
+def _runtime_selection_engine():
+    engine = _Engine(_xml(_group()))
+    runtime = {
+        "groups": [{
+            "index": 1,
+            "rootSkillId": "SkillGemTempestFlurryPlayer",
+            "mainActiveSkillCalcs": 2,
+            "activeSkills": [
+                {"index": 2, "name": "Command"},
+                {"index": 1, "name": "Tempest Flurry"},
+            ],
+        }],
+    }
+    engine.call = lambda _: deepcopy(runtime)
+    return engine, runtime
+
+
+def test_preflight_projects_runtime_effect_order_and_selected_index_together():
+    engine, _ = _runtime_selection_engine()
+    result = preflight.inspect_generation_preflight(engine)
+    group = result["skillGroups"][0]
+    assert group["activeSkills"] == ["Tempest Flurry", "Command"]
+    assert group["mainActiveSkillCalcs"] == 2
+    assert group["activeSkillSelectionError"] is None
+
+
+def test_preflight_keeps_duplicate_effect_names_at_distinct_runtime_indices():
+    engine, runtime = _runtime_selection_engine()
+    runtime["groups"][0]["activeSkills"][0]["name"] = "Tempest Flurry"
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert group["activeSkills"] == ["Tempest Flurry", "Tempest Flurry"]
+    assert group["mainActiveSkillCalcs"] == 2
+
+
+@pytest.mark.parametrize("change,error", [
+    ({"rootSkillId": "OtherPlayer"}, "runtime_skill_group_identity_mismatch"),
+    ({"source": "Tree:123"}, "runtime_skill_group_identity_mismatch"),
+    ({"enabled": False}, "runtime_skill_group_identity_mismatch"),
+    ({"mainActiveSkillCalcs": None}, "runtime_active_skill_selection_invalid"),
+    ({"mainActiveSkillCalcs": 0}, "runtime_active_skill_selection_invalid"),
+    ({"mainActiveSkillCalcs": 3}, "runtime_active_skill_selection_invalid"),
+    ({"mainActiveSkillCalcs": True}, "runtime_active_skill_selection_invalid"),
+    ({"activeSkills": []}, "runtime_active_skills_missing"),
+    ({"activeSkills": [{"index": 2, "name": "Command"}]}, "runtime_active_skills_invalid"),
+    ({"activeSkills": [
+        {"index": 1, "name": "Command"}, {"index": 1, "name": "Command"},
+    ]}, "runtime_active_skills_invalid"),
+    ({"activeSkills": [
+        {"index": 1, "name": "Tempest Flurry"}, {"index": 2, "name": ""},
+    ]}, "runtime_active_skills_invalid"),
+])
+def test_preflight_cannot_project_guessed_runtime_selection(change, error):
+    engine, runtime = _runtime_selection_engine()
+    runtime["groups"][0].update(change)
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert group["mainActiveSkillCalcs"] is None
+    assert group["activeSkillSelectionError"] == error
+
+
+@pytest.mark.parametrize("failure,error", [
+    ("missing", "runtime_skill_group_unavailable"),
+    ("exception", "runtime_skill_group_unavailable"),
+    ("ambiguous", "runtime_skill_group_ambiguous"),
+])
+def test_preflight_requires_one_identity_matched_runtime_group(failure, error):
+    engine, runtime = _runtime_selection_engine()
+    if failure == "missing":
+        runtime["groups"] = []
+    elif failure == "ambiguous":
+        runtime["groups"].append(deepcopy(runtime["groups"][0]))
+    else:
+        def fail(_):
+            raise RuntimeError("synthetic unavailable runtime")
+        engine.call = fail
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert group["mainActiveSkillCalcs"] is None
+    assert group["activeSkillSelectionError"] == error

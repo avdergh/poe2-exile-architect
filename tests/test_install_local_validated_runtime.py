@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -43,6 +44,10 @@ def make_runtime_source(root: Path, *, commit: str = CERTIFIED_COMMIT) -> None:
     )
     (root / "data").mkdir(exist_ok=True)
     (root / "data" / "corpus.sqlite").write_bytes(b"corpus")
+    (root / "data" / "compatibility" / "corpus.json").write_text(json.dumps({
+        "schemaVersion": 1, "sha256": hashlib.sha256(b"corpus").hexdigest(),
+        "game_patch": "0.5.4", "passive_tree": "0_5",
+    }), encoding="utf-8")
     (root / "pob" / "PathOfBuilding-PoE2" / "src").mkdir(parents=True)
     (root / "pob" / "PathOfBuilding-PoE2" / "runtime" / "lua").mkdir(parents=True)
     (root / "pob" / "PathOfBuilding-PoE2" / "src" / "Calc.lua").write_text("-- src")

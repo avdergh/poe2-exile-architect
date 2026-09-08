@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 from pathlib import Path
 import sys
 
 
-EXPECTED_TOTAL = 160
 MODULES = (
     "server.mcp.knowledge_server",
     "server.mcp.build_server",
@@ -24,6 +24,11 @@ def main() -> int:
     stage = args.stage.resolve()
     if not (stage / "server" / "main.py").is_file():
         raise FileNotFoundError(f"staged server is missing: {stage}")
+    manifest = json.loads((stage / "manifest.json").read_text(encoding="utf-8"))
+    declarations = [item["name"] for item in manifest["tools"]]
+    expected = set(declarations)
+    if not expected or len(expected) != len(declarations):
+        raise RuntimeError("staged manifest has an empty or duplicate tool declaration")
     sys.path.insert(0, str(stage))
     domains: dict[str, set[str]] = {}
     for module_name in MODULES:
@@ -38,8 +43,11 @@ def main() -> int:
         if duplicate:
             raise RuntimeError(f"staged MCP tools overlap in {module_name}: {sorted(duplicate)}")
         seen.update(names)
-    if len(seen) != EXPECTED_TOTAL:
-        raise RuntimeError(f"staged MCP tool count is {len(seen)}, expected {EXPECTED_TOTAL}")
+    if seen != expected:
+        raise RuntimeError(
+            "staged MCP tools do not match the staged manifest: "
+            f"missing={sorted(expected - seen)}, undeclared={sorted(seen - expected)}"
+        )
     if "get_research_write_receipt" not in domains["server.mcp.knowledge_server"]:
         raise RuntimeError("staged knowledge MCP omitted get_research_write_receipt")
     print("STAGED FOUR-DOMAIN MCP SMOKE OK")

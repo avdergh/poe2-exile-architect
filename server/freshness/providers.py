@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from ..knowledge import db
+from ..knowledge import db, corpus_certification
 from ..live import update as live_update
 from .models import (
     ClaimDimension,
@@ -63,12 +63,16 @@ def shape_validated_release(
         else ()
     )
     engine_status = SourceStatus.CURRENT if pob_commit else SourceStatus.UNKNOWN
-    corpus_version = release_version or str(corpus_info.get("built_at") or "").strip()
-    corpus_status = (
-        SourceStatus.CURRENT
-        if corpus_version and corpus_info.get("schema_version") is not None
-        else SourceStatus.UNKNOWN
-    )
+    corpus_version = str(corpus_info.get("built_at") or release_version).strip()
+    corpus_certification = corpus_info.get("certifiedCompatibility")
+    corpus_claims: tuple[VersionClaim, ...] = ()
+    if isinstance(corpus_certification, dict):
+        if corpus_certification.get("game_patch") and corpus_certification.get("passive_tree"):
+            corpus_claims = (
+                VersionClaim(ClaimDimension.GAME_PATCH, corpus_certification["game_patch"]),
+                VersionClaim(ClaimDimension.PASSIVE_TREE, corpus_certification["passive_tree"]),
+            )
+    corpus_status = SourceStatus.CURRENT if corpus_claims else SourceStatus.UNKNOWN
 
     return (
         FreshnessEvidence(
@@ -96,7 +100,7 @@ def shape_validated_release(
             observed_at=observed_at,
             version=corpus_version or None,
             status=corpus_status,
-            claims=release_claims,
+            claims=corpus_claims,
         ),
     )
 
@@ -104,12 +108,20 @@ def shape_validated_release(
 def collect_local_evidence(observed_at: datetime) -> tuple[FreshnessEvidence, ...]:
     """Read best-effort local evidence; missing metadata remains missing and blocks the gate."""
 
+    installed: dict[str, Any] = {}
+    corpus_info: dict[str, Any] = {}
     try:
-        installed = live_update.installed_meta()
-    except (OSError, ValueError):
-        installed = {}
-    try:
-        corpus_info = db.corpus_info()
+        with corpus_certification.corpus_guard():
+            try:
+                installed = active_runtime_metadata()
+            except (OSError, ValueError):
+                installed = {}
+            corpus_info = db.corpus_info()
+            certificate = corpus_certification.certificate_for_hash(
+                corpus_certification.file_sha256(db.db_path())
+            )
+            if certificate is not None:
+                corpus_info = {**corpus_info, "certifiedCompatibility": certificate}
     except (OSError, ValueError, sqlite3.Error):
         corpus_info = {}
     compatibility = _resolve_local_compatibility(installed)
@@ -119,6 +131,24 @@ def collect_local_evidence(observed_at: datetime) -> tuple[FreshnessEvidence, ..
         observed_at=observed_at,
         compatibility=compatibility,
     )
+
+
+def active_runtime_metadata() -> dict[str, Any]:
+    """Describe the runtime pair actually selected, not a shadowed old installed engine."""
+    from .. import paths
+    from .pob import read_pinned_commit, DEFAULT_PINNED_PATH
+
+    installed = dict(live_update.installed_meta())
+    if paths.pob_runtime_pair().source == "user-data":
+        return installed
+    commit = read_pinned_commit(DEFAULT_PINNED_PATH)
+    installed["pob_commit"] = commit
+    installed["engine_sha256"] = None
+    compatibility = _resolve_local_compatibility(installed)
+    installed["pob_version"] = compatibility.pob_version if compatibility else None
+    installed["game_patch"] = compatibility.game_patch if compatibility else None
+    installed["passive_tree"] = compatibility.passive_tree if compatibility else None
+    return installed
 
 
 def current_local_compatibility() -> LocalCompatibility | None:

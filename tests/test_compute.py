@@ -461,8 +461,10 @@ def test_optimize_item_on_empty_weapon_slot_for_attack_skill(engine):
         engine.get_stats(["TotalDPS"])["stats"], dict
     )  # not [] even when uncomputable
     r = itemopt.optimize_item(engine, "Weapon 1", base="Grand Spear", metric="TotalDPS")
-    assert r["ok"]
+    assert r["ok"], r
     assert r["metricBefore"] is None  # no weapon -> nothing to measure before
+    assert r["baselineStatus"] == "unavailable_empty_weapon"
+    assert r["comparisonAvailable"] is False
     assert isinstance(r["metricAfter"], (int, float)) and r["metricAfter"] > 0
     assert r["affixes"]  # crafted a real spear
 
@@ -637,7 +639,7 @@ def test_optimize_supports_picks_improving_set(engine):
     assert r["screened"] >= 30  # solo-screened a broad pool, not a tiny tag-ranked slice
     assert r["supportAudit"]["status"] == "inconclusive"
     assert r["supportAudit"]["measurement"]["checkpointEligible"] is False
-    assert r["supportAudit"]["positiveGainSupportsMissing"]
+    assert r["supportAudit"]["positiveGainSupportsMissing"] == []
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only: build restored
 
 
@@ -689,6 +691,105 @@ def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_me
     )
     assert per_hit["numericRanking"] == "supported"
     assert per_hit["triggerRate"] == "not_applicable"
+
+
+@pytest.mark.parametrize("active_index", [1, 2])
+@pytest.mark.parametrize("invalid_support", [False, True])
+def test_trigger_support_roles_are_verified_across_host_and_payload(
+    engine, active_index, invalid_support
+):
+    from server.compute import supportopt
+    from server.generation import evaluation, validation_checkpoint
+
+    engine.new_build()
+    engine.set_class("Sorceress")
+    engine.set_level(95)
+    engine.paste_skill(
+        "Cast on Critical 20/20 1 / Energy Retention\n"
+        "Comet 20/20 1 / Controlled Destruction" + (" / Bidding III" if invalid_support else "")
+    )
+    engine.call("set_skill_group_state", index=1, activeSkillIndex=active_index, makeMain=True)
+    before_hash = build_state_hash(engine.get_xml())
+
+    result = supportopt.optimize_supports(engine, metric="FullDPS", group_index=1)
+    application = {
+        item["name"]: item["activeSkills"] for item in result["capability"]["supportApplication"]
+    }
+    assert application["Energy Retention"] == ["Cast on Critical"]
+    assert application["Controlled Destruction"] == ["Comet"]
+    if invalid_support:
+        assert application["Bidding III"] == []
+    assert result["reasonClass"] == ("actionable_gap" if invalid_support else "capability_gap")
+    assert result["measurement"]["screenedCandidates"] == 0
+    assert build_state_hash(engine.get_xml()) == before_hash
+
+    checkpoint = validation_checkpoint.inspect_generation_checkpoint(
+        engine, offense_skill_group_index=1, expected_skill_name="Comet"
+    )
+    support = checkpoint["createQualityChecklist"]["skillSupportAudit"]
+    assert support["status"] == ("failed" if invalid_support or active_index == 1 else "unknown")
+    if not invalid_support and active_index == 1:
+        assert "support_audit_calculation_context_mismatch:1" in support["reasons"]
+        # A host capability receipt cannot authorize the payload. Re-audit that exact effect.
+        engine.call("set_skill_group_state", index=1, makeMain=True, activeSkillIndex=2)
+        refreshed = supportopt.optimize_supports(engine, metric="FullDPS")
+        assert refreshed["reasonClass"] == "capability_gap"
+        payload_checkpoint = validation_checkpoint.inspect_generation_checkpoint(
+            engine, offense_skill_group_index=1, expected_skill_name="Comet"
+        )
+        assert payload_checkpoint["createQualityChecklist"]["skillSupportAudit"]["status"] == "unknown"
+    blockers = evaluation._final_check_blockers(checkpoint["createQualityChecklist"])
+    assert any(reason.startswith("skillSupportAudit:") for reason in blockers) is (
+        invalid_support or active_index == 1
+    )
+    assert checkpoint["deliveryStatus"] != "recommended"
+
+
+@pytest.mark.parametrize("planner", ["optimize_item", "plan_gear"])
+def test_rare_planners_share_checkpoint_tier_counts_for_overlapping_rolls(
+    engine, monkeypatch, planner
+):
+    from server.compute import attainability, completeness
+
+    engine.new_build()
+    engine.set_class("Huntress", "Amazon")
+    engine.set_level(95)
+    engine.paste_skill("Lightning Spear 20/20 1")
+    engine.add_item(
+        "Rarity: Rare\nReview Spear\nGrand Spear\nItem Level: 82\n--------\n"
+        "Adds 40 to 80 Lightning Damage",
+        slot="Weapon 1",
+    )
+    pool = db.affix_pool("Grand Spear", ilvl=82)
+    # Real corpus tiers and real PoB measurement: focus the search on the three families that
+    # exposed the disagreement, including the overlapping T2 physical roll.
+    focused = {
+        "prefixes": [
+            source
+            for source in pool["prefixes"]
+            if source["group"]
+            in {"FireDamage", "IncreasedWeaponElementalDamagePercent", "PhysicalDamage"}
+        ],
+        "suffixes": [],
+    }
+    monkeypatch.setattr(db, "affix_pool", lambda _base, ilvl=82: focused)
+    before_hash = build_state_hash(engine.get_xml())
+    if planner == "optimize_item":
+        result = itemopt.optimize_item(engine, "Weapon 1", thorough=True)
+        assert result["ok"], result
+        text = result["item"]
+        assert len(result["affixes"]) == 3
+    else:
+        result = itemopt.plan_gear(engine, slots=["Weapon 1"], auto_base=False)
+        assert result["ok"], result
+        assert len(result["plan"]) == 1
+        text = result["plan"][0]["item"]
+        assert len(result["plan"][0]["affixes"]) == 3
+    assert build_state_hash(engine.get_xml()) == before_hash
+    engine.add_item(text, slot="Weapon 1")
+    evidence = completeness.equipped_item_metadata(engine.get_xml())["Weapon 1"]
+    assert evidence["topTierAffixes"] == 2
+    assert attainability.rare_item_reasons(evidence) == []
 
 
 def test_support_pool_surfaces_on_element_levers():
@@ -795,7 +896,7 @@ def test_plan_gear_meets_stage_resists_while_keeping_damage(engine):
         dps_weight=0.7,
         slots=["Amulet", "Body Armour", "Helmet", "Boots", "Belt", "Ring 2"],
     )
-    assert r["ok"] and r["plan"]
+    assert r["ok"] and r["plan"], r
     assert not r["rejectedIllegalCandidates"]
     assert all(item["legalityCheck"]["ok"] for item in r["plan"])
     pj = r["projected"]
@@ -1051,6 +1152,7 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
         slot="Weapon 1",
     )
     r = itemopt.plan_gear(engine, dps_weight=0.6, min_ehp=12000)
+    assert r["ok"], r
     planned = {p["slot"] for p in r["plan"]}
     for slot in ("Amulet", "Gloves", "Ring 1", "Ring 2", "Body Armour", "Helmet", "Boots", "Belt"):
         assert slot in planned, f"auto-base missed {slot}"
@@ -1059,7 +1161,8 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
     assert engine.get_build()["mainSkill"] == "Spark"  # read-only: build restored
 
 
-def test_realistic_plan_replaces_normal_bootstrap_weapon(engine):
+@pytest.mark.parametrize("attributes_ready", [False, True], ids=["insufficient_attributes", "sufficient_attributes"])
+def test_realistic_plan_replaces_normal_bootstrap_weapon(engine, attributes_ready):
     from server.compute import itemopt
 
     engine.new_build()
@@ -1067,6 +1170,9 @@ def test_realistic_plan_replaces_normal_bootstrap_weapon(engine):
     engine.set_level(95)
     engine.paste_skill("Galvanic Shards 20/20  1")
     engine.add_item("Rarity: Normal\nMakeshift Crossbow\nItem Level: 1", slot="Weapon 1")
+    if attributes_ready:
+        engine.set_config(custom_mods="+1000 to Strength\n+1000 to Dexterity")
+    before_hash = build_state_hash(engine.get_xml())
 
     result = itemopt.plan_gear(
         engine,
@@ -1074,7 +1180,15 @@ def test_realistic_plan_replaces_normal_bootstrap_weapon(engine):
         acquisition_profile="realistic_trade",
     )
 
-    assert result["replacedBootstrapSlots"] == ["Weapon 1"]
+    assert result["ok"], result
+    assert build_state_hash(engine.get_xml()) == before_hash
+    if not attributes_ready:
+        assert result["plan"] == []
+        assert result["replacedBootstrapSlots"] == []
+        reasons = result["rejectedIllegalCandidates"][0]["legalityRegression"]["reasons"]
+        assert any(reason["code"] == "attribute_requirement_unmet" for reason in reasons)
+        return
+    assert result["replacedBootstrapSlots"] == ["Weapon 1"], result
     assert result["plan"][0]["item"].splitlines()[2] != "Makeshift Crossbow"
     assert len(result["plan"][0]["affixes"]) <= 5
     assert all(entry["topTierAffixCount"] <= 2 for entry in result["plan"])
@@ -1546,8 +1660,10 @@ class _SocketBatchEngine:
 def test_plan_item_sockets_batch_returns_explicit_slot_decisions(monkeypatch):
     def fake_optimize(_engine, *, slot, **_kwargs):
         if slot == "Helmet":
-            return {"ok": True, "changed": True, "item": "planned", "craftReceiptRef": "r"}
-        return {"ok": True, "changed": False, "reason": "no_beneficial_socket_option"}
+            return {"ok": True, "changed": True, "item": "planned", "craftReceiptRef": "r",
+                    "measurementComplete": True, "measurementStatus": "positive", "reviewPolicyVersion": "item_socket_review_v2"}
+        return {"ok": True, "changed": False, "reason": "no_beneficial_socket_option",
+                "measurementComplete": True, "measurementStatus": "no_positive", "reviewPolicyVersion": "item_socket_review_v2"}
 
     monkeypatch.setattr(craftopt, "optimize_item_sockets", fake_optimize)
     result = craftopt.plan_item_sockets_batch(
@@ -1575,6 +1691,9 @@ def test_partial_socket_plan_only_carries_to_immediate_equip_output_state(monkey
             "itemFingerprint": fingerprint,
             "acceptedItemFingerprints": [fingerprint],
             "remainingSocketCount": 1,
+            "measurementComplete": True,
+            "reviewPolicyVersion": "item_socket_review_v2",
+            "measurementStatus": "positive",
         },
     )
 
@@ -1589,7 +1708,7 @@ def test_partial_socket_plan_only_carries_to_immediate_equip_output_state(monkey
         lambda _xml: {"Helmet": {"itemFingerprint": fingerprint}},
     )
 
-    assert result["decisions"] == {"Helmet": "partial_no_positive"}
+    assert result["decisions"] == {"Helmet": "partial_socketed"}
     assert craftopt.socket_batch_decisions_for_state(engine, "post-equip-state") == {}
     carried = craftopt.carry_socket_decision_to_equipped_state(
         engine,
@@ -1622,6 +1741,9 @@ def test_multi_slot_socket_plan_carries_across_consecutive_equip_outputs(monkeyp
             "itemFingerprint": fingerprint,
             "acceptedItemFingerprints": [fingerprint],
             "remainingSocketCount": 1,
+            "measurementComplete": True,
+            "reviewPolicyVersion": "item_socket_review_v2",
+            "measurementStatus": "positive",
         }
 
     monkeypatch.setattr(craftopt, "optimize_item_sockets", fake_optimize)
@@ -1999,6 +2121,8 @@ def test_complete_skill_mutation_rolls_back_silently_dropped_support(engine):
             return self.xml
 
         def call(self, method, **_params):
+            if method == "resolve_support_gem_identity":
+                return engine.call(method, **_params)
             assert method == "list_skill_groups"
             if not self.mutated:
                 return {"mainGroupIndex": 0, "groups": []}
@@ -2179,16 +2303,17 @@ def test_optimize_build_rejects_unset_build(engine):
 
 
 def test_optimize_build_smoke(engine):
-    # Integration: the holistic optimizer assembles a whole build (tree + gear + jewels + supports)
-    # that beats the bare skill, meets stage resist targets, and is left LOADED. Slow (~30s).
+    # Maintenance-only orchestration smoke with explicit attribute prerequisites. The pure-DPS
+    # tree does not supply them; planning must not obtain resistance from illegal auto-bases.
     _spark_caster(engine)
+    engine.set_config(custom_mods="+200 to Strength\n+200 to Dexterity\n+200 to Intelligence")
     bare = engine.paste_skill("Spark 20/20  1")["stats"]["TotalDPS"]
     r = buildopt.optimize_build(engine, levers=[], passes=1, max_jewel_sockets=1, min_ehp=None)
     assert r["ok"], r
     assert r["committed"] == "balanced"  # levers=[] -> only the balanced candidate
     res = r["result"]
     assert (res["TotalDPS"] or 0) > bare  # synthesis added real DPS over the bare skill
-    assert res["resistanceTargetMet"] is True  # the stage defensive constraint held
+    assert res["resistanceTargetMet"] is True, r  # the stage defensive constraint held
     # the winner is loaded in the session, so the live engine matches the reported result
     live = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
     assert live == pytest.approx(res["TotalDPS"], rel=1e-3)
@@ -2260,6 +2385,54 @@ def test_optimize_item_sockets_preserves_item_and_returns_receipt(engine, tmp_pa
     assert equipped["ok"] is True, equipped
 
 
+def test_socket_probe_clears_existing_runes_before_measuring_bare_item(
+    engine, tmp_path, monkeypatch
+):
+    """Pinned PoB inherits old Rune slots unless cleared; canonical effects use nested tags."""
+    engine.new_build()
+    engine.set_class("Sorceress")
+    engine.set_level(92)
+    engine.paste_skill("Fireball 20/20 1")
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    raw = "Rarity: Rare\nSocket Target\nSacramental Robe\nItem Level: 82\n--------\n+50 to maximum Life"
+    engine.add_item(raw, slot="Body Armour")
+    options = engine.crafting_options("Body Armour")["runes"]
+    iron = next(option for option in options if option["name"] == "Iron Rune")
+    perfect = next(option for option in options if option["name"] == "Perfect Iron Rune")
+    existing = craftopt._augment_item_with_runes(
+        raw, [(iron["name"], iron["mods"])] * 2, socket_capacity=2
+    )
+    engine.add_item(existing, slot="Body Armour")
+    snapshot_hash = build_state_hash(engine.get_xml())
+    before = engine.get_stats(["EnergyShield"])["stats"]["EnergyShield"]
+    # Use two real PoB options to keep this regression bounded.
+    monkeypatch.setattr(
+        engine, "crafting_options", lambda _slot: {"ok": True, "runes": [iron, perfect]}
+    )
+    writes = []
+    original_write = craftopt._socket_add_item
+
+    def verify_write(active_engine, item, slot):
+        original_write(active_engine, item, slot)
+        actual = craftopt.completeness.equipped_item_text(active_engine.get_xml(), slot)
+        assert craftopt._socket_item_readback_matches(item, actual)
+        writes.append(itemparse.semantic_item_structure(actual)["runeNames"])
+
+    monkeypatch.setattr(craftopt, "_socket_add_item", verify_write)
+    result = craftopt.optimize_item_sockets(
+        engine, slot="Body Armour", goals={"EnergyShield": 1}, socket_count=2
+    )
+
+    assert result["ok"], result
+    assert result["decision"] == "socketed"
+    assert result["runes"] == ["Perfect Iron Rune", "Perfect Iron Rune"]
+    assert result["metricsBefore"]["EnergyShield"] == before
+    assert result["metricsAfter"]["EnergyShield"] > before
+    assert writes[0] == []
+    assert len(writes[-1]) == 2
+    assert build_state_hash(engine.get_xml()) == snapshot_hash
+
+
 def test_generated_endgame_belt_round_trips_three_charm_slots(engine):
     engine.new_build()
     engine.set_class("Ranger", "Deadeye")
@@ -2282,6 +2455,8 @@ def test_optimize_build_crafting_keeps_resistance_target_met(engine):
     # earlier tests reuse the session engine): full crafting on a whole gear set. Match the
     # explicit compute profile's 30-minute heavy-test budget while ordinary tests remain strict.
     _spark_caster(engine)
+    # Supply the same explicit prerequisites as the maintenance orchestration smoke above.
+    engine.set_config(custom_mods="+200 to Strength\n+200 to Dexterity\n+200 to Intelligence")
     engine.paste_skill("Spark 20/20  1")
     r = buildopt.optimize_build(
         engine, levers=[], passes=1, max_jewel_sockets=0, min_ehp=None, crafting=True
@@ -2289,7 +2464,7 @@ def test_optimize_build_crafting_keeps_resistance_target_met(engine):
     assert r["ok"], r
     res = r["result"]
     assert res["craftedGear"]  # crafting actually ran on the gear
-    assert res["resistanceTargetMet"] is True
+    assert res["resistanceTargetMet"] is True, r
 
 
 def test_craft_item_beats_plain_rare_and_round_trips_source_receipt(

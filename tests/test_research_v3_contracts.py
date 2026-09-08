@@ -115,6 +115,7 @@ def _with_raw_compact_dq(
             request_contract={"responseProfile": "create_compact"},
             result_contract={
                 "queryContractVersion": 2,
+                "deepRecordEligibilityVersion": research_memory.DEEP_RECORD_ELIGIBILITY_VERSION,
                 "responseProfile": "create_compact",
                 "memoryRevision": revision,
                 "selectedKnowledgeScope": value.get("selectedKnowledgeScope"),

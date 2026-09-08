@@ -783,10 +783,15 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    from .patch_reviews import register_sql
+
+    register_sql(con)
     return con
 
 
 def initialize_store(db_path: Path | None = None) -> Path:
+    from . import research_claims, research_content
+
     path = db_path or mature_learning_path()
     with interprocess_file_lock(research_runtime.research_write_lock_path(path)):
         if db_path is None:
@@ -799,12 +804,48 @@ def initialize_store(db_path: Path | None = None) -> Path:
                     f"mature learning DB schema {existing} is newer than supported {SCHEMA_VERSION}"
                 )
             if existing == SCHEMA_VERSION:
-                if _v5_structure_complete(con):
+                if research_content.installed(con) and research_claims.installed(con):
+                    if not _v5_structure_complete(con):
+                        _backup_before_schema_upgrade(con, path=path, existing=existing)
+                        con.execute("BEGIN IMMEDIATE")
+                        revision_before_repair = research_runtime.get_memory_revision(con)
+                        knowledge_before_repair = _repair_knowledge_fingerprint(con)
+                        _migrate_research_memory_v5(con, apply_known_repairs=False)
+                        if (
+                            research_runtime.get_memory_revision(con) == revision_before_repair
+                            and _repair_knowledge_fingerprint(con) != knowledge_before_repair
+                        ):
+                            research_runtime.bump_memory_revision(con)
+                        research_content.validate_storage(con)
+                        research_claims.validate_storage(con)
+                        con.commit()
                     return path
+                raise SchemaVersionError("research content/claim schema is incomplete; restore a verified backup")
+            if existing == 6:
+                if not research_content.installed(con):
+                    raise SchemaVersionError("research content schema is incomplete; restore a verified backup")
                 _backup_before_schema_upgrade(con, path=path, existing=existing)
                 con.execute("PRAGMA foreign_keys = OFF")
                 con.execute("BEGIN IMMEDIATE")
-                _migrate_research_memory_v5(con, apply_known_repairs=False)
+                research_claims.migrate(con)
+                research_content.validate_storage(con)
+                research_claims.validate_storage(con)
+                con.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+                if con.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise ValueError("research claim migration failed foreign-key validation")
+                con.commit()
+                return path
+            if existing == 5:
+                _backup_before_schema_upgrade(con, path=path, existing=existing)
+                con.execute("PRAGMA foreign_keys = OFF")
+                con.execute("BEGIN IMMEDIATE")
+                if not _v5_structure_complete(con):
+                    _migrate_research_memory_v5(con, apply_known_repairs=False)
+                research_content.migrate(con, invalidate_receipts=False)
+                research_claims.migrate(con)
+                research_content.validate_storage(con)
+                research_claims.validate_storage(con)
+                con.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
                 if con.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise ValueError(
                         "research memory structural repair failed foreign-key validation"
@@ -830,6 +871,10 @@ def initialize_store(db_path: Path | None = None) -> Path:
                 con.execute("BEGIN IMMEDIATE")
             _migrate_phase4_additive_schema(con)
             _migrate_research_memory_v5(con)
+            research_content.migrate(con, invalidate_receipts=False)
+            research_claims.migrate(con, invalidate_receipts=existing > 0)
+            research_content.validate_storage(con)
+            research_claims.validate_storage(con)
             con.execute(
                 """
                 INSERT INTO meta(key, value) VALUES ('schema_version', ?)
@@ -850,6 +895,27 @@ def initialize_store(db_path: Path | None = None) -> Path:
     return path
 
 
+def _repair_knowledge_fingerprint(con: sqlite3.Connection) -> str:
+    """Ignore empty DDL/meta repairs while detecting changed knowledge or source authority."""
+    projection = {}
+    for table in (
+        "deep_research_records",
+        "deep_research_record_evidence",
+        "research_build_families",
+        "research_build_family_evidence",
+        "research_source_provenance",
+        "research_patch_reviews",
+    ):
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','view')", (table,)
+        ).fetchone()
+        projection[table] = (
+            sorted(research_runtime.stable_hash(dict(row)) for row in con.execute(f"SELECT * FROM {table}"))
+            if exists else []
+        )
+    return research_runtime.stable_hash(projection)
+
+
 def _backup_before_schema_upgrade(
     con: sqlite3.Connection,
     *,
@@ -858,7 +924,10 @@ def _backup_before_schema_upgrade(
 ) -> None:
     backup_path = path.with_name(f"{path.name}.pre-schema-{existing}.sqlite")
     if backup_path.exists():
-        return
+        # A previous same-schema repair may have left this backup weeks ago. Never
+        # mistake it for a snapshot of the current data before the next migration.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = path.with_name(f"{path.name}.pre-schema-{existing}-{stamp}.sqlite")
     backup = sqlite3.connect(backup_path)
     try:
         con.backup(backup)
@@ -901,29 +970,14 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
         if not integrity or str(integrity[0]).casefold() != "ok":
             raise ValueError("research release seed failed SQLite integrity check")
         actual_schema = schema_version(con)
-        if actual_schema != SCHEMA_VERSION and not (allow_legacy_schema and actual_schema == 4):
+        if actual_schema != SCHEMA_VERSION and not (allow_legacy_schema and actual_schema in {4, 5, 6}):
             raise ValueError("research release seed schema version mismatch")
         meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+        from .patch_reviews import validate_release_reviews
+
+        validate_release_reviews(con)
         if meta.get("release_seed_kind") != RELEASE_SEED_KIND:
             raise ValueError("research release seed kind is missing or unsupported")
-        if actual_schema == 4:
-            # Packaged v4 seeds were validated by the previous release contract.  Existing-store
-            # initialization immediately migrates the private copy to v5; release packaging still
-            # calls this function without the compatibility flag and therefore fails closed.
-            return
-        family_columns = {
-            str(row[1]) for row in con.execute("PRAGMA table_info(research_build_families)")
-        }
-        if allow_legacy_schema and "knowledge_scope" not in family_columns:
-            legacy_counts = (
-                con.execute("SELECT count(*) FROM research_build_families").fetchone()[0],
-                con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0],
-            )
-            if legacy_counts == (0, 0):
-                return
-            raise ValueError("legacy schema-5 release seed contains unscoped Family data")
-        if not _scoped_source_provenance_complete(con) and not allow_legacy_schema:
-            raise ValueError("research release seed source provenance is not scope-separated")
         allowed_meta = {
             "schema_version",
             "release_seed_kind",
@@ -950,8 +1004,12 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
             "research_revalidation_events",
             "research_decay_events",
         ):
-            if con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','view')", (table,)
+            ).fetchone()
+            if exists and con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]:
                 raise ValueError(f"research release seed contains forbidden table rows: {table}")
+        validate_release_seed_text(con)
         scoped_tables = (
             "research_fragments",
             "research_semantic_edges",
@@ -961,26 +1019,59 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
         )
         for table in scoped_tables:
             where = (
-                "visibility <> 'creator_visible' OR split <> 'train_context' "
-                "OR knowledge_scope <> 'global_seed' "
-                "OR copy_safety_state <> 'passed'"
+                "visibility IS NOT 'creator_visible' OR split IS NOT 'train_context' "
+                "OR knowledge_scope IS NOT 'global_seed' "
+                "OR copy_safety_state IS NOT 'passed'"
             )
             if table != "research_build_design_observations":
-                where += " OR status <> 'valid'"
+                where += " OR status IS NOT 'valid'"
             if con.execute(f"SELECT count(*) FROM {table} WHERE {where}").fetchone()[0]:
                 raise ValueError(f"research release seed contains non-creator-safe rows: {table}")
+        # Legacy compatibility changes only the supported storage version, never the
+        # publication permissions. Old v4/v5 inputs lacking these facts must be rebuilt
+        # through the sanitized seed exporter; do not infer or migrate their authority here.
+        if not _scoped_source_provenance_complete(con):
+            raise ValueError("research release seed source provenance is not scope-separated")
+        if con.execute(
+            "SELECT 1 FROM research_fragment_evidence AS evidence WHERE "
+            "visibility IS NOT 'creator_visible' OR split IS NOT 'train_context' "
+            "OR knowledge_scope IS NOT 'global_seed' OR NOT EXISTS "
+            "(SELECT 1 FROM research_fragments AS fragment "
+            "WHERE fragment.fragment_id=evidence.fragment_id) LIMIT 1"
+        ).fetchone():
+            raise ValueError("research release seed contains non-creator-safe fragment evidence")
+        content_storage_present = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name IN "
+            "('research_content_revisions', 'deep_research_record_bindings') LIMIT 1"
+        ).fetchone()
+        if actual_schema >= 6 or content_storage_present:
+            from .research_content import validate_storage
+
+            validate_storage(con)
+        claim_columns = {str(row[1]) for row in con.execute(
+            "PRAGMA table_info(deep_research_record_evidence)"
+        )}
+        claim_storage_present = bool({"record_id", "source_claim_key", "binding_issue"} & claim_columns)
+        if actual_schema == SCHEMA_VERSION or claim_storage_present:
+            from .research_claims import validate_storage as validate_claim_storage
+
+            validate_claim_storage(con, release=True)
         invalid_deep_records = con.execute(
             """
             SELECT count(*) FROM deep_research_records
-            WHERE record_schema_version <> 2 OR projection_hash IS NULL
-               OR source_state_scope NOT IN ('active_state', 'state_agnostic')
+            WHERE record_schema_version IS NOT 2 OR projection_hash IS NULL
+               OR COALESCE(source_state_scope, '') NOT IN ('active_state', 'state_agnostic')
                OR COALESCE(json_extract(typed_payload, '$.availability'), 'standard') <> 'standard'
             """
         ).fetchone()[0]
         if invalid_deep_records:
             raise ValueError("research release seed contains legacy or non-authorizing records")
+        claim_binding = (
+            "AND evidence.record_id = record.record_id AND evidence.binding_issue IS NULL"
+            if claim_storage_present else ""
+        )
         ineligible_deep_records = con.execute(
-            """
+            f"""
             SELECT count(*) FROM deep_research_records AS record
             WHERE NOT EXISTS (
                 SELECT 1
@@ -994,7 +1085,11 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
                 WHERE evidence.knowledge_scope = record.knowledge_scope
                   AND evidence.knowledge_key = record.knowledge_key
                   AND evidence.accepted_projection_hash = record.projection_hash
+                  AND evidence.game_patch = record.game_patch
+                  AND evidence.passive_tree_version = record.passive_tree_version
+                  AND evidence.pob_version_or_commit = record.pob_version_or_commit
                   AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
+                  {claim_binding}
             )
             """
         ).fetchone()[0]
@@ -1016,7 +1111,7 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
             raise ValueError("research release seed contains Family rows without public records")
         non_global_family_count = con.execute(
             "SELECT count(*) FROM research_build_families "
-            "WHERE knowledge_scope <> 'global_seed'"
+            "WHERE knowledge_scope IS NOT 'global_seed'"
         ).fetchone()[0]
         if non_global_family_count:
             raise ValueError("research release seed contains non-global Family rows")
@@ -1035,7 +1130,7 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
         if orphan_evidence_count:
             raise ValueError("research release seed contains orphaned Family evidence")
         orphan_record_evidence_count = con.execute(
-            """
+            f"""
             SELECT count(*)
             FROM deep_research_record_evidence AS evidence
             WHERE NOT EXISTS (
@@ -1045,13 +1140,19 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
                   AND record.knowledge_key = evidence.knowledge_key
                   AND record.status = 'valid'
                   AND record.superseded_by_id IS NULL
+                  AND evidence.accepted_projection_hash = record.projection_hash
+                  AND evidence.game_patch = record.game_patch
+                  AND evidence.passive_tree_version = record.passive_tree_version
+                  AND evidence.pob_version_or_commit = record.pob_version_or_commit
+                  AND evidence.source_state_scope IN ('active_state', 'state_agnostic')
+                  {claim_binding}
             )
             """
         ).fetchone()[0]
         if orphan_record_evidence_count:
             raise ValueError("research release seed contains orphaned deep-record evidence")
         invalid_source_provenance = con.execute(
-            "SELECT count(*) FROM research_source_provenance WHERE knowledge_scope <> 'global_seed'"
+            "SELECT count(*) FROM research_source_provenance WHERE knowledge_scope IS NOT 'global_seed'"
         ).fetchone()[0]
         if invalid_source_provenance:
             raise ValueError("research release seed contains non-global source provenance")
@@ -1068,8 +1169,43 @@ def validate_release_seed(seed: Path, *, allow_legacy_schema: bool = False) -> N
         ).fetchone()[0]
         if unproven_evidence:
             raise ValueError("research release seed contains evidence without global provenance")
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("research release seed safety contract is incomplete or invalid") from exc
     finally:
         con.close()
+
+
+def validate_release_seed_text(con: sqlite3.Connection) -> None:
+    """Use the same raw-free publication boundary for legacy inputs and new exports."""
+    allowed_tables = set(re.findall(
+        r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA_SQL + _PHASE4_SCHEMA_SQL
+    )) | {
+        "research_content_revisions", "deep_research_record_bindings", "research_patch_reviews",
+        "research_fragment_fts", "research_fragment_fts_config", "research_fragment_fts_data",
+        "research_fragment_fts_docsize", "research_fragment_fts_idx",
+        "sqlite_sequence", "sqlite_stat1", "sqlite_stat4",
+    }
+    tables = [str(row[0]) for row in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )]
+    if set(tables) - allowed_tables:
+        raise ValueError("research release seed contains unsupported data tables")
+    markers = (
+        "<pathofbuilding", "rawxml", "rawimportcode", "pobb.in/", "pastebin.com/",
+        "http://", "https://", "c:\\users\\", "/home/",
+    )
+    for table in tables:
+        if table.startswith("sqlite_") or table.startswith("research_fragment_fts"):
+            continue
+        columns = [str(row[1]) for row in con.execute(f'PRAGMA table_info("{table}")')
+                   if str(row[2] or "").upper() in {"TEXT", ""}]
+        if not columns:
+            continue
+        selected = ", ".join('"' + column.replace('"', '""') + '"' for column in columns)
+        for row in con.execute(f'SELECT {selected} FROM "{table}"'):
+            joined = "\n".join(str(value) for value in row if value is not None).casefold()
+            if any(marker in joined for marker in markers):
+                raise ValueError(f"research release seed contains forbidden text marker in {table}")
 
 
 def schema_version(con: sqlite3.Connection) -> int:
@@ -1170,15 +1306,15 @@ def _migrate_phase4_additive_schema(con: sqlite3.Connection) -> None:
         """
     )
     con.execute(
-        """
+        f"""
         CREATE INDEX IF NOT EXISTS idx_deep_research_records_family
-        ON deep_research_records(build_family_key, record_kind, status)
+        ON {_research_record_storage(con)}(build_family_key, record_kind, status)
         """
     )
     con.execute(
-        """
+        f"""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_research_records_canonical_knowledge
-        ON deep_research_records(knowledge_key)
+        ON {_research_record_storage(con)}(knowledge_key)
         WHERE knowledge_key IS NOT NULL AND superseded_by_id IS NULL
         """
     )
@@ -1189,6 +1325,10 @@ def _migrate_research_memory_v5(
     con: sqlite3.Connection, *, apply_known_repairs: bool = True
 ) -> None:
     """Apply the additive Research v5 storage contract inside the caller transaction."""
+
+    from .patch_reviews import install_schema
+
+    install_schema(con)
 
     _add_column_if_missing(
         con,
@@ -1334,9 +1474,9 @@ def _migrate_research_memory_v5(
 
     con.execute("DROP INDEX IF EXISTS idx_deep_research_records_canonical_knowledge")
     con.execute(
-        """
+        f"""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_research_records_scope_knowledge
-        ON deep_research_records(knowledge_scope, knowledge_key)
+        ON {_research_record_storage(con)}(knowledge_scope, knowledge_key)
         WHERE knowledge_key IS NOT NULL AND superseded_by_id IS NULL
         """
     )
@@ -1542,6 +1682,12 @@ def _migrate_scoped_research_families_v5(con: sqlite3.Connection) -> None:
                 canonical == stored_canonical for _identity, canonical in inferred_canonical
             )
             if not containment_compatible or not exact_witness:
+                _detach_claims_before_legacy_record_change(
+                    con,
+                    "build_family_key = ? AND knowledge_scope = ? "
+                    "AND superseded_by_id IS NULL AND status = 'valid'",
+                    (family_key, scope),
+                )
                 con.execute(
                     "UPDATE deep_research_records SET status = 'needs_revalidation' "
                     "WHERE build_family_key = ? AND knowledge_scope = ? "
@@ -1638,8 +1784,14 @@ def _migrate_scoped_research_families_v5(con: sqlite3.Connection) -> None:
     )
 
 
-def _v5_structure_complete(con: sqlite3.Connection) -> bool:
+def _research_record_storage(con: sqlite3.Connection) -> str:
+    row = con.execute("SELECT type FROM sqlite_master WHERE name='deep_research_records'").fetchone()
+    return "deep_research_record_bindings" if row and row[0] == "view" else "deep_research_records"
+
+
+def _v5_structure_complete(con: sqlite3.Connection, *, check_legacy_records: bool = True) -> bool:
     required_tables = {
+        "research_patch_reviews",
         "research_query_sessions",
         "research_record_write_receipts",
         "research_source_provenance",
@@ -1664,6 +1816,7 @@ def _v5_structure_complete(con: sqlite3.Connection) -> bool:
     if not _scoped_source_provenance_complete(con):
         return False
     required_columns = {
+        "research_patch_reviews": {"source_claim_fingerprint"},
         "deep_research_records": {"projection_hash", "source_state_scope"},
         "deep_research_record_evidence": {
             "knowledge_scope",
@@ -1689,7 +1842,7 @@ def _v5_structure_complete(con: sqlite3.Connection) -> bool:
         actual = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
         if not expected <= actual:
             return False
-    if _legacy_support_packages_need_revalidation(con):
+    if check_legacy_records and _legacy_support_packages_need_revalidation(con):
         return False
     return (
         con.execute("SELECT 1 FROM meta WHERE key = 'research_memory_revision'").fetchone()
@@ -1720,12 +1873,25 @@ def _legacy_support_packages_need_revalidation(con: sqlite3.Connection) -> bool:
     )
 
 
+def _detach_claims_before_legacy_record_change(
+    con: sqlite3.Connection, predicate: str, params: tuple[Any, ...] = ()
+) -> None:
+    """Detach only the internally selected records; a policy repair is not source acceptance."""
+    claim_columns = {
+        str(row[1]) for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")
+    }
+    if {"record_id", "binding_issue"} <= claim_columns:
+        con.execute(
+            "UPDATE deep_research_record_evidence SET record_id=NULL, "
+            "binding_issue='record_projection_mismatch' WHERE record_id IN "
+            "(SELECT record_id FROM deep_research_records WHERE " + predicate + ")",
+            params,
+        )
+
+
 def _migrate_legacy_support_package_status_v5(con: sqlite3.Connection) -> int:
-    cursor = con.execute(
-        """
-        UPDATE deep_research_records
-        SET status = 'needs_revalidation'
-        WHERE record_schema_version = 1
+    predicate = """
+        record_schema_version = 1
           AND status = 'valid'
           AND (
                 record_kind = 'skill_package'
@@ -1736,8 +1902,11 @@ def _migrate_legacy_support_package_status_v5(con: sqlite3.Connection) -> int:
                 )
           )
         """
-    )
-    return max(0, int(cursor.rowcount or 0))
+    count = int(con.execute("SELECT count(*) FROM deep_research_records WHERE " + predicate).fetchone()[0])
+    if count:
+        _detach_claims_before_legacy_record_change(con, predicate)
+        con.execute("UPDATE deep_research_records SET status='needs_revalidation' WHERE " + predicate)
+    return count
 
 
 def _apply_known_research_repairs_v5(con: sqlite3.Connection) -> None:
@@ -1779,6 +1948,9 @@ def _apply_known_research_repairs_v5(con: sqlite3.Connection) -> None:
     if not matched:
         return
     placeholders = ",".join("?" for _ in matched)
+    _detach_claims_before_legacy_record_change(
+        con, f"record_id IN ({placeholders}) AND superseded_by_id IS NULL", tuple(matched)
+    )
     con.execute(
         f"""
         UPDATE deep_research_records

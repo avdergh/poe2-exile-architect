@@ -8,7 +8,7 @@ values in one place prevents the public contracts from drifting independently.
 from __future__ import annotations
 
 
-RESEARCH_MEMORY_DB_SCHEMA_VERSION = 5
+RESEARCH_MEMORY_DB_SCHEMA_VERSION = 7
 SAFE_REVIEW_CONTRACT_VERSION = "phase4-safe-review-v3"
 LEGACY_SAFE_REVIEW_CONTRACT_VERSION = "phase4-safe-review-v2"
 NEW_DEEP_RESEARCH_OUTPUT_SCHEMA_VERSION = 6
@@ -20,6 +20,8 @@ QUERY_CONTRACT_VERSION = 2
 VALIDATION_ISSUE_CONTRACT_VERSION = 2
 RESEARCH_QUERY_RESPONSE_BUDGET_BYTES = 65_536
 MAX_CREATE_INSIGHT_DECISIONS = 24
+# Canonical PoB unique keys preserve ASCII apostrophes; never rewrite their identity.
+SAFE_BOUNDED_REFERENCE_PATTERN = r"^[A-Za-z0-9_.:/\-']{3,240}$"
 
 SOURCE_STATE_SCOPES = {
     "active_state",

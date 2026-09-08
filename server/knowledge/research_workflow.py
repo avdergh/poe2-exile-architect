@@ -15,6 +15,10 @@ from typing import Any
 
 from scripts import research_mature_builds
 from server import paths
+from server.freshness import service as freshness_service
+from server.freshness.leagues import league_token
+from server.knowledge import research_retention
+from server.runtime.file_lock import interprocess_file_lock
 
 
 RUN_REF_PREFIX = "research-run:"
@@ -31,6 +35,55 @@ _PRIVATE_PATH_KEYS = {
     "transientpacketpath",
     "transientpromptpath",
 }
+
+
+def _source_patch_for_run(
+    *,
+    source_game_patch: str | None,
+    league: str,
+    offline: bool,
+    prior_run: Path | None,
+) -> tuple[str, str]:
+    if prior_run is not None:
+        original = research_mature_builds._queue_version_context(
+            prior_run / research_mature_builds.QUEUE_DB_FILENAME
+        )["gamePatch"]
+        if source_game_patch and source_game_patch != original:
+            raise ValueError("supplement_source_patch_is_locked")
+        return original, league
+    if source_game_patch:
+        if not re.fullmatch(r"\d+\.\d+\.\d+[a-z]*", source_game_patch):
+            raise ValueError("invalid_source_game_patch")
+        if offline:
+            return source_game_patch, league
+    if offline:
+        raise ValueError("source_game_patch_required_for_local_input")
+    report = freshness_service.get_freshness_report(
+        force_refresh=True,
+        target_league=None if league == "current" else league,
+    )
+    patches = {
+        claim["value"]
+        for item in report.get("active_evidence", [])
+        if item.get("source") == "ggg-patch" and item.get("status") == "current"
+        for claim in item.get("claims", [])
+        if claim.get("key") == "game_patch"
+    }
+    leagues = {
+        claim["value"]
+        for item in report.get("active_evidence", [])
+        if item.get("component") == "league" and item.get("status") == "current"
+        for claim in item.get("claims", [])
+        if claim.get("key") == "league"
+    }
+    if len(patches) != 1 or len(leagues) != 1:
+        raise ValueError("research_source_patch_or_league_unverified")
+    if source_game_patch and source_game_patch != next(iter(patches)):
+        raise ValueError("research_source_patch_mismatch")
+    selected = league_token(next(iter(leagues)))
+    if league != "current" and selected != league_token(league):
+        raise ValueError("research_source_league_mismatch")
+    return next(iter(patches)), selected
 
 
 def start_run(
@@ -50,15 +103,23 @@ def start_run(
     re_research_run_ref: str | None = None,
     supplement_sample_ids: list[str] | None = None,
     supplement_focus: str = "",
+    source_game_patch: str | None = None,
+    retention_days: int = 7,
+    re_research_scope: str = "supplement",
 ) -> dict[str, Any]:
     """Create one user-data-backed queue and return an opaque run reference."""
 
     runtime_root = _product_runtime_root()
+    research_retention.create_policy(retention_days=retention_days)
     source_files = _absolute_local_sources(source_files, option_name="source_files")
     source_batch_files = _absolute_local_sources(
         source_batch_files, option_name="source_batch_files"
     )
     prior_run = _run_dir(re_research_run_ref) if re_research_run_ref else None
+    if re_research_scope not in {"supplement", "full_case"}:
+        return {"status": "invalid_request", "errorCode": "invalid_re_research_scope"}
+    if re_research_scope == "full_case" and (prior_run is None or not supplement_sample_ids):
+        return {"status": "invalid_request", "errorCode": "full_case_revisit_requires_selected_source_cases"}
     if prior_run is not None and (source_files or source_batch_files):
         return {
             "status": "invalid_request",
@@ -113,9 +174,16 @@ def start_run(
                 "status": "supplement_selection_invalid",
                 "errorCode": "supplement_selection_failed",
             }
+    source_patch, source_league = _source_patch_for_run(
+        source_game_patch=source_game_patch,
+        league=league,
+        offline=bool(source_files or source_batch_files),
+        prior_run=prior_run,
+    )
     if dry_run:
         report = research_mature_builds.queue_cases(
-            league_url=league,
+            league_url=source_league,
+            current_patch=source_patch,
             limit=limit,
             worker_count=worker_count,
             level_min=level_min,
@@ -131,13 +199,16 @@ def start_run(
             re_research_run_dir=prior_run,
             supplement_sample_ids=supplement_sample_ids,
             supplement_focus=supplement_focus,
+            retention_days=retention_days,
+            re_research_scope=re_research_scope,
         )
         return _without_paths(report)
 
     run_id, run_dir = research_mature_builds._allocate_run_output_dir(runtime_root)
     try:
         report = research_mature_builds.queue_cases(
-            league_url=league,
+            league_url=source_league,
+            current_patch=source_patch,
             limit=limit,
             worker_count=worker_count,
             level_min=level_min,
@@ -152,6 +223,8 @@ def start_run(
             re_research_run_dir=prior_run,
             supplement_sample_ids=supplement_sample_ids,
             supplement_focus=supplement_focus,
+            retention_days=retention_days,
+            re_research_scope=re_research_scope,
         )
     except BaseException:
         shutil.rmtree(run_dir, ignore_errors=True)
@@ -162,9 +235,40 @@ def start_run(
 
 
 def run_status(*, run_ref: str) -> dict[str, Any]:
-    run_dir = _run_dir(run_ref)
+    run_dir = _run_dir(run_ref, require_queue=False)
+    with interprocess_file_lock(research_mature_builds._run_lock_path(run_dir / research_mature_builds.QUEUE_DB_FILENAME)):
+        return _run_status_locked(run_dir)
+
+
+def _run_status_locked(run_dir: Path) -> dict[str, Any]:
+    if not (run_dir / research_mature_builds.QUEUE_DB_FILENAME).is_file():
+        audit = research_mature_builds.read_run_audit(
+            output_dir=_product_runtime_root(), run_id=run_dir.name,
+        )
+        if audit is not None:
+            return _with_followup_status(_without_paths(audit), run_dir=run_dir)
+        raise ValueError("research run was not found")
     result = _without_paths(research_mature_builds.queue_status(output_dir=run_dir))
     result.update({"runId": run_dir.name, "runRef": _run_ref(run_dir.name)})
+    result["retention"] = research_retention.inspect_policy(
+        research_mature_builds._read_metadata(run_dir / research_mature_builds.QUEUE_DB_FILENAME),
+        research_mature_builds._fetch_cases(run_dir / research_mature_builds.QUEUE_DB_FILENAME),
+        now=research_mature_builds._now(),
+    )
+    if not result["retention"]["newClaimAllowed"]:
+        result["dispatchableCount"] = 0
+    return _with_followup_status(result, run_dir=run_dir)
+
+
+def _with_followup_status(result: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
+    research_mature_builds._attach_followup_completion(
+        runtime_root=_product_runtime_root(), memory_db_path=paths.mature_learning_path(),
+        run_id=run_dir.name, rows=result.get("samples") or [],
+    )
+    result["effectiveResearchCompleteCount"] = sum(
+        row.get("status") == "accepted" and row.get("effectiveResearchCompletion") == "complete"
+        for row in result.get("samples") or []
+    )
     return result
 
 
@@ -234,6 +338,20 @@ def review_contract(*, run_ref: str, lease_token: str) -> dict[str, Any]:
         lease_token=lease_token,
     )
     public = _without_paths(result)
+    # Product workers edit the initialized object; file transport stays with the legacy CLI.
+    public.pop("artifactEncoding", None)
+    public.pop("topLevelTemplate", None)
+    product_rules = {
+        "先写 safe review，再运行 accept --validate-only；修复全部 invalid_schema 后才能正式 accept。": (
+            "在 initialize_research_review 返回的对象中完成研究；调用 validate_research_review，"
+            "修复全部 invalid_schema 后再调用 accept_research_review。"
+        ),
+        "safe review 使用 UTF-8、两空格缩进的多行 JSON，确保有界修复能精确编辑单个字段。": (
+            "只在模型工作状态中修改 review 对象，并原样提交给 typed 工具；"
+            "运行态文件的编码、格式和保存由服务负责。"
+        ),
+    }
+    public["rules"] = [product_rules.get(rule, rule) for rule in public.get("rules", [])]
     public["nextActions"] = [
         "initialize_research_review",
         "validate_research_review",
@@ -344,12 +462,15 @@ def cleanup_run(
 ) -> dict[str, Any]:
     """Remove one private run runtime without exposing or accepting a filesystem path."""
 
-    run_dir = _run_dir(run_ref)
+    # The helper restores a retained cleanup-staging directory and rechecks all
+    # completion/receipt gates. A partial deletion must remain reachable here.
+    run_dir = _run_dir(run_ref, require_queue=False)
     result = research_mature_builds.cleanup_completed_run(
         run_id=run_dir.name,
         output_dir=_product_runtime_root(),
         allow_rejected=allow_rejected,
         abandon_incomplete=abandon_incomplete,
+        memory_db_path=paths.mature_learning_path(),
     )
     public = _without_paths(result)
     public.update({"runId": run_dir.name, "runRef": _run_ref(run_dir.name)})
@@ -370,7 +491,7 @@ def _run_ref(run_id: str) -> str:
     return RUN_REF_PREFIX + run_id
 
 
-def _run_dir(run_ref: str | None) -> Path:
+def _run_dir(run_ref: str | None, *, require_queue: bool = True) -> Path:
     value = str(run_ref or "").strip()
     if not value.startswith(RUN_REF_PREFIX):
         raise ValueError("run_ref must be an opaque research-run reference")
@@ -380,7 +501,7 @@ def _run_dir(run_ref: str | None) -> Path:
     runs_root = (_product_runtime_root() / research_mature_builds.RUNS_DIRNAME).resolve()
     candidate = (runs_root / run_id).resolve()
     candidate.relative_to(runs_root)
-    if not (candidate / research_mature_builds.QUEUE_DB_FILENAME).is_file():
+    if require_queue and not (candidate / research_mature_builds.QUEUE_DB_FILENAME).is_file():
         raise ValueError("research run was not found")
     return candidate
 

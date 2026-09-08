@@ -2,7 +2,7 @@ diff --git a/src/Classes/Item.lua b/src/Classes/Item.lua
 index e92af74..e2f0ebd 100644
 --- a/src/Classes/Item.lua
 +++ b/src/Classes/Item.lua
-@@ -2135,17 +2135,38 @@ function ItemClass:BuildModList()
+@@ -2135,18 +2135,39 @@ function ItemClass:BuildModList()
  			for _, mod in ipairs(modLine.modList) do
  				baseList:ScaleAddMod(mod, effectModifier)
  			end
@@ -29,6 +29,7 @@ index e92af74..e2f0ebd 100644
  				skillId = skill.skillId,
  				level = skill.level,
  				noSupports = skill.noSupports,
+ 				noReservation = self.base and self.base.grantedSkillsHaveNoReservation or nil,
 +				-- The Coming Calamity grants its three Heralds without their base
 +				-- reservation. This is an item-specific rule, not a generic rule for
 +				-- item-granted skills.
@@ -46,12 +47,13 @@ diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
 index 9f2bcd8..aacd735 100644
 --- a/src/Modules/CalcSetup.lua
 +++ b/src/Modules/CalcSetup.lua
-@@ -1551,10 +1551,11 @@ function calcs.initEnv(build, mode, override, specEnv)
+@@ -1551,11 +1551,12 @@ function calcs.initEnv(build, mode, override, specEnv)
  				activeGemInstance.level = grantedSkill.level
  				activeGemInstance.gemId = data.gemForSkill[data.skills[grantedSkill.skillId]]
  				activeGemInstance.enableGlobal1 = true
  				activeGemInstance.noSupports = grantedSkill.noSupports
  				group.noSupports = grantedSkill.noSupports
+ 				activeGemInstance.noReservation = grantedSkill.noReservation
 +				activeGemInstance.noSpiritReservation = grantedSkill.noSpiritReservation
  				activeGemInstance.triggered = grantedSkill.triggered
  				activeGemInstance.triggerChance = grantedSkill.triggerChance
@@ -77,7 +79,7 @@ index e035876..4da3b09 100644
  	end
  	-- Add support gem modifiers to skill mod list
  	for _, skillEffect in pairs(activeSkill.effectList) do
-@@ -797,10 +801,14 @@ function calcs.buildActiveSkillModList(env, activeSkill)
+@@ -797,16 +801,20 @@ function calcs.buildActiveSkillModList(env, activeSkill)
  	if activeStatSet and activeStatSet.levels then
  		for k, v in pairs(activeStatSet.levels[activeEffect.level] or { }) do
  			grantedEffectLevel[k] = v
@@ -87,6 +89,12 @@ index e035876..4da3b09 100644
 +		grantedEffectLevel.spiritReservationFlat = 0
 +		grantedEffectLevel.spiritReservationPercent = 0
 +	end
+ 	if activeEffect.srcInstance and activeEffect.srcInstance.noReservation then
+ 		for _, resource in ipairs({ "mana", "life", "spirit" }) do
+ 			grantedEffectLevel[resource.."ReservationFlat"] = 0
+ 			grantedEffectLevel[resource.."ReservationPercent"] = 0
+ 		end
+ 	end
  	activeEffect.grantedEffectLevel = grantedEffectLevel
  
  	-- Add extra modifiers from granted effect level

@@ -58,6 +58,15 @@ def resolve_league(override: str | None = None) -> dict[str, str]:
         return {"name": override, "base": ""}
     if _league_info is None:
         leagues = _get(f"{REALM}/Leagues")
+        from datetime import datetime, timezone
+        from ..freshness.leagues import default_league, league_token
+
+        selected = default_league(datetime.now(timezone.utc))
+        if selected is not None:
+            matches = [row for row in leagues if league_token(row["Value"]) == league_token(selected)]
+            if len(matches) != 1:
+                raise ValueError("target league prices unavailable; specify a supported league")
+            return {"name": matches[0]["Value"], "base": matches[0].get("BaseCurrencyText", "")}
         current = [leag for leag in leagues if leag.get("IsCurrent")] or leagues
         _league_info = {
             "name": current[0]["Value"],

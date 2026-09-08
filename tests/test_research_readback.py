@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from server.knowledge import research_readback
+import pytest
 
 
 class _FakeEngine:
@@ -44,6 +45,48 @@ class _FakeEngine:
         return '<PathOfBuilding><Build level="98"/></PathOfBuilding>'
 
 
+@pytest.mark.parametrize("model, status", [("0.5.4", "source_patch_model_mismatch"),
+    ("0.5.5", "certified_local_runtime"), ("", "model_version_unknown")])
+def test_readback_preserves_source_and_model_patch_without_numerical_promotion(monkeypatch, model, status):
+    monkeypatch.setattr(research_readback, "PobEngine", _FakeEngine)
+    context = {"gamePatch": "0.5.5", "modelGamePatch": model,
+               "passiveTreeVersion": "0_5", "pobVersionOrCommit": "0.23.1"}
+    result = research_readback.build_safe_readback("<PathOfBuilding/>", source_hash_ref="source-hash:test", version_context=context)
+    assert result["versionContext"]["gamePatch"] == "0.5.5"
+    assert result["versionContext"]["modelGamePatch"] == model
+    assert result["versionContext"]["status"] == status
+    assert result["modelability"]["status"] == "partial"
+    if model == "0.5.4":
+        assert any("model patch 0.5.4" in warning for warning in result["modelability"]["caveats"])
+    unavailable = research_readback.build_safe_readback("", source_hash_ref="source-hash:test", version_context=context)
+    assert unavailable["versionContext"] == result["versionContext"]
+
+
+def test_packet_and_readback_share_version_context_and_bind_it_into_safe_hash(tmp_path, monkeypatch):
+    from scripts import research_mature_builds as mature
+    from server.knowledge import research_packet
+    monkeypatch.setattr(research_readback, "PobEngine", _FakeEngine)
+    monkeypatch.setenv("POE2_RESEARCH_POB_READBACK", "1")
+    captured = []
+    original = research_packet.build_research_packet
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)
+        captured.append(result["packet"])
+        return result
+    monkeypatch.setattr(research_packet, "build_research_packet", capture)
+    case = {"sampleId": "case:test", "sourceType": "local_pob_file", "sourceHashRef": "source-hash:test",
+            "sourceHash": "test", "_rawImportCode": "synthetic", "_rawXml": "<PathOfBuilding/>"}
+    for model in ("0.5.4", "0.5.5"):
+        mature._prepare_packet(case, temp_root=tmp_path, ttl_seconds=60, current_patch="0.5.5",
+            passive_tree_version="0_5", pob_version_or_commit="0.23.1", include_pob_readback=True,
+            version_context={"modelGamePatch": model})
+    first = captured[0]
+    assert first["safeMetadata"]["modelGamePatch"] == "0.5.4"
+    assert first["safeMetadata"]["versionContextStatus"] == "source_patch_model_mismatch"
+    assert first["pobReadback"]["versionContext"]["modelGamePatch"] == "0.5.4"
+    assert captured[0]["safeHash"] != captured[1]["safeHash"]
+
+
 def test_safe_readback_recomputes_bounded_active_snapshot(monkeypatch):
     monkeypatch.setattr(research_readback, "PobEngine", _FakeEngine)
     result = research_readback.build_safe_readback(
@@ -57,10 +100,11 @@ def test_safe_readback_recomputes_bounded_active_snapshot(monkeypatch):
     assert result["resources"]["spiritReservedCapped"] == 251
     assert result["resources"]["ledgerStatus"] == "consistent"
     assert result["stats"]["ManaPerSecondCost"] == 5968
-    assert "xml" not in str(result).casefold()
+    serialized = str(result).casefold()
+    assert "rawxml" not in serialized and "<pathofbuilding" not in serialized
     assert result["stateBinding"]["weaponSetState"] == "active"
     assert result["stateBinding"]["activeWeaponSet"] == 2
-    assert result["schemaVersion"] == "research_pob_readback_v3"
+    assert result["schemaVersion"] == "research_pob_readback_v4"
     assert "supportOwnerEvidence" not in result
 
 

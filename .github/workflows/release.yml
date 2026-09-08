@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  POB_COMMIT: 860f4268299739ce9df87c4f373abe35824101cf # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
+  POB_COMMIT: 7d6f530cbdab20389ff8bc6ba97a37ac27f74e41 # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
   LUAJIT_COMMIT: 871db2c84ecefd70a850e03a6c340214a81739f0 # matches PoB's pinned LuaJIT
 
 jobs:
@@ -69,7 +69,12 @@ jobs:
         continue-on-error: true
         run: uv run ruff format --check server scripts pipeline tests
       - run: npx --yes @anthropic-ai/mcpb validate manifest.json
-      - run: uv run python -m pipeline.build_corpus
+      - name: Rebuild and bind the reviewed corpus certificate
+        shell: bash
+        run: |
+          cp data/corpus.sqlite reviewed-corpus.sqlite
+          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
       - name: Full non-compute release gate
         shell: pwsh
         run: ./scripts/verify.ps1 -Profile full
@@ -96,7 +101,12 @@ jobs:
           git -C pob/PathOfBuilding-PoE2 config core.autocrlf false # keep LF so the LF patch applies on Windows
           git -C pob/PathOfBuilding-PoE2 checkout -q ${{ env.POB_COMMIT }}
           (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
-      - run: uv sync && uv run python -m pipeline.build_corpus
+      - name: Rebuild and bind the reviewed corpus certificate
+        run: |
+          cp data/corpus.sqlite reviewed-corpus.sqlite
+          uv sync
+          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
 
       - name: Assemble update payload + manifest
         run: |
@@ -122,6 +132,7 @@ jobs:
           python - "$POB_COMMIT" "$BASE" "$SRC_SHA" <<'PY'
           import hashlib, json, sys
           from server import paths
+          from server.knowledge.corpus_certification import validate
           commit, base, src_sha = sys.argv[1], sys.argv[2], sys.argv[3]
           def sha(p): return hashlib.sha256(open(p,"rb").read()).hexdigest()
           compat = json.load(open("data/compatibility/pob.json", encoding="utf-8"))
@@ -130,6 +141,7 @@ jobs:
           if certified is None:
               raise SystemExit(f"PoB commit {commit} is not certified in data/compatibility/pob.json")
           tag = "${{ github.ref_name }}"
+          corpus_certificate = validate(json.load(open("data/compatibility/corpus.json", encoding="utf-8")), corpus_sha256=sha("rel/corpus.sqlite"))
           manifest = {
               "version": tag,                       # data version (apply_updates compares this)
               "app_version": tag.lstrip("v"),       # .mcpb/code version (decoupled .mcpb nag)
@@ -139,7 +151,7 @@ jobs:
               "game_patch": certified["game_patch"],
               "passive_tree": certified["passive_tree"],
               "source_sha": src_sha,
-              "corpus": {"url": f"{base}/corpus.sqlite", "sha256": sha("rel/corpus.sqlite")},
+              "corpus": {"url": f"{base}/corpus.sqlite", "sha256": sha("rel/corpus.sqlite"), "certificate": corpus_certificate},
               "engine": {"url": f"{base}/pob-engine.zip", "sha256": sha("rel/pob-engine.zip")},
           }
           json.dump(manifest, open("rel/update-manifest.json","w"), indent=2)

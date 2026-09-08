@@ -423,7 +423,7 @@ def test_current_runtime_verified_support_capability_gap_can_reach_judge():
                             "groupIndex": 2,
                             "activeSkillIndex": 1,
                             "freshness": "current",
-                            "auditVersion": "support_audit_v2",
+                            "auditVersion": "support_audit_v3",
                             "status": "unknown",
                             "reasonClass": "capability_gap",
                             "verificationRequired": True,
@@ -580,6 +580,8 @@ def test_memory_assisted_judge_rejects_mechanism_drift_before_attempt(tmp_path, 
         "blueprintRef": "gbp-0123456789abcdef",
         "blueprintHash": "blueprint-hash",
         "researchExecutionStructureHash": "structure-hash",
+        "evidenceAudit": {},
+        "evidenceAuditHash": "audit-hash",
     }
     (run_dir / "mechanism-blueprint-validation.json").write_text(
         json.dumps(blueprint), encoding="utf-8"
@@ -595,6 +597,10 @@ def test_memory_assisted_judge_rejects_mechanism_drift_before_attempt(tmp_path, 
     marker = {
         "schemaVersion": 2,
         "candidateId": "candidate:test:drift",
+        "evidenceAuditHash": "audit-hash",
+        "designToolsHash": "tools-hash",
+        "designEvidenceUses": {"packages": {}, "crossCasePlans": {}},
+        "designEvidenceUsesHash": "uses-hash",
         "researchMemoryRef": _version_context()["research_memory_ref"],
         "researchPremiseAuditReady": True,
         "familyDiscoveryRef": family["familyDiscoveryRef"],
@@ -722,6 +728,11 @@ def test_historical_attempt_cannot_be_saved_under_revised_blueprint(tmp_path, mo
         return _judge_result(snapshot_id)
 
     monkeypatch.setattr(evaluation.runner, "safe_evaluate_active_build", fake_safe)
+    # Construct a pre-bundle legacy receipt. Today's required-Draft Judge correctly refuses
+    # these bare markers; the compatibility test must not create a new bundle-less attempt
+    # through that path. The optional-Draft fixture supplies the original numerical receipt.
+    manifest["experimentContext"]["mechanismBlueprintRequired"] = False
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     evaluated = evaluation.evaluate_generation_candidate(
         _ActiveEngine(),
         run_id=run_id,
@@ -731,7 +742,17 @@ def test_historical_attempt_cannot_be_saved_under_revised_blueprint(tmp_path, mo
         engine_factory=_JudgeEngine,
     )
     assert evaluated["status"] == "evaluated"
+    manifest["experimentContext"]["mechanismBlueprintRequired"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     receipt = json.loads((run_dir / "trusted-evaluation.json").read_text(encoding="utf-8"))
+    receipt["mechanismBinding"] = run_store.current_mechanism_binding(
+        run_store.load_bound_run(run_id, token)
+    )
+    for receipt_path in (
+        run_dir / "trusted-evaluation.json",
+        run_dir / "trusted-evaluations" / "attempt-0.json",
+    ):
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     assert receipt["mechanismBinding"]["mechanismBlueprintHash"] == "blueprint-hash-v1"
     assert receipt["mechanismBinding"]["researchExecutionContractRef"] == "contract-v2"
     assert receipt["mechanismBinding"]["researchExecutionStructureHash"] == "structure-v2"

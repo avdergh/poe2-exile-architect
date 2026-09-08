@@ -10,6 +10,7 @@ Run:  uv run python -m pipeline.build_corpus  [--refresh]
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import sys
@@ -171,6 +172,11 @@ def apply_radius_jewel_scope(mod_id: str, text: str, node_types: dict[str, int])
 
 def fetch_all(refresh: bool = False) -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
+    exported_url = "https://raw.githubusercontent.com/repoe-fork/poe2/master/exported-version.txt"
+    exported_before = "unknown"
+    if refresh:
+        with urllib.request.urlopen(exported_url, timeout=30) as response:
+            exported_before = response.read().decode("utf-8").strip()
     for name in SOURCE_FILES:
         dest = RAW_DIR / name
         if dest.exists() and not refresh:
@@ -179,6 +185,20 @@ def fetch_all(refresh: bool = False) -> None:
         req = urllib.request.Request(BASE + name, headers={"User-Agent": "poe2-build-mcp/0.1"})
         with urllib.request.urlopen(req, timeout=120) as r:
             dest.write_bytes(r.read())
+    exported_after = "unknown"
+    if refresh:
+        with urllib.request.urlopen(exported_url, timeout=30) as response:
+            exported_after = response.read().decode("utf-8").strip()
+    if exported_before != exported_after:
+        raise ValueError("RePoE export changed during fetch; retry a consistent snapshot")
+    # Cached files cannot inherit today's export version without being fetched again.
+    manifest = {
+        "exportedVersion": exported_after if refresh else "unknown",
+        "versionSource": exported_url,
+        "files": [{"sourceUrl": BASE + name, "sha256": hashlib.sha256((RAW_DIR / name).read_bytes()).hexdigest()}
+                  for name in SOURCE_FILES],
+    }
+    (RAW_DIR / "source-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print("fetching wiki mechanics ...")
     print("  wiki:", wiki.fetch_all(refresh=refresh))
 
@@ -384,6 +404,14 @@ def build() -> dict[str, int]:
         "schema_version": "4",
         "counts": json.dumps(counts),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_manifest": json.dumps({
+            "repoe": json.loads((RAW_DIR / "source-manifest.json").read_text(encoding="utf-8"))
+                     if (RAW_DIR / "source-manifest.json").is_file() else {"exportedVersion": "unknown"},
+            "pobUniqueFiles": [{"path": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
+                                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                               for path in sorted(UNIQUES_DIR.glob("*.lua"))],
+            "wiki": {"certification": "reference_only"},
+        }),
     }.items():
         cur.execute("INSERT INTO meta(key,value) VALUES(?,?)", (key, value))
 

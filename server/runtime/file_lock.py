@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,7 +26,7 @@ def interprocess_file_lock(path: Path) -> Iterator[None]:
 
 
 def _lock(handle: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0, os.SEEK_END)
@@ -46,7 +47,7 @@ def _lock(handle: BinaryIO) -> None:
 
 
 def _unlock(handle: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         handle.seek(0)

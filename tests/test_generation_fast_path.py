@@ -679,6 +679,8 @@ def test_endgame_quality_checklist_keeps_unassessed_systems_at_candidate(monkeyp
 
 
 def test_checkpoint_cache_refreshes_session_local_quality_audits(monkeypatch):
+    from test_tree_source_skill_supports import _complete_support_measurement
+
     engine = FakeCheckpointEngine()
     engine.xml = """<PathOfBuilding><Build className="Mercenary" level="95" mainSocketGroup="1"/>
     <Skills activeSkillSet="1"><SkillSet id="1"><Skill enabled="true">
@@ -763,20 +765,15 @@ def test_checkpoint_cache_refreshes_session_local_quality_audits(monkeypatch):
 
     before = validation_checkpoint.inspect_generation_checkpoint(engine)
     audit["value"] = {
+        "auditVersion": "support_audit_v3",
         "status": "passed",
+        "groupIndex": 1,
+        "activeSkillIndex": 1,
+        "skill": "Stormblast Bolts",
+        "currentSupports": [],
+        "recommendedSupports": [],
         "positiveGainSupportsMissing": [],
-        "measurement": {
-            "status": "complete",
-            "checkpointEligible": True,
-            "coverageComplete": True,
-            "classificationComplete": True,
-            "measuredCandidates": 1,
-            "classifiedCandidates": 1,
-            "screenedCandidates": 1,
-            "failedCandidates": 0,
-            "failedCombinations": 0,
-            "finalConstraintsSatisfied": True,
-        },
+        "measurement": _complete_support_measurement(),
     }
     after = validation_checkpoint.inspect_generation_checkpoint(engine)
 
@@ -867,6 +864,7 @@ def test_support_capability_gap_is_unknown_with_group_evidence():
                 {
                     "groupIndex": 1,
                     "mainActiveSkillCalcs": 1,
+                    "activeSkills": ["Cast on Critical"],
                     "source": None,
                     "sourceKind": None,
                     "noSupports": False,

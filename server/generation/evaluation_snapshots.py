@@ -29,6 +29,7 @@ class EvaluationSnapshot:
     candidate_id: str
     source_hash: str
     semantic_state_hash: str
+    mechanism_evidence_hash: str | None
     xml: str
     created_at: datetime
 
@@ -43,6 +44,7 @@ def remember(
     candidate_id: str,
     source_hash: str,
     xml: str,
+    mechanism_evidence_hash: str | None = None,
 ) -> EvaluationSnapshot:
     """Remember one exact Judge input without writing it to disk."""
 
@@ -54,6 +56,7 @@ def remember(
         candidate_id=candidate_id,
         source_hash=source_hash,
         semantic_state_hash=build_state_hash(xml),
+        mechanism_evidence_hash=mechanism_evidence_hash,
         xml=xml,
         created_at=datetime.now(timezone.utc),
     )
