@@ -25,9 +25,11 @@ accepted=2、claimed=1、effectiveComplete=0，不cleanup，也不把接受安�
 本次工程修复将validate/accept/retry的末端回传限定为已有的durable知识规则，保留完整核心机制
 诊断及拒绝状态；queue/control继续严格，raw/角色链接/禁用字段/长文门槛不变。回归使用合成
 多效果与不同技能来源，覆盖四类核心机制文本、partial/blocked、accept/retry和原料反例，
-不加入升华或技能名称特判；23项新增场景、320项相关回归及132项quick检查通过。新代码安装
-生效后须对保留的完整35条对象重验；lease过期须合法
-重新领取，不能重放旧token。详见本地审计`tmp/research-content-20260909/AUDIT.md`。
+不加入升华或技能名称特判；23项新增场景、320项相关回归及132项quick检查通过。
+`0.5.0+codex.20260909063203`已安装启用，实际cache的3550个文件、165工具、PoB启动和诊断探针
+均核验通过，用户存储与安装前备份一致。当前任务仍须重新加载新版MCP；之后对保留的完整35条
+对象重验，lease过期须合法重新领取，不能重放旧token。详见本地审计
+`tmp/research-content-20260909/AUDIT.md`及`tmp/release-install-20260909c/INSTALL_REPORT.md`。
 
 ## 审查后优化进度（2026-09-06）
 
