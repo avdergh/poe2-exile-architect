@@ -482,6 +482,12 @@ def _unique_modifier_lines(text: str, *, include_implicit: bool = False) -> list
 
 
 def _unique_modifier_line_matches(actual: str, expected: str) -> bool:
+    # Clipboard effects have already had kind markers split off by
+    # _structured_effect_lines; tagged PoB variant projections still contain them.
+    # Compare effect text on both sides without changing either item's structural
+    # fingerprint or the separate special-source provenance audit.
+    actual = _MARKER.sub("", _PREFIX_MARKER.sub("", actual.strip())).strip()
+    expected = _MARKER.sub("", _PREFIX_MARKER.sub("", expected.strip())).strip()
     if _normalize(actual) != _normalize(expected):
         return False
     actual_ranges = _display_ranges(actual)

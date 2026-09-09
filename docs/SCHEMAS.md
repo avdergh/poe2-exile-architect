@@ -313,6 +313,8 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `get_unique.variantSelection` 返回 `requiredSelections/allowDuplicateVariants/options/modifierTemplates`；
   展平的 `text` 仅供阅读，不代表所有变体可以同时装备。校验按 PoB 的 variant 共享与重复语义核对
   完整词条多重集、数值范围及选择数量，不允许任意子集、跨变体拼接或由调用者扩大选择容量。
+  PoB来源中的词条种类标记（如`{desecrated}`）与剪贴板效果分开比较；仅统一效果文本，原始
+  结构指纹、实际读回及独立的Rune/腐化等特殊来源回执审计不因此放宽。
   写入后的同暗金身份校验包含实际选中变体和隐式，不能用同名不同效果的物品冒充请求。
 - `optimize_item_sockets` 复用同一个 `CraftLegalityReceipt`，不定义第二套写入合同。它读取已装备
   物品，只接受显式 1–2 孔，在保留底材、Item Level、隐式和全部显式词缀后选择 PoB

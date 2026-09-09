@@ -138,6 +138,106 @@ def test_large_generated_jewel_prunes_to_real_selected_choices():
     assert not itemparse.audit_item_legality("Rarity: Unique\n" + unique["text"])["ok"]
 
 
+_HEART_MODIFIERS = [
+    "Gain 10% of Damage as Extra Chaos Damage",
+    "Gain 12% of Damage as Extra Cold Damage",
+    "Recover 2% of maximum Mana on Kill",
+    "6% increased Mana Regeneration Rate",
+]
+
+
+@pytest.mark.parametrize("marker", ["plain", "prefix", "suffix"])
+def test_generated_jewel_source_markers_match_clipboard_effects(marker):
+    unique = db.get_unique("Heart of the Well", include_source=True)
+    assert "{desecrated}" in unique["pobSource"]
+    modifiers = [
+        "{desecrated}" + line
+        if marker == "prefix"
+        else line + " (desecrated)"
+        if marker == "suffix"
+        else line
+        for line in _HEART_MODIFIERS
+    ]
+    raw = _item("Heart of the Well", modifiers)
+    result = itemparse.audit_item_legality(raw, require_special_provenance=True)
+    assert result["ok"], result
+    # Matching intrinsic effects must not rewrite the original provenance projection.
+    kinds = {entry["kind"] for entry in itemparse.semantic_item_structure(raw)["effects"]}
+    assert kinds == ({"explicit"} if marker == "plain" else {"desecrated"})
+
+
+@pytest.mark.parametrize(
+    "modifiers",
+    [
+        _HEART_MODIFIERS[:-1],
+        _HEART_MODIFIERS + ["+9999 to maximum Mana"],
+        [line.replace("Gain 10%", "Gain 14%") for line in _HEART_MODIFIERS],
+        [*_HEART_MODIFIERS[:3], _HEART_MODIFIERS[2]],
+        ["{unknown}" + line for line in _HEART_MODIFIERS],
+    ],
+)
+def test_generated_jewel_marker_matching_keeps_complete_choices_and_roll_limits(modifiers):
+    result = itemparse.audit_item_legality(_item("Heart of the Well", modifiers))
+    assert not result["ok"]
+    assert "unique_modifier_mismatch" in result["issues"]
+
+
+def test_generated_jewel_matching_does_not_authorize_external_special_sources():
+    raw = _item("Heart of the Well", _HEART_MODIFIERS)
+    for extra in ["\nCorrupted", "\nRune: Iron Rune\n{rune}+20 to Armour"]:
+        result = itemparse.audit_item_legality(raw + extra, require_special_provenance=True)
+        assert "special_source_provenance_required" in result["issues"]
+    assert not equipment._same_unique_identity(raw, raw.replace("Gain 10%", "Gain 11%"))
+
+
+def test_tagged_generated_source_and_clipboard_share_only_the_selected_effects():
+    unique = db.get_unique("Heart of the Well", include_source=True)
+    source = parse_unique_source(unique["pobSource"], name=unique["name"], base=unique["base"])
+    raw_source = "Rarity: Unique\n" + unique["pobSource"]
+    clipboard = _item(
+        unique["name"],
+        [line.removeprefix("{desecrated}") for line in source.project(source.selected)],
+    )
+    assert itemparse.audit_item_legality(raw_source)["ok"]
+    assert itemparse.audit_item_legality(clipboard)["ok"]
+    assert equipment._same_unique_identity(raw_source, clipboard)
+    assert not equipment._same_unique_identity(raw_source, _item(unique["name"], _HEART_MODIFIERS))
+
+
+@pytest.mark.parametrize(
+    "class_name,ascendancy", [("Huntress", "Amazon"), ("Sorceress", "Stormweaver")]
+)
+@pytest.mark.parametrize("tagged", [False, True])
+def test_pob_generated_unique_jewel_verifies_existing_slot(
+    fireball, class_name, ascendancy, tagged
+):
+    from server.compute import completeness
+    from server.compute.state import build_state_hash
+
+    fireball.set_level(95)
+    fireball.set_class(class_name, ascendancy)
+    fireball.alloc_passive(61834, path_attribute="Intelligence")
+    modifiers = [("{desecrated}" if tagged else "") + line for line in _HEART_MODIFIERS]
+    raw = _item("Heart of the Well", modifiers)
+    before = fireball.get_build()
+    result = equipment.equip_jewel_verified(
+        fireball, raw=raw, socket=61834, expected_state_hash=build_state_hash(fireball.get_xml())
+    )
+    assert result["ok"] and result["readbackVerified"], result
+    assert result["socketOperation"] == "existing_allocated_socket"
+    after = fireball.get_build()
+    assert after["normalPassivePointsUsed"] == before["normalPassivePointsUsed"]
+    actual = completeness.equipped_item_text_from_engine(fireball, "Jewel 61834")
+    assert actual and equipment._same_unique_identity(raw, actual)
+    assert itemparse.audit_item_legality(actual, require_special_provenance=True)["ok"]
+    stable_hash = build_state_hash(fireball.get_xml())
+    rejected = equipment.equip_jewel_verified(
+        fireball, raw=raw.replace("Gain 10%", "Gain 14%"), socket=61834
+    )
+    assert rejected["errorCode"] == "item_legality_check_failed"
+    assert build_state_hash(fireball.get_xml()) == stable_hash
+
+
 def test_fixed_unique_implicit_and_tagged_source_still_match_actual_rolls():
     raw = _item(
         "Andvarius",
