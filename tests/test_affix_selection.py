@@ -59,6 +59,34 @@ def test_shared_five_affix_budget_does_not_prefer_prefixes() -> None:
     assert _valid(selected, policy)
 
 
+@pytest.mark.parametrize(("prefix_limit", "suffix_limit"), [(2, 2), (1, 1), (0, 2), (3, 3)])
+def test_base_capacity_bounds_each_side_before_spending_shared_budget(prefix_limit, suffix_limit):
+    entries = [
+        _affix(gain, kind, f"{kind}{index}")
+        for kind, gain in (("prefix", 1), ("suffix", 100))
+        for index in range(3)
+    ]
+    policy = policy_for("realistic_trade")
+    selected = select_affix_subset(
+        entries, policy, prefix_limit=prefix_limit, suffix_limit=suffix_limit
+    )
+    expected = max(
+        _score(list(subset))
+        for size in range(len(entries) + 1)
+        for subset in itertools.combinations(entries, size)
+        if _valid(list(subset), policy)
+        and sum(item[1]["type"] == "prefix" for item in subset) <= prefix_limit
+        and sum(item[1]["type"] == "suffix" for item in subset) <= suffix_limit
+    )
+    assert _score(selected) == expected
+
+
+@pytest.mark.parametrize("capacity", [-1, True, 2.5, None])
+def test_invalid_base_capacity_is_rejected(capacity):
+    with pytest.raises(ValueError, match="invalid_affix_selection_capacity"):
+        select_affix_subset([], policy_for("theoretical"), prefix_limit=capacity)
+
+
 def test_deep_tier_budget_keeps_lower_tier_alternative_of_same_group() -> None:
     entries = [
         _affix(100, "prefix", "a", deep=True, line="a:T1"),

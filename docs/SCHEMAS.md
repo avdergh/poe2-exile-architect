@@ -286,8 +286,13 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `plan_gear / optimize_item / craft_item / rank_upgrades` 与 Checkpoint 使用同一 policy 及 tier 阶梯，
   实际 roll 后重新分类，来源低档与高档数值重叠时继续寻找实际低档候选；完整成品须再次通过审计。
   装备写入、暗金、药剂、护符、珠宝、Rune、Soul Core、implicit 和 corruption 不受该策略限制。
-  `plan_gear`的边际词缀选择在全局group互斥、3前/3后、总显式与实际深T1预算内联合优化，
+  `plan_gear`的边际词缀选择在全局group互斥、底材前后缀容量、总显式与实际深T1预算内联合优化，
   完整成品必须另测；不能将边际分数之和直接当作组合收益。
+- 物品词缀容量按静态底材类型与稀有度共用`db.craft_profile`：普通Rare装备3前/3后，
+  Jewel类Rare（含Radius/Time-Lost）2前/2后；Magic仍1前/1后，Flask域保持Magic限制。
+  `optimize_jewel`自动选择与Agent精确选择、通用单件优化、边际规划、物品解析的剩余槽位和
+  来源感知合法性审计使用同一容量。隐式、Rune及可信特殊来源仍按既有来源合同计数，
+  不套普通黄装可获得性预算；`theoretical`也不能提高底材合法容量。不得按职业、升华或技能名分支。
 - 普通装备搜索使用`item_replacement_context_v1`：抗性发现以卸除待换槽后的PoB状态为准，候选
   绑定原effectId/精确名称、用户组或source归属与配置，逐项完整测量并验证恢复；未知、缺值、
   非有限数值或显式失败不进入排名。原生未配置派生源可随真实词缀变化，原输出与用户配置不得漂移。
@@ -970,6 +975,9 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   `researchCompletion=complete/needs_followup/unknown`、`completionScope=case/supplement`，保存
   deferred/未解析/coverage计数、typed原因及安全定位，不保存被拒绝正文。缺失计数保留unknown；
   `completionDiagnosticsIncomplete` 阻止缺失信息被缓存默认零升级为clean。补录成功不自动关闭父案。
+- 辅助组合拒绝诊断保留全部`unsupportedPairs`端点、类型条件和来源证据；自然语言预览单独限长，
+  不把全部配对拼成一条过长caveat而遮住原始拒绝原因。预览限长不删除结构明细、不放宽copy-safety，
+  也不能将被拒记录或来源缺口变为通过。
 - `acceptedCount` 与 `researchCompleteCount/researchNeedsFollowupCount/researchCompletionUnknownCount`
   分离。原诊断不改，后续`effectiveResearchCompletion/effectiveResearchCompleteCount`用于完成性判断。
   默认cleanup拒绝尚有有效缺口的案例；显式放弃或锁定期限到期也不能绕过活跃lease与accepting恢复。

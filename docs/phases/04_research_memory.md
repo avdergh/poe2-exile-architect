@@ -1,5 +1,25 @@
 # Phase 4 - Researcher 语义记忆
 
+## 当期内容审计与通用诊断修复（2026-09-09）
+
+冻结已安装插件`0.5.0+codex.20260908182655`后，真实采集3例成功，覆盖三个职业/升华；
+本次未复现`source_unavailable`，未为采集器加入过滤特判。来源为0.5.5，PoB/语料仍为0.5.4，
+freshness保持`blocked_conflict`。旧Phase7不恢复，本批不生成新BD或声称质量改善。
+
+用户批准后，Twister与Ice Shot两例分别新增24/18条记录、各2条边和1条Family来源证据，
+更新历史记录为0。42条均可读回，projection与正式回执逐项一致；39条满足当前Create召回资格，
+另3条`sourceStateScope=unknown`的open_question仅供Research诊断，不进入Create必读前提。
+两例均`partial_with_deferred / needs_followup`，各1个正式supports覆盖gap保留；Twister原来源
+scope不足，gap当前不能关闭。第三例27条提案因自动诊断过长被阻断，未接受；因此本run
+accepted=2、claimed=1、effectiveComplete=0，不cleanup，也不把接受安全子集当成整案完成。
+
+本批独立来源清单暴露资源生成/消费/保留方向、Life/Mana支付域、地面与异常条件的历史误用，
+以及辅助效果正文缺失、特殊词缀实例投影遗漏。新来源记录明确条件与验证任务，旧知识/旧反向边
+仍待正式复核。自动辅助诊断长文问题已在仓库通用修复：只限自然语言预览，完整失败配对及证据
+保留，原拒绝与copy-safety不变；5/12配对反例及165项相关回归通过。当前尚未安装该修复，
+第三例需更新后按run/lease实际状态恢复并重新完整校验；lease过期须通过claim合法重新领取，
+不能重放旧token。详见本地审计`tmp/research-content-20260909/AUDIT.md`。
+
 ## 审查后优化进度（2026-09-06）
 
 ### R1–R4修改复审：修复与交叉复验完成

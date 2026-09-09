@@ -788,16 +788,17 @@ def optimize_item(
                     bi, bv = i, s
             return bi, bv
 
-        # Greedy: each round add the affix (respecting 3 prefix / 3 suffix + group exclusivity) that
-        # most improves the score, until full or no candidate helps.
+        # Respect the static base capacity and group exclusivity in every full-combination probe.
+        prefix_limit = int(base_profile["prefixLimit"])
+        suffix_limit = int(base_profile["suffixLimit"])
         cur = score(base_stats)
-        while (len(chosen_pre) < 3 or len(chosen_suf) < 3) and len(chosen_pre) + len(
-            chosen_suf
-        ) < acquisition_policy.maxExplicitAffixes:
+        while (
+            len(chosen_pre) < prefix_limit or len(chosen_suf) < suffix_limit
+        ) and len(chosen_pre) + len(chosen_suf) < acquisition_policy.maxExplicitAffixes:
             opts: list[dict[str, str]] = []
-            if len(chosen_pre) < 3:
+            if len(chosen_pre) < prefix_limit:
                 opts += [c for c in pre if c["group"] not in used]
-            if len(chosen_suf) < 3:
+            if len(chosen_suf) < suffix_limit:
                 opts += [c for c in suf if c["group"] not in used]
             if acquisition_policy.maxDeepTopTierAffixes is not None:
                 deep_count = sum(bool(item.get("_deepTopTier")) for item in chosen_pre + chosen_suf)
@@ -1480,7 +1481,7 @@ def optimize_jewel(
     selected_mod_ids: list[str] | None = None,
     item_level: int | None = None,
 ) -> dict[str, Any]:
-    """Craft the best-in-slot rare JEWEL for the active build (marginal-ranked).
+    """Construct a rare jewel within its static base capacity (marginal-ranked).
 
     Ordinary jewel modifiers are measured as custom modifiers on the real build and ranked by
     marginal gain. Radius/Time-Lost bases instead require Agent-selected exact modifier ids; this
@@ -1685,7 +1686,11 @@ def optimize_jewel(
 
         chosen: list[dict[str, Any]] = []
         used: set[str] = set()
-        for side, cap in ((ranked_side(pre), 3), (ranked_side(suf), 3)):
+        profile = _craft_profile(base)
+        for side, cap in (
+            (ranked_side(pre), int(profile["prefixLimit"])),
+            (ranked_side(suf), int(profile["suffixLimit"])),
+        ):
             n = 0
             for _gain, line, m in side:
                 if n >= cap:
@@ -1708,7 +1713,7 @@ def optimize_jewel(
     finally:
         engine.load_build_xml(snapshot)
 
-    item = _item_text(base, final_lines, "Jewel", ilvl=ilvl)
+    item = _item_text(base, final_lines, "Jewel", ilvl=ilvl, profile=profile)
     legality = _generated_item_legality(item)
     if not legality.get("ok"):
         return {
@@ -1736,10 +1741,10 @@ def optimize_jewel(
         "stateChanged": False,
         "legalityCheck": legality,
         "note": (
-            "Best jewel by marginal gain (jewel mods are ~independent). Socket it with equip_jewel "
-            "into an ALLOCATED tree socket (list_jewel_sockets). Verify your jewel base's affix limit "
-            "— some hold fewer than 3 prefix / 3 suffix. Radius/Time-Lost jewels aren't modelled "
-            "here — evaluate them positionally with evaluate_jewel_socket."
+            "Individual modifiers are ranked by measured marginal gain within the base's affix "
+            "capacity; the final combination is measured together. Socket it with equip_jewel "
+            "into an ALLOCATED tree socket (list_jewel_sockets). Radius/Time-Lost jewels require "
+            "Agent-selected modifiers and positional evaluation."
         ),
     }
     if weights:
@@ -1893,7 +1898,16 @@ def _marginal_craft_locked(
     scored: list[tuple[float, dict[str, Any], str]] = []
     for (candidate, line), stats in zip(meta, results, strict=True):
         scored.append((score(stats), candidate, line))
-    chosen_lines = [entry[2] for entry in select_affix_subset(scored, acquisition_policy)]
+    base_profile = _craft_profile(base)
+    chosen_lines = [
+        entry[2]
+        for entry in select_affix_subset(
+            scored,
+            acquisition_policy,
+            prefix_limit=int(base_profile["prefixLimit"]),
+            suffix_limit=int(base_profile["suffixLimit"]),
+        )
+    ]
     if not chosen_lines:
         return None
     final = _item_text(base, chosen_lines, slot, ilvl=ilvl)

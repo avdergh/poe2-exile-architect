@@ -2111,13 +2111,14 @@ def optimize_jewel(
     selected_mod_ids: list[str] | None = None,
     item_level: int | None = None,
 ) -> dict[str, Any]:
-    """Craft the best-in-slot rare JEWEL for the active build (one metric or a weighted goals blend).
+    """Construct a rare jewel from measured modifiers or exact Agent-selected modifier IDs.
 
     Ordinary jewels keep the existing global marginal ranking. Radius/Time-Lost bases require exact
     ``selected_mod_ids`` returned by ``search_mods``; this validates and formats the Agent-selected
     modifiers without pretending their effect is global. Position those candidates with
     ``evaluate_next_jewel_socket``. Generated rare jewels include an Item Level, defaulting to the
-    current character level. Read-only: the build is restored.
+    current character level. The static Jewel base capacity is two prefixes and two suffixes;
+    generated candidates still pass the shared item audit. Read-only: the build is restored.
     """
     return itemopt.optimize_jewel(
         get_engine(),

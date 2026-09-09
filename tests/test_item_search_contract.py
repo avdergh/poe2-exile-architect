@@ -259,6 +259,29 @@ def test_prefix_and_suffix_share_budget_by_measured_value(pools):
     assert craft(engine) == result
 
 
+@pytest.mark.parametrize("entrypoint", ["plan", "optimize"])
+def test_item_search_uses_static_base_capacity_in_all_probes(pools, entrypoint):
+    pools["prefixes"] = [{"text": f"P{i}", "type": "prefix", "group": f"p{i}"} for i in range(3)]
+    pools["suffixes"] = [{"text": f"S{i}", "type": "suffix", "group": f"s{i}"} for i in range(3)]
+    engine = ItemOracle(gains={**{f"P{i}": 1 for i in range(3)}, **{f"S{i}": 100 for i in range(3)}})
+    before = engine.get_xml()
+    if entrypoint == "plan":
+        item = itemopt._marginal_craft(
+            engine, "Jewel 1", "Ruby", {"TotalEHP": 1}, "realistic",
+            chaos_resist_target=30, elemental_resist_target=60, ilvl=90,
+            acquisition_policy=attainability.policy_for("realistic_trade"),
+        )
+    else:
+        result = itemopt.optimize_item(engine, "Jewel 1", base="Ruby", metric="TotalEHP")
+        assert result["ok"] is True, result
+        item = result["item"]
+    assert engine.get_xml() == before
+    assert sum(line in engine.gains for line in item.splitlines()) == 4
+    for probe in [*engine.probes, item]:
+        assert sum(line in {"P0", "P1", "P2"} for line in probe.splitlines()) <= 2
+        assert sum(line in {"S0", "S1", "S2"} for line in probe.splitlines()) <= 2
+
+
 def test_whole_candidate_must_improve_the_actual_original_item(pools):
     engine = ItemOracle(
         {"Ring 1": raw_item(["Original"])},

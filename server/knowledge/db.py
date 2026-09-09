@@ -760,7 +760,7 @@ def _mod_domains_for_base(base_domain: str) -> tuple[str, ...]:
 
 
 def craft_profile(base_name: str) -> dict[str, Any] | None:
-    """Return the deterministic rarity/affix contract for one craftable base domain."""
+    """Return the deterministic rarity/affix contract for one static base class/domain."""
 
     base = get_item(base_name)
     if not isinstance(base, dict):
@@ -768,7 +768,10 @@ def craft_profile(base_name: str) -> dict[str, Any] | None:
     domain = str(base.get("domain") or "")
     if domain == "flask":
         return {"domain": domain, "rarity": "Magic", "prefixLimit": 1, "suffixLimit": 1}
-    return {"domain": domain, "rarity": "Rare", "prefixLimit": 3, "suffixLimit": 3}
+    # Pinned PoB Item.lua's rare Jewel branch has four affixes, including Radius
+    # bases. Use the static item class, never a character, skill or base-name list.
+    limit = 2 if base.get("item_class") == "Jewel" else 3
+    return {"domain": domain, "rarity": "Rare", "prefixLimit": limit, "suffixLimit": limit}
 
 
 def canonical_mod_tier_ladder(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

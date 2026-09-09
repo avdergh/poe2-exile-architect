@@ -35,10 +35,18 @@ _PREFIX_MARKER = re.compile(
     re.I,
 )
 
-# Max prefixes/suffixes by rarity (PoE2). Uniques have fixed mods (no craftable slots).
+# Rarity defaults. Rare items additionally use the static base capacity below.
 _AFFIX_LIMITS = {"normal": (0, 0), "magic": (1, 1), "rare": (3, 3)}
 # Marker kinds that do NOT consume a prefix/suffix slot.
 _NON_AFFIX = {"implicit", "enchant", "rune"}
+
+
+def _affix_limits(base_name: str, rarity: str) -> tuple[int, int] | None:
+    if rarity == "rare":
+        profile = db.craft_profile(base_name)
+        if profile is not None:
+            return int(profile["prefixLimit"]), int(profile["suffixLimit"])
+    return _AFFIX_LIMITS.get(rarity)
 
 
 # RePoE's PoE2 mod text is templated and can drift from in-game wording in case/plural. Bridge
@@ -442,7 +450,7 @@ def parse_item(text: str) -> dict[str, Any]:
     }
     if unrecognized:
         out["unrecognized"] = unrecognized
-    limits = _AFFIX_LIMITS.get(rarity)
+    limits = _affix_limits(str(info.get("base") or ""), rarity)
     if limits:
         out["prefixes"], out["suffixes"] = pre, suf
         out["openPrefixes"], out["openSuffixes"] = max(0, limits[0] - pre), max(0, limits[1] - suf)
@@ -769,7 +777,8 @@ def audit_item_legality(
                 *([] if not structure.get("corrupted") else ["corruption"]),
             ]
         return result
-    limits = _AFFIX_LIMITS[rarity]
+    limits = _affix_limits(str(parsed.get("base") or ""), rarity)
+    assert limits is not None  # Non-craftable rarities returned above.
     parsed_affixes = [
         affix
         for affix in (parsed.get("affixes") or [])

@@ -33,13 +33,17 @@ def _prefer(candidate: _Selection, current: _Selection | None) -> bool:
 
 
 def select_affix_subset(
-    scored: Iterable[ScoredAffix], policy: GearAttainabilityPolicy
+    scored: Iterable[ScoredAffix],
+    policy: GearAttainabilityPolicy,
+    *,
+    prefix_limit: int = 3,
+    suffix_limit: int = 3,
 ) -> list[ScoredAffix]:
     """Return original entries maximizing their positive finite marginal-score sum.
 
     Each global affix group can contribute at most one entry, including when its alternatives
-    span both prefix and suffix pools. Counts are bounded by three prefixes, three suffixes,
-    and the supplied policy's explicit-affix and deep-top-tier limits. Candidates must carry
+    span both prefix and suffix pools. Counts are bounded by the supplied base capacities
+    and the policy's explicit-affix and deep-top-tier limits. Candidates must carry
     their actual-roll ``_deepTopTier`` classification; this function does not infer tier quality.
 
     All candidates are considered. A sparse dynamic program processes complete groups instead
@@ -49,6 +53,8 @@ def select_affix_subset(
     """
     max_explicit = policy.maxExplicitAffixes
     max_deep = policy.maxDeepTopTierAffixes
+    if any(type(limit) is not int or limit < 0 for limit in (prefix_limit, suffix_limit)):
+        raise ValueError("invalid_affix_selection_capacity")
     if (
         isinstance(max_explicit, bool)
         or not isinstance(max_explicit, int)
@@ -59,7 +65,7 @@ def select_affix_subset(
         )
     ):
         raise ValueError("invalid_affix_selection_policy")
-    max_explicit = min(max_explicit, 6)
+    max_explicit = min(max_explicit, prefix_limit + suffix_limit)
     max_deep = min(max_deep if max_deep is not None else max_explicit, max_explicit)
 
     prepared: list[tuple[str, str, str, str, ScoredAffix]] = []
@@ -100,7 +106,11 @@ def select_affix_subset(
                 new_prefixes = prefixes + (candidate["type"] == "prefix")
                 new_suffixes = suffixes + (candidate["type"] == "suffix")
                 new_deep = deep + candidate["_deepTopTier"]
-                if new_prefixes > 3 or new_suffixes > 3 or new_deep > max_deep:
+                if (
+                    new_prefixes > prefix_limit
+                    or new_suffixes > suffix_limit
+                    or new_deep > max_deep
+                ):
                     continue
                 state_key = (new_prefixes, new_suffixes, new_deep)
                 selection = _Selection(prior.score + exact_scores[index], (*prior.indexes, index))

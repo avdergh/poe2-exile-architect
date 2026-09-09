@@ -805,27 +805,41 @@ def test_support_pool_surfaces_on_element_levers():
     assert "Lightning Penetration" in screen and "Overcharge" in screen
 
 
-def test_optimize_jewel_crafts_damage_jewel(engine):
+@pytest.mark.parametrize(
+    ("class_name", "ascendancy", "skill", "base"),
+    [
+        ("Huntress", "Amazon", "Lightning Spear", "Emerald"),
+        ("Sorceress", "Stormweaver", "Fireball", "Ruby"),
+        ("Monk", "Invoker", "Spark", "Sapphire"),
+    ],
+)
+def test_optimize_jewel_crafts_damage_jewel(engine, class_name, ascendancy, skill, base):
     # Jewel crafter: marginal-ranks jewel mods (measured as real modifiers); non-jewel base rejected.
     from server.compute import itemopt
 
     engine.new_build()
-    engine.set_class("Huntress", "Amazon")
+    engine.set_class(class_name, ascendancy)
     engine.set_level(95)
-    engine.paste_skill("Lightning Spear 20/20  1")
-    engine.add_item(
-        "Rarity: Rare\nX\nGrand Spear\n--------\nAdds 200 to 400 Lightning Damage\n"
-        "100% increased Elemental Damage with Attacks",
-        slot="Weapon 1",
-    )
-    r = itemopt.optimize_jewel(engine, metric="TotalDPS", base="Emerald")
+    engine.paste_skill(f"{skill} 20/20  1")
+    if skill == "Lightning Spear":
+        engine.add_item(
+            "Rarity: Rare\nX\nGrand Spear\n--------\nAdds 200 to 400 Lightning Damage\n"
+            "100% increased Elemental Damage with Attacks",
+            slot="Weapon 1",
+        )
+    before_hash = build_state_hash(engine.get_xml())
+    r = itemopt.optimize_jewel(engine, metric="TotalDPS", base=base)
     assert r["ok"] and r["affixes"]
     assert r["metricAfter"] > r["metricBefore"]  # the jewel raises DPS
-    assert r["item"].startswith("Rarity: Rare") and "Emerald" in r["item"]
+    assert r["item"].startswith("Rarity: Rare") and base in r["item"]
+    parsed = itemparse.parse_item(r["item"])
+    assert parsed["prefixes"] <= 2 and parsed["suffixes"] <= 2
+    assert itemparse.audit_item_legality(r["item"])["ok"]
     assert "Item Level: 95" in r["item"]
     assert r["selectionMode"] == "automatic_global_marginal"
     assert itemopt.optimize_jewel(engine, base="Grand Spear")["ok"] is False  # not a jewel base
-    assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only
+    assert engine.get_build()["mainSkill"] == skill
+    assert build_state_hash(engine.get_xml()) == before_hash
 
 
 def test_optimize_radius_jewel_requires_and_validates_agent_selected_mods(engine):

@@ -3430,11 +3430,16 @@ def _filter_records_with_unsupported_structured_support_packages(
             kept_records.append(record)
             kept_summaries.append(summary)
             continue
-        pair_summary = "; ".join(
-            f"{item['skillName']}[{item['skillKey']}] + {item['supportName']}[{item['supportKey']}]"
-            f" (excluded: {item['excludedReason']}; requires {item['requiredTypesExpr'] or '?'}"
-            f" vs endpoint {item['endpointKey']} types {item['endpointSkillTypes'] or '?'})"
-            for item in unsupported_pairs[:5]
+        # Keep every endpoint and its evidence in unsupportedPairs. Bound only the prose
+        # preview so a large legitimate failure cannot hide behind the copy-safety gate.
+        pair_summary = _bounded_join_diagnostics(
+            [
+                f"{item['skillName']}[{item['skillKey']}] + {item['supportName']}[{item['supportKey']}]"
+                f" (excluded: {item['excludedReason']}; requires {item['requiredTypesExpr'] or '?'}"
+                f" vs endpoint {item['endpointKey']} types {item['endpointSkillTypes'] or '?'})"
+                for item in unsupported_pairs
+            ],
+            limit=500,
         )
         deferred.append(
             {
