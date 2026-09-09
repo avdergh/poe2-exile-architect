@@ -198,7 +198,9 @@ def _save_final_build_artifact_locked(
     if receipt.get("schemaVersion") not in {2, 3}:
         return models.rejected("legacy_evaluation_requires_rejudge")
     audit_version = str((receipt.get("hardLegalityAudit") or {}).get("auditVersion") or "")
-    if audit_version not in hard_legality.ARTIFACT_COMPATIBLE_AUDIT_VERSIONS:
+    # Older receipts did not audit active-Spec jewels. Keep historical artifact metadata intact,
+    # but only a current Judge may authorize a new artifact, including baseline recovery.
+    if audit_version != hard_legality.AUDIT_VERSION:
         return models.rejected("legacy_evaluation_requires_rejudge")
     try:
         state = models.TransientBuildStateRef.model_validate(receipt.get("transientBuildState"))

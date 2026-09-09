@@ -185,7 +185,7 @@ def craft_item(
         added = engine.add_item(raw, slot=slot)
         if not isinstance(added, dict) or added.get("ok") is not True:
             raise item_search.ItemSearchError("item_candidate_equip_failed", slot=slot)
-        actual = completeness.equipped_item_text(engine.get_xml(), slot)
+        actual = completeness.equipped_item_text_from_engine(engine, slot)
         if not actual or not _socket_item_readback_matches(raw, actual):
             raise item_search.ItemSearchError("item_candidate_readback_mismatch", slot=slot)
         if check_context:
@@ -632,7 +632,7 @@ def _socket_stage_item(
             socket_probe.load_candidate(engine, source_snapshot, slot, raw)
         except ValueError as exc:
             raise _SocketMeasurementError(str(exc)) from exc
-        actual = completeness.equipped_item_text(engine.get_xml(), slot)
+        actual = completeness.equipped_item_text_from_engine(engine, slot)
         if not actual or not _socket_item_readback_matches(raw, actual):
             raise _SocketMeasurementError("socket_probe_readback_mismatch")
         item_search.verify_context(engine, context, slot=slot)
@@ -645,7 +645,7 @@ def _socket_add_item(engine: Any, raw: str, slot: str) -> None:
     cleared = engine.unequip_item(slot)
     if not isinstance(cleared, dict) or cleared.get("ok") is not True:
         raise _SocketMeasurementError("socket_probe_clear_failed")
-    if completeness.equipped_item_text(engine.get_xml(), slot):
+    if completeness.equipped_item_text_from_engine(engine, slot):
         raise _SocketMeasurementError("socket_probe_clear_not_applied")
     result = engine.add_item(raw, slot=slot)
     if not isinstance(result, dict) or result.get("ok") is not True:
@@ -654,7 +654,7 @@ def _socket_add_item(engine: Any, raw: str, slot: str) -> None:
     engine.load_build_xml(written_xml)
     if build_state_hash(engine.get_xml()) != build_state_hash(written_xml):
         raise _SocketMeasurementError("socket_probe_readback_state_changed")
-    actual = completeness.equipped_item_text(engine.get_xml(), slot)
+    actual = completeness.equipped_item_text_from_engine(engine, slot)
     if not actual or not _socket_item_readback_matches(raw, actual):
         raise _SocketMeasurementError("socket_probe_readback_mismatch")
 
@@ -789,7 +789,7 @@ def _optimize_item_sockets_locked(
     keys = list(weights)
     build = engine.get_build()
     snapshot = engine.get_xml()
-    raw = completeness.equipped_item_text(snapshot, slot)
+    raw = completeness.equipped_item_text_from_engine(engine, slot, snapshot_xml=snapshot)
     if not raw:
         return {"ok": False, "errorCode": "equipped_item_not_found", "slot": slot}
     structure = itemparse.semantic_item_structure(raw)
@@ -981,7 +981,7 @@ def _optimize_item_sockets_locked(
         }
     _socket_stage_item(engine, final, slot, calculation_context, source_snapshot=source_snapshot)
     final_xml = engine.get_xml()
-    canonical_final = completeness.equipped_item_text(final_xml, slot)
+    canonical_final = completeness.equipped_item_text_from_engine(engine, slot, snapshot_xml=final_xml)
     if not canonical_final:
         raise _SocketMeasurementError("socket_final_item_missing")
     prepared_receipt = craft_receipts.derive_socket_receipt(

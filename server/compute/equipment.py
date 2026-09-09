@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import re
 from typing import Any
 
-from server.knowledge import item_legality, itemparse
+from server.knowledge import db, item_legality, itemparse
 from server.runtime import craft_receipts
 
 from . import completeness
@@ -23,6 +24,11 @@ def equip_item_verified(
     craft_receipt_ref: str | None,
 ) -> dict[str, Any]:
     """Equip and verify the actual slot text under one re-entrant transaction."""
+
+    if slot is not None and re.fullmatch(r"Jewel \d+", slot):
+        return equip_jewel_verified(
+            engine, raw=raw, socket=int(slot.split()[1]), craft_receipt_ref=craft_receipt_ref
+        )
 
     requested_structure = itemparse.semantic_item_structure(raw)
     has_special_source = bool(
@@ -71,6 +77,12 @@ def _equip_item_verified_locked(
     craft_receipt_ref: str | None,
     requested_structure: dict[str, Any],
 ) -> dict[str, Any]:
+    if getattr(engine, _RECOVERY_ATTRIBUTE, False):
+        return {
+            "ok": False,
+            "errorCode": "mutation_batch_recovery_required",
+            "recoveryRequired": True,
+        }
     try:
         snapshot = engine.get_xml()
         input_hash = build_state_hash(snapshot)
@@ -115,6 +127,7 @@ def _equip_item_verified_locked(
             **first,
             "itemLegality": verified["itemLegality"],
             "readbackVerified": True,
+            "outputStateHash": build_state_hash(engine.get_xml()),
             **({"socketDecisionCarried": carried} if carried else {}),
         }
 
@@ -164,9 +177,105 @@ def _equip_item_verified_locked(
         "slot": actual_slot,
         "itemLegality": second_verified["itemLegality"],
         "readbackVerified": True,
+        "outputStateHash": build_state_hash(engine.get_xml()),
         "cleanSlotRetry": True,
         **({"socketDecisionCarried": carried} if carried else {}),
     }
+
+
+def equip_jewel_verified(
+    engine: Any,
+    *,
+    raw: str,
+    socket: int | None,
+    craft_receipt_ref: str | None = None,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Fill/replace one explicit, already allocated socket without spending passive points.
+
+    New socket acquisition still belongs to evaluate/apply_next_jewel_socket_decision. This
+    transaction validates the item's own legality during construction; final whole-build
+    attributes/resources and quality are checked by Checkpoint/Judge.
+    """
+    if type(socket) is not int or socket < 0:
+        return {"ok": False, "errorCode": "explicit_jewel_socket_required"}
+    slot = f"Jewel {socket}"
+    structure = itemparse.semantic_item_structure(raw)
+    if craft_receipt_ref is None and (
+        structure.get("corrupted")
+        or structure.get("runeNames")
+        or any(
+            value.get("kind") == "rune"
+            for value in structure.get("effects") or []
+            if isinstance(value, dict)
+        )
+    ):
+        return {"ok": False, "errorCode": "special_source_provenance_required"}
+    parsed = itemparse.parse_item(raw)
+    base = db.get_item(str(parsed.get("base") or ""))
+    if not base or "jewel" not in (base.get("tags") or []):
+        return {"ok": False, "errorCode": "item_is_not_jewel"}
+    if (
+        str(parsed.get("rarity") or "").casefold() in {"rare", "magic"}
+        and parsed.get("itemLevel") is None
+    ):
+        return {"ok": False, "errorCode": "jewel_item_level_missing"}
+    audit = item_legality.audit_item(
+        raw, slot=slot, craft_receipt_ref=craft_receipt_ref, require_special_provenance=True
+    )
+    if not audit.get("ok"):
+        return {"ok": False, "errorCode": "item_legality_check_failed", "itemLegality": audit}
+    with engine.transaction_lock():
+        if getattr(engine, _RECOVERY_ATTRIBUTE, False):
+            return {
+                "ok": False,
+                "errorCode": "mutation_batch_recovery_required",
+                "recoveryRequired": True,
+            }
+        try:
+            snapshot = engine.get_xml()
+            input_hash = build_state_hash(snapshot)
+        except Exception:  # noqa: BLE001 - no write has started.
+            return {"ok": False, "errorCode": "jewel_equip_snapshot_failed"}
+        if expected_state_hash is not None and input_hash != expected_state_hash:
+            return {"ok": False, "errorCode": "build_state_conflict", "actualStateHash": input_hash}
+        sockets = engine.list_jewel_sockets().get("sockets") or []
+        target = next((row for row in sockets if row.get("socket") == socket), None)
+        if not target or target.get("allocated") is not True:
+            return {"ok": False, "errorCode": "jewel_socket_not_allocated"}
+        try:
+            result = engine.equip_jewel(raw, socket=socket)
+            if (
+                not isinstance(result, dict)
+                or not result.get("ok")
+                or result.get("socket") != socket
+            ):
+                return _rollback_failure(engine, snapshot, input_hash, "jewel_equip_failed")
+            verified = _verify_actual_item(
+                engine,
+                raw=raw,
+                requested_structure=structure,
+                slot=slot,
+                craft_receipt_ref=craft_receipt_ref,
+            )
+            if not verified.get("ok"):
+                return _rollback_failure(
+                    engine,
+                    snapshot,
+                    input_hash,
+                    str(verified.get("errorCode") or "jewel_readback_mismatch"),
+                )
+            return {
+                **result,
+                "slot": slot,
+                "itemLegality": verified["itemLegality"],
+                "readbackVerified": True,
+                "socketOperation": "existing_allocated_socket",
+                "inputStateHash": input_hash,
+                "outputStateHash": build_state_hash(engine.get_xml()),
+            }
+        except Exception:  # noqa: BLE001 - restore before exposing any failure.
+            return _rollback_failure(engine, snapshot, input_hash, "jewel_equip_failed")
 
 
 def _verify_actual_item(
@@ -177,7 +286,16 @@ def _verify_actual_item(
     slot: str,
     craft_receipt_ref: str | None,
 ) -> dict[str, Any]:
-    actual = completeness.equipped_item_text(engine.get_xml(), slot)
+    socket_ids = None
+    if slot.startswith("Jewel "):
+        socket_ids = [
+            row["socket"]
+            for row in engine.list_jewel_sockets().get("sockets") or []
+            if row.get("allocated") is True
+        ]
+    actual = completeness.equipped_item_text(
+        engine.get_xml(), slot, allocated_jewel_socket_ids=socket_ids
+    )
     if actual is None:
         return {"ok": False, "errorCode": "item_readback_missing"}
     actual_structure = itemparse.semantic_item_structure(actual)
@@ -189,6 +307,14 @@ def _verify_actual_item(
     )
     if not audit.get("ok"):
         return {"ok": False, "errorCode": "item_readback_provenance_mismatch"}
+    if slot.startswith("Jewel "):
+        gear = completeness.equipped_item_metadata(
+            engine.get_xml(), require_special_provenance=True, allocated_jewel_socket_ids=socket_ids
+        )
+        if "jewel_limit_exceeded" in (
+            gear.get(slot, {}).get("affixLegality", {}).get("issues") or []
+        ):
+            return {"ok": False, "errorCode": "jewel_limit_exceeded"}
     from . import socket_limits
 
     if not socket_limits.audit(engine.get_xml()).get("ok"):

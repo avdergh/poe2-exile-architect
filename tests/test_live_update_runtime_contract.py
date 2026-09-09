@@ -86,7 +86,7 @@ class LiveUpdateRuntimeContractTests(unittest.TestCase):
         self.assertIn("app version", result["error"])
         http.assert_not_called()
 
-    def test_contract_four_engine_persists_app_bound_compatibility_metadata(self) -> None:
+    def test_current_contract_engine_persists_app_bound_compatibility_metadata(self) -> None:
         blob = _engine_archive()
         manifest = {
             "version": "0.5.1",

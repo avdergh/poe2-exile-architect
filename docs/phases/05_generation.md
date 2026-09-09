@@ -16,9 +16,10 @@
 runtime已匹配，保持原版本。等待用户重启Codex后再确认当前任务加载新工具；没有重跑旧Create
 或Phase7，也未证明BD质量改善。详见本地`tmp/release-install-20260909b/INSTALL_REPORT.md`。
 
-后续仍需完成天然隐式/物品授予技能输出，以及树珠宝写入与artifact门禁专项：现有public
-equip_jewel直接交给PoB，装备元数据读取仅覆盖ItemSet Slot，不能将本轮生成器与共享审计修复
-夸大为所有树珠宝入口已闭合。相关定位和六维记录见本地`tmp/jewel-cap-20260909/REVIEW.md`。
+随后普通 Create 实跑确认并修复了三项共享工具缺口：`get_passive` 移入持有当前 PoB 的 Build 服务；
+新增显式路径属性选择与已有属性点局部改选；已有珠宝槽写入复用合法性、来源和活动 Spec 读回事务，
+树珠宝进入共享 Checkpoint/Judge 与 artifact 检查。已有槽填入与新增槽审计分开，额外槽的受保护
+等点收益与原子应用门禁保持。天然隐式/物品授予技能输出仍需后续实跑检查。
 
 ## 阶段状态
 

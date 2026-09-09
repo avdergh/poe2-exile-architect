@@ -849,15 +849,21 @@ def inspect_generation_checkpoint(
 
 
 @mcp.tool()
-def equip_jewel(raw: str, socket: int | None = None) -> dict[str, Any]:
-    """Socket a jewel (raw PoB item text) into a passive-tree jewel socket.
+def equip_jewel(
+    raw: str, socket: int, craft_receipt_ref: str | None = None,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Transactionally fill or replace an explicit, already allocated passive jewel socket.
 
-    `socket` is a socket id from `list_jewel_sockets`; if omitted, the first allocated empty socket
-    is used. The jewel only applies in an ALLOCATED socket (the result warns otherwise). Ground the
-    jewel's mods in real jewel rolls (`search_mods`) — jewels aren't covered by the equip legality
-    check. Mana/ES/damage stat jewels are a meaningful chunk of mana-stacker power.
+    Read list_jewel_sockets, ground the real item in corpus, and use evaluate_jewel_socket for
+    its position. This spends no passive points; positive benefit in an existing socket is
+    allowed. Acquiring an additional socket at level 90+ still requires the protected-node
+    evaluate_next_jewel_socket / apply_next_jewel_socket_decision audit. Validates item legality,
+    provenance and actual active-Spec readback; failures roll back or require state recovery.
     """
-    return get_engine().equip_jewel(raw, socket=socket)
+    return equipment.equip_jewel_verified(get_engine(), raw=raw, socket=socket,
+                                         craft_receipt_ref=craft_receipt_ref,
+                                         expected_state_hash=expected_state_hash)
 
 
 @mcp.tool()
@@ -1834,18 +1840,48 @@ def search_passives(
 
 @mcp.tool()
 def get_passive(node: str | int) -> dict[str, Any]:
-    """Return a passive node's details by id (preferred) or exact name."""
+    """Read a node from the active build: allocation, path, stats and attribute options.
+
+    This is an engine query on the build server, never an offline knowledge lookup.
+    Use the exact node id for subsequent edits.
+    """
     return get_engine().get_passive(node)
 
 
 @mcp.tool()
-def alloc_passive(node: str | int) -> dict[str, Any]:
+def alloc_passive(
+    node: str | int,
+    path_attribute: Literal["Strength", "Dexterity", "Intelligence"] | None = None,
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
     """Allocate a passive node (and the shortest path to it) by id or name.
 
     Returns points spent and the resulting stat deltas. Fails if the node isn't reachable
-    from the currently allocated tree.
+    from the currently allocated tree. `path_attribute` explicitly selects newly allocated
+    travel attributes for this request only; omission preserves PoB's default. Existing
+    allocated attributes stay unchanged. Use set_passive_attribute to change those.
     """
-    return get_engine().alloc_passive(node)
+    from .compute.passives import mutate_passive
+
+    return mutate_passive(get_engine(), node=node, operation="allocate",
+                          attribute=path_attribute, expected_state_hash=expected_state_hash)
+
+
+@mcp.tool()
+def set_passive_attribute(
+    node: int,
+    attribute: Literal["Strength", "Dexterity", "Intelligence"],
+    expected_state_hash: str | None = None,
+) -> dict[str, Any]:
+    """Switch one already allocated attribute node using its exact id and PoB's options.
+
+    Does not allocate, remove or reroute passives. Read get_passive for attributeOptions.
+    The transactional write verifies readback and returns the new state hash.
+    """
+    from .compute.passives import mutate_passive
+
+    return mutate_passive(get_engine(), node=node, operation="attribute",
+                          attribute=attribute, expected_state_hash=expected_state_hash)
 
 
 @mcp.tool()

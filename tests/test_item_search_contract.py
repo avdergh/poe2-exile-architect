@@ -110,7 +110,17 @@ class ItemOracle:
             f'<Slot name="{slot}" itemId="{i}"/>'
             for i, (slot, _) in enumerate(sorted(self.items.items()), 1)
         )
-        return f'<PathOfBuilding2><Build level="90"/><Items activeItemSet="1">{entries}<ItemSet id="1">{slots}</ItemSet></Items><Config/></PathOfBuilding2>'
+        sockets = "".join(
+            f'<Socket nodeId="{slot.split()[1]}" itemId="{i}"/>'
+            for i, (slot, _) in enumerate(sorted(self.items.items()), 1)
+            if slot.startswith("Jewel ")
+        )
+        # Match PoB's active-Spec authority; the ItemSet mirror above is not jewel evidence.
+        tree = f'<Tree activeSpec="1"><Spec nodes="1"><Sockets>{sockets}</Sockets></Spec></Tree>'
+        return f'<PathOfBuilding2><Build level="90"/>{tree}<Items activeItemSet="1">{entries}<ItemSet id="1">{slots}</ItemSet></Items><Config/></PathOfBuilding2>'
+
+    def list_jewel_sockets(self):
+        return {"sockets": [{"socket": 1, "allocated": True, "filled": "Jewel 1" in self.items}]}
 
     def load_build_xml(self, xml, **_kwargs):
         if self.restore_fails:

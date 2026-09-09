@@ -473,9 +473,11 @@ def test_save_rejects_legacy_evaluation_before_writing_artifact(tmp_path, monkey
     assert not (tmp_path / "artifacts").exists()
 
 
-def test_save_rejects_schema2_v1_evaluation_before_writing_artifact(
+@pytest.mark.parametrize("audit_version", ["hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4"])
+def test_save_rejects_legacy_audit_before_writing_artifact(
     tmp_path,
     monkeypatch,
+    audit_version,
 ):
     run_id, token, evaluated = _evaluate_passing(tmp_path, monkeypatch)
     run_dir = tmp_path / "runs" / run_id
@@ -483,7 +485,7 @@ def test_save_rejects_schema2_v1_evaluation_before_writing_artifact(
     attempt_path = run_dir / "trusted-evaluations" / "attempt-0.json"
     legacy = json.loads(latest_path.read_text(encoding="utf-8"))
     legacy["schemaVersion"] = 2
-    legacy["hardLegalityAudit"]["auditVersion"] = "hard_legality_v1"
+    legacy["hardLegalityAudit"]["auditVersion"] = audit_version
     latest_path.write_text(json.dumps(legacy), encoding="utf-8")
     attempt_path.write_text(json.dumps(legacy), encoding="utf-8")
 

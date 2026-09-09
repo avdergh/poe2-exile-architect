@@ -153,13 +153,13 @@ process cap is five, including reserved Judge/optimizer capacity.
 | --- | --- |
 | Exact component facts | `find_skills/get_gem`, `search_items/get_item`, `search_uniques/get_unique`, `search_mods` |
 | Mechanic explanation | `search_mechanics/explain_mechanic`; `lookup_mechanic` for live fallback; retain returned attribution |
-| Passive reachability | `search_passives/get_passive`; exact allocation decisions via `alloc_passive/dealloc_passive` |
+| Passive reachability | Build-server `search_passives/get_passive`; `alloc_passive(path_attribute=...)` for new paths, `set_passive_attribute` for exact allocated attribute nodes; no rerouting |
 | Stat sensitivity | `rank_levers/list_levers/solve_for` |
 | Complete item comparison | `optimize_item/rank_upgrades/plan_gear` |
 | Proven special crafting | `craft_item`; pass its unchanged `craftReceiptRef` to `equip_item` |
 | Existing-item sockets | `optimize_item_sockets`; apply the returned plan through trusted equip |
 | Support combination | `optimize_supports`; same exact effect, full current/candidate combinations |
-| Jewel replacement | `list_jewel_sockets/evaluate_jewel_socket/optimize_jewel/equip_jewel` |
+| Jewel replacement | `list_jewel_sockets/evaluate_jewel_socket/optimize_jewel/equip_jewel`; explicit already allocated sockets, transactional source/legality/active-Spec readback. A positive replacement is allowed; acquiring an extra socket still uses the protected evaluate/apply decision |
 | Next reachable jewel socket | `evaluate_next_jewel_socket/apply_next_jewel_socket_decision` |
 | Ordinary Flask | use `optimize_flask` to create a legal Magic target |
 | Numeric comparison/calibration | `compare_to/benchmark_build/list_reference_builds`; reference library is calibration-only |

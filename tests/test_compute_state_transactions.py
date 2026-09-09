@@ -1,9 +1,105 @@
 from __future__ import annotations
 
+import pytest
+
 from server import main
 from server.compute import completeness, equipment, mutation_batch, passiveopt, skillgroups
 from server.compute.engine import PobEngineError
 from server.compute.state import build_state_hash
+from server.judge import hard_legality
+
+
+@pytest.mark.parametrize(
+    "class_name,attribute", [("Warrior", "Intelligence"), ("Sorceress", "Dexterity")]
+)
+def test_public_jewel_transaction_and_shared_snapshot_audit(
+    engine, monkeypatch, class_name, attribute
+):
+    engine.new_build()
+    engine.set_class(class_name)
+    engine.set_level(90)
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    sockets = engine.list_jewel_sockets()["sockets"]
+    socket = min(sockets, key=lambda row: engine.get_passive(row["socket"]).get("pathDist", 999))[
+        "socket"
+    ]
+    prism = "Rarity: Unique\nPrism of Belief\nDiamond\n+3 to Level of all Fireball Skills"
+    original = build_state_hash(engine.get_xml())
+    assert main.equip_jewel(prism, socket)["errorCode"] == "jewel_socket_not_allocated"
+    assert build_state_hash(engine.get_xml()) == original
+    allocated = main.alloc_passive(socket, path_attribute=attribute, expected_state_hash=original)
+    assert allocated["ok"]
+    result = main.equip_jewel(prism, socket, expected_state_hash=allocated["outputStateHash"])
+    assert result["ok"] and result["readbackVerified"]
+    assert result["outputStateHash"] == build_state_hash(engine.get_xml())
+    other = next(
+        row["socket"] for row in engine.list_jewel_sockets()["sockets"] if not row["allocated"]
+    )
+    engine.alloc_passive(other)
+    before_duplicate = build_state_hash(engine.get_xml())
+    duplicate = main.equip_jewel(prism.replace("Fireball", "Spark"), other)
+    assert duplicate["errorCode"] == "jewel_limit_exceeded" and duplicate["rolledBack"]
+    assert build_state_hash(engine.get_xml()) == before_duplicate
+    # The generic equipment route shares the same allocated-slot and item-source authority.
+    raw = "Rarity: Rare\nTest Jewel\nSapphire\nItem Level: 80\n15% increased Mana Regeneration Rate"
+    result = main.equip_item(raw, slot=f"Jewel {socket}")
+    assert result["ok"] and result["readbackVerified"]
+    illegal = raw.replace("15%", "999%")
+    before_illegal = build_state_hash(engine.get_xml())
+    assert main.equip_jewel(illegal, socket)["ok"] is False
+    assert build_state_hash(engine.get_xml()) == before_illegal
+    # Imported / low-level material is still caught at the shared Judge/artifact boundary.
+    assert engine.equip_jewel(illegal, socket=socket)["ok"]
+    gear = completeness.equipped_item_metadata(engine.get_xml())
+    assert gear[f"Jewel {socket}"]["affixLegality"]["ok"] is False
+    assert "final_artifact_illegal_affixes" in completeness.artifact_blockers(engine.get_xml())
+    audit = hard_legality.audit_active_build(engine)
+    assert "illegal_equipped_item_affixes" in audit["hardFailures"]
+
+
+def test_passive_attribute_batch_rolls_back_earlier_edits_and_rejects_stale_hash(
+    engine, monkeypatch
+):
+    engine.new_build()
+    engine.set_class("Mercenary")
+    engine.set_level(90)
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    nodes = engine.search_passives(node_type="Notable", limit=6000)["results"]
+    target = next(n for n in nodes if n.get("pathDist", 0) >= 7)
+    attribute_target = next(
+        n
+        for n in engine.search_passives(limit=6000)["results"]
+        if n["isAttribute"] and n.get("pathDist")
+    )
+    engine.alloc_passive(attribute_target["id"], path_attribute="Intelligence")
+    attribute = next(
+        n["id"]
+        for n in engine.search_passives(limit=6000)["results"]
+        if n["alloc"] and n["isAttribute"]
+    )
+    before = build_state_hash(engine.get_xml())
+    assert (
+        main.set_passive_attribute(attribute, "Dexterity", expected_state_hash="sha256:stale")[
+            "errorCode"
+        ]
+        == "build_state_conflict"
+    )
+    result = mutation_batch.apply_build_mutation_batch(
+        engine,
+        batch_kind="passive_delta",
+        expected_state_hash=before,
+        operations=[
+            mutation_batch.BuildMutationOperation(
+                operation="set_passive_attribute", node=attribute, attribute="Dexterity"
+            ),
+            mutation_batch.BuildMutationOperation(
+                operation="set_passive_attribute", node=target["id"], attribute="Strength"
+            ),
+        ],
+    )
+    assert not result["ok"] and result["rolledBack"]
+    assert build_state_hash(engine.get_xml()) == before
+    assert engine.get_passive(attribute)["attribute"] == "Intelligence"
 
 
 def _monk_with_two_groups(engine):
@@ -80,9 +176,7 @@ def test_functional_mutation_batches_chain_and_rollback_on_real_engine(engine):
             ),
             mutation_batch.BuildMutationOperation(
                 operation="equip_item",
-                    raw=(
-                        "Rarity: Normal\nSteelpoint Quarterstaff\nItem Level: 20"
-                    ),
+                raw=("Rarity: Normal\nSteelpoint Quarterstaff\nItem Level: 20"),
                 slot="Weapon 1",
             ),
         ],

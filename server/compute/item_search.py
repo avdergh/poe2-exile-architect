@@ -137,7 +137,7 @@ def baseline_stats(
             and slot == "Weapon 1"
             and build.get("activeWeaponSet") == 1
             and not (build.get("gear") or {}).get(slot)
-            and completeness.equipped_item_text(engine.get_xml(), slot) is None
+            and completeness.equipped_item_text_from_engine(engine, slot) is None
             and isinstance(context, dict)
             and context.get("skillName")
             and check.get("skillName") == context["skillName"]
@@ -163,7 +163,7 @@ def clear_slot(engine: Any, slot: str) -> None:
     result = engine.unequip_item(slot)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise ItemSearchError("item_slot_clear_failed", slot=slot)
-    if completeness.equipped_item_text(engine.get_xml(), slot) is not None:
+    if completeness.equipped_item_text_from_engine(engine, slot) is not None:
         raise ItemSearchError("item_slot_clear_not_applied", slot=slot)
 
 
@@ -261,7 +261,7 @@ def equip_candidate(engine: Any, raw: str, slot: str, context: Any) -> str:
     result = engine.add_item(raw, slot=slot)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise ItemSearchError("item_candidate_equip_failed", slot=slot)
-    actual = completeness.equipped_item_text(engine.get_xml(), slot)
+    actual = completeness.equipped_item_text_from_engine(engine, slot)
     if (
         not actual
         or itemparse.semantic_item_structure(actual)["itemFingerprint"]

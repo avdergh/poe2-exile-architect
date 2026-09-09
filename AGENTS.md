@@ -190,6 +190,12 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   可达槽位的等点边际收益。工具只可替换当前安全单点叶节点，不向内拆分支、不重排树，也不以成熟
   案例槽数、固定轮数或最低槽数作为目标。正收益只能经 `apply_next_jewel_socket_decision` 原子应用，
   并在新 state 重做审计；`policy_limited/inconclusive` 可 Judge 但只能交付 candidate。
+- 核心路径上已有的已分配珠宝槽用 `evaluate_jewel_socket` 定位比较、`equip_jewel` 显式填入或替换，
+  正收益允许采用；该操作不花天赋点，不属于新增槽位审计。public 与 batch 共用物品合法性、特殊
+  来源、暗金数量和活动 Spec 精确读回，失败必须回滚。不能先手工点额外槽来绕过上条原子决策。
+- `get_passive` 与 `search_passives` 必须从 Build 服务的当前 PoB 状态读取。新增路径可显式传
+  `path_attribute`；已分配属性点用 `set_passive_attribute(node, attribute)` 精确改选，可归入
+  `passive_delta` 小事务。只调用 PoB 原生属性切换，不按职业猜选，不重排树。
 - `inspect_generation_checkpoint` 和 `evaluate_generation_candidate` 必须复用同一个无评分
   `HardLegalityAudit`。属性、装备/宝石等级、武器兼容、Spirit、普通与武器组天赋预算、黄装
   词缀、生成候选遗留的 `Scaffold ...` 装备和 rare/magic 装备缺少 `Item Level` 等确定性非法状态

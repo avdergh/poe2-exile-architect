@@ -113,7 +113,7 @@ Agent 主导理解需求、查询取舍、机制设计、PoB 实装和失败修�
 | 需要的能力 | 入口 |
 | --- | --- |
 | 知识与机制 | `mcp__poe_knowledge__graph_tool_query`、`mcp__poe_knowledge__find_skills/mcp__poe_knowledge__get_gem/mcp__poe_knowledge__find_supports_for`、`mcp__poe_knowledge__explain_mechanic/mcp__poe_knowledge__search_mechanics`；Research见其reference |
-| 装备与天赋候选 | `mcp__poe_knowledge__search_items/mcp__poe_knowledge__search_uniques/mcp__poe_knowledge__get_unique`、`mcp__poe_knowledge__search_mods/mcp__poe_knowledge__get_item`、`mcp__poe_build__search_passives/mcp__poe_knowledge__get_passive`、`mcp__poe_knowledge__list_ascendancies` |
+| 装备与天赋候选 | `mcp__poe_knowledge__search_items/mcp__poe_knowledge__search_uniques/mcp__poe_knowledge__get_unique`、`mcp__poe_knowledge__search_mods/mcp__poe_knowledge__get_item`、`mcp__poe_build__search_passives/mcp__poe_build__get_passive`、`mcp__poe_knowledge__list_ascendancies` |
 | 规划启发 | `mcp__poe_knowledge__build_advice/mcp__poe_knowledge__suggest_build_lifecycle`；不能覆盖当前版本事实、本Skill的Family和质量政策 |
 | 等级参考 | `mcp__poe_knowledge__list_skills_for_level/mcp__poe_build__validate_level_availability`；候选参考，实际合法性由PoB与共享审计确认 |
 | 局部诊断 | `mcp__poe_build__get_build_stats/mcp__poe_build__get_defenses/mcp__poe_build__evaluate_build/mcp__poe_build__pinnacle_readiness`；不能冒充正式Judge |

@@ -15,7 +15,7 @@ from server.knowledge import lifecycle_verification
 from . import lifecycle_observation, preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v8"
+CHECKPOINT_VERSION = "generation_checkpoint_v9"
 _CACHE_LIMIT = 48
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCK = threading.RLock()
@@ -213,7 +213,9 @@ def recheck_lifecycle_verification(
     lifecycle_stage = (
         "endgame_final" if int(effective_state.get("level") or 0) >= 92 else "endgame_budget"
     )
-    gear = completeness.equipped_item_metadata(xml) or (
+    gear = completeness.equipped_item_metadata(
+        xml, allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds")
+    ) or (
         build.get("gear") if isinstance(build.get("gear"), dict) else {}
     )
     resource_gap = preflight.inspect_resource_model_gap(xml, gear)
@@ -540,7 +542,9 @@ def _create_quality_checklist(
             }
         )
 
-    gear = completeness.equipped_item_metadata(xml)
+    gear = completeness.equipped_item_metadata(
+        xml, allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds")
+    )
     if not gear:
         gear = build.get("gear") if isinstance(build.get("gear"), dict) else {}
     bootstrap_reasons = list(completeness_result.get("scaffoldSlots") or [])

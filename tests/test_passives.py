@@ -2,6 +2,60 @@
 
 from __future__ import annotations
 
+import pytest
+
+from server.compute.state import build_state_hash
+
+
+@pytest.mark.parametrize(
+    "class_name,attribute", [("Warrior", "Intelligence"), ("Sorceress", "Dexterity")]
+)
+def test_explicit_attribute_path_and_local_switch_survive_reload(engine, class_name, attribute):
+    engine.new_build()
+    engine.set_class(class_name)
+    engine.set_level(90)
+    candidates = engine.search_passives(node_type="Notable", limit=6000)["results"]
+    target = next(n for n in candidates if n.get("pathDist", 0) >= 6)
+    result = engine.alloc_passive(target["id"], path_attribute=attribute)
+    assert result["ok"]
+    nodes = engine.search_passives(limit=6000)["results"]
+    attributes = [n for n in nodes if n["alloc"] and n["isAttribute"]]
+    assert attributes and all(n["attribute"] == attribute for n in attributes)
+    assert all(
+        n["attributeOptions"] == ["Strength", "Dexterity", "Intelligence"] for n in attributes
+    )
+    allocated_ids = {n["id"] for n in nodes if n["alloc"]}
+    selected = attributes[0]["id"]
+    before = engine.get_stats(["Str", "Dex", "Int"])["stats"]
+    changed = engine.set_passive_attribute(selected, "Strength")
+    assert changed["ok"] and changed["pointsSpent"] == 0
+    after = engine.get_stats(["Str", "Dex", "Int"])["stats"]
+    assert after["Str"] > before["Str"]
+    unchanged = [n for n in attributes if n["id"] != selected]
+    assert all(engine.get_passive(n["id"])["attribute"] == attribute for n in unchanged)
+    xml = engine.get_xml()
+    saved_hash = build_state_hash(xml)
+    engine.load_build_xml(xml, name="attribute-roundtrip")
+    assert build_state_hash(engine.get_xml()) == saved_hash
+    assert engine.get_passive(selected)["attribute"] == "Strength"
+    assert {
+        n["id"] for n in engine.search_passives(limit=6000)["results"] if n["alloc"]
+    } == allocated_ids
+    assert engine.set_passive_attribute(selected, "Strength")["already"]
+    assert build_state_hash(engine.get_xml()) == saved_hash
+    # Invalid, nonattribute and unallocated nodes must never write a new override.
+    for node_id, value, code in [
+        (selected, "Magic", "invalid_passive_attribute"),
+        (target["id"], "Dexterity", "passive_node_not_attribute"),
+        (
+            next(n["id"] for n in nodes if n["isAttribute"] and not n["alloc"]),
+            "Intelligence",
+            "passive_node_not_allocated",
+        ),
+    ]:
+        assert engine.set_passive_attribute(node_id, value)["errorCode"] == code
+        assert build_state_hash(engine.get_xml()) == saved_hash
+
 
 def test_keystones_listed(fireball):
     ks = fireball.search_passives(node_type="Keystone", limit=5)["results"]

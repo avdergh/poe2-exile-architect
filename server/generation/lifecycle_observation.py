@@ -114,7 +114,9 @@ def observe_state(
         actual_level = int(build.get("level") or 0)
     if 1 <= actual_level <= 100:
         effective["level"] = actual_level
-    gear = completeness.equipped_item_metadata(xml)
+    gear = completeness.equipped_item_metadata(
+        xml, allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds")
+    )
     if not gear:
         gear = build.get("gear") if isinstance(build.get("gear"), dict) else {}
     effective["manaFlaskEquipped"] = any(

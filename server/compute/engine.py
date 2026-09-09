@@ -423,8 +423,13 @@ class PobEngine:
     def get_passive(self, node: str | int) -> dict[str, Any]:
         return self.call("get_passive", node=node)
 
-    def alloc_passive(self, node: str | int) -> dict[str, Any]:
-        return self.call("alloc_passive", node=node)
+    def alloc_passive(
+        self, node: str | int, *, path_attribute: str | None = None
+    ) -> dict[str, Any]:
+        return self.call("alloc_passive", node=node, path_attribute=path_attribute)
+
+    def set_passive_attribute(self, node: str | int, attribute: str) -> dict[str, Any]:
+        return self.call("set_passive_attribute", node=node, attribute=attribute)
 
     def dealloc_passive(self, node: str | int) -> dict[str, Any]:
         return self.call("dealloc_passive", node=node)

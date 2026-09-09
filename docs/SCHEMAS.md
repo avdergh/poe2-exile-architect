@@ -364,7 +364,7 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - `bootstrap`：一次 `set_class`、一次 `set_level`，可选首项 `new_build`，最多 3 步；
 - `mechanism_shell`：恰好一次主技能，加必要副技能与显式武器槽，最多 6 步；
 - `skill_loadout`：只增加已决定的次级技能组，最多 8 步；
-- `passive_delta`：精确天赋节点增删，最多 16 步；
+- `passive_delta`：精确天赋节点增删或已分配属性点改选，最多 16 步；
 - `required_gear`：机制必需装备/珠宝，最多 4 步；
 - `ordinary_gear`：普通装备补全，最多 10 步；
 - `config`：一次配置提交。
@@ -374,6 +374,24 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 需要 skill-group fingerprint 的精确编辑继续使用独立 CAS 工具，不能混入批次。只有首项为
 `new_build` 的 bootstrap 可以省略 `expectedStateHash`；其余批次必须链入上一批
 `outputStateHash`。
+
+`allocate_passive.pathAttribute` 可选择 `Strength/Dexterity/Intelligence`，只作用于本次新增路径；
+独立 `alloc_passive` 对应参数是 `path_attribute`。`set_passive_attribute` 操作要求精确整数 `node`
+与 `attribute`，节点必须已经分配且由当前 PoB 树确认为属性点；同选项为幂等，不花点、不改路径。
+`search_passives/get_passive` 均属于 Build 服务，返回 `isAttribute/attribute/attributeOptions`。
+单工具与批次失败均核对恢复后的语义 hash，失败恢复不能用后续装备成功清除。
+
+`equip_jewel` 要求显式已分配 `socket`，与通用 `equip_item(slot="Jewel <id>")`、批次共用事务性
+写入和来源感知审计；特殊来源原样传 `craftReceiptRef`。它用于已有槽位的填入/替换，不分配天赋；
+新增额外槽的正收益仍只能经 `apply_next_jewel_socket_decision` 应用。写后由活动 `Tree/Spec/Sockets`
+与真实 Item ID 核对物品，不能借非活动 Spec 或 ItemSet 的珠宝镜像通过；Rare/Magic 珠宝要求
+Item Level，Unique 数量使用静态来源限制。Checkpoint/Judge 与 artifact 检查也纳入这些树珠宝。
+PoB 不把物品授予的免费槽写入 `Spec.nodes`，实时审计因此使用引擎读回的
+`allocatedPassiveJewelSocketIds`；XML-only 结构检查仅确认显式已分配槽，不提升免费槽数值权限。
+新保存要求 `hard_legality_v5` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
+原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v9`，不复用旧检查。
+Python/Headless bridge 使用运行时合同 5，旧合同 4 的 user-data 引擎不能覆盖新版 bundle；
+属性切换与免费珠宝槽观察不会通过修改旧安装元数据获得权限。
 
 执行器只回滚当前职能批次，不修改此前已经提交的 scope。失败回执必须区分
 `attemptedOperationsBeforeFailure` 与 `persistedOperationCount`；只有 `rolledBack=true` 才能确认

@@ -58,19 +58,25 @@ class PobRuntimeSelectionTests(unittest.TestCase):
             "bundle",
         )
 
-    def test_contract_four_still_requires_a_current_engine_version(self) -> None:
+    def test_contract_four_without_passive_attributes_and_jewel_observation_is_rejected(self) -> None:
+        self.assertEqual(
+            self._select(contract=4, engine_version="99.0.0"),
+            "bundle",
+        )
+
+    def test_current_contract_still_requires_a_current_engine_version(self) -> None:
         self.assertEqual(
             self._select(
-                contract=4,
+                contract=paths.POB_RUNTIME_CONTRACT,
                 engine_version="0.1.59",
             ),
             "bundle",
         )
 
-    def test_current_contract_four_runtime_can_override_the_bundle(self) -> None:
+    def test_current_contract_runtime_can_override_the_bundle(self) -> None:
         self.assertEqual(
             self._select(
-                contract=4,
+                contract=paths.POB_RUNTIME_CONTRACT,
                 engine_version="0.1.60",
             ),
             "user-data",
@@ -99,11 +105,11 @@ class PobRuntimeSelectionTests(unittest.TestCase):
             ):
                 self.assertEqual(paths.pob_runtime_pair().source, "bundle")
 
-    def test_bundled_bridge_advertises_contract_four(self) -> None:
+    def test_bundled_bridge_advertises_contract_five(self) -> None:
         engine = PobEngine()
         try:
-            self.assertEqual(engine.info["runtimeContract"], 4)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 4)
+            self.assertEqual(engine.info["runtimeContract"], 5)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 5)
         finally:
             engine.close()
 

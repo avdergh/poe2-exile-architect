@@ -137,6 +137,8 @@ def apply_next_jewel_socket_decision(
             "recoveryRequired": True,
         }
     with engine.transaction_lock():
+        if _jewel_recovery_required(engine):
+            return {"ok": False, "errorCode": "build_state_recovery_required", "recoveryRequired": True}
         snapshot = engine.get_xml()
         state_hash = build_state_hash(snapshot)
         if state_hash != expected_state_hash:
@@ -894,7 +896,9 @@ def optimize_item(
         expected_stats = stats_of([lines()])[0]
         item_search.equip_candidate(engine, final, slot, calculation_context)
         candidate_xml = engine.get_xml()
-        canonical_item = completeness.equipped_item_text(candidate_xml, slot)
+        canonical_item = completeness.equipped_item_text_from_engine(
+            engine, slot, snapshot_xml=candidate_xml
+        )
         if canonical_item:
             attainability_reasons = _item_attainability_reasons(
                 canonical_item, acquisition_policy, legality=legality
@@ -2355,6 +2359,8 @@ def evaluate_next_jewel_socket(
             "recoveryRequired": True,
         }
     with engine.transaction_lock():
+        if _jewel_recovery_required(engine):
+            return {"ok": False, "errorCode": "build_state_recovery_required", "recoveryRequired": True}
         try:
             snapshot = engine.get_xml()
             state_hash = build_state_hash(snapshot)

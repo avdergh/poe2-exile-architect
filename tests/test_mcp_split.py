@@ -8,6 +8,8 @@ registered tools so tests, smoke scripts and old host configurations keep workin
 from __future__ import annotations
 
 import asyncio
+import ast
+import inspect
 
 from server import main
 from server.mcp import build_server, knowledge_server, learning_server, research_server
@@ -97,10 +99,42 @@ def test_key_tools_land_in_the_right_server():
 
 def test_engine_tools_are_build_server_only():
     # The single headless PoB engine must be reachable through exactly one server.
-    engine_tools = {"new_build", "set_class", "get_build_stats", "equip_item", "optimize_passives"}
+    engine_tools = {
+        "new_build",
+        "set_class",
+        "get_build_stats",
+        "equip_item",
+        "optimize_passives",
+        "search_passives",
+        "get_passive",
+        "alloc_passive",
+        "set_passive_attribute",
+    }
     assert engine_tools <= _tool_names(build_server.mcp)
     for other in (knowledge_server, research_server, learning_server):
         assert not (engine_tools & _tool_names(other.mcp))
+
+
+def test_knowledge_tools_never_reach_main_engine_helpers():
+    tree = ast.parse(inspect.getsource(main))
+    calls = {
+        f.name: {
+            n.func.id
+            for n in ast.walk(f)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        for f in tree.body
+        if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    pending = list(_tool_names(knowledge_server.mcp))
+    seen = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        assert name != "get_engine", "Knowledge tools must not read a separate active PoB state"
+        pending.extend(calls.get(name, set()) - seen)
 
 
 def test_each_server_has_short_domain_instructions():

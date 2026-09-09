@@ -16,12 +16,12 @@ from server.compute import completeness
 from . import rules, scoring
 
 
-AUDIT_VERSION = "hard_legality_v4"
+AUDIT_VERSION = "hard_legality_v5"
 SUPPORTED_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", AUDIT_VERSION}
+    {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4", AUDIT_VERSION}
 )
 ARTIFACT_COMPATIBLE_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v2", "hard_legality_v3", AUDIT_VERSION}
+    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", AUDIT_VERSION}
 )
 def audit_active_build(
     engine: Any,
@@ -368,6 +368,7 @@ def augment_build_with_snapshot_gear(
         gear = completeness.equipped_item_metadata(
             xml,
             require_special_provenance=True,
+            allocated_jewel_socket_ids=output.get("allocatedPassiveJewelSocketIds"),
         )
     except Exception:  # noqa: BLE001 - missing metadata remains unknown, never guessed.
         gear = {}

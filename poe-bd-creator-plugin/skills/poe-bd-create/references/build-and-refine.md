@@ -108,7 +108,7 @@ premise的deep-read解决记录，相关引用规则见[Research使用](research
 
 | 方向 | 操作与采用依据 |
 | --- | --- |
-| 精确搜索 | `search_passives/search_mods/search_items`不设固定候选条数上限；默认返回量不是上限。选定后用`get_passive/get_item`等精确详情，必要时扩展结果或改查询 |
+| 精确搜索 | `search_passives/search_mods/search_items`不设固定候选条数上限；默认返回量不是上限。选定后用`get_passive/get_item`等精确详情，必要时扩展结果或改查询。天赋搜索与详情均由Build服务读取当前状态 |
 | 武器/黄装/天赋 | 用单槽`optimize_item/craft_item`、`plan_gear`和局部`optimize_passives`；禁止`optimize_build`与`optimize_passives(reset=true, points=0)`全局重排 |
 | 辅助 | 对每个用户可编辑组及`noSupports=false`的核心`Tree:*`/`Item:*`组，用group_index/新鲜fingerprint调用`optimize_supports`，按职责比较完整当前与候选组合；同目标完整测量、合法性不回归且净正收益才要求修改，可以纯移除辅助，不机械要求五辅 |
 | Spirit机会成本 | 定向查询该等级的精魂/保留搭配，验证等级、Spirit、实际作用。使用率不高于80%时实测与Blueprint职责一致的持久技能：有正收益且不破坏机制则采用；无可容纳/有价值选项则记录留余量理由，不塞无关技能凑比例 |
@@ -124,10 +124,17 @@ premise的deep-read解决记录，相关引用规则见[Research使用](research
 其机制价值。审计status/reasonClass与可继续条件统一见
 [验证与恢复](validation-and-recovery.md)。
 
-用`list_jewel_sockets`盘点：已分配槽必须填真实珠宝。目标≥90才强制额外槽审计；核心与重要支撑
+新增路径可用`alloc_passive(path_attribute=...)`明确选择力量/敏捷/智慧，已有属性点用
+`set_passive_attribute(node, attribute)`改选，归入`passive_delta`小事务；从`get_passive`读取选项，
+不按职业默认猜选，也不为补属性重排整树。
+
+用`list_jewel_sockets`盘点：已分配槽必须填真实珠宝，经`evaluate_jewel_socket`比较后用
+`equip_jewel`显式填入/替换，正收益允许采用；该操作不花天赋点，不属于新增槽位决策。
+写后必须通过物品来源、暗金数量、活动Spec读回与回滚核验。目标≥90才强制额外槽审计；核心与重要支撑
 天赋完成后以精确node ID声明`protected_node_ids`，为已选下一颗珠宝调用`evaluate_next_jewel_socket`，
 比较全部当前可达槽及安全单点叶节点的等点边际，不重排树。正收益只能经
-`apply_next_jewel_socket_decision`原子应用，再在新state重审；无正收益或无可达槽才结束。
+`apply_next_jewel_socket_decision`原子应用，再在新state重审；不能先手工点额外槽后填珠宝来绕过审计。
+无正收益或无可达槽才结束。
 `policy_limited/inconclusive`可Judge但只能candidate，不能以成熟案例槽数、固定轮数或最低槽数代替。
 低于90级只在机制需要时评估额外槽，不作为质量门禁。
 

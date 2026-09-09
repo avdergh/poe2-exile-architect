@@ -23,7 +23,9 @@ def evaluate_active_build(
     build = dict(prepared_build) if isinstance(prepared_build, dict) else engine.get_build()
     try:
         snapshot_xml = engine.get_xml()
-        equipped_items = completeness.equipped_item_metadata(snapshot_xml)
+        equipped_items = completeness.equipped_item_metadata(
+            snapshot_xml, allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds")
+        )
         completion = completeness.inspect_build_completeness(
             engine,
             snapshot_xml=snapshot_xml,

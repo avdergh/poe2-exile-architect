@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 4
+local HEADLESS_RUNTIME_CONTRACT = 5
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -2956,6 +2956,10 @@ end
 -- Full read-back of the active build (so callers can see what they've assembled).
 function methods.get_build()
 	local spec = build.spec
+	local allocatedPassiveJewelSocketIds = {}
+	for _, socket in ipairs(methods.list_jewel_sockets().sockets) do
+		if socket.allocated then allocatedPassiveJewelSocketIds[#allocatedPassiveJewelSocketIds + 1] = socket.socket end
+	end
 	local notables, keystones, asc = {}, {}, {}
 	for _, node in pairs(spec.allocNodes) do
 		if node.ascendancyName then
@@ -3036,6 +3040,7 @@ function methods.get_build()
 		keystones = keystones,
 		ascendancyNotables = asc,
 		gear = gear,
+		allocatedPassiveJewelSocketIds = allocatedPassiveJewelSocketIds,
 		customMods = (build.configTab and build.configTab.input.customMods) or "",
 		attributes = {
 			strength = asNumber(mainOutput.Str),
@@ -3218,6 +3223,13 @@ local function nodeSummary(n)
 		end
 	end
 	table.sort(pathNodeIds)
+	local attributeOptions = {}
+	local sourceNode = build.spec.tree.nodes[n.id]
+	if sourceNode and sourceNode.isAttribute then
+		for _, option in ipairs(sourceNode.options or {}) do
+			attributeOptions[#attributeOptions + 1] = option.dn
+		end
+	end
 	return {
 		id = n.id,
 		name = n.name,
@@ -3228,6 +3240,9 @@ local function nodeSummary(n)
 		reachable = n.path ~= nil,
 		ascendancy = n.ascendancyName,
 		pathNodeIds = pathNodeIds,
+		isAttribute = sourceNode and sourceNode.isAttribute or false,
+		attribute = sourceNode and sourceNode.isAttribute and n.dn or nil,
+		attributeOptions = attributeOptions,
 	}
 end
 
@@ -3380,19 +3395,30 @@ function methods.list_reallocation_candidates(p)
 end
 
 function methods.alloc_passive(p)
+	local attributeIndex
+	if p and p.path_attribute ~= nil then
+		attributeIndex = ({ Strength = 1, Dexterity = 2, Intelligence = 3 })[p.path_attribute]
+		if not attributeIndex then return { ok = false, errorCode = "invalid_passive_attribute" } end
+	end
 	local n = findNode(p and p.node)
 	if not n then return { ok = false, error = "node not found" } end
 	if n.alloc then return { ok = true, already = true, node = nodeSummary(n) } end
 	if not n.path then return { ok = false, error = "node not reachable from current tree" } end
 	local before = statSnapshot()
 	local used = build.spec:CountAllocNodes()
-	build.spec:AllocNode(n, nil)
+	-- Use the pinned PoB allocation policy only for this request. Never persist a hidden default
+	-- that could change subsequent allocations made by another tool or imported build.
+	local previousAttributeIndex = build.spec.attributeIndex
+	if attributeIndex then build.spec.attributeIndex = attributeIndex end
+	local allocated, allocationError = pcall(function() build.spec:AllocNode(n, nil) end)
+	build.spec.attributeIndex = previousAttributeIndex
+	if not allocated then error(allocationError) end
 	build.buildFlag = true
 	runCallback("OnFrame")
 	local usedAfter = build.spec:CountAllocNodes()
 	local r = {
 		ok = true,
-		node = nodeSummary(n),
+		node = nodeSummary(build.spec.nodes[n.id]),
 		pointsSpent = usedAfter - used,
 		statsDelta = statDelta(before),
 	}
@@ -3411,6 +3437,30 @@ function methods.alloc_passive(p)
 			.. " (dealloc_passive) or raise the level before exporting."
 	end
 	return r
+end
+
+function methods.set_passive_attribute(p)
+	local attributeIndex = p and ({ Strength = 1, Dexterity = 2, Intelligence = 3 })[p.attribute]
+	if not attributeIndex then return { ok = false, errorCode = "invalid_passive_attribute" } end
+	local n = findNode(p and p.node)
+	if not n then return { ok = false, errorCode = "passive_node_not_found" } end
+	local sourceNode = build.spec.tree.nodes[n.id]
+	if not sourceNode or not sourceNode.isAttribute then
+		return { ok = false, errorCode = "passive_node_not_attribute" }
+	end
+	if not n.alloc then return { ok = false, errorCode = "passive_node_not_allocated" } end
+	if n.dn == p.attribute then
+		return { ok = true, already = true, node = nodeSummary(n), pointsSpent = 0 }
+	end
+	local before = statSnapshot()
+	build.spec:SwitchAttributeNode(n.id, attributeIndex)
+	build.spec:BuildAllDependsAndPaths()
+	build.buildFlag = true
+	runCallback("OnFrame")
+	return {
+		ok = true, node = nodeSummary(build.spec.nodes[n.id]), pointsSpent = 0,
+		statsDelta = statDelta(before),
+	}
 end
 
 function methods.dealloc_passive(p)

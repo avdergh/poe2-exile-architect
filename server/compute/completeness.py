@@ -6,10 +6,11 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from server.knowledge import item_legality, itemparse
+from server.knowledge import db, item_legality, itemparse
 from server.judge import rules
 
-from . import attainability
+from . import attainability, pob_structure
+from .pob_xml_input import parse_pob_xml
 from .engine import PobEngine
 
 _FLASK_SLOTS = ("Flask 1", "Flask 2")
@@ -34,6 +35,8 @@ _RUNE_RELEVANT_SLOTS = {
     "Gloves",
     "Boots",
 }
+
+
 def spirit_opportunity_review_required(build: dict[str, Any]) -> bool:
     """Return a factual low-utilization signal without deciding what the build should reserve."""
 
@@ -44,8 +47,7 @@ def spirit_opportunity_review_required(build: dict[str, Any]) -> bool:
     if isinstance(requested, bool) or not isinstance(requested, int | float):
         return False
     return (
-        max(0.0, float(requested)) / float(available)
-        <= rules.SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD
+        max(0.0, float(requested)) / float(available) <= rules.SPIRIT_OPPORTUNITY_REVIEW_THRESHOLD
     )
 
 
@@ -56,7 +58,10 @@ def inspect_build_completeness(
 ) -> dict[str, Any]:
     """Describe omitted real-build systems without deciding the build on the Agent's behalf."""
     build = engine.get_build()
-    gear = equipped_item_metadata(snapshot_xml if snapshot_xml is not None else engine.get_xml())
+    gear = equipped_item_metadata(
+        snapshot_xml if snapshot_xml is not None else engine.get_xml(),
+        allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds"),
+    )
     if not gear:
         fallback = build.get("gear") or {}
         gear = fallback if isinstance(fallback, dict) else {}
@@ -81,7 +86,7 @@ def inspect_build_completeness(
         rarity = str(item.get("rarity") or "unknown").lower()
         rarity_counts[rarity] = rarity_counts.get(rarity, 0) + 1
         if (
-            slot in _EQUIPMENT_SLOTS
+            (slot in _EQUIPMENT_SLOTS or slot.startswith("Jewel "))
             and rarity in {"rare", "magic"}
             and item.get("itemLevel") is None
         ):
@@ -228,10 +233,11 @@ def equipped_item_metadata(
     xml: str,
     *,
     require_special_provenance: bool = False,
+    allocated_jewel_socket_ids: list[int] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Read only active-slot item metadata from PoB XML; raw item text never leaves this module."""
     try:
-        root = ET.fromstring(xml)
+        root = parse_pob_xml(xml)
     except (ET.ParseError, TypeError):
         return {}
     items = root.find("Items")
@@ -245,28 +251,49 @@ def equipped_item_metadata(
         (node for node in items.findall("ItemSet") if str(node.get("id")) == active_id),
         None,
     )
-    if item_set is None:
-        return {}
     gear: dict[str, dict[str, Any]] = {}
-    for slot in item_set.findall("Slot"):
+    for slot in item_set.findall("Slot") if item_set is not None else []:
         item_id = str(slot.get("itemId") or "0")
         slot_name = str(slot.get("name") or "")
-        if item_id != "0" and slot_name and item_id in by_id:
+        if item_id != "0" and slot_name and item_id in by_id and not slot_name.startswith("Jewel "):
             gear[slot_name] = _parse_item_text(
                 by_id[item_id],
                 slot=slot_name,
                 require_special_provenance=require_special_provenance,
             )
+    jewels = pob_structure.active_spec_jewel_items(
+        root, allocated_socket_ids=allocated_jewel_socket_ids
+    )
+    if jewels is None:
+        gear["Passive Jewel State"] = {
+            "affixLegality": {"ok": False, "issues": ["active_jewel_item_state_invalid"]}
+        }
+    else:
+        for slot, raw in jewels.items():
+            gear[slot] = _parse_item_text(
+                raw, slot=slot, require_special_provenance=require_special_provenance
+            )
+        _audit_jewel_limits(gear)
     return gear
 
 
-def equipped_item_text(xml: str, slot_name: str) -> str | None:
+def equipped_item_text(
+    xml: str,
+    slot_name: str,
+    *,
+    allocated_jewel_socket_ids: list[int] | None = None,
+) -> str | None:
     """Return one private active-slot item text for internal receipt canonicalization only."""
 
     try:
-        root = ET.fromstring(xml)
+        root = parse_pob_xml(xml)
     except (ET.ParseError, TypeError):
         return None
+    if slot_name.startswith("Jewel "):
+        jewels = pob_structure.active_spec_jewel_items(
+            root, allocated_socket_ids=allocated_jewel_socket_ids
+        )
+        return jewels.get(slot_name) if jewels is not None else None
     items = root.find("Items")
     if items is None:
         return None
@@ -291,6 +318,53 @@ def equipped_item_text(xml: str, slot_name: str) -> str | None:
     return item.text or "" if item is not None else None
 
 
+def equipped_item_text_from_engine(
+    engine: Any,
+    slot_name: str,
+    *,
+    snapshot_xml: str | None = None,
+) -> str | None:
+    """Read one live item, including allocated free jewel sockets absent from Spec.nodes."""
+    xml = engine.get_xml() if snapshot_xml is None else snapshot_xml
+    if slot_name.startswith("Jewel "):
+        socket_ids = [
+            row["socket"]
+            for row in engine.list_jewel_sockets().get("sockets") or []
+            if row.get("allocated") is True
+        ]
+        return equipped_item_text(xml, slot_name, allocated_jewel_socket_ids=socket_ids)
+    return equipped_item_text(xml, slot_name)
+
+
+def _audit_jewel_limits(gear: dict[str, dict[str, Any]]) -> None:
+    """Use corpus Unique limits, never a caller-edited 'Limited to' property."""
+    groups: dict[str, tuple[int, list[str]]] = {}
+    for slot, item in gear.items():
+        if not slot.startswith("Jewel ") or str(item.get("rarity") or "").casefold() != "unique":
+            continue
+        source = db.get_unique(str(item.get("name") or ""))
+        match = re.search(
+            r"^Limited to:\s*(\d+)([^\n]*)$", str((source or {}).get("text") or ""), re.MULTILINE
+        )
+        if match is None:
+            continue
+        limit = int(match.group(1))
+        group = match.group(2).strip() or str(item["name"])
+        old_limit, slots = groups.get(group, (limit, []))
+        groups[group] = (min(old_limit, limit), [*slots, slot])
+    for group, (limit, slots) in groups.items():
+        if len(slots) <= limit:
+            continue
+        for slot in slots:
+            audit = dict(gear[slot].get("affixLegality") or {})
+            audit.update(
+                ok=False,
+                issues=[*(audit.get("issues") or []), "jewel_limit_exceeded"],
+                jewelLimit={"group": group, "limit": limit, "equippedCount": len(slots)},
+            )
+            gear[slot]["affixLegality"] = audit
+
+
 def artifact_blockers(xml: str) -> list[str]:
     """Return structural equipment omissions that can never be a final playable artifact."""
     gear = equipped_item_metadata(xml, require_special_provenance=True)
@@ -300,7 +374,7 @@ def artifact_blockers(xml: str) -> list[str]:
     if any(
         str(item.get("rarity") or "").lower() in {"rare", "magic"} and item.get("itemLevel") is None
         for slot, item in gear.items()
-        if slot in _EQUIPMENT_SLOTS
+        if slot in _EQUIPMENT_SLOTS or slot.startswith("Jewel ")
     ):
         blockers.append("final_artifact_item_level_missing")
     if any(item.get("affixLegality", {}).get("ok") is False for item in gear.values()):

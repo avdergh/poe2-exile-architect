@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from . import equipment, skillgroups
+from . import equipment, passives, skillgroups
 from .state import build_state_hash
 
 
@@ -39,6 +39,7 @@ MutationKind = Literal[
     "equip_jewel",
     "allocate_passive",
     "deallocate_passive",
+    "set_passive_attribute",
 ]
 
 MAX_FUNCTIONAL_BATCH_OPERATIONS = 16
@@ -90,7 +91,7 @@ _SCOPE_OPERATIONS: dict[FunctionalBatchKind, frozenset[MutationKind]] = {
         }
     ),
     "skill_loadout": frozenset({"add_skill_group"}),
-    "passive_delta": frozenset({"allocate_passive", "deallocate_passive"}),
+    "passive_delta": frozenset({"allocate_passive", "deallocate_passive", "set_passive_attribute"}),
     "required_gear": frozenset({"equip_item", "unequip_item", "equip_jewel"}),
     "ordinary_gear": frozenset({"equip_item", "unequip_item", "equip_jewel"}),
     "config": frozenset({"set_config"}),
@@ -129,6 +130,8 @@ class BuildMutationOperation(BaseModel):
     )
     socket: int | None = Field(default=None, ge=0)
     node: str | int | None = None
+    attribute: passives.PassiveAttribute | None = None
+    path_attribute: passives.PassiveAttribute | None = None
 
     @model_validator(mode="after")
     def _operation_contract(self) -> "BuildMutationOperation":
@@ -144,6 +147,7 @@ class BuildMutationOperation(BaseModel):
             "equip_jewel": {"raw"},
             "allocate_passive": {"node"},
             "deallocate_passive": {"node"},
+            "set_passive_attribute": {"node", "attribute"},
         }
         values = {
             "class_name": self.class_name,
@@ -157,6 +161,8 @@ class BuildMutationOperation(BaseModel):
             "craft_receipt_ref": self.craft_receipt_ref,
             "socket": self.socket,
             "node": self.node,
+            "attribute": self.attribute,
+            "path_attribute": self.path_attribute,
         }
         missing = sorted(key for key in required[self.operation] if values[key] is None)
         if missing:
@@ -172,9 +178,10 @@ class BuildMutationOperation(BaseModel):
             "set_config": {"options", "custom_mods"},
             "equip_item": {"raw", "slot", "craft_receipt_ref"},
             "unequip_item": {"slot"},
-            "equip_jewel": {"raw", "socket"},
-            "allocate_passive": {"node"},
+            "equip_jewel": {"raw", "socket", "craft_receipt_ref"},
+            "allocate_passive": {"node", "path_attribute"},
             "deallocate_passive": {"node"},
+            "set_passive_attribute": {"node", "attribute"},
         }
         explicitly_set = set(self.model_fields_set) - {"operation"}
         unexpected = sorted(explicitly_set - allowed[self.operation])
@@ -182,6 +189,8 @@ class BuildMutationOperation(BaseModel):
             raise ValueError(f"{self.operation} does not accept: {', '.join(unexpected)}")
         if isinstance(self.node, str) and not self.node.strip():
             raise ValueError("passive node cannot be blank")
+        if self.operation == "set_passive_attribute" and type(self.node) is not int:
+            raise ValueError("set_passive_attribute requires an exact integer node id")
         return self
 
 
@@ -514,7 +523,7 @@ def _duplicate_operation_selector(
             domain = "item"
         elif operation.operation == "equip_jewel":
             domain = "jewel"
-        elif operation.operation in {"allocate_passive", "deallocate_passive"}:
+        elif operation.operation in {"allocate_passive", "deallocate_passive", "set_passive_attribute"}:
             domain = "passive"
         elif operation.operation in {"set_main_skill", "add_skill_group"}:
             domain = "skill"
@@ -536,7 +545,7 @@ def _operation_selector(
         return operation.slot
     if operation.operation == "equip_jewel":
         return operation.socket
-    if operation.operation in {"allocate_passive", "deallocate_passive"}:
+    if operation.operation in {"allocate_passive", "deallocate_passive", "set_passive_attribute"}:
         return operation.node
     if operation.operation in {"set_main_skill", "add_skill_group"} and operation.skill:
         normalized = re.sub(r"\s+", " ", operation.skill).strip()
@@ -586,7 +595,7 @@ def _operation_postcondition_error(
             return "mutation_batch_jewel_socket_unallocated", {
                 "socket": operation.socket,
             }
-    elif operation.operation in {"allocate_passive", "deallocate_passive"}:
+    elif operation.operation in {"allocate_passive", "deallocate_passive", "set_passive_attribute"}:
         if not isinstance(result.get("node"), dict):
             return "mutation_batch_passive_postcondition_failed", {
                 "node": operation.node,
@@ -775,9 +784,14 @@ def _apply_operation(engine: Any, operation: BuildMutationOperation) -> dict[str
     if operation.operation == "unequip_item":
         return engine.unequip_item(operation.slot)
     if operation.operation == "equip_jewel":
-        return engine.equip_jewel(operation.raw, socket=operation.socket)
+        return equipment.equip_jewel_verified(engine, raw=operation.raw, socket=operation.socket,
+                                             craft_receipt_ref=operation.craft_receipt_ref)
     if operation.operation == "allocate_passive":
-        return engine.alloc_passive(operation.node)
+        return passives.mutate_passive(engine, node=operation.node, operation="allocate",
+                                       attribute=operation.path_attribute)
+    if operation.operation == "set_passive_attribute":
+        return passives.mutate_passive(engine, node=operation.node, operation="attribute",
+                                       attribute=operation.attribute)
     if operation.operation == "deallocate_passive":
         return engine.dealloc_passive(operation.node)
     raise ValueError("unsupported mutation operation")
