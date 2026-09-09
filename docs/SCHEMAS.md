@@ -269,7 +269,11 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   两者必须绑定同一精确技能、目标、原始构筑状态并完整测量；合法性不得新增或加重错误。
   只有完整审计证明净正收益，才设置`positiveGainCombinationAvailable`并要求修改；
   `positiveGainSupportsMissing`为空不代表无需修改，纯移除方案由`supportsToRemove`表达。
-  搜索从当前与空辅助集合出发，`globalOptimalityProven=false`；覆盖仅限已筛选的runtime可解析
+  搜索从当前与最小辅助集合出发；最小集合保留PoB实际应用且增加`HasUsageCondition`的辅助。
+  `usageConditionContractVersion=1/usageConditionContracts`逐效果绑定support/effect ID；新增、移除
+  或替换使用条件的组合记为`support_usage_condition_changed`，不是自动正收益。Agent需先明确
+  改组才能改变玩法条件；该合同不证明移动、站立或充能条件的实际覆盖率。缺少该运行时证据的旧
+  数值审计必须重验，不补标记。`globalOptimalityProven=false`；覆盖仅限已筛选的runtime可解析
   辅助身份及已访问组合。PoB runtime ID确认不可用的候选单列于`uncoveredCandidates`，
   `modelCoverageComplete=false`不等于这些候选无收益，也不能将搜索结果称为全局最优。
   同effect、目标权重、约束及完整候选范围的新测量错误或反证撤销旧comparison沿用权限；历史

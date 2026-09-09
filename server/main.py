@@ -2111,6 +2111,9 @@ def optimize_supports(
 ) -> dict[str, Any]:
     """Compare complete support sets for one exact active effect using PoB.
 
+    Searches preserve runtime-observed support usage conditions across every effect in the group.
+    A support that changes when a skill can be used is not an automatic numeric upgrade: the Agent
+    must choose that gameplay change explicitly before re-auditing. This does not certify uptime.
     Supports are usually a build's biggest "more" multiplier, but the corpus stores no support
     MAGNITUDES — so this values them empirically. Candidate discovery covers the group's active
     skills and exact selected effect. Solo probes order candidates; the installed combination is

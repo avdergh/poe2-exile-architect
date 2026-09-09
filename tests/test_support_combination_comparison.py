@@ -144,6 +144,8 @@ class CombinationOracle:
                 "numericRanking": "supported",
                 "triggerRate": "not_applicable",
                 "capabilitySource": "pob_runtime",
+                "usageConditionContractVersion": 1,
+                "usageConditionContracts": [],
             }
         assert method == "list_skill_groups"
         gems = [
@@ -206,6 +208,74 @@ def test_installed_synergy_is_measured_and_never_replaced_by_inferior_solo(monke
     assert result["supportAudit"]["status"] == "passed"
     assert result["supportAudit"]["positiveGainSupportsMissing"] == []
     assert result["measurement"]["globalOptimalityProven"] is False
+
+
+@pytest.mark.parametrize("condition_effect", ["effect:Spark", "effect:Comet"])
+def test_usage_condition_added_to_any_group_role_is_not_an_automatic_upgrade(
+    monkeypatch, condition_effect
+):
+    engine = CombinationOracle({(): 100, ("Pair A", "Pair B"): 300, ("Solo C",): 1000})
+    original_call = engine.call
+
+    def call(method, **params):
+        result = original_call(method, **params)
+        if method == "inspect_support_evaluation_capability" and "Solo C" in engine._supports():
+            result["usageConditionContracts"] = [
+                {"effectId": condition_effect, "supportEffectId": "effect:Solo C"}
+            ]
+        return result
+
+    engine.call = call
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: ["Pair A", "Pair B", "Solo C"])
+    before = engine.get_xml()
+    result = supportopt.optimize_supports(engine)
+    assert result["supports"] == ["Pair A", "Pair B"]
+    assert result["measurement"]["candidateRejectionCodes"]["support_usage_condition_changed"] == 1
+    assert result["supportAudit"]["status"] == "passed"
+    assert engine.get_xml() == before
+
+
+def test_existing_usage_condition_is_preserved_in_minimal_seed_and_full_comparison(monkeypatch):
+    engine = CombinationOracle(
+        {(): 100, ("Pair A",): 150, ("Pair A", "Pair B"): 300, ("Pair A", "Solo C"): 500,
+         ("Solo C",): 1000}
+    )
+    original_call = engine.call
+
+    def call(method, **params):
+        result = original_call(method, **params)
+        if method == "inspect_support_evaluation_capability" and "Pair A" in engine._supports():
+            result["usageConditionContracts"] = [
+                {"effectId": "effect:Spark", "supportEffectId": "effect:Pair A"}
+            ]
+        return result
+
+    engine.call = call
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: ["Pair A", "Pair B", "Solo C"])
+    before = engine.get_xml()
+    result = supportopt.optimize_supports(engine)
+    assert set(result["supports"]) == {"Pair A", "Solo C"}
+    assert result["measurement"]["preservedUsageConditionSupports"] == ["Pair A"]
+    assert result["supportAudit"]["positiveGainCombinationAvailable"] is True
+    assert engine.get_xml() == before
+
+
+def test_missing_usage_contract_cannot_issue_a_numeric_support_pass(monkeypatch):
+    engine = CombinationOracle({(): 100, ("Pair A", "Pair B"): 300})
+    original_call = engine.call
+
+    def call(method, **params):
+        result = original_call(method, **params)
+        if method == "inspect_support_evaluation_capability":
+            result.pop("usageConditionContractVersion")
+        return result
+
+    engine.call = call
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: ["Pair A", "Pair B"])
+    result = supportopt.optimize_supports(engine)
+    assert result["supportAudit"]["status"] == "inconclusive"
+    assert result["supportAudit"]["positiveGainCombinationAvailable"] is False
+    assert "support_usage_condition_evidence_missing" in result["supportAudit"]["reasonCodes"]
 
 
 def test_positive_solo_is_actionable_only_when_whole_set_beats_current(monkeypatch):

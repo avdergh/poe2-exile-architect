@@ -57,6 +57,7 @@ _EXPECTED_SOURCE_REJECTION_CODES = frozenset(
         "source_support_not_applied",
         "source_command_unsupported",
         "spirit_over_reserved",
+        "support_usage_condition_changed",
     }
 )
 _EXPECTED_SOURCE_COMBINATION_REJECTION_CODES = _EXPECTED_SOURCE_REJECTION_CODES | {
@@ -113,6 +114,7 @@ def support_audit_is_complete(audit: dict[str, Any]) -> bool:
         and measurement.get("checkpointEligible") is True
         and measurement.get("coverageComplete") is True
         and measurement.get("classificationComplete") is True
+        and _usage_condition_contract(measurement) is not None
         and measurement.get("currentCombinationMeasurable") is True
         and int(measurement.get("measuredCandidates") or 0) > 0
         and int(measurement.get("classifiedCandidates") or 0)
@@ -488,6 +490,24 @@ def _support_evaluation_capability(
     }
 
 
+def _usage_condition_contract(capability: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    if capability.get("usageConditionContractVersion") != 1:
+        return None
+    entries = capability.get("usageConditionContracts")
+    if not isinstance(entries, list):
+        return None
+    if any(
+        not isinstance(entry, dict)
+        or not isinstance(entry.get("effectId"), str)
+        or not entry["effectId"]
+        or not isinstance(entry.get("supportEffectId"), str)
+        or not entry["supportEffectId"]
+        for entry in entries
+    ):
+        return None
+    return tuple(sorted({(entry["effectId"], entry["supportEffectId"]) for entry in entries}))
+
+
 def _unique_output_index(group: dict[str, Any], skill: str, effect_id: str | None) -> int:
     matches = [
         int(effect.get("index") or 0)
@@ -771,7 +791,7 @@ def _optimize_supports_locked(
     `metric`. Builds the candidate pool by MEASUREMENT, not tags: it solo-measures the skill's
     tag-relevant supports (`screen` of them; on-element supports — those sharing the skill's damage
     type, like penetration — are always included), keeps the strongest `candidates`, then greedily
-    adds supports from both the installed mechanism and empty seeds. Solo-neutral supports are
+    adds supports from the installed mechanism and a usage-preserving minimal seed. Neutral supports are
     retained for contextual trials. This is a heuristic, not an exhaustive combination search.
     Only a complete, same-context improvement can require a change. The build is restored.
     """
@@ -1028,6 +1048,13 @@ def _optimize_supports_locked(
         for identity in resolved_identities.values()
         if identity.get("status") == "resolved" and identity.get("name")
     }
+    usage_contract = _usage_condition_contract(capability)
+    condition_effect_ids = {entry[1] for entry in usage_contract or ()}
+    condition_supports = []
+    for name in current_supports:
+        identity = identities_by_canonical_name.get(name) or _runtime_support_identity(engine, name)
+        if identity.get("effectId") in condition_effect_ids:
+            condition_supports.append(name)
     search_scope_hash = canonical_payload_hash(
         {
             "discoverySkills": sorted(discovery_skills),
@@ -1276,6 +1303,11 @@ def _optimize_supports_locked(
                 return {}, "failed", "support_selected_effect_changed"
             if probe_capability.get("applicationCheck") == "failed":
                 return {}, "rejected", "source_support_not_applied"
+            probe_usage_contract = _usage_condition_contract(probe_capability)
+            if usage_contract is None or probe_usage_contract is None:
+                return {}, "failed", "support_usage_condition_evidence_missing"
+            if usage_contract != probe_usage_contract:
+                return {}, "rejected", "support_usage_condition_changed"
             if (
                 probe_capability.get("ok") is not True
                 or probe_capability.get("numericRanking") != "supported"
@@ -1296,8 +1328,8 @@ def _optimize_supports_locked(
             hard_legality.augment_build_with_snapshot_gear(engine.get_build(), engine.get_xml())
         )
         base_stats, base_outcome, base_error = measure(
-            []
-        )  # only a search seed; not the audit baseline
+            condition_supports
+        )  # Preserve runtime usage conditions even in the minimal search seed.
 
         def measurement_valid(stats: dict[str, Any]) -> bool:
             return any(_finite_num(stats.get(key)) for key in keys)
@@ -1382,8 +1414,9 @@ def _optimize_supports_locked(
                 )
                 continue
             canonical_name = str(identity["name"])
-            measured_stats, outcome, error_code = measure([canonical_name])
-            screen_measurements[(canonical_name,)] = measured_stats, outcome, error_code
+            screened_set = list(dict.fromkeys([*condition_supports, canonical_name]))
+            measured_stats, outcome, error_code = measure(screened_set)
+            screen_measurements[tuple(sorted(screened_set))] = measured_stats, outcome, error_code
             if outcome == "rejected":
                 rejected_candidate_count += 1
                 count_code(candidate_rejection_codes, error_code, "source_support_rejected")
@@ -1479,7 +1512,7 @@ def _optimize_supports_locked(
 
         seeds = [(list(current_supports), current_stats)]
         if current_supports:
-            seeds.append(([], base_stats))
+            seeds.append((list(condition_supports), base_stats))
         for seed, seed_stats in seeds:
             candidate_set, candidate_stats, candidate_steps = greedy(seed, seed_stats)
             candidate_score = score(candidate_stats)
@@ -1659,9 +1692,12 @@ def _optimize_supports_locked(
         "objectiveDirections": metric_directions,
         "measurementKeys": list(measurement_keys),
         "objectiveSpecification": objective_specification,
+        "usageConditionContractVersion": capability.get("usageConditionContractVersion"),
+        "usageConditionContracts": deepcopy(capability.get("usageConditionContracts")),
+        "preservedUsageConditionSupports": list(condition_supports),
         "searchScopeHash": search_scope_hash,
         "combinationComparison": comparison,
-        "searchMethod": "greedy_current_and_empty_seeds",
+        "searchMethod": "greedy_current_and_usage_preserving_seeds",
         "probeMode": "full_snapshot_source" if configurable_source else "group_local",
         "topologyRebuilds": topology_rebuilds,
         "searchCoverage": "screened_candidates_and_visited_combinations",
@@ -1723,7 +1759,7 @@ def _optimize_supports_locked(
             else (
                 "Engine search — each support is valued empirically (the corpus has no support "
                 "magnitudes). The current complete combination is retained as a measured baseline. "
-                "Greedy search starts from both the current and empty support sets; only a measured "
+                "Greedy search starts from current and usage-preserving minimal support sets; only a measured "
                 "whole-set improvement can require a change. Preserve the selected group's active "
                 "gems and settings when applying. Screening is not proof of a global optimum."
             )

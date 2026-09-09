@@ -56,6 +56,8 @@ def _complete_support_measurement(*keys: str, current=(), recommended=()) -> dic
         "currentCombinationMeasurable": True,
         "coverageComplete": True,
         "classificationComplete": True,
+        "usageConditionContractVersion": 1,
+        "usageConditionContracts": [],
         "supportCapacity": 5,
         "maxSupports": 5,
         "candidateLimit": 1,
@@ -151,6 +153,8 @@ class _AuditProbeEngine:
                 "numericRanking": "supported",
                 "triggerRate": "not_applicable",
                 "capabilitySource": "pob_runtime",
+                "usageConditionContractVersion": 1,
+                "usageConditionContracts": [],
             }
         raise AssertionError(method)
 
@@ -241,6 +245,8 @@ class _RuntimeTriggerAuditEngine(_TriggerAuditEngine):
                 "triggerRate": self.trigger_rate,
                 "reasonCodes": [reason],
                 "capabilitySource": "pob_runtime",
+                "usageConditionContractVersion": 1,
+                "usageConditionContracts": [],
             }
         return super().call(method, **kwargs)
 

@@ -693,6 +693,38 @@ def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_me
     assert per_hit["triggerRate"] == "not_applicable"
 
 
+@pytest.mark.parametrize(
+    "skill,base", [("Ice Shot", "Gemini Bow"), ("Lightning Spear", "Grand Spear")]
+)
+def test_real_support_search_preserves_usage_conditions(engine, monkeypatch, skill, base):
+    from server.compute import supportopt
+
+    engine.new_build()
+    engine.set_class("Huntress", "Amazon")
+    engine.set_level(95)
+    engine.add_item(f"Rarity: Normal\n{base}\nItem Level: 95", slot="Weapon 1")
+    engine.paste_skill(f"{skill} 20/20 1 / Hit and Run")
+    observed = engine.call(
+        "inspect_support_evaluation_capability", index=1, activeIndex=1, objectiveKeys=["TotalDPS"]
+    )
+    assert observed["applicationCheck"] == "verified"
+    assert observed["usageConditionContractVersion"] == 1
+    assert observed["usageConditionContracts"] == [
+        {"effectId": observed["selectedEffectId"], "supportEffectId": "SupportHitAndRunPlayer"}
+    ]
+
+    engine.paste_skill(f"{skill} 20/20 1 / Rapid Attacks II")
+    before_hash = build_state_hash(engine.get_xml())
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: ["Rapid Attacks II", "Hit and Run"])
+    result = supportopt.optimize_supports(engine)
+    assert result["ok"] is True
+    assert "Hit and Run" not in result["supports"]
+    assert result["measurement"]["candidateRejectionCodes"]["support_usage_condition_changed"] == 1
+    assert result["measurement"]["failedCandidates"] == 0
+    assert result["supportAudit"]["status"] == "passed"
+    assert build_state_hash(engine.get_xml()) == before_hash
+
+
 @pytest.mark.parametrize("active_index", [1, 2])
 @pytest.mark.parametrize("invalid_support", [False, True])
 def test_trigger_support_roles_are_verified_across_host_and_payload(

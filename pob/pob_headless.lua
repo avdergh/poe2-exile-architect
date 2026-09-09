@@ -1520,6 +1520,29 @@ function methods.inspect_support_evaluation_capability(p)
 	if applicationCheck == "failed" then reasons[#reasons + 1] = "current_support_not_applied" end
 
 	local ge = active.activeEffect and active.activeEffect.grantedEffect
+	-- A support may change when an effect is usable without PoB modelling the time spent
+	-- satisfying that condition. Preserve this mechanical contract during numeric searches.
+	-- Bind applied support/effect identities, not display names or a hand-maintained gem list.
+	local usageConditionContracts = {}
+	for _, candidate in ipairs(group.displaySkillList or {}) do
+		local candidateGe = candidate.activeEffect and candidate.activeEffect.grantedEffect
+		for _, effect in ipairs(candidate.supportList or {}) do
+			local supportGe = effect.grantedEffect
+			local applied = candidateGe and effect.supportedActiveEffectIds
+				and effect.supportedActiveEffectIds[candidateGe.id]
+			if applied and supportGe then
+				for _, kind in ipairs(supportGe.addSkillTypes or {}) do
+					if kind == SkillType.HasUsageCondition then
+						usageConditionContracts[#usageConditionContracts + 1] = {
+							effectId = candidateGe.id,
+							supportEffectId = supportGe.id,
+						}
+						break
+					end
+				end
+			end
+		end
+	end
 	local selectedTriggered = hasType(ge, "Triggered") or hasType(ge, "InbuiltTrigger")
 		or (active.skillData and active.skillData.triggered) and true or false
 	local hasMetaHost = false
@@ -1579,6 +1602,8 @@ function methods.inspect_support_evaluation_capability(p)
 		reasonCodes = reasons,
 		capabilitySource = "pob_runtime",
 		supportApplication = application,
+		usageConditionContractVersion = 1,
+		usageConditionContracts = usageConditionContracts,
 	}
 end
 

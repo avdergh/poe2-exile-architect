@@ -180,7 +180,9 @@ pruning, compare complete loadouts on the same output/config, and require recove
 Final support, jewel and socket audits bind the locked state. Stale/missing receipts and unapplied
 positive plans block Judge. Only the documented current support capability gap with verified
 application may continue as unknown; it retains candidate status. Support application can target
-the host or payload but every support needs a real active effect. `support_audit_v3` compares full
+the host or payload but every support needs a real active effect. Searches preserve runtime-observed
+support usage conditions on every group effect; changing those conditions requires an explicit Agent
+edit before re-auditing, and does not prove uptime. `support_audit_v3` compares full
 combinations, including removal-only changes. `item_socket_review_v2` distinguishes failed or
 unmodeled measurements from `no_positive`; pending `socketed/partial_socketed` plans need trusted
 equip, and a failed recheck revokes the prior pending plan.

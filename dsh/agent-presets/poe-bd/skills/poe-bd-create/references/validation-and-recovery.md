@@ -43,6 +43,8 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
      `support_audit_v3`的`positiveGainCombinationAvailable=true`表示完整组合有已证实正收益；
      应按完整方案更新并重审，包括`positiveGainSupportsMissing`为空但`supportsToRemove`非空的纯移除。
      同条件的新测量错误或反证会撤销旧数值回执的沿用权限；缩窄查询或换目标不能洗掉已证实的整改。
+     搜索保留PoB实际观察到的使用条件辅助；不能仅因更高DPS自动加入移动/站立/充能等使用门槛。
+     Agent决定改变此类玩法条件时，先明确改组再重审；使用条件合同不证明实际覆盖率。
      辅助生成或删除附属effect后，按实际列表中的精确名称与PoB effectId确认输出，不能沿用旧序号。
      辅助可以分别服务同组 host 与 payload，但每个辅助都必须由 PoB 确认至少作用于一个 active
      effect，数值能力绑定所选精确输出。仅当应用验证和结构检查完整、唯一缺口是触发率不可建模的

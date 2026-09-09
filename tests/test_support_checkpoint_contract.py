@@ -52,6 +52,9 @@ def test_checkpoint_accepts_measured_current_complete_combination(monkeypatch):
 
 @pytest.mark.parametrize("change", [
     {"combinationComparison": {}},
+    {"usageConditionContractVersion": None},
+    {"usageConditionContracts": None},
+    {"usageConditionContracts": [{"effectId": "effect:Spark"}]},
     {"comparison": {"sameContext": False}},
     {"comparison": {"baselineMeasurable": False}},
     {"comparison": {"candidateLegalityNonRegressing": False}},
