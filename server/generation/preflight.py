@@ -513,7 +513,11 @@ def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
         for effect in effects:
             index = _positive_runtime_index(effect.get("index")) if isinstance(effect, dict) else None
             name = str(effect.get("name") or "").strip() if isinstance(effect, dict) else ""
-            if index is None or index in indexed_names or not name:
+            effect_id = effect.get("effectId") if isinstance(effect, dict) else None
+            # PoB includes unnamed internal effects in the same ordered list as selectable
+            # outputs. Keep an identified entry's position; removing it would shift the payload.
+            identified_internal = isinstance(effect_id, str) and bool(effect_id.strip())
+            if index is None or index in indexed_names or (not name and not identified_internal):
                 break
             indexed_names[index] = name
         if set(indexed_names) != set(range(1, len(effects) + 1)):
@@ -523,7 +527,7 @@ def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
         # shift the exact PoB selector; explicit name-only consumers must reject ambiguity.
         group["activeNames"] = [indexed_names[index] for index in range(1, len(effects) + 1)]
         active_index = _positive_runtime_index(runtime_group.get("mainActiveSkillCalcs"))
-        if active_index not in indexed_names:
+        if active_index not in indexed_names or not indexed_names[active_index]:
             group["activeSkillSelectionError"] = "runtime_active_skill_selection_invalid"
             continue
         group["mainActiveSkillCalcs"] = active_index

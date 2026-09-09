@@ -64,6 +64,12 @@ class PobRuntimeSelectionTests(unittest.TestCase):
             "bundle",
         )
 
+    def test_contract_five_without_complete_item_replacement_is_rejected(self) -> None:
+        self.assertEqual(
+            self._select(contract=5, engine_version="99.0.0"),
+            "bundle",
+        )
+
     def test_current_contract_still_requires_a_current_engine_version(self) -> None:
         self.assertEqual(
             self._select(
@@ -108,8 +114,8 @@ class PobRuntimeSelectionTests(unittest.TestCase):
     def test_bundled_bridge_advertises_contract_five(self) -> None:
         engine = PobEngine()
         try:
-            self.assertEqual(engine.info["runtimeContract"], 5)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 5)
+            self.assertEqual(engine.info["runtimeContract"], 6)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 6)
         finally:
             engine.close()
 

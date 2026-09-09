@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 5
+local HEADLESS_RUNTIME_CONTRACT = 6
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -2219,26 +2219,14 @@ end
 -- PoB's parser throws (e.g. "attempt to index local 'item'") on an unrecognized base/malformed
 -- block; we pcall it so callers get a message, not a raw traceback.
 local function equipItemRaw(raw, slot)
-	local items = build.itemsTab.items
-	local before = {}
-	for id in pairs(items) do
-		before[id] = true
-	end
-	local ok, err = pcall(function()
-		build.itemsTab:CreateDisplayItemFromRaw(raw)
-		build.itemsTab:AddDisplayItem(true) -- add without auto-equip; we place it explicitly
-	end)
+	-- The caller supplies the complete item, so do not use the UI paste path: it
+	-- copies the currently equipped item's anoint/runes and populates slots before
+	-- this replacement has been attached. Parse with PoB, then replace in one step.
+	local ok, newItem = pcall(function() return new("Item", raw) end)
 	if not ok then
-		return false, "parse error: " .. tostring(err)
+		return false, "parse error: " .. tostring(newItem)
 	end
-	local newItem
-	for id, it in pairs(items) do
-		if not before[id] then
-			newItem = it
-			break
-		end
-	end
-	if not newItem then
+	if not newItem or not newItem.base then
 		return false, "item not created (unrecognized base type?)"
 	end
 	local sl = slot or newItem:GetPrimarySlot()
@@ -2246,7 +2234,14 @@ local function equipItemRaw(raw, slot)
 	if not sc then
 		return false, "unknown slot: " .. tostring(sl)
 	end
-	sc:SetSelItemId(newItem.id) -- replaces any existing item in the slot
+	local attached, err = pcall(function()
+		build.itemsTab:AddItem(newItem, true) -- no auto-equip or intermediate PopulateSlots
+		sc:SetSelItemId(newItem.id)
+		-- Validate against the complete new loadout. A genuinely incompatible new
+		-- weapon may invalidate its offhand; the caller's input/legality guard rejects it.
+		build.itemsTab:PopulateSlots()
+	end)
+	if not attached then return false, "equip error: " .. tostring(err) end
 	build.buildFlag = true
 	build.modFlag = true
 	return true, sl
@@ -2771,9 +2766,6 @@ local function evaluateItemReplacements(p)
 		if fullReload then loadBuildFromXML(snapshot) end
 		local slot = build.itemsTab.slots[p.slot]
 		if not slot then return nil, "item_replacement_slot_missing" end
-		slot:SetSelItemId(0)
-		build.buildFlag, build.modFlag = true, true
-		runCallback("OnFrame")
 		local equipped = equipItemRaw(raw, p.slot)
 		if not equipped then return nil, "item_replacement_equip_failed" end
 		local jewelId = p.slot:match("^Jewel (%d+)$")
@@ -2847,14 +2839,9 @@ function methods.eval_items(p)
 	local out = {}
 	for i, raw in ipairs(p.items) do
 		if p.isolateEachItem then
-			-- Socket probes compare complete item texts. PoB otherwise inherits the previous
-			-- slot's runes, and repeated candidates can contaminate each other's modifiers.
+			-- Each complete replacement starts from the immutable input. Never recalculate
+			-- an empty intermediate weapon slot: PoB would discard a dependent offhand.
 			loadBuildFromXML(snapshot)
-			local sc = build.itemsTab.slots[p.slot]
-			if sc then sc:SetSelItemId(0) end
-			build.buildFlag = true
-			build.modFlag = true
-			runCallback("OnFrame")
 		end
 		local ok = equipItemRaw(raw, p.slot)
 		if ok then

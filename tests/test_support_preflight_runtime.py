@@ -87,6 +87,29 @@ def test_real_secondary_comet_audit_retains_selection_through_preflight_and_judg
     assert build_state_hash(engine.get_xml()) == state_hash
 
 
+@pytest.mark.parametrize("payload", ["Ice Shot", "Lightning Arrow"])
+def test_real_unnamed_internal_effect_does_not_detach_mirage_payload_audit(engine, payload):
+    engine.new_build()
+    engine.set_class("Ranger", "Deadeye")
+    engine.set_level(95)
+    engine.paste_skill(f"{payload} 20/20 1")
+    engine.add_item("Rarity: Normal\nGemini Bow\nItem Level: 82", slot="Weapon 1")
+    engine.set_config(custom_mods="+300 to Dexterity")
+    engine.add_skill_group(f"Mirage Archer 20/20 1\n{payload} 20/20 1\nElemental Focus")
+    assert engine.call("set_skill_group_state", index=2, activeSkillIndex=3)["ok"]
+    state_hash = build_state_hash(engine.get_xml())
+    result = supportopt.optimize_supports(engine, metric="FullDPS", group_index=2)
+    assert result["supportAudit"]["activeSkillIndex"] == 3
+    assert result["supportAudit"]["skill"] == payload
+    assert supportopt.support_audit_is_complete(result["supportAudit"]), result
+    support, blockers = _support_result(engine, skill=payload)
+    second = next(row for row in support["groupResults"] if row["groupIndex"] == 2)
+    assert second["freshness"] == "current", second
+    assert second["activeSkillIndex"] == 3
+    assert "skillSupportAudit:support_audit_calculation_context_mismatch:2" not in blockers
+    assert build_state_hash(engine.get_xml()) == state_hash
+
+
 @pytest.mark.parametrize("limit_kind", ["none", "equal", "mana", "spirit", "both"])
 def test_real_rate_gap_does_not_override_known_resource_constraints(engine, limit_kind):
     state_hash = _meta_group(engine)

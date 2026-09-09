@@ -16,9 +16,20 @@ PoB正反例。3314项full仅出现一次更新期间的入口版本不同步，
 本地插件已安装并启用为`0.5.0+codex.20260909133901`，实际cache的3551文件与stage一致；安装目录
 中的Heart写入、读回、非法拒绝和来源审计通过，166工具与runtime contract 5保持。用户PoB/语料
 目录与知识、入队、缺口、生命周期和Learning Memory存储保持；模型仍为0.5.4，不增加0.5.5认证。
-当前任务再次调用正式Heart写入仍被旧进程拒绝，需要重载新版后继续。普通Create仍在构筑阶段，
-未正式Judge或保存artifact。天然隐式/物品授予技能输出仍需后续实跑检查；详细本地验收和续跑摘要
-见`tmp/release-install-20260909e/INSTALL_REPORT.md`及同目录`WORKING_CHECKPOINT.md`。
+重载后，原run蓝图以相同指纹通过重验，正常Create的Heart已有槽写入和实际读回均已成功。
+普通Create仍在构筑阶段，未正式Judge或保存artifact。随后整套装备规划发现独立的替换探针问题：
+卸弓后先重算空槽会让PoB删除箭袋，导致合法换弓被输入保护拒绝。修复改为PoB原生Item解析和
+完整单槽替换，去掉制作／镶嵌／规划过程的空槽中间态；保留真正不兼容组合、来源丢失、配置漂移与
+恢复失败的拒绝。当前定向验证已覆盖Amazon/Ice Shot、Deadeye/Lightning Arrow、符文交替与
+带原箭袋的完整规划重放。预检另保留带稳定effectId的匿名内部效果位置，让实际Mirage负载继续使用
+PoB的第3项索引；选中匿名效果或缺失身份仍拒绝。跨Ice Shot／Lightning Arrow的真实辅助回执、
+索引投影及缺口保留检查通过。新Python依赖完整物品替换语义，runtime contract升为6，旧用户
+runtime保留但不再与新Python混用；工具参数与166个MCP工具集合不变。最终full的3330项测试及
+19项subtest、静态与发布检查、四域MCP与Research读回均通过，完整compute亦通过。
+本地插件已安装并启用为`0.5.0+codex.20260909151555`，实际cache的3551文件与stage一致，
+安装目录真实PoB验收和用户知识／学习存储一致性核验通过；当前任务的旧连接仍需重载后继续构筑。
+天然隐式/物品授予技能输出仍需后续实跑检查；本次验收与续跑摘要维护于
+`tmp/release-install-20260909f/INSTALL_REPORT.md`及同目录`WORKING_CHECKPOINT.md`。
 
 ## 跨底材珠宝容量修复（2026-09-09）
 

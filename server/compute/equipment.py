@@ -131,8 +131,8 @@ def _equip_item_verified_locked(
             **({"socketDecisionCarried": carried} if carried else {}),
         }
 
-    # Pinned PoB can inherit Rune state across direct same-slot replacement. The first write gives
-    # us the exact implicit slot; restore, clear that slot, and retry once inside this transaction.
+    # Restore and retry the complete raw item once. The bridge parses an independent item;
+    # an empty-slot recalculation here would discard dependent offhands before replacement.
     if not _restore(engine, snapshot, input_hash, "item-readback-retry-restore"):
         setattr(engine, _RECOVERY_ATTRIBUTE, True)
         return {
@@ -142,9 +142,6 @@ def _equip_item_verified_locked(
             "recoveryRequired": True,
         }
     try:
-        cleared = engine.unequip_item(actual_slot)
-        if not isinstance(cleared, dict) or not cleared.get("ok"):
-            raise ValueError("item_slot_clear_failed")
         second = engine.add_item(raw, slot=actual_slot)
         if not isinstance(second, dict) or not second.get("ok"):
             raise ValueError("item_equip_failed")

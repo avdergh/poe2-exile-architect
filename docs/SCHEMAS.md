@@ -238,7 +238,8 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   `supportApplication` 保存每个辅助的实际作用目标；允许分别服务同组宿主和输出技能，不能要求
   全部辅助作用于同一选中效果。数值能力判断仍绑定该次精确选中效果。
   preflight从身份核对通过的runtime组投影`mainActiveSkillCalcs/activeSkillSelectionError`，保留完整
-  active顺序和重复名；多输出缺失/歧义不得猜index1。辅助速率缺口仍用`currentConstraintCheck`
+  active顺序和重复名；未选中的空显示名效果仅在runtime提供非空稳定effectId时保留原索引位置，
+  选中空名、身份缺失或多输出歧义均不猜index1。辅助速率缺口仍用`currentConstraintCheck`
   核可读Mana/Spirit约束，明确超限/测量错误/缺值不能由capability_gap覆盖。
   每个quality项的`currentAdverseEvidence`只标记同snapshot的当前有效反证；审计missing/stale不标记。
   满孔仍纳入曾审槽位的时效核对，已卸槽不遗留义务，可信装备后的当前applied计划可通过。
@@ -296,6 +297,9 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - 普通装备搜索使用`item_replacement_context_v1`：抗性发现以卸除待换槽后的PoB状态为准，候选
   绑定原effectId/精确名称、用户组或source归属与配置，逐项完整测量并验证恢复；未知、缺值、
   非有限数值或显式失败不进入排名。原生未配置派生源可随真实词缀变化，原输出与用户配置不得漂移。
+  完整物品由PoB原生Item解析后一次替换目标槽，再按完整新装备组合刷新槽位；不走UI粘贴的
+  anoint/Rune自动继承，也不在替换中间重算空槽，避免合法换弓误删箭袋。真正不兼容的组合仍由
+  PoB槽位规则与原输入／整角色合法性检查拒绝。普通写入、制作、镶嵌和批量测量复用该解析路径。
   `plan_gear.planReplayVerified`表示仅重放返回物品便可复现投影，仍不替代最终Judge或装备采纳。
   `craft_item.comparison`比较原完整装备与最终成品；旧`metricBare/metricCrafted`保留为制作步骤比较。
   空活动主手的攻击构筑仅在精确输出及PoB武器检查共同证明缺少武器时，允许原基线保留

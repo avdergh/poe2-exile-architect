@@ -390,6 +390,54 @@ def test_preflight_keeps_duplicate_effect_names_at_distinct_runtime_indices():
     assert group["mainActiveSkillCalcs"] == 2
 
 
+def test_preflight_preserves_unnamed_identified_effect_without_shifting_selected_output():
+    engine, runtime = _runtime_selection_engine()
+    runtime["groups"][0]["activeSkills"] = [
+        {"index": 1, "name": "", "effectId": "InternalSpawnPlayer"},
+        {"index": 2, "name": "Tempest Flurry", "effectId": "SkillGemTempestFlurryPlayer"},
+        {"index": 3, "name": "Command", "effectId": "CommandPlayer"},
+    ]
+    runtime["groups"][0]["mainActiveSkillCalcs"] = 3
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert group["activeSkills"] == ["", "Tempest Flurry", "Command"]
+    assert group["mainActiveSkillCalcs"] == 3
+    assert group["activeSkillSelectionError"] is None
+    runtime["groups"][0]["mainActiveSkillCalcs"] = 1
+    selected_unnamed = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert selected_unnamed["mainActiveSkillCalcs"] is None
+    assert selected_unnamed["activeSkillSelectionError"] == "runtime_active_skill_selection_invalid"
+
+
+@pytest.mark.parametrize("effect_id", [None, "", " ", 123, True])
+def test_preflight_unnamed_effect_requires_a_real_runtime_identifier(effect_id):
+    engine, runtime = _runtime_selection_engine()
+    runtime["groups"][0]["activeSkills"][1].update(name="", effectId=effect_id)
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][0]
+    assert group["mainActiveSkillCalcs"] is None
+    assert group["activeSkillSelectionError"] == "runtime_active_skills_invalid"
+
+
+@pytest.mark.parametrize("character,ascendancy,payload", [("Huntress", "Amazon", "Ice Shot"), ("Ranger", "Deadeye", "Lightning Arrow")])
+def test_real_mirage_payload_preflight_keeps_pob_effect_index(engine, character, ascendancy, payload):
+    from server.generation.validation_checkpoint import _projected_active_index
+
+    engine.new_build()
+    engine.set_class(character, ascendancy)
+    engine.set_level(95)
+    engine.paste_skill(f"{payload} 20/0 1")
+    engine.add_skill_group(f"Mirage Archer 20/0 1\n{payload} 20/0 1")
+    listed = engine.call("list_skill_groups")["groups"][1]
+    effects = listed["activeSkills"]
+    assert effects[0]["name"] == "" and effects[0]["effectId"]
+    actual_index = next(effect["index"] for effect in effects if effect["name"] == payload)
+    assert engine.call("set_skill_group_state", index=2, activeSkillIndex=actual_index)["ok"]
+    group = preflight.inspect_generation_preflight(engine)["skillGroups"][1]
+    assert group["activeSkillSelectionError"] is None
+    assert group["mainActiveSkillCalcs"] == actual_index == 3
+    assert group["activeSkills"][actual_index - 1] == payload
+    assert _projected_active_index(group) == actual_index
+
+
 @pytest.mark.parametrize("change,error", [
     ({"rootSkillId": "OtherPlayer"}, "runtime_skill_group_identity_mismatch"),
     ({"source": "Tree:123"}, "runtime_skill_group_identity_mismatch"),

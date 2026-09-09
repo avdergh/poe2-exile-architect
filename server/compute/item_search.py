@@ -257,7 +257,6 @@ def verify_context(engine: Any, context: Any, *, slot: str) -> None:
 
 def equip_candidate(engine: Any, raw: str, slot: str, context: Any) -> str:
     """Stage the complete proposed item, without old Rune inheritance or target substitution."""
-    clear_slot(engine, slot)
     result = engine.add_item(raw, slot=slot)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise ItemSearchError("item_candidate_equip_failed", slot=slot)

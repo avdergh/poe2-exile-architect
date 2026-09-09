@@ -175,15 +175,17 @@ def test_real_pob_partial_socket_receipt_keeps_empty_capacity_without_inventing_
     assert item["affixLegality"]["ok"]
 
     wand = "Rarity: Rare\nQuota Probe\nAttuned Wand\nItem Level: 95\n50% increased Spell Damage"
-    engine.add_item(wand, slot="Weapon 2")
+    # The remaining assertion only checks the shared Rune quota. Equip the wand in its
+    # legal main-hand slot; a wand cannot be used as Brutus' Lead Sprinkler's offhand.
+    assert engine.add_item(wand, slot="Weapon 1")["ok"]
     from server.compute import socket_limits
 
     lifesprig = next(
-        option for option in original("Weapon 2")["runes"]
+        option for option in original("Weapon 1")["runes"]
         if option["name"] == "Legacy of Lifesprig"
     )
     assert lifesprig["constraints"][0]["evidencePatch"] == "0.5.5"
-    quota = socket_limits.audit(engine.get_xml(), replacements={"Weapon 2": [lifesprig]})
+    quota = socket_limits.audit(engine.get_xml(), replacements={"Weapon 1": [lifesprig]})
     assert not quota["ok"], quota
     assert quota["violations"][0]["group"] == "Aldur's Legacy"
 

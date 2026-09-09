@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from server.compute import craftopt, itemopt, skillgroups
+from server.compute import completeness, craftopt, equipment, item_search, itemopt, skillgroups
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
 from server.knowledge import db
@@ -58,10 +58,14 @@ def test_engine_opt_in_preserves_existing_eval_parameters():
     engine = object.__new__(PobEngine)
     engine.call = Mock(return_value={})
     engine.eval_items("Helmet", ["item"], replacement_context=True)
-    engine.call.assert_called_once_with("eval_items", slot="Helmet", items=["item"], keys=None, replacementContext=True)
+    engine.call.assert_called_once_with(
+        "eval_items", slot="Helmet", items=["item"], keys=None, replacementContext=True
+    )
     engine.call.reset_mock()
     engine.eval_items("Helmet", ["item"], isolate_each_item=True)
-    engine.call.assert_called_once_with("eval_items", slot="Helmet", items=["item"], keys=None, isolateEachItem=True)
+    engine.call.assert_called_once_with(
+        "eval_items", slot="Helmet", items=["item"], keys=None, isolateEachItem=True
+    )
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -69,7 +73,11 @@ def test_alternating_complete_runes_equal_full_reload(replacement_engine, revers
     engine = replacement_engine
     bare = _raw()
     assert engine.add_item(bare, slot="Helmet")["ok"]
-    rune = next(r for r in engine.crafting_options("Helmet")["runes"] if r["mods"] and not any(m.startswith("Bonded:") for m in r["mods"]))
+    rune = next(
+        r
+        for r in engine.crafting_options("Helmet")["runes"]
+        if r["mods"] and not any(m.startswith("Bonded:") for m in r["mods"])
+    )
     socketed = craftopt._build_item("Golden Visage", [], [(rune["name"], rune["mods"])], None, 90)
     assert engine.add_item(socketed, slot="Helmet")["ok"]
     candidates = [bare, socketed, _raw(mods=["+50 to Intelligence", "+30% to Cold Resistance"])] * 2
@@ -90,7 +98,12 @@ def test_attribute_candidates_preserve_other_equipment_and_config(replacement_en
 
 def test_wrong_parse_does_not_contaminate_following_candidate(replacement_engine):
     engine = replacement_engine
-    result = _compare(engine, "Helmet", [_raw(), "not a valid item", _raw(mods=["+40% to Fire Resistance"]), _raw()], all_measured=False)
+    result = _compare(
+        engine,
+        "Helmet",
+        [_raw(), "not a valid item", _raw(mods=["+40% to Fire Resistance"]), _raw()],
+        all_measured=False,
+    )
     assert result["results"][1] is False
     assert result["failureCodes"][1] == "item_replacement_equip_failed"
     assert result["results"][0] == result["results"][3]
@@ -109,7 +122,9 @@ def _source(engine, supports=True):
             expected_state_hash=listed["stateHash"],
         )
         assert result["ok"], result
-    engine.select_judge_skill(offense_skill_group_index=target["index"], expected_skill_name="Firebolt")
+    engine.select_judge_skill(
+        offense_skill_group_index=target["index"], expected_skill_name="Firebolt"
+    )
 
 
 def test_source_weapon_lost_support_cannot_return_other_skill_dps(replacement_engine):
@@ -117,12 +132,15 @@ def test_source_weapon_lost_support_cannot_return_other_skill_dps(replacement_en
     _source(engine)
     snapshot = engine.get_xml()
     expected = engine.inspect_item_replacement_context()["calculationContext"]
-    old = engine.eval_items("Weapon 1", [STAFF], keys=KEYS, isolate_each_item=True)
-    assert old["results"][0]["ManaCost"] > 0  # Old path has silently switched to Fireball.
-    result = engine.eval_items("Weapon 1", [STAFF, STAFF.replace("50%", "100%")], keys=KEYS, replacement_context=True)
+    result = engine.eval_items(
+        "Weapon 1", [STAFF, STAFF.replace("50%", "100%")], keys=KEYS, replacement_context=True
+    )
     assert result["ok"] and result["rolledBack"], result
     assert result["results"] == [False, False]
-    assert all(code in {"item_replacement_input_changed", "item_replacement_group_config_changed"} for code in result["failureCodes"])
+    assert all(
+        code in {"item_replacement_input_changed", "item_replacement_group_config_changed"}
+        for code in result["failureCodes"]
+    )
     assert build_state_hash(engine.get_xml()) == build_state_hash(snapshot)
     assert engine.inspect_item_replacement_context(expected)["ok"]
 
@@ -174,9 +192,14 @@ def test_non_first_effect_in_same_group_is_bound(replacement_engine):
 
 def test_no_skill_allows_defense_only_but_not_unknown_offense(engine):
     engine.new_build()
-    assert engine.inspect_item_replacement_context() == {"ok": True, "contextStatus": "no_active_output"}
+    assert engine.inspect_item_replacement_context() == {
+        "ok": True,
+        "contextStatus": "no_active_output",
+    }
     initial_hash = build_state_hash(engine.get_xml())
-    measured = engine.eval_items("Helmet", [_raw()], keys=["Life", "EnergyShield", "FireResist"], replacement_context=True)
+    measured = engine.eval_items(
+        "Helmet", [_raw()], keys=["Life", "EnergyShield", "FireResist"], replacement_context=True
+    )
     assert measured["ok"] and measured["rolledBack"], measured
     assert measured["results"][0]["Life"] > 0
     assert "calculationContext" not in measured
@@ -235,7 +258,9 @@ def test_tree_source_command_stays_on_its_owner(engine):
 
 
 @pytest.mark.parametrize("starts_derived", [False, True])
-def test_native_unconfigured_derived_group_can_appear_and_disappear(replacement_engine, starts_derived):
+def test_native_unconfigured_derived_group_can_appear_and_disappear(
+    replacement_engine, starts_derived
+):
     engine = replacement_engine
     plain = _raw("Feathered Raiment", slot="Body Armour")
     thorns = _raw("Feathered Raiment", ["144 to 210 Physical Thorns damage"], "Body Armour")
@@ -245,7 +270,10 @@ def test_native_unconfigured_derived_group_can_appear_and_disappear(replacement_
     assert result["fallbackCount"] == 0
 
 
-@pytest.mark.parametrize("settings", [{"enabled": False}, {"includeInFullDPS": True}, {"label": "User configured derived output"}])
+@pytest.mark.parametrize(
+    "settings",
+    [{"enabled": False}, {"includeInFullDPS": True}, {"label": "User configured derived output"}],
+)
 def test_manual_derived_configuration_cannot_be_discarded(replacement_engine, settings):
     engine = replacement_engine
     plain = _raw("Feathered Raiment", slot="Body Armour")
@@ -257,9 +285,16 @@ def test_manual_derived_configuration_cannot_be_discarded(replacement_engine, se
     initial_hash = build_state_hash(engine.get_xml())
     result = engine.eval_items("Body Armour", [plain, thorns], keys=KEYS, replacement_context=True)
     assert result["ok"] and result["rolledBack"], result
-    assert result["results"] == [False, False]
-    assert result["failureCodes"] == ["item_replacement_input_changed"] * 2
+    assert result["results"][0] is False
+    assert isinstance(result["results"][1], dict)
+    assert result["failureCodes"] == ["item_replacement_input_changed", False]
     assert build_state_hash(engine.get_xml()) == initial_hash
+    preserved = next(
+        group
+        for group in engine.call("list_skill_groups")["groups"]
+        if group.get("sourceKind") == "other"
+    )
+    assert all(preserved[key] == value for key, value in settings.items())
 
 
 def test_original_derived_target_must_still_exist(replacement_engine):
@@ -267,7 +302,11 @@ def test_original_derived_target_must_still_exist(replacement_engine):
     plain = _raw("Feathered Raiment", slot="Body Armour")
     thorns = _raw("Feathered Raiment", ["144 to 210 Physical Thorns damage"], "Body Armour")
     assert engine.add_item(thorns, slot="Body Armour")["ok"]
-    target = next(group for group in engine.call("list_skill_groups")["groups"] if group.get("sourceKind") == "other")
+    target = next(
+        group
+        for group in engine.call("list_skill_groups")["groups"]
+        if group.get("sourceKind") == "other"
+    )
     # Select only: keep native FullDPS/label settings so the input guard may ignore this
     # default derived group; the separate numerical target contract must reject its loss.
     engine.call("set_main_socket_group", index=target["index"], activeIndex=1)
@@ -285,10 +324,17 @@ def test_manual_derived_configuration_can_be_preserved_by_another_source(replace
     engine = replacement_engine
     thorns = _raw(mods=["144 to 210 Physical Thorns damage"])
     assert engine.add_item(thorns, slot="Helmet")["ok"]
-    target = next(group for group in engine.call("list_skill_groups")["groups"] if group.get("sourceKind") == "other")
+    target = next(
+        group
+        for group in engine.call("list_skill_groups")["groups"]
+        if group.get("sourceKind") == "other"
+    )
     assert engine.call(
-        "set_skill_group_state", index=target["index"], enabled=False,
-        includeInFullDPS=True, label="Preserve user configuration",
+        "set_skill_group_state",
+        index=target["index"],
+        enabled=False,
+        includeInFullDPS=True,
+        label="Preserve user configuration",
     )["ok"]
     plain = _raw("Feathered Raiment", slot="Body Armour")
     extra = _raw("Feathered Raiment", ["144 to 210 Physical Thorns damage"], "Body Armour")
@@ -310,7 +356,8 @@ def test_unselected_secondary_curse_default_does_not_fake_restore_failure(engine
     bare = _raw()
     assert engine.add_item(bare, slot="Helmet")["ok"]
     rune = next(
-        option for option in engine.crafting_options("Helmet")["runes"]
+        option
+        for option in engine.crafting_options("Helmet")["runes"]
         if option["name"] == "Tacati's Soul Core of Affliction"
     )
     socketed = craftopt._augment_item_with_runes(bare, [(rune["name"], rune["mods"])])
@@ -328,3 +375,96 @@ def test_unselected_secondary_curse_default_does_not_fake_restore_failure(engine
     assert all(row["effectId"] == "EssenceDrainPlayer" for row in result["resolvedContexts"])
     reference = engine.eval_items("Helmet", [bare, socketed], keys=keys, isolate_each_item=True)
     assert result["results"] == reference["results"]
+
+
+def _bow_with_quiver(engine, character="Huntress", ascendancy="Amazon", skill="Ice Shot"):
+    engine.new_build()
+    engine.set_class(character, ascendancy)
+    engine.set_level(95)
+    engine.paste_skill(f"{skill} 20/0 1")
+    engine.set_config(custom_mods="+300 to Dexterity")
+    bow = _raw("Gemini Bow", ["100% increased Physical Damage"], "Weapon 1")
+    stronger = _raw("Gemini Bow", ["150% increased Physical Damage"], "Weapon 1")
+    quiver = "Rarity: Unique\nCadiro's Gambit\nPrimed Quiver\n9% increased Attack Speed\nEach Arrow fired is a Crescendo, Splinter, Reversing, Diamond, Covetous, or Blunt Arrow"
+    assert engine.add_item(bow, slot="Weapon 1")["ok"]
+    assert engine.add_item(quiver, slot="Weapon 2")["ok"]
+    return bow, stronger
+
+
+@pytest.mark.parametrize(
+    "character,ascendancy,skill",
+    [("Huntress", "Amazon", "Ice Shot"), ("Ranger", "Deadeye", "Lightning Arrow")],
+)
+def test_bow_replacement_keeps_existing_quiver(engine, character, ascendancy, skill):
+    bow, stronger = _bow_with_quiver(engine, character, ascendancy, skill)
+    before = engine.get_xml()
+    initial_stats = engine.get_stats(KEYS)["stats"]
+    result = engine.eval_items(
+        "Weapon 1", [bow, stronger, bow], keys=KEYS, replacement_context=True
+    )
+    assert result["ok"] and result["rolledBack"] and not result["recoveryRequired"], result
+    assert result["failureCodes"] == [False, False, False], result
+    assert result["results"][0] == pytest.approx(initial_stats)
+    assert result["results"][2] == pytest.approx(initial_stats)
+    assert result["results"][1]["TotalDPS"] > initial_stats["TotalDPS"]
+    assert build_state_hash(engine.get_xml()) == build_state_hash(before)
+    assert engine.get_build()["gear"]["Weapon 2"]["name"] == "Cadiro's Gambit"
+    reference = engine.eval_items(
+        "Weapon 1", [bow, stronger, bow], keys=KEYS, isolate_each_item=True
+    )
+    assert reference["results"] == result["results"]
+
+
+def test_incompatible_weapon_cannot_drop_quiver_and_contaminate_next_probe(engine):
+    bow, _ = _bow_with_quiver(engine)
+    before = engine.get_xml()
+    stats = engine.get_stats(KEYS)["stats"]
+    result = engine.eval_items("Weapon 1", [STAFF, bow], keys=KEYS, replacement_context=True)
+    assert result["ok"] and result["rolledBack"] and not result["recoveryRequired"], result
+    assert result["failureCodes"] == ["item_replacement_input_changed", False]
+    assert result["results"][0] is False
+    assert result["results"][1] == pytest.approx(stats)
+    assert build_state_hash(engine.get_xml()) == build_state_hash(before)
+
+
+def test_complete_bow_writes_and_socket_probes_never_inherit_old_runes(engine):
+    bow, stronger = _bow_with_quiver(engine)
+    quiver = completeness.equipped_item_text_from_engine(engine, "Weapon 2")
+    rune = next(
+        option
+        for option in engine.crafting_options("Weapon 1")["runes"]
+        if option["mods"] and not any(mod.startswith("Bonded:") for mod in option["mods"])
+    )
+    socketed = craftopt._augment_item_with_runes(bow, [(rune["name"], rune["mods"])])
+    context = item_search.capture_context(engine)
+    for raw in [socketed, stronger, socketed, bow]:
+        craftopt._socket_add_item(engine, raw, "Weapon 1")
+        assert craftopt._socket_item_readback_matches(
+            raw, completeness.equipped_item_text_from_engine(engine, "Weapon 1")
+        )
+        assert completeness.equipped_item_text_from_engine(engine, "Weapon 2") == quiver
+    item_search.equip_candidate(engine, stronger, "Weapon 1", context)
+    assert completeness.equipped_item_text_from_engine(engine, "Weapon 2") == quiver
+    # Exercise the public/batch shared write after a socketed old weapon as well.
+    assert engine.add_item(socketed, slot="Weapon 1")["ok"]
+    result = equipment.equip_item_verified(engine, raw=bow, slot="Weapon 1", craft_receipt_ref=None)
+    assert result["ok"] and result["readbackVerified"], result
+    assert completeness.equipped_item_text_from_engine(engine, "Weapon 2") == quiver
+    assert "Rune:" not in completeness.equipped_item_text_from_engine(engine, "Weapon 1")
+
+
+def test_gear_plan_replays_bow_with_the_original_quiver(engine):
+    _bow_with_quiver(engine)
+    snapshot = engine.get_xml()
+    result = itemopt.plan_gear(
+        engine, slots=["Weapon 1"], locked_slots=["Weapon 2"], auto_base=False, stage="endgame"
+    )
+    assert result["ok"] and result["planReplayVerified"], result
+    assert len(result["plan"]) == 1 and result["plan"][0]["slot"] == "Weapon 1"
+    assert build_state_hash(engine.get_xml()) == build_state_hash(snapshot)
+    entry = result["plan"][0]
+    assert engine.add_item(entry["item"], slot=entry["slot"])["ok"]
+    assert engine.get_build()["gear"]["Weapon 2"]["name"] == "Cadiro's Gambit"
+    assert engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"] == pytest.approx(
+        result["projected"]["TotalDPS"], abs=0.01
+    )

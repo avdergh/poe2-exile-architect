@@ -181,7 +181,6 @@ def craft_item(
     baseline_complete = all(current_stats.get(key) is not None for key in keys)
 
     def stage_item(raw: str, *, check_context: bool = True) -> str:
-        item_search.clear_slot(engine, slot)
         added = engine.add_item(raw, slot=slot)
         if not isinstance(added, dict) or added.get("ok") is not True:
             raise item_search.ItemSearchError("item_candidate_equip_failed", slot=slot)
@@ -642,11 +641,6 @@ def _socket_stage_item(
 
 
 def _socket_add_item(engine: Any, raw: str, slot: str) -> None:
-    cleared = engine.unequip_item(slot)
-    if not isinstance(cleared, dict) or cleared.get("ok") is not True:
-        raise _SocketMeasurementError("socket_probe_clear_failed")
-    if completeness.equipped_item_text_from_engine(engine, slot):
-        raise _SocketMeasurementError("socket_probe_clear_not_applied")
     result = engine.add_item(raw, slot=slot)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise _SocketMeasurementError("socket_probe_equip_failed")

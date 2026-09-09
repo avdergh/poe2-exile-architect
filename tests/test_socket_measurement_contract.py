@@ -577,12 +577,15 @@ def test_batch_merges_other_slot_failure_and_records_each_probe_once(monkeypatch
     }
 
 
-def test_socket_probe_rejects_slot_that_does_not_clear(monkeypatch, safe_audits):
+def test_socket_probe_replaces_without_empty_intermediate_state(monkeypatch, safe_audits):
     engine = SocketEngine()
-    monkeypatch.setattr(engine, "unequip_item", lambda _: {"ok": True})
+
+    def unexpected_clear(_):
+        pytest.fail("a complete item replacement must not clear dependent equipment")
+
+    monkeypatch.setattr(engine, "unequip_item", unexpected_clear)
     result = direct_plan(engine)
-    assert result["errorCode"] == "socket_probe_clear_not_applied"
-    assert result["decision"] == "measurement_error"
+    assert result["ok"] is True
 
 
 def test_socket_probe_rejects_semantically_different_readback(monkeypatch, safe_audits):

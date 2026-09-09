@@ -55,7 +55,7 @@ class CraftOracle(ItemOracle):
         return deepcopy(self.options)
 
     def add_item(self, raw, slot):
-        assert slot not in self.items, "every staged candidate must clear old Rune inheritance"
+        assert slot in self.items, "a complete replacement must not expose an empty intermediate slot"
         self.add_count += 1
         if self.add_count == self.fail_add_at:
             return {"ok": False}
