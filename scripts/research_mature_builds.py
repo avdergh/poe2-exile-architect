@@ -1680,7 +1680,7 @@ def accept_case(
                 "deferred counts reflect the single-record slice, not the full review.",
             }
             result["sliceContext"] = slice_context or {}
-        _assert_safe_payload(result)
+        _assert_safe_payload(result, allow_core_mechanisms=True)
         return result
 
     if only_record is not None:
@@ -1887,7 +1887,7 @@ def accept_case(
     }
     result, transport_diagnostics = _safe_validation_transport_report(result)
     result["copySafetyDiagnostics"] = transport_diagnostics
-    _assert_safe_payload(result)
+    _assert_safe_payload(result, allow_core_mechanisms=True)
     return result
 
 
@@ -2627,7 +2627,7 @@ def retry_accept_case(
     }
     result, transport_diagnostics = _safe_validation_transport_report(result)
     result["copySafetyDiagnostics"] = transport_diagnostics
-    _assert_safe_payload(result)
+    _assert_safe_payload(result, allow_core_mechanisms=True)
     return result
 
 
@@ -6195,16 +6195,30 @@ def _iso(value: datetime) -> str:
     return value.isoformat(timespec="seconds")
 
 
-def _assert_safe_payload(payload: dict[str, Any]) -> None:
+def _assert_safe_payload(
+    payload: dict[str, Any], *, allow_core_mechanisms: bool = False
+) -> None:
+    """Guard transport; only reviewed-knowledge results allow bounded core mechanisms.
+
+    Validation, acceptance and retry reports already use the durable-knowledge policy.
+    Their diagnostic prose must keep that policy at the final transport boundary too.
+    This never authorizes a record or changes raw-material checks; queue/control payloads
+    retain the stricter default.
+    """
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     leaks = [marker for marker in RAW_MARKERS if marker in serialized]
     if leaks:
         raise ValueError(f"unsafe research queue markers detected: {', '.join(leaks)}")
     if copy_safety.find_forbidden_paths(payload):
         raise ValueError("unsafe research queue contains forbidden raw fields")
+    classify = (
+        copy_safety.durable_knowledge_flags
+        if allow_core_mechanisms
+        else copy_safety.copyability_flags
+    )
     flags: set[str] = set()
     for text in _human_text(payload):
-        flags.update(copy_safety.copyability_flags(text))
+        flags.update(classify(text))
     if flags:
         raise ValueError(f"unsafe research queue failed copy-safety: {sorted(flags)}")
 

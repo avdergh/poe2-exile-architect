@@ -1682,6 +1682,157 @@ def test_accept_case_validation_returns_copy_safety_failure_instead_of_runtime_e
     assert unsafe_claim not in str(result)
 
 
+@pytest.mark.parametrize(
+    "caveat",
+    [
+        "Supports: Alpha, Beta, Gamma, Delta, Epsilon",
+        "Alpha -> Beta -> Gamma -> Delta -> Epsilon",
+        "passive path: 101, 102, 103",
+        "Helmet: Core Enabler",
+    ],
+)
+@pytest.mark.parametrize("report_status", ["accepted", "rejected"])
+def test_review_validation_transports_core_diagnostics_without_changing_outcome(
+    tmp_path, monkeypatch, caveat, report_status
+):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(_rich_sample_xml(), encoding="utf-8")
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file],
+        output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-core-diagnostic-validation",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_claim_review(review_file, claimed)
+    pairs = [
+        {"endpointKey": endpoint, "supportKey": "support:fixture", "sourceRefs": ["static:fixture"]}
+        for endpoint in ("skill:host", "skill:payload")
+    ]
+    deferred = {
+        "reason": "unsupported_structured_skill_support_pair",
+        "caveats": [caveat],
+        "unsupportedPairs": pairs,
+    }
+    report = {
+        "status": report_status,
+        "acceptedDeepRecordCount": 1 if report_status == "accepted" else 0,
+        "deferredCandidateCount": 1,
+        "deferredReasonCounts": {deferred["reason"]: 1},
+        "deferredCandidates": [deferred],
+        "patternWrite": {"status": "accepted", "validationOnly": True},
+        "deepRecordWrite": {"status": "accepted", "validationOnly": True},
+    }
+    monkeypatch.setattr(
+        research_mature_builds.acceptance, "accept_deep_review_candidates", lambda **_: report
+    )
+    result = research_mature_builds.accept_case(
+        output_dir=output_dir,
+        lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"],
+        memory_db_path=tmp_path / "memory.sqlite",
+        validation_only=True,
+    )
+
+    assert result["readyForAccept"] is (report_status == "accepted")
+    assert result["fullyResolvedForAccept"] is False
+    assert result["acceptanceMode"] == (
+        "partial_with_deferred" if report_status == "accepted" else "blocked"
+    )
+    assert result["deferredCandidates"] == [deferred]
+    assert result["deferredReasonCounts"] == report["deferredReasonCounts"]
+    assert result["copySafetyBlockingIssueCount"] == 0
+    assert result["durableWritePerformed"] is False
+    assert not (tmp_path / "memory.sqlite").exists()
+    assert research_mature_builds.queue_status(output_dir=output_dir)["claimedCount"] == 1
+
+
+def test_accept_and_retry_preserve_rejected_core_diagnostics(tmp_path, monkeypatch):
+    from scripts import research_mature_builds
+
+    source_file = tmp_path / "sample.txt"
+    source_file.write_text(
+        _sample_code("LightningArrowPlayer", ascendancy="Deadeye", level=95), encoding="utf-8"
+    )
+    output_dir = tmp_path / "research"
+    research_mature_builds.queue_cases(
+        source_files=[source_file], output_dir=output_dir,
+        temp_root=tmp_path.parent / "poe-core-diagnostic-retry",
+    )
+    claimed = research_mature_builds.claim_case(output_dir=output_dir, lease_seconds=1800)
+    review_file = output_dir / claimed["reviewFile"]
+    review_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_claim_review(review_file, claimed)
+    rejected = {
+        "status": "rejected", "errorCode": "unsupported_structured_skill_support_pair",
+        "facts": {"caveats": ["Supports: Alpha, Beta, Gamma, Delta, Epsilon"]},
+    }
+    report = {
+        "status": "rejected", "errorCode": rejected["errorCode"],
+        "acceptedDeepRecordCount": 0, "deferredCandidateCount": 1,
+        "deferredReasonCounts": {rejected["errorCode"]: 1},
+        "deepRecordWrite": rejected,
+    }
+    monkeypatch.setattr(
+        research_mature_builds.acceptance, "accept_deep_review_candidates", lambda **_: report
+    )
+    accepted = research_mature_builds.accept_case(
+        output_dir=output_dir, lease_token=claimed["leaseToken"],
+        review_file=claimed["reviewFile"], memory_db_path=tmp_path / "memory.sqlite",
+    )
+    retried = research_mature_builds.retry_accept_case(
+        output_dir=output_dir, sample_id=claimed["sampleId"],
+        review_file=claimed["reviewFile"], memory_db_path=tmp_path / "memory.sqlite",
+    )
+    for result in (accepted, retried):
+        assert result["status"] == "acceptance_rejected"
+        assert result["acceptedDeepRecordCount"] == 0
+        assert result["deepRecordWrite"] == rejected
+        assert result["deferredReasonCounts"] == report["deferredReasonCounts"]
+        assert result["copySafetyDiagnostics"] == []
+    assert research_mature_builds.queue_status(output_dir=output_dir)["acceptedCount"] == 0
+
+
+@pytest.mark.parametrize(
+    "caveat",
+    [
+        "Supports: Alpha, Beta, Gamma, Delta, Epsilon",
+        "Alpha -> Beta -> Gamma -> Delta -> Epsilon",
+        "passive path: 101, 102, 103",
+        "Helmet: Core Enabler",
+    ],
+)
+def test_queue_transport_keeps_strict_core_mechanism_default(caveat):
+    from scripts import research_mature_builds
+
+    with pytest.raises(ValueError, match="copy-safety"):
+        research_mature_builds._assert_safe_payload({"caveats": [caveat]})
+
+
+@pytest.mark.parametrize("allow_core_mechanisms", [False, True])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"caveats": ["<PathOfBuilding2><Build /></PathOfBuilding2>"]},
+        {"caveats": ["https://pobb.in/synthetic-fixture"]},
+        {"caveats": ["https://pathofexile.com/account/view-profile/synthetic-fixture"]},
+        {"caveats": ["x" * 1201]},
+        {"nested": {"accountName": "synthetic-fixture"}},
+    ],
+)
+def test_review_transport_never_relaxes_raw_material_guards(payload, allow_core_mechanisms):
+    from scripts import research_mature_builds
+
+    with pytest.raises(ValueError, match="unsafe research queue"):
+        research_mature_builds._assert_safe_payload(
+            payload, allow_core_mechanisms=allow_core_mechanisms
+        )
+
+
 def test_validation_only_counts_forbidden_field_failures_as_blocking():
     from scripts import research_mature_builds
 

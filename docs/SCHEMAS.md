@@ -978,6 +978,10 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - 辅助组合拒绝诊断保留全部`unsupportedPairs`端点、类型条件和来源证据；自然语言预览单独限长，
   不把全部配对拼成一条过长caveat而遮住原始拒绝原因。预览限长不删除结构明细、不放宽copy-safety，
   也不能将被拒记录或来源缺口变为通过。
+- Research的validate/accept/retry结果回传与已审查知识使用同一`durable_knowledge_flags`规则：
+  有界核心辅助包、局部天赋连接和装备联动的诊断文字不因组件数量在末端再次拒绝；原始材料、
+  可复制角色链接、禁用字段和过长正文仍拒绝。队列/控制响应保持严格默认；此区分仅作用于回传，
+  不改变schema、resolver、辅助兼容、缺口或接受权限，也不将诊断切片当成整案校验。
 - `acceptedCount` 与 `researchCompleteCount/researchNeedsFollowupCount/researchCompletionUnknownCount`
   分离。原诊断不改，后续`effectiveResearchCompletion/effectiveResearchCompleteCount`用于完成性判断。
   默认cleanup拒绝尚有有效缺口的案例；显式放弃或锁定期限到期也不能绕过活跃lease与accepting恢复。
