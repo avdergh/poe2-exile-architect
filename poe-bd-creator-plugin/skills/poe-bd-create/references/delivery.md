@@ -73,6 +73,11 @@ review-result、review-consumed、可信 Judge 回执或运行锁。按工具的
 
 ## 交付档位与格式限制
 
+允许以明确的Agent情景粗估展示未建模收益，使用candidate的`performanceEstimates`，与PoB计算值
+并列，不覆盖PoB XML/导入码中的统计值或Judge回执。展示范围、依据、假设、重叠/重复计数处理和
+限制；验证覆盖与技能采用价值分开说明，不能因模型缺口把有作用的技能当作零收益或降低采用优先级。
+candidate标签说明证据覆盖有限，不是强弱评分。完整字段与边界见output-contract。
+
 保存前参考 checkpoint 的 `deliveryStatus`；保存后以可信 artifact manifest 的档位为准：
 blocked 不导出，candidate 只称技术候选或
 待验证方案，recommended 才称推荐成品。正式 Judge passed、artifact 已保存、review accepted

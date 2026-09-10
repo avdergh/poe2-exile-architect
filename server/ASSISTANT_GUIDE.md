@@ -40,6 +40,13 @@ failures rather than editing source, tests, installers, run files or databases.
 - PoB numbers describe the exact observed state, output skill and combat configuration. Static
   corpus facts, Graph identity, Agent interpretation and model hypotheses have different scopes.
   Never invent DPS, EHP, resistances, Spirit legality or sustain.
+- Agent DPS scenario estimates are allowed in `performanceEstimates`, separately from observed
+  PoB values. Require finite ranges, inspected evidence, assumptions, overlap/double-count handling
+  and limitations, with fixed `evidenceKind=agent_estimated`. They never replace Judge/reward values
+  or prove hard legality. Unknown modelling is not zero benefit or a reason to lower adoption value;
+  choose skills by their mechanisms, duties, conditions and evidence-backed scenario estimates.
+  Candidate status describes verification coverage, not build strength. Full and compact Review
+  preserve the estimates for explicit disclosure.
 - `ToolReference` contains `toolName/queryRef/summary/evidenceKind/reviewBasis`.
   Missing `evidenceKind` means `unverified`; a plausible query string is not a receipt.
   `internal_receipt` is currently supported only for validated run-fresh Research references.
@@ -179,14 +186,16 @@ pruning, compare complete loadouts on the same output/config, and require recove
 
 Final support, jewel and socket audits bind the locked state. Stale/missing receipts and unapplied
 positive plans block Judge. Only the documented current support capability gap with verified
-application may continue as unknown; it retains candidate status. Support application can target
+application, complete structure and satisfied constraints may continue as unknown; this includes
+runtime-attested rate and incomplete duration/DoT object models and retains candidate status. Support application can target
 the host or payload but every support needs a real active effect. Searches preserve runtime-observed
 support usage conditions on every group effect; changing those conditions requires an explicit Agent
 edit before re-auditing, and does not prove uptime. Numeric comparisons stay within the observed
 model. Proxy spawns and Herald procs require an independent
 rate; payload attack Speed and zero DPS cannot replace it. A duration/DoT object's positive partial
 impact readout cannot authorize whole-set damage ranking when duration and DoT outputs are absent. That broader gap
-remains blocked and cannot use the rate-only exception. `support_audit_v3` compares full
+retains its incomplete-model diagnosis and unsupported numeric ranking, while candidate review may
+continue. Unknown model coverage is not zero benefit or low adoption value. `support_audit_v3` compares full
 combinations, including removal-only changes. `item_socket_review_v2` distinguishes failed or
 unmodeled measurements from `no_positive`; pending `socketed/partial_socketed` plans need trusted
 equip, and a failed recheck revokes the prior pending plan.

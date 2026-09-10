@@ -1170,7 +1170,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         assert result["supportAudit"]["reasonClass"] == "actionable_gap"
         assert result["reasonCode"] == "trigger_rate_zero_or_inactive"
 
-    def test_broader_model_gap_cannot_be_relabelled_as_rate_only(self) -> None:
+    def test_known_broader_model_gap_preserves_candidate_without_numeric_ranking(self) -> None:
         class IncompleteModelEngine(_RuntimeTriggerAuditEngine):
             def call(self, method: str, **kwargs: object) -> dict:
                 result = super().call(method, **kwargs)
@@ -1182,8 +1182,13 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         result = supportopt.optimize_supports(IncompleteModelEngine(), metric="FullDPS")
 
         assert result["ok"] is False
-        assert result["supportAudit"]["reasonClass"] == "evidence_gap"
-        assert result["supportAudit"]["verificationRequired"] is False
+        assert result["supportAudit"]["reasonClass"] == "capability_gap"
+        assert result["supportAudit"]["verificationRequired"] is True
+        assert result["supportAudit"]["status"] == "inconclusive"
+        assert result["capability"]["numericRanking"] == "unsupported"
+        assert not supportopt.support_capability_is_rate_only_gap(result["capability"])
+        assert supportopt.support_capability_is_model_gap(result["capability"])
+        assert "supports" not in result
         assert result["measurement"]["screenedCandidates"] == 0
 
     def test_rate_gap_contract_rejects_missing_malformed_and_mixed_reasons(self) -> None:
@@ -1201,6 +1206,12 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             )
         assert not supportopt.support_capability_is_rate_only_gap(
             {**capability, "declaredDamageModel": "incomplete"}
+        )
+        assert not supportopt.support_capability_is_model_gap(
+            {**capability, "declaredDamageModel": "incomplete"}
+        )
+        assert not supportopt.support_capability_is_model_gap(
+            {**capability, "reasonCodes": ["trigger_rate_unmodelled", "unknown_measurement_error"]}
         )
 
     def test_unmeasurable_metric_is_inconclusive_and_is_cached(self) -> None:

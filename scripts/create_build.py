@@ -1372,6 +1372,12 @@ def _compact_review_result(
             "scoreDelta": retry_report.get("scoreDelta"),
         },
         "requiredUserDisclosures": candidate.get("completenessAdvisoryDecisions") or [],
+        "performanceEstimates": candidate.get("performanceEstimates") or [],
+        "performanceEstimateNotice": (
+            "这些是Agent给出的条件情景粗估，未经PoB完整验证；不得替换PoB/Judge数值，"
+            "也不得在未核对重叠与重复计数时直接相加。建模覆盖不代表技能价值。"
+            if candidate.get("performanceEstimates") else None
+        ),
         "noRawMaterial": True,
         "noHiddenChainOfThought": True,
     }

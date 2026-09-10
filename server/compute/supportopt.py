@@ -2,8 +2,9 @@
 
 Greedily picks the support gems that most raise a metric (or weighted goals) for the active main
 skill, measuring each combination on the real engine. The corpus has support-gem identity but not
-effect magnitudes, so the only honest way to value a support is to try it — this is a bounded
-mechanical search over engine truth, like optimize_passives / optimize_item.
+effect magnitudes. This bounded mechanical search ranks only engine-modelled objectives.
+Unmodelled capabilities retain the current package for Agent mechanism review; they do not mean
+zero benefit or lower adoption value. Agent scenario estimates remain separate from these metrics.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ _EXPECTED_SOURCE_COMBINATION_REJECTION_CODES = _EXPECTED_SOURCE_REJECTION_CODES 
 
 
 def support_capability_is_rate_only_gap(capability: Any) -> bool:
-    """Only a runtime-attested rate gap can use the candidate-only exception."""
+    """Recognize the rate-only subset of native model gaps."""
     if not isinstance(capability, dict):
         return False
     reasons = capability.get("reasonCodes")
@@ -79,6 +80,29 @@ def support_capability_is_rate_only_gap(capability: Any) -> bool:
         and all(isinstance(reason, str) for reason in reasons)
         and set(reasons) == {"trigger_rate_unmodelled"}
         and capability.get("declaredDamageModel") in (None, "not_flagged_incomplete")
+    )
+
+
+def support_capability_is_model_gap(capability: Any) -> bool:
+    """Known native model gaps permit candidate review, never numeric ranking or a pass."""
+    if support_capability_is_rate_only_gap(capability):
+        return True
+    if not isinstance(capability, dict):
+        return False
+    reasons = capability.get("reasonCodes")
+    if not isinstance(reasons, list) or not all(isinstance(reason, str) for reason in reasons):
+        return False
+    rate = capability.get("triggerRate")
+    expected = {"declared_duration_dot_model_missing"}
+    if rate == "unmodelled":
+        expected.add("trigger_rate_unmodelled")
+    return (
+        capability.get("capabilitySource") == "pob_runtime"
+        and capability.get("applicationCheck") in {"verified", "not_applicable"}
+        and capability.get("numericRanking") == "unsupported"
+        and capability.get("declaredDamageModel") == "incomplete"
+        and rate in {"not_applicable", "unmodelled"}
+        and set(reasons) == expected
     )
 
 
@@ -940,7 +964,7 @@ def _optimize_supports_locked(
         application_check = str(capability.get("applicationCheck") or "unknown")
         if application_check == "failed" or "trigger_rate_zero_or_inactive" in reason_codes:
             reason_class = "actionable_gap"
-        elif support_capability_is_rate_only_gap(capability):
+        elif support_capability_is_model_gap(capability):
             reason_class = "capability_gap"
         elif capability.get("numericRanking") == "unknown":
             reason_class = "measurement_error"

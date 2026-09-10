@@ -567,6 +567,44 @@ def mechanism_blueprint_hash(blueprint: MechanismBlueprint | dict[str, Any]) -> 
     return hashlib.sha256(encoded).hexdigest()
 
 
+class AgentDpsEstimate(StrictModel):
+    """An explicitly unverified scenario range; never a PoB metric or Judge input."""
+
+    estimate_id: str = Field(pattern=research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN)
+    subject: str = Field(min_length=1, max_length=200)
+    estimate_scope: Literal["skill_dps", "additional_dps", "total_dps"]
+    evidence_kind: Literal["agent_estimated"] = "agent_estimated"
+    lower_dps: float = Field(ge=0, allow_inf_nan=False)
+    upper_dps: float = Field(gt=0, allow_inf_nan=False)
+    basis: str = Field(min_length=20, max_length=1200)
+    assumptions: list[str] = Field(min_length=1, max_length=12)
+    source_refs: list[str] = Field(min_length=1, max_length=16)
+    overlap_handling: str = Field(min_length=10, max_length=600)
+    limitations: list[str] = Field(min_length=1, max_length=12)
+
+    @field_validator("lower_dps", "upper_dps", mode="before")
+    @classmethod
+    def _numeric_bound(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("DPS estimate bounds must be finite numbers")
+        return value
+
+    @model_validator(mode="after")
+    def _estimate_is_explicit(self) -> "AgentDpsEstimate":
+        if self.lower_dps > self.upper_dps:
+            raise ValueError("DPS estimate lower bound exceeds upper bound")
+        if any(not value.strip() for value in [self.subject, self.basis, self.overlap_handling,
+                                               *self.assumptions, *self.limitations]):
+            raise ValueError("DPS estimate explanations must not be blank")
+        if len(self.source_refs) != len(set(self.source_refs)) or any(
+            not re.fullmatch(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN, ref)
+            or ref.lower().startswith(("http://", "https://"))
+            for ref in self.source_refs
+        ):
+            raise ValueError("DPS estimates require distinct safe evidence references")
+        return self
+
+
 class PrototypeBuildCandidate(VersionedSafeModel):
     candidate_id: str = Field(min_length=1)
     prompt_ref: str = Field(min_length=1)
@@ -595,6 +633,7 @@ class PrototypeBuildCandidate(VersionedSafeModel):
         pattern=r"^gbp-[0-9a-f]{16}$",
     )
     mechanism_blueprint: MechanismBlueprint | None = None
+    performance_estimates: list[AgentDpsEstimate] = Field(default_factory=list, max_length=8)
     rationale_summary: str = Field(min_length=1)
 
     @field_validator("current_output_stages", "target_lifecycle_stages", mode="before")
@@ -609,6 +648,15 @@ class PrototypeBuildCandidate(VersionedSafeModel):
         advisory_codes = [item.advisory_code for item in self.completeness_advisory_decisions]
         if len(advisory_codes) != len(set(advisory_codes)):
             raise ValueError("completeness advisory decisions must not contain duplicates")
+        estimate_ids = [estimate.estimate_id for estimate in self.performance_estimates]
+        if len(estimate_ids) != len(set(estimate_ids)):
+            raise ValueError("performance estimate IDs must not be repeated")
+        reviewed_refs = {
+            reference.query_ref for reference in self.tool_references
+            if reference.evidence_kind in {"agent_reviewed", "internal_receipt"}
+        }
+        if any(set(estimate.source_refs) - reviewed_refs for estimate in self.performance_estimates):
+            raise ValueError("performance estimates require declared reviewed evidence references")
         if self.research_memory_use is not None:
             usage = self.research_memory_use
             memory_tool_refs = {

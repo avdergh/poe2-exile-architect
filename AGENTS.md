@@ -44,7 +44,12 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 - 不要从零编写新的数值 BD 引擎。数值声明必须使用现有 Headless PathOfBuilding-PoE2
   wrapper，或明确标记为 unverified/unmodelled。
-- 没有 PoB/modelability evidence，就不能声明 DPS/EHP/抗性/Spirit 合法性。
+- PoB实测数值须有对应状态的PoB/modelability evidence。允许Agent依据机制、研究与实测锚点给出
+  明确标记的DPS情景粗估，列出范围、假设、来源、覆盖率/重叠与重复计数处理；粗估不得冒充
+  PoB数值、填补Judge/reward统计，或证明EHP/抗性/Spirit等硬合法性。
+- 技能的采用价值与建模覆盖分开评估。未建模不等于零收益，不因PoB算不全降低采用优先级；
+  Agent按机制、职责、配套、失败条件和有依据的粗估比较。报告同时呈现PoB可计算部分与粗估，
+  没有可靠估计依据时保留未知，不编造系数或搬用其他BD总DPS。
 - 没有 static source，就不能创建 physical graph node。
 - 没有已存在 graph node，就不能创建 semantic graph edge。
 - 没有 typed tool，就不能让 agent 查询图。不要暴露 raw Cypher/Gremlin/SQL 拼接给
@@ -173,8 +178,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   原XML字节。受旧读取语义影响的回执须重验，不能仅补版本标记或批量重标来源。
 - 最终 Support、Jewel、Socket 回执必须在装备、天赋、珠宝、Rune 和 config 锁定后生成。
   Checkpoint 必须区分 `current/stale/missing`；正式 Judge 对适用检查的 stale/missing、明确失败和
-  未应用正收益非消耗式拒绝。Support 只有当前 PoB 已验证辅助实际作用、结构检查完整且唯一缺口为
-  速率数值不可建模的 `capability_gap` 才能以 `unknown` 继续 Judge，交付仍保持 candidate；测量错误、
+  未应用正收益非消耗式拒绝。Support 当前PoB已验证辅助实际作用、结构完整，且明确缺口属于
+  已识别的原生数值模型缺失时，可按 `capability_gap` 以 `unknown` 继续 Judge，交付仍保持 candidate；测量错误、
   证据不全和可修复问题继续阻止 Judge。Jewel 的受保护 `policy_limited/inconclusive` 规则不变。
   辅助应用按同组实际职责验证：允许分别作用于触发宿主和输出技能，但每个辅助都必须由 PoB
   确认至少作用于组内一个 active effect；数值能力仍绑定选中的精确输出。
@@ -182,9 +187,13 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
   不回归且有净正收益；单辅助读数不能替代组合比较，方案允许只移除辅助。候选发现覆盖同组职责，
   PoB精确ID确认模型不可用的辅助单列未覆盖，不算无收益；其他测量错误仍阻断。名称差异只由稳定
   gem/effect ID与PoB实际回读绑定，不能按去重音或相似名猜测。
+- 上条约束已建模范围内的“数值升级”声明。明确模型缺口下，Agent可按机制、条件与有依据的粗估
+  决定组合，仍核真实辅助适用性与硬合法性，并标记为未验证设计取舍；不强迫按局部面板拆包，也不
+  把该取舍写成已验证净收益。粗估按同一战斗情景比较，不只凭乐观上界采用。
 - 代理生成与Herald触发缺少频率模型时，不得以负载攻击速度或零DPS签无收益。持续、耐久、持续伤害
   物体缺少持续时间且没有持续伤害读回时，正的普通武器命中读数仍不能授权伤害辅助排序；这种更广的
-  模型缺口不得混作仅速率缺口放行。既有受影响审计须重验，不改标旧产物。
+  模型缺口保留原诊断与不支持数值排序的状态，可在结构/适用性及约束完整时作为unknown候选继续，
+  不得改称已建模、无收益或已通过。既有受影响审计须重验，不改标旧产物。
 - 辅助搜索必须保留PoB实际应用的使用条件，按组内effect与support effect ID绑定；不能把新增移动、
   站立或充能门槛的面板增益当作同玩法正收益。Agent明确改变条件后再改组重审；合同不证明实际
   覆盖率，缺少该证据的旧数值审计必须重验，不补标记。

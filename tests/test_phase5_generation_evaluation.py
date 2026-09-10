@@ -411,8 +411,11 @@ def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monk
     assert not (run_dir / "trusted-evaluations").exists()
 
 
-@pytest.mark.parametrize("extra_reason", [None, "declared_duration_dot_model_missing"])
-def test_current_runtime_verified_support_capability_gap_can_reach_judge(extra_reason):
+@pytest.mark.parametrize("gap_kind", ["rate", "inconsistent", "declared", "both"])
+def test_current_runtime_verified_support_capability_gap_can_reach_judge(gap_kind):
+    reasons = [] if gap_kind == "declared" else ["trigger_rate_unmodelled"]
+    if gap_kind != "rate":
+        reasons.append("declared_duration_dot_model_missing")
     assert evaluation._final_check_blockers(
         {
             "skillSupportAudit": {
@@ -431,9 +434,11 @@ def test_current_runtime_verified_support_capability_gap_can_reach_judge(extra_r
                             "capabilitySource": "pob_runtime",
                             "applicationCheck": "verified",
                             "numericRanking": "unsupported",
-                            "triggerRate": "unmodelled",
-                            "reasonCodes": ["trigger_rate_unmodelled"]
-                            + ([extra_reason] if extra_reason else []),
+                                "triggerRate": "not_applicable" if gap_kind == "declared"
+                                else "unmodelled",
+                                "reasonCodes": reasons,
+                                "declaredDamageModel": "incomplete"
+                                if gap_kind in {"declared", "both"} else "not_flagged_incomplete",
                         },
                     }
                 ],
@@ -444,7 +449,7 @@ def test_current_runtime_verified_support_capability_gap_can_reach_judge(extra_r
         }
     ) == (
         ["skillSupportAudit:support_audit_capability_gap:2:trigger_rate_unmodelled"]
-        if extra_reason
+            if gap_kind == "inconsistent"
         else []
     )
 

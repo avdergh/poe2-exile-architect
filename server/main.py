@@ -2128,7 +2128,8 @@ def optimize_supports(
     records a candidate-only capability gap; evidence, measurement, and actionable gaps remain
     blockers. Proxy spawns and Herald procs need their own rate, not payload attack Speed or zero
     DPS. A duration/DoT object with missing duration and DoT output cannot rank damage using a
-    positive partial impact readout; that broader model gap is not a rate-only exception.
+    positive partial impact readout. Runtime-attested missing models with verified support application
+    and complete constraints retain unknown/candidate status, not a numeric pass or zero gain.
     Greedy, not a global optimum.
     """
     return supportopt.optimize_supports(

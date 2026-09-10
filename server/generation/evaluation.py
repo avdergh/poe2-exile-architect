@@ -612,7 +612,7 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
                         and group.get("auditVersion") == "support_audit_v3"
                         and group.get("reasonClass") == "capability_gap"
                         and group.get("verificationRequired") is True
-                        and supportopt.support_capability_is_rate_only_gap(group.get("capability"))
+                        and supportopt.support_capability_is_model_gap(group.get("capability"))
                     )
                 )
                 for group in groups

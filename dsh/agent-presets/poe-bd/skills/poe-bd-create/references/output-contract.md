@@ -95,6 +95,24 @@ mechanismRationale 至少40字符、buildApplication 至少30字符。正文应�
 
 ## 工具引用与最终完整度决定
 
+### DPS粗估与技能价值
+
+`prototypeBuildCandidate.performanceEstimates`可选，最多8项，均为Agent情景估计，不能替代PoB/Judge
+的可信数值。每项填写`estimateId / subject / estimateScope / lowerDps / upperDps / basis /
+assumptions / sourceRefs / overlapHandling / limitations`，`evidenceKind`固定为`agent_estimated`。
+`estimateScope`为`skill_dps / additional_dps / total_dps`，明确是单技能、额外增量还是包含已有输出的
+总量；不自动相加。上下界须有限、非负、顺序正确，至少一项假设、已声明审读的ToolReference来源
+及限制，说明触发频率、有效命中/重叠、覆盖率、同时生效及重复计数处理。简述依据与公式，不写
+隐藏推理过程。范围是条件情景，不冒充统计置信区间；缺少可靠依据时保持未知，不填0作占位。
+
+构筑比较应同时查看机制作用、配套、失败窗口、PoB部分与有依据的粗估。建模困难不降低技能采用
+优先级；candidate表示验证覆盖有限，不表示构筑弱。粗估不能单独把机制假设升级为已证事实，也不
+进入Judge/reward/进步趋势的数值字段。所有来源仍受当前run、版本、模式及case边界约束。
+粗估锚点须对应最终选中的候选；恢复旧baseline时重算或撤回新状态的估计。比较使用相同场景，
+不单凭乐观上界采用，也不把粗估的证据限制解释成技能本身弱。
+完整与compact Review均保留此数组，最终报告并列展示“PoB可计算部分”和“Agent粗估情景”，明确
+每个范围的假设及未验证项，不把不同来源或不同条件的数字混成一个已验证DPS。
+
 `toolReferences` 每项为 `{toolName, queryRef, summary, evidenceKind, reviewBasis}`：
 
 - `internal_receipt`：此处仅支持本 run 已校验的 Research query/contract 引用；reviewBasis=null。

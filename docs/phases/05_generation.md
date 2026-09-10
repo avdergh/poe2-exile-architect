@@ -502,9 +502,10 @@ Agent 负责：
    不重复执行，状态修改后自动形成新检查。主动宝石
    检查只看宝石自身等级，装备或天赋提供的 `+levels` 不会造成误判。
    Support 逐组记录 `reasonClass`；只有 PoB runtime 已逐辅助验证其组内实际作用目标、结构检查
-   完整且唯一缺口为触发率不可建模的 `capability_gap` 可作为 unknown 进入 Judge，并保持 candidate。
+   完整且缺口由原生PoB明确识别为数值模型缺失的 `capability_gap` 可作为 unknown 进入 Judge，并保持 candidate。
    代理生成与Herald不能用负载速度或零DPS替代缺失频率；声明持续/耐久/持续伤害物体而缺少其
-   持续时间及持续伤害模型时，正的普通武器命中也不构成伤害排序依据，且不能借仅速率例外放行。
+   持续时间及持续伤害模型时，正的普通武器命中也不构成完整伤害排序依据；可保留结构与unknown
+   候选，但不能改称数值验证通过。技能价值不按建模覆盖降权，有依据的Agent情景粗估独立展示。
    宿主辅助和输出辅助可分别作用于同组不同 active effect，数值能力仍绑定精确选中输出。
    `evidence_gap / measurement_error / actionable_gap` 继续在 Judge 前阻断且不消耗 attempt。
    Research 深读和最终候选摘要完成，且装备、天赋、珠宝、Rune、辅助与 config 冻结后，Agent 先

@@ -802,11 +802,13 @@ def test_duration_dot_object_missing_model_rejects_partial_hit_ranking(engine, m
     result = supportopt.optimize_supports(engine, group_index=1, metric=metric)
 
     assert result["ok"] is False
-    assert result["reasonClass"] == "evidence_gap"
+    assert result["reasonClass"] == "capability_gap"
     assert result["capability"]["declaredDamageModel"] == "incomplete"
     assert result["capability"]["triggerRate"] == "not_applicable"
     assert "declared_duration_dot_model_missing" in result["capability"]["reasonCodes"]
-    assert result["supportAudit"]["verificationRequired"] is False
+    assert result["supportAudit"]["verificationRequired"] is True
+    assert result["supportAudit"]["status"] == "inconclusive"
+    assert result["capability"]["numericRanking"] == "unsupported"
     assert result["measurement"]["screenedCandidates"] == 0
     assert build_state_hash(engine.get_xml()) == before
 

@@ -477,12 +477,12 @@ def _create_quality_checklist(
             and supportopt.support_audit_is_complete(audit)
         )
         capability = audit.get("capability") or {}
-        pure_capability_gap = (
+        supported_model_gap = (
             context_matches
             and audit.get("auditVersion") == "support_audit_v3"
             and audit.get("status") == "inconclusive"
             and audit.get("reasonClass") == "capability_gap"
-            and supportopt.support_capability_is_rate_only_gap(capability)
+            and supportopt.support_capability_is_model_gap(capability)
             and measurement.get("coverageComplete") is True
             and measurement.get("classificationComplete") is True
             and int(measurement.get("failedCandidates") or 0) == 0
@@ -496,7 +496,7 @@ def _create_quality_checklist(
         elif complete:
             group_status = "passed"
             group_reasons: list[str] = []
-        elif pure_capability_gap:
+        elif supported_model_gap:
             group_status = "unknown"
             detail = ",".join(str(value) for value in audit.get("reasonCodes") or [])
             group_reasons = [f"support_audit_capability_gap:{group_index}:{detail or 'unmodelled'}"]

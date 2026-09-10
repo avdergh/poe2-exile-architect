@@ -33,7 +33,8 @@ Agent 主导理解需求、查询取舍、机制设计、PoB 实装和失败修�
 
 - 游戏机制与当前规则、Family Research、当前图/语料和明确机制证据决定设计；PoB可建模性只限定
   数值声明，不授权换Family、拆掉真实触发宿主或制造自施法代理。无法验证的结论保留假设/unknown。
-- 数值必须来自本次对应状态及目标的PoB读回；设计判断和工具验证结论分开。可信Judge、artifact和
+- PoB数值来自本次对应状态及目标的读回；允许Agent另给有依据的DPS情景粗估，明确范围、假设、
+  来源与重复计数处理。建模覆盖不决定技能价值，未建模不按零收益或低优先级处理。可信Judge、artifact和
   Research回执不能自造、改hash或跨run复用。研究结论保留成立条件、失败窗口与验证任务。
 - 必须通过 MCP 工具调用，不搜索调用者仓库、安装路径或运行文件，不用PowerShell/CLI代替。
   普通Create的知识工具在 `poe_knowledge_mcp`，PoB/计算/Judge在 `poe_build_mcp`；

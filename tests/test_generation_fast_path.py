@@ -811,10 +811,13 @@ def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
     assert result["deliveryStatus"] == "candidate"
 
 
-@pytest.mark.parametrize("extra_reason", [None, "declared_duration_dot_model_missing"])
-def test_support_capability_gap_is_unknown_with_group_evidence(extra_reason):
+@pytest.mark.parametrize("gap_kind", ["rate", "inconsistent", "declared", "both"])
+def test_support_capability_gap_is_unknown_with_group_evidence(gap_kind):
     engine = FakeCheckpointEngine()
     state_hash = build_state_hash(engine.get_xml())
+    reasons = [] if gap_kind == "declared" else ["trigger_rate_unmodelled"]
+    if gap_kind != "rate":
+        reasons.append("declared_duration_dot_model_missing")
     supportopt._record_support_audit(
         engine=engine,
         state_hash=state_hash,
@@ -828,8 +831,10 @@ def test_support_capability_gap_is_unknown_with_group_evidence(extra_reason):
             "capabilitySource": "pob_runtime",
             "applicationCheck": "verified",
             "numericRanking": "unsupported",
-            "triggerRate": "unmodelled",
-            "reasonCodes": ["trigger_rate_unmodelled"] + ([extra_reason] if extra_reason else []),
+            "triggerRate": "not_applicable" if gap_kind == "declared" else "unmodelled",
+            "reasonCodes": reasons,
+            "declaredDamageModel": "incomplete" if gap_kind in {"declared", "both"}
+            else "not_flagged_incomplete",
         },
         measurement={
             "status": "inconclusive",
@@ -875,9 +880,9 @@ def test_support_capability_gap_is_unknown_with_group_evidence(extra_reason):
     )
 
     support = checklist["skillSupportAudit"]
-    assert support["status"] == ("failed" if extra_reason else "unknown")
-    assert support["verificationRequired"] is (extra_reason is None)
-    if extra_reason is None:
+    assert support["status"] == ("failed" if gap_kind == "inconsistent" else "unknown")
+    assert support["verificationRequired"] is (gap_kind != "inconsistent")
+    if gap_kind != "inconsistent":
         assert support["groupResults"][0]["reasonClass"] == "capability_gap"
 
 

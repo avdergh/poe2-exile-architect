@@ -158,6 +158,14 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 - `AgentRefinedBuildPrompt`：Agent 对用户自然语言需求的更具体设计提示词或最小 `BuildBrief`
   摘要。它可以保存用户目标摘要、字段来源、默认假设、需要追问的问题和版本上下文；不能保存
   模型隐藏思维链、完整对话记录、草稿推理区或未经清洗的原始提示词。
+- `AgentDpsEstimate`：候选的可选`performanceEstimates`（最多8项），只表示Agent情景粗估。
+  字段为`estimateId / subject / estimateScope / evidenceKind / lowerDps / upperDps / basis /
+  assumptions / sourceRefs / overlapHandling / limitations`。`evidenceKind`固定`agent_estimated`；
+  scope为`skill_dps/additional_dps/total_dps`。边界须有限、非负、upper>0且lower≤upper，不接受布尔；
+  ID唯一、来源引用去重且须对应候选已声明审读的ToolReference；Research采用对应实际查询回执，
+  仍由run级provenance核验。说明公式、假设、重复计数和限制。
+  范围不是统计置信区间，不能自动相加，不替换PoB/Judge/reward字段；估计与可信数值在完整及
+  compact Review分开呈现。没有估计依据时省略，不填0。建模覆盖不自动降低技能采用权重。
 - `PrototypeBuildCandidate`：Agent 产出的候选 BD 安全摘要。至少表达当前输出阶段、完整生命
   周期目标、职业壳、跨阶段职业硬锁、主技能/辅助技能意图、机制和伤害缩放轴、防御层、
   Spirit / 保留资源假设、装备角色、词缀方向、天赋锚点或区域意图、转型门槛、未解决注意事项
@@ -233,14 +241,16 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   两份审计：新增或加重确定性错误的候选必须拒绝；诊断用基础构筑本来就存在且未被候选加重的
   错误继续披露，但不能被错误归因为本次换装。
   v8保留 `skillSupportAudit.groupResults` 逐组记录 active skill、freshness、`reasonClass`、reason codes
-  与 PoB runtime capability。只有当前辅助应用已验证且唯一缺口为触发率不可建模的
-  `capability_gap` 映射为 `unknown`；其他 evidence/measurement/actionable gap 均阻止 Judge。
+  与 PoB runtime capability。当前辅助应用已验证、结构和约束完整、缺口由原生PoB明确识别为
+  数值模型缺失时，`capability_gap` 映射为 `unknown`；其他 evidence/measurement/actionable gap 均阻止 Judge。
   原生代理生成 effect 的 `UsedByProxy/Cooldown/Duration/Buff` 类型与Herald类型也要求独立频率；
   负载的普通攻击速度或零DPS不能替代。`rateSourceEffectIds`保留相关原生effect身份。
   `ObjectDurability/Duration/DamageOverTime`声明同时存在，但持续时间缺失、持续伤害未读回时，
   `declaredDamageModel="incomplete"`及`declared_duration_dot_model_missing`阻止伤害排序，即使有正的
-  普通武器命中读数。该缺口不是仅速率缺口；优化器、Checkpoint与Judge共用同一纯速率资格检查，
-  缺失、畸形或混合reasonCodes不能进入该例外。受影响旧审计需重验，不批量改标旧artifact。
+  普通武器命中读数。优化器、Checkpoint与Judge共用`support_capability_is_model_gap`：仅接受与
+  `triggerRate/declaredDamageModel`一致的已知模型缺口代码，保留numericRanking=unsupported并
+  以unknown候选继续；已知模型缺口可以同时存在。缺失、畸形、不一致或夹杂测量/资源失败的
+  reasonCodes不能借此放行。受影响旧审计需重验，不批量改标旧artifact。
   `supportApplication` 保存每个辅助的实际作用目标；允许分别服务同组宿主和输出技能，不能要求
   全部辅助作用于同一选中效果。数值能力判断仍绑定该次精确选中效果。
   preflight从身份核对通过的runtime组投影`mainActiveSkillCalcs/activeSkillSelectionError`，保留完整
