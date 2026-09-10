@@ -215,9 +215,7 @@ def recheck_lifecycle_verification(
     )
     gear = completeness.equipped_item_metadata(
         xml, allocated_jewel_socket_ids=build.get("allocatedPassiveJewelSocketIds")
-    ) or (
-        build.get("gear") if isinstance(build.get("gear"), dict) else {}
-    )
+    ) or (build.get("gear") if isinstance(build.get("gear"), dict) else {})
     resource_gap = preflight.inspect_resource_model_gap(xml, gear)
     verified = lifecycle_verification.verify_stage_metrics(
         lifecycle_stage,
@@ -484,10 +482,7 @@ def _create_quality_checklist(
             and audit.get("auditVersion") == "support_audit_v3"
             and audit.get("status") == "inconclusive"
             and audit.get("reasonClass") == "capability_gap"
-            and capability.get("capabilitySource") == "pob_runtime"
-            and capability.get("applicationCheck") in {"verified", "not_applicable"}
-            and capability.get("numericRanking") == "unsupported"
-            and capability.get("triggerRate") == "unmodelled"
+            and supportopt.support_capability_is_rate_only_gap(capability)
             and measurement.get("coverageComplete") is True
             and measurement.get("classificationComplete") is True
             and int(measurement.get("failedCandidates") or 0) == 0

@@ -65,6 +65,23 @@ _EXPECTED_SOURCE_COMBINATION_REJECTION_CODES = _EXPECTED_SOURCE_REJECTION_CODES 
 }
 
 
+def support_capability_is_rate_only_gap(capability: Any) -> bool:
+    """Only a runtime-attested rate gap can use the candidate-only exception."""
+    if not isinstance(capability, dict):
+        return False
+    reasons = capability.get("reasonCodes")
+    return (
+        capability.get("capabilitySource") == "pob_runtime"
+        and capability.get("applicationCheck") in {"verified", "not_applicable"}
+        and capability.get("numericRanking") == "unsupported"
+        and capability.get("triggerRate") == "unmodelled"
+        and isinstance(reasons, list)
+        and all(isinstance(reason, str) for reason in reasons)
+        and set(reasons) == {"trigger_rate_unmodelled"}
+        and capability.get("declaredDamageModel") in (None, "not_flagged_incomplete")
+    )
+
+
 def support_audit_for_state(
     engine: Any,
     state_hash: str,
@@ -923,12 +940,7 @@ def _optimize_supports_locked(
         application_check = str(capability.get("applicationCheck") or "unknown")
         if application_check == "failed" or "trigger_rate_zero_or_inactive" in reason_codes:
             reason_class = "actionable_gap"
-        elif (
-            capability.get("numericRanking") == "unsupported"
-            and capability.get("triggerRate") == "unmodelled"
-            and application_check in {"verified", "not_applicable"}
-            and capability.get("capabilitySource") == "pob_runtime"
-        ):
+        elif support_capability_is_rate_only_gap(capability):
             reason_class = "capability_gap"
         elif capability.get("numericRanking") == "unknown":
             reason_class = "measurement_error"

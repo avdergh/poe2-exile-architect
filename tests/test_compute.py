@@ -725,6 +725,111 @@ def test_real_support_search_preserves_usage_conditions(engine, monkeypatch, ski
     assert build_state_hash(engine.get_xml()) == before_hash
 
 
+@pytest.mark.parametrize(
+    "skill,base", [("Ice Shot", "Gemini Bow"), ("Lightning Spear", "Grand Spear")]
+)
+def test_proxy_payload_attack_speed_does_not_prove_spawn_rate(engine, monkeypatch, skill, base):
+    from server.compute import supportopt
+
+    engine.new_build()
+    engine.set_class("Huntress", "Amazon")
+    engine.set_level(95)
+    engine.add_item(f"Rarity: Normal\n{base}\nItem Level: 95", slot="Weapon 1")
+    engine.paste_skill(f"Mirage Archer 20/0 1 / {skill} 20/0 1 / Cooldown Recovery II")
+    groups = engine.call("list_skill_groups")["groups"]
+    output = next(value for value in groups[0]["activeSkills"] if value["name"] == skill)
+    engine.call("set_skill_group_state", index=1, activeSkillIndex=output["index"], makeMain=True)
+    before = build_state_hash(engine.get_xml())
+
+    def no_search(*args):
+        raise AssertionError("An unmodelled proxy rate must not start numeric support search")
+
+    monkeypatch.setattr(supportopt, "_screen_set", no_search)
+    result = supportopt.optimize_supports(engine, group_index=1)
+
+    assert result["ok"] is False
+    assert result["reasonClass"] == "capability_gap"
+    assert result["capability"]["triggerRate"] == "unmodelled"
+    assert result["capability"]["rateSourceEffectIds"] == ["MirageArcherSpawnPlayer"]
+    assert result["capability"]["selectedEffectId"] == output["effectId"]
+    assert result["measurement"]["screenedCandidates"] == 0
+    assert build_state_hash(engine.get_xml()) == before
+    per_hit = engine.call(
+        "inspect_support_evaluation_capability",
+        index=1,
+        activeIndex=output["index"],
+        objectiveKeys=["AverageDamage"],
+    )
+    assert per_hit["numericRanking"] == "supported"
+
+
+@pytest.mark.parametrize("skill", ["Herald of Ice", "Herald of Thunder"])
+def test_herald_without_proc_rate_is_not_a_zero_gain_dps_audit(engine, monkeypatch, skill):
+    from server.compute import supportopt
+
+    engine.new_build()
+    engine.set_class("Ranger", "Deadeye")
+    engine.set_level(95)
+    engine.add_item("Rarity: Normal\nGemini Bow\nItem Level: 95", slot="Weapon 1")
+    engine.paste_skill(f"{skill} 20/0 1 / Elemental Focus")
+    before = build_state_hash(engine.get_xml())
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: pytest.fail("must not enumerate"))
+
+    result = supportopt.optimize_supports(engine, group_index=1)
+
+    assert result["ok"] is False
+    assert result["reasonClass"] == "capability_gap"
+    assert result["measurement"]["screenedCandidates"] == 0
+    assert build_state_hash(engine.get_xml()) == before
+
+
+@pytest.mark.parametrize("metric", ["TotalDPS", "AverageDamage"])
+def test_duration_dot_object_missing_model_rejects_partial_hit_ranking(engine, monkeypatch, metric):
+    from server.compute import supportopt
+
+    engine.new_build()
+    engine.set_class("Ranger", "Deadeye")
+    engine.set_level(95)
+    engine.add_item("Rarity: Normal\nGemini Bow\nItem Level: 95", slot="Weapon 1")
+    engine.paste_skill("Tornado Shot 20/0 1 / Durability / Prolonged Duration II")
+    observed = engine.get_stats(["TotalDPS", "TotalDot", "Duration"])["stats"]
+    assert observed["TotalDPS"] > 0
+    assert observed.get("TotalDot", 0) == 0
+    assert "Duration" not in observed
+    before = build_state_hash(engine.get_xml())
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: pytest.fail("must not enumerate"))
+
+    result = supportopt.optimize_supports(engine, group_index=1, metric=metric)
+
+    assert result["ok"] is False
+    assert result["reasonClass"] == "evidence_gap"
+    assert result["capability"]["declaredDamageModel"] == "incomplete"
+    assert result["capability"]["triggerRate"] == "not_applicable"
+    assert "declared_duration_dot_model_missing" in result["capability"]["reasonCodes"]
+    assert result["supportAudit"]["verificationRequired"] is False
+    assert result["measurement"]["screenedCandidates"] == 0
+    assert build_state_hash(engine.get_xml()) == before
+
+
+@pytest.mark.parametrize("skill", ["Fireball", "Essence Drain"])
+def test_modelled_spell_hit_and_dot_do_not_trigger_missing_object_guard(engine, skill):
+    engine.new_build()
+    engine.set_class("Witch")
+    engine.set_level(95)
+    engine.paste_skill(f"{skill} 20/0 1")
+
+    observed = engine.call(
+        "inspect_support_evaluation_capability",
+        index=1,
+        activeIndex=1,
+        objectiveKeys=["TotalDPS"],
+    )
+
+    assert observed["numericRanking"] == "supported"
+    assert observed["declaredDamageModel"] == "not_flagged_incomplete"
+    assert observed["reasonCodes"] == []
+
+
 @pytest.mark.parametrize("active_index", [1, 2])
 @pytest.mark.parametrize("invalid_support", [False, True])
 def test_trigger_support_roles_are_verified_across_host_and_payload(
@@ -769,7 +874,9 @@ def test_trigger_support_roles_are_verified_across_host_and_payload(
         payload_checkpoint = validation_checkpoint.inspect_generation_checkpoint(
             engine, offense_skill_group_index=1, expected_skill_name="Comet"
         )
-        assert payload_checkpoint["createQualityChecklist"]["skillSupportAudit"]["status"] == "unknown"
+        assert (
+            payload_checkpoint["createQualityChecklist"]["skillSupportAudit"]["status"] == "unknown"
+        )
     blockers = evaluation._final_check_blockers(checkpoint["createQualityChecklist"])
     assert any(reason.startswith("skillSupportAudit:") for reason in blockers) is (
         invalid_support or active_index == 1
@@ -1207,7 +1314,9 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
     assert engine.get_build()["mainSkill"] == "Spark"  # read-only: build restored
 
 
-@pytest.mark.parametrize("attributes_ready", [False, True], ids=["insufficient_attributes", "sufficient_attributes"])
+@pytest.mark.parametrize(
+    "attributes_ready", [False, True], ids=["insufficient_attributes", "sufficient_attributes"]
+)
 def test_realistic_plan_replaces_normal_bootstrap_weapon(engine, attributes_ready):
     from server.compute import itemopt
 
@@ -1706,10 +1815,23 @@ class _SocketBatchEngine:
 def test_plan_item_sockets_batch_returns_explicit_slot_decisions(monkeypatch):
     def fake_optimize(_engine, *, slot, **_kwargs):
         if slot == "Helmet":
-            return {"ok": True, "changed": True, "item": "planned", "craftReceiptRef": "r",
-                    "measurementComplete": True, "measurementStatus": "positive", "reviewPolicyVersion": "item_socket_review_v2"}
-        return {"ok": True, "changed": False, "reason": "no_beneficial_socket_option",
-                "measurementComplete": True, "measurementStatus": "no_positive", "reviewPolicyVersion": "item_socket_review_v2"}
+            return {
+                "ok": True,
+                "changed": True,
+                "item": "planned",
+                "craftReceiptRef": "r",
+                "measurementComplete": True,
+                "measurementStatus": "positive",
+                "reviewPolicyVersion": "item_socket_review_v2",
+            }
+        return {
+            "ok": True,
+            "changed": False,
+            "reason": "no_beneficial_socket_option",
+            "measurementComplete": True,
+            "measurementStatus": "no_positive",
+            "reviewPolicyVersion": "item_socket_review_v2",
+        }
 
     monkeypatch.setattr(craftopt, "optimize_item_sockets", fake_optimize)
     result = craftopt.plan_item_sockets_batch(

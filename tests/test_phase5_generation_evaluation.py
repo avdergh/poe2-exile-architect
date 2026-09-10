@@ -411,37 +411,41 @@ def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monk
     assert not (run_dir / "trusted-evaluations").exists()
 
 
-def test_current_runtime_verified_support_capability_gap_can_reach_judge():
-    assert (
-        evaluation._final_check_blockers(
-            {
-                "skillSupportAudit": {
-                    "status": "unknown",
-                    "reasons": ["support_audit_capability_gap:2:trigger_rate_unmodelled"],
-                    "groupResults": [
-                        {
-                            "groupIndex": 2,
-                            "activeSkillIndex": 1,
-                            "freshness": "current",
-                            "auditVersion": "support_audit_v3",
-                            "status": "unknown",
-                            "reasonClass": "capability_gap",
-                            "verificationRequired": True,
-                            "capability": {
-                                "capabilitySource": "pob_runtime",
-                                "applicationCheck": "verified",
-                                "numericRanking": "unsupported",
-                                "triggerRate": "unmodelled",
-                            },
-                        }
-                    ],
-                },
-                "jewelDecision": {"status": "passed", "reasons": []},
-                "itemSockets": {"status": "passed", "reasons": []},
-                "sustain": {"status": "passed", "reasons": []},
-            }
-        )
-        == []
+@pytest.mark.parametrize("extra_reason", [None, "declared_duration_dot_model_missing"])
+def test_current_runtime_verified_support_capability_gap_can_reach_judge(extra_reason):
+    assert evaluation._final_check_blockers(
+        {
+            "skillSupportAudit": {
+                "status": "unknown",
+                "reasons": ["support_audit_capability_gap:2:trigger_rate_unmodelled"],
+                "groupResults": [
+                    {
+                        "groupIndex": 2,
+                        "activeSkillIndex": 1,
+                        "freshness": "current",
+                        "auditVersion": "support_audit_v3",
+                        "status": "unknown",
+                        "reasonClass": "capability_gap",
+                        "verificationRequired": True,
+                        "capability": {
+                            "capabilitySource": "pob_runtime",
+                            "applicationCheck": "verified",
+                            "numericRanking": "unsupported",
+                            "triggerRate": "unmodelled",
+                            "reasonCodes": ["trigger_rate_unmodelled"]
+                            + ([extra_reason] if extra_reason else []),
+                        },
+                    }
+                ],
+            },
+            "jewelDecision": {"status": "passed", "reasons": []},
+            "itemSockets": {"status": "passed", "reasons": []},
+            "sustain": {"status": "passed", "reasons": []},
+        }
+    ) == (
+        ["skillSupportAudit:support_audit_capability_gap:2:trigger_rate_unmodelled"]
+        if extra_reason
+        else []
     )
 
 

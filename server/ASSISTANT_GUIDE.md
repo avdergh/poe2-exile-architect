@@ -182,7 +182,11 @@ positive plans block Judge. Only the documented current support capability gap w
 application may continue as unknown; it retains candidate status. Support application can target
 the host or payload but every support needs a real active effect. Searches preserve runtime-observed
 support usage conditions on every group effect; changing those conditions requires an explicit Agent
-edit before re-auditing, and does not prove uptime. `support_audit_v3` compares full
+edit before re-auditing, and does not prove uptime. Numeric comparisons stay within the observed
+model. Proxy spawns and Herald procs require an independent
+rate; payload attack Speed and zero DPS cannot replace it. A duration/DoT object's positive partial
+impact readout cannot authorize whole-set damage ranking when duration and DoT outputs are absent. That broader gap
+remains blocked and cannot use the rate-only exception. `support_audit_v3` compares full
 combinations, including removal-only changes. `item_socket_review_v2` distinguishes failed or
 unmodeled measurements from `no_positive`; pending `socketed/partial_socketed` plans need trusted
 equip, and a failed recheck revokes the prior pending plan.

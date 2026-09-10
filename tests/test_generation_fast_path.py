@@ -811,7 +811,8 @@ def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
     assert result["deliveryStatus"] == "candidate"
 
 
-def test_support_capability_gap_is_unknown_with_group_evidence():
+@pytest.mark.parametrize("extra_reason", [None, "declared_duration_dot_model_missing"])
+def test_support_capability_gap_is_unknown_with_group_evidence(extra_reason):
     engine = FakeCheckpointEngine()
     state_hash = build_state_hash(engine.get_xml())
     supportopt._record_support_audit(
@@ -828,7 +829,7 @@ def test_support_capability_gap_is_unknown_with_group_evidence():
             "applicationCheck": "verified",
             "numericRanking": "unsupported",
             "triggerRate": "unmodelled",
-            "reasonCodes": ["trigger_rate_unmodelled"],
+            "reasonCodes": ["trigger_rate_unmodelled"] + ([extra_reason] if extra_reason else []),
         },
         measurement={
             "status": "inconclusive",
@@ -874,9 +875,10 @@ def test_support_capability_gap_is_unknown_with_group_evidence():
     )
 
     support = checklist["skillSupportAudit"]
-    assert support["status"] == "unknown"
-    assert support["verificationRequired"] is True
-    assert support["groupResults"][0]["reasonClass"] == "capability_gap"
+    assert support["status"] == ("failed" if extra_reason else "unknown")
+    assert support["verificationRequired"] is (extra_reason is None)
+    if extra_reason is None:
+        assert support["groupResults"][0]["reasonClass"] == "capability_gap"
 
 
 class _TargetGroupCheckpointEngine:

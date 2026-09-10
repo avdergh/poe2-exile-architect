@@ -2126,7 +2126,10 @@ def optimize_supports(
     uncovered, never measured as no gain. Other measurement failures block. For a rate-dependent target,
     a PoB-runtime-confirmed unmodelled trigger rate short-circuits before candidate enumeration and
     records a candidate-only capability gap; evidence, measurement, and actionable gaps remain
-    blockers. Greedy, not a global optimum.
+    blockers. Proxy spawns and Herald procs need their own rate, not payload attack Speed or zero
+    DPS. A duration/DoT object with missing duration and DoT output cannot rank damage using a
+    positive partial impact readout; that broader model gap is not a rate-only exception.
+    Greedy, not a global optimum.
     """
     return supportopt.optimize_supports(
         get_engine(),

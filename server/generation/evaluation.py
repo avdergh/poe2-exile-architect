@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
+from server.compute import supportopt
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
 from server.judge import evaluator, rules, runner, sample_audit
@@ -611,11 +612,7 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
                         and group.get("auditVersion") == "support_audit_v3"
                         and group.get("reasonClass") == "capability_gap"
                         and group.get("verificationRequired") is True
-                        and (group.get("capability") or {}).get("capabilitySource") == "pob_runtime"
-                        and (group.get("capability") or {}).get("applicationCheck")
-                        in {"verified", "not_applicable"}
-                        and (group.get("capability") or {}).get("numericRanking") == "unsupported"
-                        and (group.get("capability") or {}).get("triggerRate") == "unmodelled"
+                        and supportopt.support_capability_is_rate_only_gap(group.get("capability"))
                     )
                 )
                 for group in groups

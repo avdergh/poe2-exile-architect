@@ -235,6 +235,12 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   v8保留 `skillSupportAudit.groupResults` 逐组记录 active skill、freshness、`reasonClass`、reason codes
   与 PoB runtime capability。只有当前辅助应用已验证且唯一缺口为触发率不可建模的
   `capability_gap` 映射为 `unknown`；其他 evidence/measurement/actionable gap 均阻止 Judge。
+  原生代理生成 effect 的 `UsedByProxy/Cooldown/Duration/Buff` 类型与Herald类型也要求独立频率；
+  负载的普通攻击速度或零DPS不能替代。`rateSourceEffectIds`保留相关原生effect身份。
+  `ObjectDurability/Duration/DamageOverTime`声明同时存在，但持续时间缺失、持续伤害未读回时，
+  `declaredDamageModel="incomplete"`及`declared_duration_dot_model_missing`阻止伤害排序，即使有正的
+  普通武器命中读数。该缺口不是仅速率缺口；优化器、Checkpoint与Judge共用同一纯速率资格检查，
+  缺失、畸形或混合reasonCodes不能进入该例外。受影响旧审计需重验，不批量改标旧artifact。
   `supportApplication` 保存每个辅助的实际作用目标；允许分别服务同组宿主和输出技能，不能要求
   全部辅助作用于同一选中效果。数值能力判断仍绑定该次精确选中效果。
   preflight从身份核对通过的runtime组投影`mainActiveSkillCalcs/activeSkillSelectionError`，保留完整

@@ -101,11 +101,15 @@ def test_real_unnamed_internal_effect_does_not_detach_mirage_payload_audit(engin
     result = supportopt.optimize_supports(engine, metric="FullDPS", group_index=2)
     assert result["supportAudit"]["activeSkillIndex"] == 3
     assert result["supportAudit"]["skill"] == payload
-    assert supportopt.support_audit_is_complete(result["supportAudit"]), result
+    assert result["reasonClass"] == "capability_gap", result
+    assert result["capability"]["triggerRate"] == "unmodelled"
+    assert result["measurement"]["screenedCandidates"] == 0
+    assert not supportopt.support_audit_is_complete(result["supportAudit"])
     support, blockers = _support_result(engine, skill=payload)
     second = next(row for row in support["groupResults"] if row["groupIndex"] == 2)
     assert second["freshness"] == "current", second
     assert second["activeSkillIndex"] == 3
+    assert second["status"] == "unknown"
     assert "skillSupportAudit:support_audit_calculation_context_mismatch:2" not in blockers
     assert build_state_hash(engine.get_xml()) == state_hash
 

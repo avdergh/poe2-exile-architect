@@ -50,6 +50,9 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
      effect，数值能力绑定所选精确输出。仅当应用验证和结构检查完整、唯一缺口是触发率不可建模的
      `capability_gap` 时，才允许 unknown 继续 Judge，交付仍为 candidate；测量错误、证据不全和
      可修复缺口继续阻断。`noSupports=true` 不需制造辅助审计；不可写来源保留真实结构和验证缺口。
+     代理或Herald缺频率时，不把负载速度或零DPS当有效全程排序；声明持续/耐久/持续伤害物体而
+     缺少其时间与持续伤害模型时，正的普通武器命中同样不足。后者属于更广缺口，不能借仅速率
+     例外通过。保留原机制，记录阻断原因，不因错误面板推荐拆掉铺场或控制配套。
    - 等级 ≥90 的额外珠宝槽审计保留精确 `protected_node_ids`，以当前真实候选审查全部可达槽。
      正收益经 `apply_next_jewel_socket_decision` 原子应用后，在新状态重新审计；受保护策略下的
      `policy_limited/inconclusive` 可以继续 Judge，但交付保持 candidate。低于 90 级不新增此质量

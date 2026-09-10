@@ -1479,6 +1479,12 @@ local RATE_DEPENDENT_SUPPORT_OBJECTIVES = {
 	MinionTotalDPS = true,
 }
 
+local OFFENSIVE_SUPPORT_OBJECTIVES = {
+	TotalDPS = true, FullDPS = true, CombinedDPS = true, AverageDamage = true,
+	Speed = true, HitChance = true, CritChance = true, CritMultiplier = true,
+	MinionCombinedDPS = true, MinionTotalDPS = true,
+}
+
 -- Internal support-optimizer preflight for one exact group/active effect. This reports runtime
 -- facts only; Python owns the audit and delivery policy.
 function methods.inspect_support_evaluation_capability(p)
@@ -1546,22 +1552,47 @@ function methods.inspect_support_evaluation_capability(p)
 	local selectedTriggered = hasType(ge, "Triggered") or hasType(ge, "InbuiltTrigger")
 		or (active.skillData and active.skillData.triggered) and true or false
 	local hasMetaHost = false
+	local hasProxyHost = false
+	local rateSourceEffectIds = {}
 	for _, candidate in ipairs(group.displaySkillList or {}) do
 		local candidateGe = candidate.activeEffect and candidate.activeEffect.grantedEffect
 		if hasType(candidateGe, "Meta") and hasType(candidateGe, "Triggers") then
 			hasMetaHost = true
-			break
+			rateSourceEffectIds[#rateSourceEffectIds + 1] = candidateGe.id
+		end
+		-- Native proxy-spawn effects need their own creation cadence. The payload's bow
+		-- attack Speed does not model the spawn cooldown, lifetime, or active proxy count.
+		if hasType(candidateGe, "UsedByProxy") and hasType(candidateGe, "Cooldown")
+			and hasType(candidateGe, "Duration") and hasType(candidateGe, "Buff") then
+			hasProxyHost = true
+			rateSourceEffectIds[#rateSourceEffectIds + 1] = candidateGe.id
 		end
 	end
 	local rateDependent = false
+	local offensiveObjective = false
 	for _, key in ipairs(p.objectiveKeys or {}) do
 		if RATE_DEPENDENT_SUPPORT_OBJECTIVES[tostring(key)] then rateDependent = true end
+		if OFFENSIVE_SUPPORT_OBJECTIVES[tostring(key)] then offensiveObjective = true end
 	end
 
 	local triggerRate = "not_applicable"
 	local numericRanking = applicationCheck == "failed" and "unsupported" or "supported"
-	if rateDependent and (selectedTriggered or hasMetaHost) then
-		local output = (build.calcsTab and build.calcsTab.mainOutput) or {}
+	local output = (build.calcsTab and build.calcsTab.mainOutput) or {}
+	local declaredDamageModel = "not_flagged_incomplete"
+	-- A duration-based destructible DoT object may expose only its weapon-impact calculation
+	-- while the object model is absent. That partial hit readout does not certify the missing
+	-- model or a whole support-set upgrade. This is broader than a rate-only gap and stays blocked.
+	if offensiveObjective and hasType(ge, "ObjectDurability")
+		and hasType(ge, "DamageOverTime") and hasType(ge, "Duration")
+		and asOptionalNumber(output.Duration) == nil
+		and asOptionalNumber(output.DurationSecondary) == nil
+		and asOptionalNumber(output.DurationTertiary) == nil
+		and (asOptionalNumber(output.TotalDot) or 0) <= 0 then
+		declaredDamageModel = "incomplete"
+		numericRanking = "unsupported"
+		reasons[#reasons + 1] = "declared_duration_dot_model_missing"
+	end
+	if rateDependent and (selectedTriggered or hasMetaHost or hasProxyHost or hasType(ge, "Herald")) then
 		local candidates = {}
 		local function addRate(value)
 			value = asOptionalNumber(value)
@@ -1602,6 +1633,8 @@ function methods.inspect_support_evaluation_capability(p)
 		reasonCodes = reasons,
 		capabilitySource = "pob_runtime",
 		supportApplication = application,
+		declaredDamageModel = declaredDamageModel,
+		rateSourceEffectIds = rateSourceEffectIds,
 		usageConditionContractVersion = 1,
 		usageConditionContracts = usageConditionContracts,
 	}

@@ -1170,6 +1170,39 @@ class SupportAuditIntegrityTests(unittest.TestCase):
         assert result["supportAudit"]["reasonClass"] == "actionable_gap"
         assert result["reasonCode"] == "trigger_rate_zero_or_inactive"
 
+    def test_broader_model_gap_cannot_be_relabelled_as_rate_only(self) -> None:
+        class IncompleteModelEngine(_RuntimeTriggerAuditEngine):
+            def call(self, method: str, **kwargs: object) -> dict:
+                result = super().call(method, **kwargs)
+                if method == "inspect_support_evaluation_capability":
+                    result["declaredDamageModel"] = "incomplete"
+                    result["reasonCodes"].append("declared_duration_dot_model_missing")
+                return result
+
+        result = supportopt.optimize_supports(IncompleteModelEngine(), metric="FullDPS")
+
+        assert result["ok"] is False
+        assert result["supportAudit"]["reasonClass"] == "evidence_gap"
+        assert result["supportAudit"]["verificationRequired"] is False
+        assert result["measurement"]["screenedCandidates"] == 0
+
+    def test_rate_gap_contract_rejects_missing_malformed_and_mixed_reasons(self) -> None:
+        capability = _RuntimeTriggerAuditEngine().call("inspect_support_evaluation_capability")
+        assert supportopt.support_capability_is_rate_only_gap(capability)
+        for reasons in (
+            None,
+            [],
+            "trigger_rate_unmodelled",
+            [{}],
+            ["trigger_rate_unmodelled", "other_model_missing"],
+        ):
+            assert not supportopt.support_capability_is_rate_only_gap(
+                {**capability, "reasonCodes": reasons}
+            )
+        assert not supportopt.support_capability_is_rate_only_gap(
+            {**capability, "declaredDamageModel": "incomplete"}
+        )
+
     def test_unmeasurable_metric_is_inconclusive_and_is_cached(self) -> None:
         listed = self._listed()
         result = supportopt.optimize_supports(
