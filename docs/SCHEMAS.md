@@ -419,6 +419,20 @@ PoB 不把物品授予的免费槽写入 `Spec.nodes`，实时审计因此使用
 Python/Headless bridge 使用运行时合同 5，旧合同 4 的 user-data 引擎不能覆盖新版 bundle；
 属性切换与免费珠宝槽观察不会通过修改旧安装元数据获得权限。
 
+`evaluate_next_jewel_socket` 在任何天赋/数值探针前复用 `audit_jewel_input`，核对静态珠宝底材、
+Rare/Magic 的 Item Level、来源及共享物品合法性。普通词缀未识别时返回
+`candidate_jewel_unrecognized_affixes`（`reasonClass=evidence_gap`），不把该词缀判作零收益或
+自动认定非法；输入失败不写审计回执、不修改活动状态、不覆盖既有决定。
+仅当同状态旧审计的全部可达槽都因 `current_safe_leaf_points_insufficient` 停在候选测量之前，
+且没有候选测量、测量错误或待应用正收益时，才允许在相同 goals 和保护节点下更换候选输入。
+新回执记录 `replacesUnmeasuredCandidateFingerprint` 并重新检查，旧 unknown 不自动升级为通过。
+部分测量、缺字段的旧审计、目标/保护范围变化及待应用正收益仍受 pending 门禁保护；恢复失败保留
+原回执并要求恢复活动构筑。
+
+Lifecycle 的 `buildDefiningComponentKey` 与证据引用共用有界安全引用规则，保留 canonical key
+中的 ASCII 撇号。URL、控制字符、空白、重复引用、组件 kind/key 前缀不匹配及不完整声明仍拒绝；
+允许 key 进入声明不等于机制已验证，必须从同一活动快照重新观察组件。
+
 执行器只回滚当前职能批次，不修改此前已经提交的 scope。失败回执必须区分
 `attemptedOperationsBeforeFailure` 与 `persistedOperationCount`；只有 `rolledBack=true` 才能确认
 输入状态已恢复。`rolledBack=false` 时必须同时返回 `atomic=false` 和

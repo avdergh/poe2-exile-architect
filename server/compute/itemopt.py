@@ -2366,6 +2366,17 @@ def evaluate_next_jewel_socket(
             state_hash = build_state_hash(snapshot)
         except Exception:  # noqa: BLE001
             return {"ok": False, "errorCode": "jewel_socket_probe_snapshot_failed"}
+        # Reject input before any topology/stat probes, restore writes or pending review.
+        try:
+            input_audit = item_legality.audit_jewel_input(raw, require_recognized_affixes=True)
+        except Exception:  # noqa: BLE001 - no build mutation has started.
+            return {
+                "ok": False,
+                "errorCode": "candidate_jewel_validation_failed",
+                "stateHash": state_hash,
+            }
+        if not input_audit.get("ok"):
+            return {**input_audit, "stateHash": state_hash}
         try:
             result, apply_payload = _evaluate_next_jewel_socket_locked(
                 engine,
@@ -2469,6 +2480,8 @@ def _jewel_review_context_fingerprint(
 def _jewel_review_pending_result(
     current: dict[str, Any] | None,
     review_context_fingerprint: str,
+    *,
+    allow_unmeasured_candidate_change: bool = False,
 ) -> dict[str, Any] | None:
     if not isinstance(current, dict) or current.get("status") == "applied":
         return None
@@ -2484,13 +2497,67 @@ def _jewel_review_pending_result(
                 "stateHash": current.get("stateHash"),
             }
         return None
-    if current.get("status") == "inconclusive" and not same_context:
+    if (
+        current.get("status") == "inconclusive"
+        and not same_context
+        and not allow_unmeasured_candidate_change
+    ):
         return {
             "ok": False,
             "errorCode": "jewel_socket_inconclusive_review_pending",
             "stateHash": current.get("stateHash"),
         }
     return None
+
+
+def _can_correct_unmeasured_jewel_input(
+    current: dict[str, Any] | None,
+    *,
+    state_hash: str,
+    goals_fingerprint: str,
+    protected_node_ids: list[int],
+    protection_declared: bool,
+) -> bool:
+    """Only replace an input when every socket stopped before candidate measurement."""
+    if not isinstance(current, dict) or any((
+        current.get("status") != "inconclusive",
+        current.get("reviewPolicyVersion") != _JEWEL_REVIEW_POLICY_VERSION,
+        current.get("stateHash") != state_hash,
+        current.get("goalsFingerprint") != goals_fingerprint,
+        current.get("protectedNodeIds") != protected_node_ids,
+        current.get("protectionDeclared") is not protection_declared,
+        not current.get("candidateJewelFingerprint"),
+        bool(current.get("decisionRef")),
+        current.get("positiveNetBenefit") is not None,
+        "positiveNetBenefit" not in current,
+        "metricsAfter" in current,
+        "weightedRelativeGain" in current,
+    )):
+        return False
+    counts = [
+        current.get(key) for key in (
+            "reachableSocketCount", "limitedSocketCount",
+            "evaluatedSocketCount", "inconclusiveSocketCount",
+        )
+    ]
+    if any(type(value) is not int for value in counts):
+        return False
+    reachable, limited, evaluated, inconclusive = counts
+    if reachable <= 0 or limited != reachable or evaluated != 0 or inconclusive != 0:
+        return False
+    rows = current.get("socketEvaluations")
+    return bool(
+        isinstance(rows, list)
+        and len(rows) == reachable
+        and all(
+            isinstance(row, dict)
+            and row.get("status") == "policy_limited"
+            and row.get("reason") == "current_safe_leaf_points_insufficient"
+            and "metricsAfter" not in row
+            and "weightedRelativeGain" not in row
+            for row in rows
+        )
+    )
 
 
 def _restore_jewel_probe_or_raise(engine: Any, snapshot: str, state_hash: str) -> None:
@@ -2531,9 +2598,21 @@ def _evaluate_next_jewel_socket_locked(
         protected_node_ids=protected,
         protection_declared=protection_declared,
     )
+    current = next_jewel_decision_for_state(engine, state_hash)
+    correcting_input = bool(
+        current
+        and current.get("candidateJewelFingerprint") != jewel_fingerprint
+        and _can_correct_unmeasured_jewel_input(
+            current,
+            state_hash=state_hash,
+            goals_fingerprint=goals_fingerprint,
+            protected_node_ids=protected,
+            protection_declared=protection_declared,
+        )
+    )
     pending = _jewel_review_pending_result(
-        next_jewel_decision_for_state(engine, state_hash),
-        review_context_fingerprint,
+        current, review_context_fingerprint,
+        allow_unmeasured_candidate_change=correcting_input,
     )
     if pending is not None:
         return (pending, None)
@@ -2581,6 +2660,8 @@ def _evaluate_next_jewel_socket_locked(
         "goals": weights,
         "readOnly": True,
     }
+    if correcting_input:
+        common["replacesUnmeasuredCandidateFingerprint"] = current["candidateJewelFingerprint"]
     if not reachable:
         return (
             {

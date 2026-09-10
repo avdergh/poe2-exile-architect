@@ -6,7 +6,7 @@ from contextlib import nullcontext
 import re
 from typing import Any
 
-from server.knowledge import db, item_legality, itemparse
+from server.knowledge import item_legality, itemparse
 from server.runtime import craft_receipts
 
 from . import completeness
@@ -197,31 +197,12 @@ def equip_jewel_verified(
     if type(socket) is not int or socket < 0:
         return {"ok": False, "errorCode": "explicit_jewel_socket_required"}
     slot = f"Jewel {socket}"
-    structure = itemparse.semantic_item_structure(raw)
-    if craft_receipt_ref is None and (
-        structure.get("corrupted")
-        or structure.get("runeNames")
-        or any(
-            value.get("kind") == "rune"
-            for value in structure.get("effects") or []
-            if isinstance(value, dict)
-        )
-    ):
-        return {"ok": False, "errorCode": "special_source_provenance_required"}
-    parsed = itemparse.parse_item(raw)
-    base = db.get_item(str(parsed.get("base") or ""))
-    if not base or "jewel" not in (base.get("tags") or []):
-        return {"ok": False, "errorCode": "item_is_not_jewel"}
-    if (
-        str(parsed.get("rarity") or "").casefold() in {"rare", "magic"}
-        and parsed.get("itemLevel") is None
-    ):
-        return {"ok": False, "errorCode": "jewel_item_level_missing"}
-    audit = item_legality.audit_item(
-        raw, slot=slot, craft_receipt_ref=craft_receipt_ref, require_special_provenance=True
+    input_audit = item_legality.audit_jewel_input(
+        raw, slot=slot, craft_receipt_ref=craft_receipt_ref
     )
-    if not audit.get("ok"):
-        return {"ok": False, "errorCode": "item_legality_check_failed", "itemLegality": audit}
+    if not input_audit.get("ok"):
+        return input_audit
+    structure = input_audit["itemStructure"]
     with engine.transaction_lock():
         if getattr(engine, _RECOVERY_ATTRIBUTE, False):
             return {

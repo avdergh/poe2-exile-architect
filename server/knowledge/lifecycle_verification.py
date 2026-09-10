@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from server.compute import sustain
-from server.knowledge import copy_safety
+from server.knowledge import copy_safety, research_contracts
 
 _ELEMENTAL_RESISTS = ("fire", "cold", "lightning")
 _ELEMENTAL_RESISTANCE_BANDS: tuple[tuple[int, int, float], ...] = (
@@ -29,7 +29,7 @@ _DEFENSE_FLOORS: dict[str, dict[str, float]] = {
     "endgame_budget": {"pool": 3500, "ehp": 12000},
     "endgame_final": {"pool": 4500, "ehp": 18000},
 }
-_SAFE_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9_.:/\-]{3,240}$")
+_SAFE_EVIDENCE_REF = re.compile(research_contracts.SAFE_BOUNDED_REFERENCE_PATTERN)
 
 
 class LifecycleStageVerificationState(BaseModel):

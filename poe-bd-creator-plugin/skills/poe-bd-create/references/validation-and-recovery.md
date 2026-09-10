@@ -59,6 +59,9 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
      正收益经 `apply_next_jewel_socket_decision` 原子应用后，在新状态重新审计；受保护策略下的
      `policy_limited/inconclusive` 可以继续 Judge，但交付保持 candidate。低于 90 级不新增此质量
      门禁；已经分配的珠宝槽仍须填入真实珠宝。
+     候选底材、等级、来源或普通词缀识别有问题时，按输入诊断纠正后重试；不把未识别词缀当零收益。
+     只有全部槽位都尚未测量、仅因安全叶节点不足而受限，工具才允许在相同 goals 和保护节点下
+     更换候选。部分测量、测量错误及待应用正收益保持 pending；不得修改状态或删回执绕过。
    - Socket 使用`item_socket_review_v2`且必须对应实际装备。`socketed/partial_socketed`均是待应用
      方案，携原`craftReceiptRef`完成可信`equip_item`后，后者才转为`partial_no_positive`，
      保留原孔容量并允许无收益余孔留空。`no_positive/not_applicable`需完整测量才能全部留空；

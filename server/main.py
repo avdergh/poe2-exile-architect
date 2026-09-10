@@ -903,6 +903,10 @@ def evaluate_next_jewel_socket(
     means protection was not declared, while ``[]`` is an explicit no-protection decision. Only
     current safe one-point leaves may be exchanged. Apply a positive result atomically, then review
     the new state again. ``round_index`` remains a compatibility label and does not cap the review.
+    Candidate identity, item level, provenance and recognized affixes are checked before probes.
+    If every socket stopped solely for insufficient safe leaves before candidate measurement,
+    a corrected candidate may be retried under the same goals and protected nodes. Partial
+    measurements, measurement errors and pending positive decisions cannot be overwritten.
     """
 
     return itemopt.evaluate_next_jewel_socket(

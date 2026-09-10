@@ -491,6 +491,9 @@ Agent 负责：
    正收益 `decisionRef` 只能用 `apply_next_jewel_socket_decision` 原子应用，随后必须在输出 state
    重新审计；不再按固定轮数或成熟案例槽数停止。`policy_limited/inconclusive` 可进入 Judge，但
    交付保持 candidate。
+   珠宝输入先核底材、等级、来源与词缀识别，错误不留下 pending 回执。只有全部槽位尚未测量、
+   仅因安全叶节点不足而受限时，才可在同状态、同 goals 和保护节点下纠正候选；部分测量、测量
+   错误及待应用正收益不能借更换候选覆盖。Lifecycle 组件 key 原样保留合法 ASCII 撇号。
    在元素 60%、非 CI 混沌 30% 后停止继续购买普通抗性，用户明确要求时可覆盖为 75%。
 6. Agent 先调用 `inspect_generation_checkpoint` v6。该工具按语义 build-state hash 合并
    completeness、preflight、有界 stats 和 defenses，并分别返回

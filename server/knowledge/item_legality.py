@@ -6,7 +6,55 @@ from typing import Any
 
 from server.runtime import craft_receipts
 
-from . import itemparse
+from . import db, itemparse
+
+
+def audit_jewel_input(
+    item_text: str,
+    *,
+    craft_receipt_ref: str | None = None,
+    slot: str | None = None,
+    require_recognized_affixes: bool = False,
+) -> dict[str, Any]:
+    """Validate jewel identity and provenance before equipment or numeric probes.
+
+    Unrecognized ordinary affixes are an evidence gap, not proof of illegality. Numeric probes
+    cannot silently omit them; equipment retains the shared audit's existing diagnostic policy.
+    """
+    structure = itemparse.semantic_item_structure(item_text)
+    if craft_receipt_ref is None and (
+        structure.get("corrupted")
+        or structure.get("runeNames")
+        or any(
+            value.get("kind") == "rune"
+            for value in structure.get("effects") or []
+            if isinstance(value, dict)
+        )
+    ):
+        return {"ok": False, "errorCode": "special_source_provenance_required"}
+    parsed = itemparse.parse_item(item_text)
+    base = db.get_item(str(parsed.get("base") or ""))
+    if not base or "jewel" not in (base.get("tags") or []):
+        return {"ok": False, "errorCode": "item_is_not_jewel"}
+    if (
+        str(parsed.get("rarity") or "").casefold() in {"rare", "magic"}
+        and parsed.get("itemLevel") is None
+    ):
+        return {"ok": False, "errorCode": "jewel_item_level_missing"}
+    audit = audit_item(
+        item_text, slot=slot, craft_receipt_ref=craft_receipt_ref, require_special_provenance=True
+    )
+    if not audit.get("ok"):
+        return {"ok": False, "errorCode": "item_legality_check_failed", "itemLegality": audit}
+    if require_recognized_affixes and audit.get("unrecognizedAffixCount"):
+        return {
+            "ok": False,
+            "errorCode": "candidate_jewel_unrecognized_affixes",
+            "reasonClass": "evidence_gap",
+            "verificationRequired": True,
+            "itemLegality": audit,
+        }
+    return {"ok": True, "itemStructure": structure, "itemLegality": audit}
 
 
 def audit_item(
