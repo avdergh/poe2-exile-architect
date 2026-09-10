@@ -595,6 +595,8 @@ def _unique_modifier_issue(
             source = parse_unique_source(
                 unique["pobSource"], name=unique["name"], base=unique["base"]
             )
+            if source.intrinsic_corrupted and not semantic_item_structure(text)["corrupted"]:
+                return "unique_intrinsic_corruption_missing"
             if re.search(r"(?m)^Variant:|\{variant:", text):
                 actual_source = parse_unique_source(text, name=unique["name"], base=unique["base"])
                 if (
@@ -642,6 +644,7 @@ def audit_item_legality(
 
     craft_profile = db.craft_profile(str(parsed.get("base") or ""))
     unique_issue: str | None = None
+    intrinsic_corruption: dict[str, Any] | None = None
     if rarity == "unique":
         unique = db.get_unique(str(parsed.get("name") or ""), include_source=True)
         if not isinstance(unique, dict):
@@ -653,6 +656,19 @@ def audit_item_legality(
             unique_issue = "unique_item_base_mismatch"
         else:
             unique_issue = _unique_modifier_issue(text, unique, trusted_provenance=trusted_provenance)
+            if unique_issue is None and unique.get("pobSource"):
+                source = parse_unique_source(
+                    unique["pobSource"], name=unique["name"], base=unique["base"]
+                )
+                if source.intrinsic_corrupted:
+                    intrinsic_corruption = {
+                        "status": "verified_static_source",
+                        "uniqueName": unique["name"],
+                        "base": unique["base"],
+                        "sourceFingerprint": "sha256:"
+                        + hashlib.sha256(unique["pobSource"].encode("utf-8")).hexdigest(),
+                        "itemFingerprint": semantic_item_structure(text)["itemFingerprint"],
+                    }
     domain_rarity_issue = bool(
         craft_profile
         and str(craft_profile.get("domain") or "") == "flask"
@@ -733,10 +749,11 @@ def audit_item_legality(
             or structure.get("corrupted") is not True
         ):
             source_issues.append("craft_receipt_corruption_mismatch")
-    elif provenance is not None and structure.get("corrupted"):
+    elif provenance is not None and structure.get("corrupted") and not intrinsic_corruption:
         source_issues.append("craft_receipt_corruption_missing")
 
-    has_structural_special = bool(rune_hashes or actual_rune_names or structure.get("corrupted"))
+    added_corruption = bool(structure.get("corrupted") and not intrinsic_corruption)
+    has_structural_special = bool(rune_hashes or actual_rune_names or added_corruption)
     if provenance is None and require_special_provenance and has_structural_special:
         source_issues.append("special_source_provenance_required")
 
@@ -768,6 +785,8 @@ def audit_item_legality(
             "baseIllegalAffixCount": 0,
             "unrecognizedAffixCount": 0,
         }
+        if intrinsic_corruption:
+            result["intrinsicCorruption"] = intrinsic_corruption
         if provenance is not None:
             result["craftReceiptRef"] = provenance.get("receiptRef")
             result["provenanceStatus"] = "verified" if not source_issues else "rejected"
@@ -780,7 +799,7 @@ def audit_item_legality(
             result["provenanceStatus"] = "unverified"
             result["unverifiedSpecialSources"] = [
                 *([] if not (rune_hashes or actual_rune_names) else ["rune"]),
-                *([] if not structure.get("corrupted") else ["corruption"]),
+                *([] if not added_corruption else ["corruption"]),
             ]
         return result
     limits = _affix_limits(str(parsed.get("base") or ""), rarity)

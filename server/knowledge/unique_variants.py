@@ -26,6 +26,7 @@ class UniqueSource:
     duplicates: bool
     selected: tuple[int, ...]
     modifiers: tuple[UniqueModifier, ...]
+    intrinsic_corrupted: bool = False
 
     @property
     def slots(self) -> int:
@@ -49,6 +50,7 @@ class UniqueSource:
         return {
             "requiredSelections": self.slots,
             "allowDuplicateVariants": self.duplicates,
+            "intrinsicCorrupted": self.intrinsic_corrupted,
             "options": [{"id": index, "name": label} for index, label in enumerate(self.labels, 1)],
             "modifierTemplates": [
                 {
@@ -113,4 +115,6 @@ def parse_unique_source(raw: str, *, name: str, base: str) -> UniqueSource:
         metadata.get("Allow Duplicate Variants") == "true",
         selected,
         tuple(modifiers),
+        # Item.lua recognizes this exact, untagged metadata line before mod parsing.
+        intrinsic_corrupted="Corrupted" in lines,
     )

@@ -23,7 +23,7 @@ def test_public_jewel_transaction_and_shared_snapshot_audit(
     socket = min(sockets, key=lambda row: engine.get_passive(row["socket"]).get("pathDist", 999))[
         "socket"
     ]
-    prism = "Rarity: Unique\nPrism of Belief\nDiamond\n+3 to Level of all Fireball Skills"
+    prism = "Rarity: Unique\nPrism of Belief\nDiamond\n+3 to Level of all Fireball Skills\nCorrupted"
     original = build_state_hash(engine.get_xml())
     assert main.equip_jewel(prism, socket)["errorCode"] == "jewel_socket_not_allocated"
     assert build_state_hash(engine.get_xml()) == original

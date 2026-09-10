@@ -340,6 +340,11 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   PoB来源中的词条种类标记（如`{desecrated}`）与剪贴板效果分开比较；仅统一效果文本，原始
   结构指纹、实际读回及独立的Rune/腐化等特殊来源回执审计不因此放宽。
   写入后的同暗金身份校验包含实际选中变体和隐式，不能用同名不同效果的物品冒充请求。
+  静态源中无条件的原生 `Corrupted` 标记由 `variantSelection.intrinsicCorrupted` 显示；只有
+  名称、底材、完整变体和实际词条范围匹配时，共享审计才返回 `intrinsicCorruption`，包含
+  `verified_static_source` 状态、暗金身份、源指纹和物品指纹。它不创建制作凭据、不授权额外
+  腐化效果或 Rune。原生标记缺失、来源缺失、来源改变或装备读回失配均重新判定，不能删除
+  `Corrupted` 绕过门禁；后加特殊来源的装备写入仍必须显式提供原制作凭据，不能自动猜选。
 - `optimize_item_sockets` 复用同一个 `CraftLegalityReceipt`，不定义第二套写入合同。它读取已装备
   物品，只接受显式 1–2 孔，在保留底材、Item Level、隐式和全部显式词缀后选择 PoB
   `crafting_options.runes` 中的符文/灵魂核心；用现有 `equip_item` 携 receipt 提交。

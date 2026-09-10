@@ -686,6 +686,8 @@ def equip_item(
     `craft_item` results can carry Perfect-Essence/rune/corrupted effects outside the ordinary
     affix pool: pass its `craftReceiptRef` unchanged so the same source-aware legality receipt
     verifies after PoB normalizes the item text.
+    A unique's intrinsic Corrupted flag needs no crafting receipt when its full item matches
+    the pinned static source; added corruption effects and runes still need explicit receipts.
 
     Hand-written items are checked against the real mod pool; unrollable affixes return
     `illegalAffixes` + `legalityWarning` and the computed stats include invented mods (not

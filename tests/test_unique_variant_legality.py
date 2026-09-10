@@ -130,7 +130,7 @@ Variant: C
 def test_large_generated_jewel_prunes_to_real_selected_choices():
     raw = _item(
         "Megalomaniac",
-        ["Allocates Abasement", "Allocates Acceleration", "Allocates Adaptable Assault"],
+        ["Allocates Abasement", "Allocates Acceleration", "Allocates Adaptable Assault", "Corrupted"],
     )
     assert itemparse.audit_item_legality(raw)["ok"]
     assert not itemparse.audit_item_legality(raw + "\nAllocates Adaptive Skin")["ok"]

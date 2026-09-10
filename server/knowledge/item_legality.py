@@ -22,16 +22,6 @@ def audit_jewel_input(
     cannot silently omit them; equipment retains the shared audit's existing diagnostic policy.
     """
     structure = itemparse.semantic_item_structure(item_text)
-    if craft_receipt_ref is None and (
-        structure.get("corrupted")
-        or structure.get("runeNames")
-        or any(
-            value.get("kind") == "rune"
-            for value in structure.get("effects") or []
-            if isinstance(value, dict)
-        )
-    ):
-        return {"ok": False, "errorCode": "special_source_provenance_required"}
     parsed = itemparse.parse_item(item_text)
     base = db.get_item(str(parsed.get("base") or ""))
     if not base or "jewel" not in (base.get("tags") or []):
@@ -42,10 +32,22 @@ def audit_jewel_input(
     ):
         return {"ok": False, "errorCode": "jewel_item_level_missing"}
     audit = audit_item(
-        item_text, slot=slot, craft_receipt_ref=craft_receipt_ref, require_special_provenance=True
+        item_text,
+        slot=slot,
+        craft_receipt_ref=craft_receipt_ref,
+        require_special_provenance=True,
+        require_explicit_craft_receipt=True,
     )
     if not audit.get("ok"):
-        return {"ok": False, "errorCode": "item_legality_check_failed", "itemLegality": audit}
+        return {
+            "ok": False,
+            "errorCode": (
+                "special_source_provenance_required"
+                if "special_source_provenance_required" in (audit.get("issues") or [])
+                else "item_legality_check_failed"
+            ),
+            "itemLegality": audit,
+        }
     if require_recognized_affixes and audit.get("unrecognizedAffixCount"):
         return {
             "ok": False,
@@ -63,6 +65,7 @@ def audit_item(
     craft_receipt_ref: str | None = None,
     slot: str | None = None,
     require_special_provenance: bool = False,
+    require_explicit_craft_receipt: bool = False,
     runtime_context: dict[str, Any] | None = None,
     prepared_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -70,7 +73,21 @@ def audit_item(
 
     provenance = prepared_receipt
     resolution_error: str | None = None
-    if provenance is None:
+    structure = (
+        itemparse.semantic_item_structure(item_text)
+        if require_explicit_craft_receipt and craft_receipt_ref is None
+        else {}
+    )
+    explicit_reference_missing = bool(
+        structure.get("corrupted")
+        or structure.get("runeNames")
+        or any(value.get("kind") == "rune" for value in structure.get("effects") or [])
+    )
+    # Writes must name crafting receipts; the static unique audit can independently prove
+    # an intrinsic Corrupted flag. Read-only audits may resolve already recorded receipts.
+    if explicit_reference_missing:
+        provenance = None
+    elif provenance is None:
         resolution = craft_receipts.resolve_receipt(
             item_text,
             receipt_ref=craft_receipt_ref,

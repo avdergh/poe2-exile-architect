@@ -31,21 +31,12 @@ def equip_item_verified(
         )
 
     requested_structure = itemparse.semantic_item_structure(raw)
-    has_special_source = bool(
-        requested_structure.get("runeNames")
-        or requested_structure.get("corrupted")
-        or any(
-            isinstance(value, dict) and value.get("kind") == "rune"
-            for value in requested_structure.get("effects") or []
-        )
-    )
-    if has_special_source and craft_receipt_ref is None:
-        return {"ok": False, "errorCode": "special_source_provenance_required"}
     requested_audit = item_legality.audit_item(
         raw,
         craft_receipt_ref=craft_receipt_ref,
         slot=slot,
         require_special_provenance=True,
+        require_explicit_craft_receipt=True,
     )
     if not requested_audit.get("ok"):
         issues = [str(value) for value in requested_audit.get("issues") or []]
@@ -331,6 +322,8 @@ def _same_unique_identity(requested_text: str, actual_text: str) -> bool:
 
     requested = itemparse.parse_item(requested_text)
     actual = itemparse.parse_item(actual_text)
+    requested_structure = itemparse.semantic_item_structure(requested_text)
+    actual_structure = itemparse.semantic_item_structure(actual_text)
     return bool(
         requested.get("ok")
         and actual.get("ok")
@@ -340,6 +333,10 @@ def _same_unique_identity(requested_text: str, actual_text: str) -> bool:
         == str(actual.get("name") or "").strip().casefold()
         and str(requested.get("base") or "").strip().casefold()
         == str(actual.get("base") or "").strip().casefold()
+        and all(
+            requested_structure.get(key) == actual_structure.get(key)
+            for key in ("corrupted", "runeSockets", "runeNames")
+        )
         and itemparse._unique_modifiers_match(
             itemparse._unique_modifier_lines(actual_text, include_implicit=True),
             itemparse._unique_modifier_lines(requested_text, include_implicit=True),
