@@ -132,6 +132,7 @@ class CombinationOracle:
                 "status": "resolved",
                 "name": kwargs["requestedName"],
                 "gemId": "oracle:" + kwargs["requestedName"],
+                "gameId": (kwargs.get("gemIds") or [None])[0],
                 "effectId": "effect:" + kwargs["requestedName"],
                 "naturalMaxLevel": 1,
             }
@@ -211,6 +212,75 @@ def test_life_exhausting_candidate_does_not_hide_a_legal_alternative(monkeypatch
     assert result['measurement']['candidateRejectionCodes']['life_reservation_exhausts_life'] == 1
     assert result['measurement']['combinationComparison']['candidateConstraintsSatisfied'] is True
     assert result['supportAudit']['positiveGainCombinationAvailable'] is True
+
+
+def test_agent_availability_correction_replaces_invalid_demand_with_complete_recomparison(monkeypatch):
+    from test_gem_availability import valid_review
+    key = "Metadata/Items/Gems/SupportGemSyntheticC"
+    engine, first = run_oracle(monkeypatch, {():100, ("Pair A",):200, ("Pair B",):150,
+                                           ("Solo C",):1000}, current=("Pair A",))
+    assert first["supportAudit"]["positiveGainCombinationAvailable"]
+    original_subject = supportopt._support_identity_subject
+    monkeypatch.setattr(supportopt, "_support_identity_subject", lambda name:
+                        {"gemIds":[key],"effectIds":["effect:Solo C"]} if name == "Solo C" else original_subject(name))
+    monkeypatch.setattr(supportopt.db, "get_gem", lambda _: {"id":key,"name":"Solo C","gem_type":"support"})
+    review = valid_review()
+    review["componentKey"] = "gem:"+key
+    # Synthetic contract fixture only: no assertion about an actual game's new component.
+    before = engine.get_xml()
+    engine.probes.clear()
+    result = supportopt.optimize_supports(engine, availability_reviews=[review])
+    assert result["supportAudit"]["status"] == "passed"
+    assert result["supports"] == ["Pair A"]
+    assert all("Solo C" not in probe for probe in engine.probes)
+    assert result["measurement"]["unavailableInGameCandidates"][0]["evidenceKind"] == "agent_reviewed"
+    assert supportopt.support_audit_for_state(engine, result["stateHash"], 1)["auditRef"] == result["supportAudit"]["auditRef"]
+    assert engine.get_xml() == before
+    # The correction persists only in this engine session; omitting the argument cannot resurrect it.
+    repeated = supportopt.optimize_supports(engine)
+    assert repeated["supportAudit"]["status"] == "passed"
+
+
+def test_availability_reviews_are_atomic_and_wrong_patch_does_not_change_state(monkeypatch):
+    from test_gem_availability import valid_review
+    engine, _ = run_oracle(monkeypatch)
+    review = valid_review()
+    review["targetPatch"] = "0.2.0"
+    before = engine.get_xml()
+    result = supportopt.optimize_supports(engine, availability_reviews=[review])
+    assert result["errorCode"] == "invalid_support_availability_review"
+    assert engine.get_xml() == before
+    assert not supportopt.gem_availability.session_reviews(engine)
+
+
+def test_same_display_name_cannot_authorize_excluding_a_different_runtime_gem(monkeypatch):
+    from test_gem_availability import valid_review
+    engine, _ = run_oracle(monkeypatch)
+    original_call = engine.call
+    def wrong_identity(method, **params):
+        result = original_call(method, **params)
+        if method == "resolve_support_gem_identity":
+            result.update(gemId="unrelated-runtime-gem", gameId="unrelated-game-gem")
+        return result
+    engine.call = wrong_identity
+    result = supportopt.optimize_supports(engine, availability_reviews=[valid_review()])
+    assert result["errorCode"] == "invalid_support_availability_review"
+    assert result["reason"] == "availability_review_runtime_identity_mismatch"
+    assert not supportopt.gem_availability.session_reviews(engine)
+
+
+def test_current_removed_support_gets_a_legal_replacement_even_when_panel_is_lower(monkeypatch):
+    key = "Metadata/Items/Gems/SupportGemWindWave"
+    original_subject = supportopt._support_identity_subject
+    monkeypatch.setattr(supportopt, "_support_identity_subject", lambda name:
+                        {"gemIds":[key],"effectIds":["effect:Solo C"]} if name == "Solo C" else original_subject(name))
+    _, result = run_oracle(monkeypatch, {():100, ("Pair A",):200, ("Pair B",):150,
+                                        ("Solo C",):1000}, current=("Solo C",))
+    assert result["supports"] == ["Pair A"]
+    assert result["supportAudit"]["currentUnavailableSupports"] == ["Solo C"]
+    assert result["supportAudit"]["supportsToRemove"] == ["Solo C"]
+    assert result["supportAudit"]["recoveryAction"] == "apply_valid_replacement_and_reaudit"
+    assert not result["supportAudit"]["positiveGainCombinationAvailable"]
 
 
 def test_installed_synergy_is_measured_and_never_replaced_by_inferior_solo(monkeypatch):

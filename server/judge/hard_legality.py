@@ -12,17 +12,18 @@ import math
 from typing import Any
 
 from server.compute import completeness
+from server.knowledge import gem_availability
 
 from . import rules, scoring
 
 
-AUDIT_VERSION = "hard_legality_v6"
+AUDIT_VERSION = "hard_legality_v7"
 SUPPORTED_AUDIT_VERSIONS = frozenset(
     {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4",
-     "hard_legality_v5", AUDIT_VERSION}
+     "hard_legality_v5", "hard_legality_v6", AUDIT_VERSION}
 )
 ARTIFACT_COMPATIBLE_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", "hard_legality_v5", AUDIT_VERSION}
+    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", "hard_legality_v5", "hard_legality_v6", AUDIT_VERSION}
 )
 def audit_active_build(
     engine: Any,
@@ -117,6 +118,10 @@ def audit_build(
     if life_reservation["failureCode"]:
         failures.append(str(life_reservation["failureCode"]))
 
+    availability = check_gem_availability(build)
+    if availability["unavailableCount"] and source_context == "generated_candidate":
+        failures.append("equipped_gem_unavailable_in_target_patch")
+
     create_completion = check_create_completion(
         build,
         required=require_create_completion,
@@ -158,6 +163,7 @@ def audit_build(
             "weaponCompatibility": weapon_check,
             "spiritBudget": spirit_budget,
             "lifeReservation": life_reservation,
+            "gemAvailability": availability,
             "createCompletion": create_completion,
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
@@ -168,6 +174,25 @@ def audit_build(
         "sourceContext": source_context,
         "noRawMaterial": True,
     }
+
+
+def check_gem_availability(build: dict[str, Any]) -> dict[str, Any]:
+    subjects = build.get("gemAvailabilitySubjects")
+    unavailable = []
+    for subject in subjects or []:
+        result = gem_availability.inspect_ids([str(subject.get("gemId") or ""), str(subject.get("gameId") or "")])
+        if result["status"] != "unavailable":
+            for review in build.get("agentAvailabilityReviews") or []:
+                if {subject.get("gemId"), subject.get("gameId")}.intersection(review.get("gemIds") or []):
+                    result = {"status": "unavailable", "reason": "agent_reviewed_" + review["reason"],
+                              "evidenceKind": "agent_reviewed", "componentKey": review["componentKey"],
+                              "targetPatch": review["targetPatch"], "reviewRef": review["reviewRef"]}
+                    break
+        if result["status"] == "unavailable":
+            unavailable.append({"groupIndex": subject.get("groupIndex"), "name": subject.get("name"), **result})
+    return {"status": "unavailable" if unavailable else "checked_known_removals" if isinstance(subjects, list) else "unknown",
+            "unavailableCount": len(unavailable), "unavailable": unavailable,
+            "currentAvailabilityCertified": False, "catalogRef": gem_availability.catalog()["catalogRef"]}
 
 
 def life_reservation_check(build: dict[str, Any]) -> dict[str, Any]:
@@ -309,6 +334,7 @@ def compare_audits_for_regression(
                 )
 
     measurable_failures = {
+        "equipped_gem_unavailable_in_target_patch": ("gemAvailability", "unavailableCount"),
         "life_reservation_exhausts_life": ("lifeReservation", "shortfall"),
         "spirit_budget_exceeded": ("spiritBudget", "over"),
         "passive_budget_exceeded": ("passiveBudget", "over"),

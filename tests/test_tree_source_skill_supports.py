@@ -1156,7 +1156,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
 
         assert result["ok"] is False
         assert result["reasonCode"] == "trigger_rate_unmodelled"
-        assert result["supportAudit"]["auditVersion"] == "support_audit_v4"
+        assert result["supportAudit"]["auditVersion"] == "support_audit_v5"
         assert result["supportAudit"]["reasonClass"] == "capability_gap"
         assert result["supportAudit"]["verificationRequired"] is True
         assert result["measurement"]["screenedCandidates"] == 0

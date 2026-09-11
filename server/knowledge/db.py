@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from . import gem_availability
 
 _con: sqlite3.Connection | None = None
 _con_file_key: tuple[object, ...] | None = None
@@ -91,6 +92,9 @@ def corpus_info() -> dict[str, Any]:
     meta = {r["key"]: r["value"] for r in con.execute("SELECT key, value FROM meta")}
     if "counts" in meta:
         meta["counts"] = json.loads(meta["counts"])
+    meta["availabilityPolicy"] = {"catalogRef": gem_availability.catalog()["catalogRef"],
+                                  "targetPatch": gem_availability.catalog()["targetPatch"],
+                                  "sourceRefs": gem_availability.public_sources()}
     return meta
 
 
@@ -224,12 +228,21 @@ def _gem_crafting_meta(raw: str | None) -> dict[str, Any]:
     }
 
 
+def _available_support_recommendations(names: list[str]) -> list[str]:
+    excluded = gem_availability.unavailable_ids()
+    con = _conn()
+    return [name for name in names if not any(row[0] in excluded for row in con.execute(
+        "SELECT id FROM gems WHERE lower(name) = lower(?)", (name,)
+    ))]
+
+
 def find_skills(
     query: str = "",
     gem_type: str | None = None,
     tag: str | None = None,
     color: str | None = None,
     limit: int = 30,
+    include_unavailable: bool = False,
 ) -> list[dict]:
     con = _conn()
     params: list[Any] = []
@@ -253,6 +266,11 @@ def find_skills(
     if tag:
         sql += "AND g.tags LIKE ? "
         params.append(f'%"{tag}"%')
+    if not include_unavailable:
+        excluded = sorted(gem_availability.unavailable_ids())
+        if excluded:
+            sql += "AND g.id NOT IN (" + ",".join("?" for _ in excluded) + ") "
+            params.extend(excluded)
     sql += "LIMIT ?"
     params.append(limit)
     return [
@@ -262,8 +280,9 @@ def find_skills(
             "color": r["color"],
             "gem_type": r["gem_type"],
             "tags": json.loads(r["tags"]),
-            "supports": json.loads(r["supports"]),
+            "supports": _available_support_recommendations(json.loads(r["supports"])),
             "description": r["description"],
+            "availability": gem_availability.inspect_ids([r["id"]]),
             **_gem_crafting_meta(r["raw"]),
         }
         for r in con.execute(sql, params)
@@ -277,7 +296,7 @@ def find_skills(
 _DAMAGE_TYPE_TAGS = {"fire", "cold", "lightning", "chaos", "physical", "elemental"}
 
 
-def find_supports_for(skill: str, limit: int = 25) -> dict:
+def find_supports_for(skill: str, limit: int = 25, *, include_unavailable: bool = False) -> dict:
     """Find support gems for a skill: its curated recommendations plus tag-compatible supports."""
     gem = get_gem(skill)
     if not gem:
@@ -286,7 +305,10 @@ def find_supports_for(skill: str, limit: int = 25) -> dict:
     skill_tags = set(gem["tags"]) - generic
     con = _conn()
     compatible = []
-    for r in con.execute("SELECT name, tags FROM gems WHERE gem_type = 'support' ORDER BY name"):
+    excluded = gem_availability.unavailable_ids()
+    for r in con.execute("SELECT id, name, tags FROM gems WHERE gem_type = 'support' ORDER BY name"):
+        if not include_unavailable and r["id"] in excluded:
+            continue
         shared = skill_tags & (set(json.loads(r["tags"])) - generic)
         if shared:
             compatible.append(
@@ -309,7 +331,7 @@ def find_supports_for(skill: str, limit: int = 25) -> dict:
     return {
         "skill": gem["name"],
         "tags": sorted(skill_tags),
-        "recommended": gem["supports"],
+        "recommended": gem["sourceRecommendedSupports"] if include_unavailable else gem["supports"],
         "compatible": compatible[:limit],
     }
 
@@ -330,10 +352,12 @@ def get_gem(name_or_id: str) -> dict | None:
         "gem_type": row["gem_type"],
         "tags": json.loads(row["tags"]),
         "grants": json.loads(row["grants"]),
-        "supports": json.loads(row["supports"]),
+        "supports": _available_support_recommendations(json.loads(row["supports"])),
+        "sourceRecommendedSupports": json.loads(row["supports"]),
         "description": row["description"],
         "types": json.loads(row["types"]),
         "requirement_weights": _requirement_weights(row["raw"]),
+        "availability": gem_availability.inspect_ids([row["id"]]),
         **_gem_crafting_meta(row["raw"]),
     }
 
@@ -444,6 +468,8 @@ def list_gems_for_level(
 
     out: list[dict[str, Any]] = []
     for r in rows:
+        if r["id"] in gem_availability.unavailable_ids():
+            continue
         meta = _gem_crafting_meta(r["raw"])
         crafting_level = meta["crafting_level"]
         if crafting_level is not None and crafting_level > int(level):
@@ -459,7 +485,7 @@ def list_gems_for_level(
                 "gem_type": r["gem_type"],
                 "tags": json.loads(r["tags"]),
                 "grants": json.loads(r["grants"]),
-                "supports": json.loads(r["supports"]),
+                "supports": _available_support_recommendations(json.loads(r["supports"])),
                 "description": r["description"],
                 "types": json.loads(r["types"]),
                 **meta,

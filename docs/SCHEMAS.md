@@ -281,8 +281,19 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   新Research readback binding由生成器写`xmlInputSemanticsVersion/sourceInputStateHash`，
   对确受旧ET语义影响的输入缺失或不匹配时要求重验；仍独立校验原始`sourceSnapshotHash`。
   单独补标记不能授权旧数值，也不批量迁移或提高历史知识权限。
-- `support_audit_v4`：`measurement.combinationComparison`比较完整当前组合与完整候选组合，
+- `support_audit_v5`：`measurement.combinationComparison`比较完整当前组合与完整候选组合，
   两者必须绑定同一精确技能、目标、原始构筑状态并完整测量；合法性不得新增或加重错误。
+  当前版本可用性由`data/compatibility/gem-availability.json`的官方移除事件与静态精确gem ID绑定；
+  原始语料、来源版本和物理图身份保留。`released`、PoB能计算、等级曲线通过均不代替当前可用性。
+  搜索、详情、等级入口、图查询与活动`gemAvailabilitySubjects`共享可用性修订；发布校验其语料身份。
+  已移除候选在测量前排除，`unavailableInGameCandidates`列明依据，不混入`uncoveredCandidates`的模型缺口。
+  `availabilityContext`绑定目录指纹与当前引擎的审读排除，变化后旧审计变stale；完整重算才可替代旧强制推荐。
+  `optimize_supports.availability_reviews`接受精确`componentKey/targetPatch/reason`与官方及独立来源的
+  `sourceReviews(url/assessment/relevanceReason)`。Agent须阅读实际内容，参数只声明`agent_reviewed`，
+  不提升为内部Research证据。通过原生精确支持身份校验后原子登记在本引擎会话；错误补丁、歧义身份、
+  缺少官方或独立审读均拒绝，不部分登记。此排除不写用户库或发布目录，重连后由Agent重交。
+  当前组含失效辅助时输出`currentUnavailableSupports/supportsToRemove/recoveryAction`；重新选择有效组合，
+  即使面板降低也不能保留失效组件；修复不冒充同玩法的数值升级，采用后另审当前完整组合。
   辅助适用性沿 PoB 实际 source instance、effect ID 与已应用 effectList 追溯独立宿主，先授权
   宿主上的辅助，再纳入它授予的子技能；自身授予和无根循环不能作为适用性证据。
   `supportApplication` 保留 `supportEffectId/rootedActiveEffectIds/unrootedActiveEffectIds`，
@@ -425,12 +436,17 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 Item Level，Unique 数量使用静态来源限制。Checkpoint/Judge 与 artifact 检查也纳入这些树珠宝。
 PoB 不把物品授予的免费槽写入 `Spec.nodes`，实时审计因此使用引擎读回的
 `allocatedPassiveJewelSocketIds`；XML-only 结构检查仅确认显式已分配槽，不提升免费槽数值权限。
-新保存要求 `hard_legality_v6` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
-原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v9`，不复用旧检查。
+新保存要求 `hard_legality_v7` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
+原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v10`，不复用旧检查。
+目录或会话审读排除改变时，Checkpoint以可用性上下文指纹区分同一PoB状态；恢复旧快照也重新应用
+本会话已有的排除。`agentAvailabilityReviews`保持Agent审读权限，可收紧交付，不能证明内部Research来源。
 共享 `lifeReservation` 检查使用 PoB 已取整的保留与未保留生命读回；生命保留导致剩余生命不足 1 时
 返回 `life_reservation_exhausts_life`，同时用于辅助候选、装备候选、预检、Judge 和 artifact。
 CI 不豁免这条规则；普通生命保留在仍有可用生命时保持合法，不重算百分比，也不据辅助名称特判。
-Python/Headless bridge 当前使用运行时合同 8，旧合同的 user-data 引擎不能覆盖新版 bundle；
+`gemAvailability`对活动启用组的精确gem/game ID检查已确认移除项，新生成候选返回
+`equipped_gem_unavailable_in_target_patch`；禁用组/宝石不混入活动组合，第三方历史参考只保留诊断。
+没有移除命中仅为`checked_known_removals`，不是对所有组件做过当前可用性认证。
+Python/Headless bridge 当前使用运行时合同 9，旧合同的 user-data 引擎不能覆盖新版 bundle；
 属性、珠宝、辅助宿主与生命保留观察不会通过修改旧安装元数据获得权限。
 
 `evaluate_next_jewel_socket` 在任何天赋/数值探针前复用 `audit_jewel_input`，核对静态珠宝底材、

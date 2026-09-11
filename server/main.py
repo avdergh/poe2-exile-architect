@@ -2118,9 +2118,15 @@ def optimize_supports(
     expected_fingerprint: str | None = None,
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
+    availability_reviews: list[supportopt.gem_availability.SupportAvailabilityReview] | None = None,
 ) -> dict[str, Any]:
     """Compare complete support sets for one exact active effect using PoB.
 
+    Known removed gems are excluded by exact ID before measurement. If an Agent finds a new
+    removal, read official evidence and independent corroboration, then pass availability_reviews
+    with the exact componentKey and targetPatch. These engine-session exclusions are explicitly
+    agent_reviewed, never internal Research receipts or global data edits. Re-run the complete
+    search and apply its valid replacement; do not escalate a repairable candidate failure to the user.
     Support-granted effects require an independently valid host; self-grants and unanchored
     cycles cannot prove compatibility. Candidates read PoB's Life, LifeReserved and LifeUnreserved:
     a reservation that exhausts available Life is rejected even with CI or freed Spirit.
@@ -2155,6 +2161,7 @@ def optimize_supports(
         expected_fingerprint=expected_fingerprint,
         max_mana_cost=max_mana_cost,
         spirit_limit=spirit_limit,
+        availability_reviews=availability_reviews,
     )
 
 

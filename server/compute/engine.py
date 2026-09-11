@@ -464,7 +464,13 @@ class PobEngine:
         return self.call("get_xml")["xml"]
 
     def get_build(self) -> dict[str, Any]:
-        return self.call("get_build")
+        from server.knowledge import gem_availability
+
+        build = self.call("get_build")
+        reviews = gem_availability.session_reviews(self)
+        if reviews:
+            build["agentAvailabilityReviews"] = reviews
+        return build
 
     def select_judge_skill(
         self,

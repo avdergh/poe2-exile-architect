@@ -1,0 +1,553 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-09-11.1",
+  "targetPatch": "0.5.5",
+  "sources": [
+    {
+      "ref": "ggg:removed:third-edict",
+      "url": "https://www.pathofexile.com/forum/view-thread/3828542/filter-account-type/staff",
+      "section": "Removed Items",
+      "publishedAt": "2025-08-27",
+      "reviewedAt": "2026-09-11",
+      "review": "已阅读官方移除清单，逐个绑定37个辅助的精确宝石与效果ID；名称仅用于人工复核。"
+    },
+    {
+      "ref": "pinned:repoe-pob:20260911",
+      "corpusSha256": "f9d35fca0ae25e617d8cf730ab80e7425808901bb1f47162e27ba5ae039c89c3",
+      "pobGemDataSha256": "2daba2e7aa586fe7669585ff93df25e9bff82a9da1c61f72d1e134886091a0a5",
+      "repoeExportedVersion": "4.5.4.11",
+      "review": "原始released字段只证明数据发布状态；37个辅助无普通刻印入口。该特征不单独判断移除，Lineage等特殊来源不据此排除。"
+    }
+  ],
+  "entries": [
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemBloodintheEyes",
+      "displayName": "Hobble",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemBloodintheEyes"
+      ],
+      "effectIds": [
+        "SupportHobblePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUnsteadyTempo",
+      "displayName": "Unsteady Tempo",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUnsteadyTempo"
+      ],
+      "effectIds": [
+        "SupportUnsteadyTempoPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemDiscombobulate",
+      "displayName": "Daze",
+      "gemIds": [
+        "Metadata/Items/Gems/SkillGemDazeSupport",
+        "Metadata/Items/Gems/SupportGemDiscombobulate"
+      ],
+      "effectIds": [
+        "SupportDazePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUnyielding",
+      "displayName": "Unyielding",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUnyielding"
+      ],
+      "effectIds": [
+        "SupportUnyieldingPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUnbending",
+      "displayName": "Unbending",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUnbending"
+      ],
+      "effectIds": [
+        "SupportUnbendingPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUntouchable",
+      "displayName": "Untouchable",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUntouchable",
+        "Metadata/Items/Gems/SkillGemUntouchableSupport"
+      ],
+      "effectIds": [
+        "SupportUntouchablePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUnabating",
+      "displayName": "Unabating",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUnabating"
+      ],
+      "effectIds": [
+        "SupportUnabatingPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemPremeditation",
+      "displayName": "Premeditation",
+      "gemIds": [
+        "Metadata/Items/Gems/SupportGemPremeditation"
+      ],
+      "effectIds": [
+        "SupportEmpoweredDamagePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemUnbreakable",
+      "displayName": "Unbreakable",
+      "gemIds": [
+        "Metadata/Items/Gems/SupportGemUnbreakable"
+      ],
+      "effectIds": [
+        "UnbreakableSupportPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemRuthless",
+      "displayName": "Ruthless",
+      "gemIds": [
+        "Metadata/Items/Gems/SkillGemRuthlessSupport",
+        "Metadata/Items/Gems/SupportGemRuthless"
+      ],
+      "effectIds": [
+        "RuthlessSupportPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemDevastate",
+      "displayName": "Devastate",
+      "gemIds": [
+        "Metadata/Items/Gems/SupportGemDevastate"
+      ],
+      "effectIds": [
+        "SupportDevastatePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemWindWave",
+      "displayName": "Wind Wave",
+      "gemIds": [
+        "Metadata/Items/Gems/SkillGemKnockbackWaveSupport",
+        "Metadata/Items/Gems/SupportGemWindWave"
+      ],
+      "effectIds": [
+        "SupportKnockbackWavePlayer",
+        "KnockbackWavePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemEnergyBarrier",
+      "displayName": "Energy Barrier",
+      "gemIds": [
+        "Metadata/Items/Gems/SupportGemEnergyBarrier"
+      ],
+      "effectIds": [
+        "SupportEnergyBarrierPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemBreakEndurance",
+      "displayName": "Break Endurance",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemBreakEndurance"
+      ],
+      "effectIds": [
+        "SupportEnduranceChargeOnArmourBreak"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemHinder",
+      "displayName": "Hinder",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemHinder"
+      ],
+      "effectIds": [
+        "SupportHinderPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SupportGemBreakPosture",
+      "displayName": "Break Posture",
+      "gemIds": [
+        "Metadata/Items/Gems/SupportGemBreakPosture"
+      ],
+      "effectIds": [
+        "SupportDazedBreakPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemDazingCry",
+      "displayName": "Dazing Cry",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemDazingCry"
+      ],
+      "effectIds": [
+        "SupportDazingCryPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemLeverage",
+      "displayName": "Leverage",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemLeverage"
+      ],
+      "effectIds": [
+        "SupportLeveragePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemPotential",
+      "displayName": "Potential",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemPotential"
+      ],
+      "effectIds": [
+        "SupportPotentialPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemFlow",
+      "displayName": "Flow",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemFlow"
+      ],
+      "effectIds": [
+        "SupportFlowPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemTremors",
+      "displayName": "Tremors",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemTremors"
+      ],
+      "effectIds": [
+        "SupportTremorsPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemRally",
+      "displayName": "Rally",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemRally"
+      ],
+      "effectIds": [
+        "SupportRallyPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemReverberate",
+      "displayName": "Reverberate",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemReverberate",
+        "Metadata/Items/Gems/SkillGemReverberateSupport"
+      ],
+      "effectIds": [
+        "SupportReveberatePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemDazzle",
+      "displayName": "Dazzle",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemDazzle"
+      ],
+      "effectIds": [
+        "SupportDazzlePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemDesperation",
+      "displayName": "Desperation",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemDesperation"
+      ],
+      "effectIds": [
+        "SupportDesperationPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemExcoriate",
+      "displayName": "Excoriate",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemExcoriate"
+      ],
+      "effectIds": [
+        "SupportExcoriatePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemAncestralAid",
+      "displayName": "Ancestral Aid",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemAncestralAid",
+        "Metadata/Items/Gems/SkillGemAncestralAidSupport"
+      ],
+      "effectIds": [
+        "SupportAncestralAidPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemRime",
+      "displayName": "Rime",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemRime"
+      ],
+      "effectIds": [
+        "SupportRimePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemArmsLength",
+      "displayName": "Arms Length",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemArmsLength",
+        "Metadata/Items/Gems/SkillGemArmsLengthSupport"
+      ],
+      "effectIds": [
+        "SupportArmsLengthPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemCharmBounty",
+      "displayName": "Charm Bounty",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemCharmBounty",
+        "Metadata/Items/Gems/SkillGemCharmBountySupport"
+      ],
+      "effectIds": [
+        "SupportCharmBountyPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemFirstBlood",
+      "displayName": "First Blood",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemFirstBlood"
+      ],
+      "effectIds": [
+        "SupportFirstBloodPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemVolatilePower",
+      "displayName": "Volatile Power",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemVolatilePower"
+      ],
+      "effectIds": [
+        "SupportVolatilePowerPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUnerringPower",
+      "displayName": "Unerring Power",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUnerringPower",
+        "Metadata/Items/Gems/SkillGemUnerringPowerSupport"
+      ],
+      "effectIds": [
+        "SupportUnerringPowerPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemSeeRed",
+      "displayName": "See Red",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemSeeRed"
+      ],
+      "effectIds": [
+        "SupportSeeRedPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemUndermine",
+      "displayName": "Undermine",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemUndermine",
+        "Metadata/Items/Gems/SkillGemUndermineSupport"
+      ],
+      "effectIds": [
+        "SupportUnderminePlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemOutmaneuver",
+      "displayName": "Outmaneuver",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemOutmaneuver"
+      ],
+      "effectIds": [
+        "SupportOutmaneuverPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    },
+    {
+      "componentKey": "gem:Metadata/Items/Gem/SupportGemTumult",
+      "displayName": "Tumult",
+      "gemIds": [
+        "Metadata/Items/Gem/SupportGemTumult"
+      ],
+      "effectIds": [
+        "SupportTumultPlayer"
+      ],
+      "status": "removed",
+      "sincePatch": "0.3.0",
+      "sourceRef": "ggg:removed:third-edict",
+      "identitySourceRef": "pinned:repoe-pob:20260911"
+    }
+  ]
+}

@@ -1162,6 +1162,9 @@ class GraphQueryService:
             "confidence": node.confidence,
             "sourceRefs": list(node.source_refs),
         }
+        if node_key.startswith("gem:"):
+            from . import gem_availability
+            result["availability"] = gem_availability.inspect_ids([node_key])
         ascendancy_key = self._ascendancy_by_passive.get(node_key)
         if ascendancy_key:
             result["ascendancyKey"] = ascendancy_key
@@ -1178,6 +1181,9 @@ class GraphQueryService:
             "status": node.status,
             "confidence": node.confidence,
         }
+        if node_key.startswith("gem:"):
+            from . import gem_availability
+            result["availability"] = gem_availability.inspect_ids([node_key])
         ascendancy_key = self._ascendancy_by_passive.get(node_key)
         if ascendancy_key:
             result["ascendancyKey"] = ascendancy_key

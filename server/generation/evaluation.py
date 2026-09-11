@@ -609,7 +609,7 @@ def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
                     or (
                         group.get("status") == "unknown"
                         and group.get("freshness") == "current"
-                        and group.get("auditVersion") == "support_audit_v4"
+                        and group.get("auditVersion") == "support_audit_v5"
                         and group.get("reasonClass") == "capability_gap"
                         and group.get("verificationRequired") is True
                         and supportopt.support_capability_is_model_gap(group.get("capability"))

@@ -765,7 +765,7 @@ def test_checkpoint_cache_refreshes_session_local_quality_audits(monkeypatch):
 
     before = validation_checkpoint.inspect_generation_checkpoint(engine)
     audit["value"] = {
-        "auditVersion": "support_audit_v4",
+        "auditVersion": "support_audit_v5",
         "status": "passed",
         "groupIndex": 1,
         "activeSkillIndex": 1,

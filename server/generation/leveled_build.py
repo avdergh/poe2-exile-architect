@@ -90,6 +90,11 @@ def _gem_level_curve(engine: Any, gem_name: str) -> dict[str, Any] | None:
 def gem_level_availability(engine: Any, gem_name: str, level: int) -> dict[str, Any]:
     """Whether one gem is usable at `level` (ok / partial / unavailable) per the PoB curve."""
     target = int(level)
+    gem = db.get_gem(gem_name)
+    availability = (gem or {}).get("availability") or {}
+    if availability.get("status") == "unavailable":
+        return {"skill": gem_name, "status": "unavailable", "reason": "gem_unavailable_in_target_patch",
+                "availability": availability}
     curve = _gem_level_curve(engine, gem_name)
     if curve is None:
         return {
@@ -119,6 +124,7 @@ def gem_level_availability(engine: Any, gem_name: str, level: int) -> dict[str, 
         "status": "ok" if natural_max == 0 or max_legal_level >= natural_max else "partial",
         "maxLegalLevel": max_legal_level,
         "naturalMaxLevel": natural_max or None,
+        "availability": availability,
     }
 
 

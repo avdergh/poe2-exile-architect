@@ -195,8 +195,17 @@ model. Proxy spawns and Herald procs require an independent
 rate; payload attack Speed and zero DPS cannot replace it. A duration/DoT object's positive partial
 impact readout cannot authorize whole-set damage ranking when duration and DoT outputs are absent. That broader gap
 retains its incomplete-model diagnosis and unsupported numeric ranking, while candidate review may
-continue. Unknown model coverage is not zero benefit or low adoption value. `support_audit_v4` compares full
-combinations, including removal-only changes. Support-granted effects need an independently valid host;
+continue. Unknown model coverage is not zero benefit or low adoption value. `support_audit_v5` compares full
+combinations after exact-ID, versioned availability filtering. A released source record, a PoB model,
+or a legal level curve does not prove current in-game availability. If a new removal is discovered,
+read official evidence and independent corroboration, then submit `availability_reviews` to
+`optimize_supports` with the exact componentKey and targetPatch. These session-only exclusions stay
+`agent_reviewed`; they do not become internal Research receipts or edit durable data. Recompute the
+whole valid combination, apply it and re-audit, then continue to delivery. A recoverable tool/input
+or stale-data problem is not a final answer to the user and does not consume quality exploration,
+core rebuild or formal Judge allowances. Existing unavailable gems must be replaced even if the
+panel decreases. The audit separately records model gaps and current game unavailability. The comparison
+includes removal-only changes. Support-granted effects need an independently valid host;
 self-grants and unanchored grant cycles cannot establish compatibility. Every candidate reads PoB Life,
 LifeReserved and LifeUnreserved; exhausting available Life is illegal even with CI or freed Spirit.
 Older support audits require revalidation. `item_socket_review_v2` distinguishes failed or

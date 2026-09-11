@@ -87,6 +87,7 @@ def build_codex_plugin(
         "data/compatibility/corpus.json",
         "data/compatibility/leagues.json",
         "data/compatibility/patches.json",
+        "data/compatibility/gem-availability.json",
         "data/mature_build_learning/release.sqlite",
         "data/comparative_learning/learning-memory.seed.jsonl",
         "data/physical_graph/seed.json",

@@ -40,7 +40,7 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
    当前状态适用的审计必须新鲜；`stale/missing`、明确失败、未应用正收益都先修复，不能靠
    早期探索结果进入 Judge。
    - Support 覆盖用户可编辑组及需要辅助的真实来源组，用精确 group 和新鲜 fingerprint。
-     `support_audit_v4`的`positiveGainCombinationAvailable=true`表示完整组合有已证实正收益；
+     `support_audit_v5`的`positiveGainCombinationAvailable=true`表示完整组合有已证实正收益；
      应按完整方案更新并重审，包括`positiveGainSupportsMissing`为空但`supportsToRemove`非空的纯移除。
      同条件的新测量错误或反证会撤销旧数值回执的沿用权限；缩窄查询或换目标不能洗掉已证实的整改。
      搜索保留PoB实际观察到的使用条件辅助；不能仅因更高DPS自动加入移动/站立/充能等使用门槛。
@@ -48,6 +48,8 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
      辅助生成或删除附属effect后，按实际列表中的精确名称与PoB effectId确认输出，不能沿用旧序号。
      辅助可以分别服务同组 host 与 payload，但每个辅助都必须由 PoB 确认作用于有合法来源的 active
      effect；自身授予或无根循环不能反向授权。生命保留不得耗尽可用生命，CI与释放Spirit均不豁免。
+     当前可用性独立于PoB模型、等级曲线及上游`released`字段。工具按版本化静态移除证据过滤，
+     `unavailableInGameCandidates`单列已排除组件；模型缺失仍放在`uncoveredCandidates`，二者不混用。
      数值能力绑定所选精确输出。当应用、结构和约束检查完整，原生PoB明确识别数值模型
      缺口时，可按 `capability_gap` 以unknown继续Judge，交付仍为candidate；测量错误、证据不全和
      可修复缺口继续阻断。`noSupports=true` 不需制造辅助审计；不可写来源保留真实结构和验证缺口。
@@ -73,6 +75,20 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
    `buildSummary` 的职业、升华、等级和主技能，只有具名局部诊断才另读 `mcp__poe_build__get_build()`。
 
 ## 处理 checkpoint
+
+先执行可恢复修正，再判断是否需要用户介入。发现辅助已移除、禁用或不适用时，查精确详情的
+`availability`与当前补丁；若尚未录入可用性目录，阅读官方页面与独立旁证，再向`mcp__poe_build__optimize_supports`
+传`availability_reviews`：每项含精确`componentKey`、`targetPatch`、`reason=removed|disabled`，
+以及至少两项`sourceReviews`（`url`、`assessment=supports_unavailable`、`relevanceReason`）。
+必须审读内容及其适用补丁；仅粘贴URL、名字、搜索结果、PoB能计算或缺少刻印入口都不够。
+这只是本引擎会话内的`agent_reviewed`排除，不是内部Research回执，也不改全局语料或历史知识。
+保留该结构化审读声明以便会话恢复后重交，并把来源放入输出的普通toolReferences与取舍说明。
+
+在同一精确输出、目标和资源约束下重新搜索完整组合。旧方案含失效辅助时，不能只删掉那一项就沿用
+旧收益；采用新完整方案后再次审计。若当前组本身有失效辅助，按`currentUnavailableSupports /
+supportsToRemove / recoveryAction`修复，面板下降不构成保留非法组件的理由。按下表刷新Draft及
+受影响检查，继续lifecycle、Judge和交付，不把这一可修复问题转交用户。只有实际工具不可用、
+恢复失败、关键证据无法取得且无法形成合法候选，或需要用户改变锁定要求时，才说明具体未解阻碍。
 
 先处理 `preflight.blockingIssues` 和 completeness 硬失败，再处理
 `createQualityChecklist` 中的辅助、机制依赖、占位物品、装备可获得性、护符/药剂、珠宝、镶嵌和
@@ -150,6 +166,7 @@ run 重置。保留本次用户需求与明确锁定项。
 | 变化或事件 | 失效范围与下一步 | 额度与停止条件 |
 | --- | --- | --- |
 | 状态、目标、参数及Research实质决定均未变化 | 复用检查结果；不重放相同Research查询或刷新Draft marker；内存证据缺失时按工具要求完整重建 | 不以形式轮数重复；重建不续期 |
+| 版本失效候选、输入错误或回执陈旧 | 审读并绑定精确证据，排除已确认失效的候选，在完整有效候选范围重算，修正后重审并继续交付 | 资料/工具输入纠错不计质量探索或核心重建，不消耗正式Judge；同条件重复且没有新证据/方案时不得空转 |
 | 装备、天赋、珠宝、Rune 或 config 改变 | 使用最新 state hash；锁定后重做最终 Support/Jewel/Socket 及 checkpoint。若机制 signature 不变，不要求重复 Research | 局部修正不计核心重建；仅实际消费的正式评估计 Judge attempt |
 | 核心输出、辅助组合、主导伤害类型或 Mana/Life 支付域改变 | 重验 Draft；只有 Blueprint 机制意图也改变时才重验 Blueprint。重新确认 offense group/name，并刷新受影响检查 | 单纯辅助或局部天赋修改不自动算核心重建 |
 | 升华或核心主技能身份改变 | 先重新解析身份并在本 run 重新查询 Research，更新新查询引用，再完成 Blueprint/Draft 与最终检查 | 保留用户锁定项；不可沿用原身份授权 |

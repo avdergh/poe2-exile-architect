@@ -15,7 +15,7 @@ from server.knowledge import lifecycle_verification
 from . import lifecycle_observation, preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v9"
+CHECKPOINT_VERSION = "generation_checkpoint_v10"
 _CACHE_LIMIT = 48
 _CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _LOCK = threading.RLock()
@@ -76,7 +76,8 @@ def inspect_generation_checkpoint(
             f"{int(offense_skill_group_index or 0)}:"
             f"{str(expected_skill_name or '').strip().casefold()}"
         )
-        cache_key = f"{CHECKPOINT_VERSION}:{state_hash}:{calculation_selector}"
+        availability_context = supportopt._availability_context(engine)
+        cache_key = f"{CHECKPOINT_VERSION}:{state_hash}:{calculation_selector}:{availability_context['fingerprint']}"
         with _LOCK:
             cached = _CACHE.get(cache_key)
             if cached is not None:
@@ -135,6 +136,7 @@ def inspect_generation_checkpoint(
         result = {
             "status": "ready" if preflight_result.get("readyForJudge") else "blocked",
             "checkpointVersion": CHECKPOINT_VERSION,
+            "availabilityContextRef": availability_context["fingerprint"],
             "validationRef": _validation_ref(state_hash),
             "stateHash": state_hash,
             "cacheHit": False,
@@ -479,7 +481,7 @@ def _create_quality_checklist(
         capability = audit.get("capability") or {}
         supported_model_gap = (
             context_matches
-            and audit.get("auditVersion") == "support_audit_v4"
+            and audit.get("auditVersion") == "support_audit_v5"
             and audit.get("status") == "inconclusive"
             and audit.get("reasonClass") == "capability_gap"
             and supportopt.support_capability_is_model_gap(capability)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sqlite3
 import subprocess
 import sys
 import zipfile
@@ -95,6 +96,15 @@ def main() -> int:
     if not corpus.exists():
         print("corpus missing; building it…")
         subprocess.run([sys.executable, "-m", "pipeline.build_corpus"], check=True, cwd=ROOT)
+
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from server.knowledge import gem_availability
+    availability_con = sqlite3.connect(corpus.as_uri() + "?mode=ro", uri=True)
+    try:
+        gem_availability.validate_corpus_bindings(availability_con)
+    finally:
+        availability_con.close()
 
     stage = Path(args.out) / f"bundle-{args.platform}"
     if stage.exists():

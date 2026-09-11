@@ -23,7 +23,7 @@ _PLATFORM_DIR = {"win32": "win-x64", "darwin": "mac-arm64", "linux": "linux-x64"
 # Bump this only when bundled Python requires a newer headless bridge contract.  Validated
 # user-data engines advertise the same value in installed.json; an older or unlabelled engine is
 # deliberately ignored instead of being mixed with the new Python runtime.
-POB_RUNTIME_CONTRACT = 8
+POB_RUNTIME_CONTRACT = 9
 
 
 @dataclass(frozen=True)

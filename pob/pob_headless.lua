@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 8
+local HEADLESS_RUNTIME_CONTRACT = 9
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -251,6 +251,9 @@ local function gemSummaryForSocketGroup(groupIndex)
 				end
 				table.insert(gems, {
 					name = nm,
+					gemId = g.gemId or (g.gemData and g.gemData.id),
+					gameId = g.gemData and g.gemData.gameId,
+					effectId = ge and ge.id,
 					level = g.level,
 					quality = g.quality,
 					enabled = g.enabled ~= false,
@@ -3067,6 +3070,19 @@ end
 -- Full read-back of the active build (so callers can see what they've assembled).
 function methods.get_build()
 	local spec = build.spec
+	local gemAvailabilitySubjects = {}
+	for groupIndex, group in ipairs(build.skillsTab.socketGroupList or {}) do
+		if group.enabled ~= false then
+			for _, gem in ipairs(gemSummaryForSocketGroup(groupIndex)) do
+				if gem.enabled then
+					gemAvailabilitySubjects[#gemAvailabilitySubjects + 1] = {
+						groupIndex = groupIndex, name = gem.name, gemId = gem.gemId,
+						gameId = gem.gameId, effectId = gem.effectId,
+					}
+				end
+			end
+		end
+	end
 	local allocatedPassiveJewelSocketIds = {}
 	for _, socket in ipairs(methods.list_jewel_sockets().sockets) do
 		if socket.allocated then allocatedPassiveJewelSocketIds[#allocatedPassiveJewelSocketIds + 1] = socket.socket end
@@ -3146,6 +3162,7 @@ function methods.get_build()
 		mainSkill = mainSkillName(),
 		mainSkillWeaponCheck = activeWeaponCheck(build.mainSocketGroup or 1),
 		mainSkillGroup = gems,
+		gemAvailabilitySubjects = gemAvailabilitySubjects,
 		activeSkillGemLevelViolations = activeGemLevelViolations(),
 		notables = notables,
 		keystones = keystones,

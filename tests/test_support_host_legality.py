@@ -67,7 +67,7 @@ def test_native_wind_counterattack_remains_a_valid_host(engine):
     engine.set_level(95)
     observed = capability(
         engine,
-        "Wind Dancer 20/20 1\nBlind II\nBursting Plague\nEonyr's Thunder\nFrozen Spite\nWind Wave",
+        "Wind Dancer 20/20 1\nBlind II\nBursting Plague\nEonyr's Thunder\nFrozen Spite",
     )
     assert observed["applicationCheck"] == "verified"
     assert all(row["activeSkills"] for row in observed["supportApplication"])

@@ -18,7 +18,9 @@ from weakref import WeakKeyDictionary
 from xml.etree import ElementTree as ET
 from xml.parsers import expat
 
-from ..knowledge import db
+from pydantic import ValidationError
+
+from ..knowledge import db, gem_availability
 from ..knowledge.skill_equivalence import SkillEquivalenceIndex
 from ..judge import hard_legality, modelability
 from .engine import PobEngine
@@ -28,7 +30,61 @@ from .state import build_state_hash, canonical_payload_hash
 _AUDIT_LOCK = threading.RLock()
 _SUPPORT_AUDITS: WeakKeyDictionary[Any, dict[tuple[str, int], dict[str, Any]]] = WeakKeyDictionary()
 _AUDIT_LIMIT_PER_ENGINE = 96
-_SUPPORT_AUDIT_VERSION = "support_audit_v4"
+_SUPPORT_AUDIT_VERSION = "support_audit_v5"
+
+
+def _availability_context(engine: Any) -> dict[str, Any]:
+    data = gem_availability.catalog()
+    reviews = gem_availability.session_reviews(engine)
+    payload = {"catalogRef": data["catalogRef"], "targetPatch": data["targetPatch"],
+               "agentReviews": sorted(reviews, key=lambda row: row["componentKey"])}
+    return {**payload, "fingerprint": gem_availability.fingerprint(payload)}
+
+
+def _register_availability_reviews(engine: Any, reviews: list[Any]) -> None:
+    pending = {}
+    for raw in reviews:
+        review = gem_availability.SupportAvailabilityReview.model_validate(raw)
+        if review.target_patch != gem_availability.catalog()["targetPatch"]:
+            raise ValueError("availability_review_target_patch_mismatch")
+        gem = db.get_gem(review.component_key.removeprefix("gem:"))
+        if not gem or gem.get("gem_type") != "support":
+            raise ValueError("availability_review_support_identity_missing")
+        allowed_ids = {gem["id"]}
+        for entry in gem_availability.catalog()["entries"]:
+            if entry["componentKey"] == review.component_key:
+                allowed_ids.update(entry["gemIds"])
+        identity = engine.call("resolve_support_gem_identity", requestedName=gem["name"],
+                               gemIds=sorted(allowed_ids), effectIds=[])
+        if (identity.get("ok") is not True or identity.get("status") != "resolved"
+                or not {identity.get("gemId"), identity.get("gameId")}.intersection(allowed_ids)):
+            raise ValueError("availability_review_runtime_identity_mismatch")
+        payload = review.model_dump(mode="json", by_alias=True)
+        payload.update(name=identity["name"], gemIds=sorted({*allowed_ids, identity["gemId"]}))
+        payload["reviewRef"] = gem_availability.fingerprint(payload)
+        if review.component_key in pending:
+            raise ValueError("duplicate_availability_review_subject")
+        pending[review.component_key] = payload
+    # Register atomically only after every exact identity has been checked. Nothing is durable.
+    gem_availability.register_session_reviews(engine, pending)
+
+
+def _candidate_availability(identity: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    ids = [*identity.get("gemIds", []), str(identity.get("gemId") or "")]
+    result = gem_availability.inspect_ids(ids, target_patch=context["targetPatch"])
+    if result["status"] == "unavailable":
+        return result
+    for review in context["agentReviews"]:
+        if set(ids).intersection(review["gemIds"]):
+            return {"status": "unavailable", "reason": review["reason"],
+                    "componentKey": review["componentKey"], "targetPatch": review["targetPatch"],
+                    "evidenceKind": "agent_reviewed", "reviewRef": review["reviewRef"]}
+    return result
+
+
+def _availability_current(engine: Any, audit: dict[str, Any]) -> bool:
+    return (audit.get("measurement", {}).get("availabilityContext", {}).get("fingerprint")
+            == _availability_context(engine)["fingerprint"])
 
 _CHECKPOINT_AUDIT_METRIC_DIRECTIONS = {
     "TotalDPS": "higher",
@@ -118,6 +174,7 @@ def support_audit_for_state(
         return (
             deepcopy(value)
             if value is not None and value.get("auditVersion") == _SUPPORT_AUDIT_VERSION
+            and _availability_current(engine, value)
             else None
         )
 
@@ -133,6 +190,7 @@ def support_audit_freshness(engine: Any, state_hash: str, group_index: int) -> s
         if (
             audits.get((state_hash, int(group_index)), {}).get("auditVersion")
             == _SUPPORT_AUDIT_VERSION
+            and _availability_current(engine, audits[(state_hash, int(group_index))])
         ):
             return "current"
         if any(key[1] == int(group_index) for key in audits):
@@ -222,6 +280,9 @@ def _supersedes_support_audit(before: dict[str, Any], after: dict[str, Any]) -> 
         return False
     if previous.get("scopeKind") == "current_effect_capability":
         return True
+    if previous.get("availabilityContext", {}).get("fingerprint") != latest.get("availabilityContext", {}).get("fingerprint"):
+        # Only the versioned catalog or exact, engine-bound Agent reviews can change this context.
+        return bool(latest.get("availabilityContext", {}).get("fingerprint"))
     return bool(previous.get("searchScopeHash")) and previous.get("searchScopeHash") == latest.get(
         "searchScopeHash"
     )
@@ -292,6 +353,7 @@ def _record_support_audit(
     current = sorted(current_supports)
     recommended = sorted(recommended_supports)
     measurement_copy = deepcopy(measurement)
+    measurement_copy.setdefault("availabilityContext", _availability_context(engine))
     measurement_complete = support_audit_is_complete(
         {
             "auditVersion": _SUPPORT_AUDIT_VERSION,
@@ -316,7 +378,11 @@ def _record_support_audit(
             if value
         }
     )
-    if measurement_complete:
+    unavailable_current = list(measurement_copy.get("currentUnavailableSupports") or [])
+    if unavailable_current:
+        reason_class = "actionable_gap"
+        reason_codes.append("current_support_unavailable")
+    elif measurement_complete:
         reason_class = "actionable_gap" if positive_gain else "none"
         if positive_gain:
             reason_codes.append("positive_gain_supports_missing")
@@ -357,8 +423,12 @@ def _record_support_audit(
         "positiveGainSupportsMissing": missing,
         "positiveGainCombinationAvailable": positive_gain,
         "supportsToRemove": (
-            sorted((Counter(current) - Counter(recommended)).elements()) if positive_gain else []
+            sorted((Counter(current) - Counter(recommended)).elements())
+            if positive_gain or unavailable_current else []
         ),
+        "currentUnavailableSupports": unavailable_current,
+        "recoveryAction": "apply_valid_replacement_and_reaudit" if unavailable_current else
+            "apply_complete_combination_and_reaudit" if positive_gain else None,
         "constraints": deepcopy(constraints),
         "measurement": measurement_copy,
         "capability": deepcopy(capability or {}),
@@ -800,7 +870,8 @@ def _screen_set(skill: str, screen: int) -> list[str]:
     include the premier levers (penetration, added/increased element damage) that a tag-COUNT ranking
     buries, because such a support often shares ONLY the element tag and so looks "least relevant".
     """
-    info = db.find_supports_for(skill, limit=9999)
+    # Keep removed discovery subjects for an explicit exclusion receipt, never for measurement.
+    info = db.find_supports_for(skill, limit=9999, include_unavailable=True)
     rec = info.get("recommended") or []
     comp = info.get("compatible") or []
     on_elem = [c["name"] for c in comp if c.get("on_element")]
@@ -910,6 +981,10 @@ def _optimize_supports_locked(
         for gem in selected_group.get("gems") or []
         if isinstance(gem, dict) and gem.get("isSupport") and gem.get("name")
     ]
+    availability_context = _availability_context(engine)
+    current_identities = {name: _runtime_support_identity(engine, name) for name in current_supports}
+    current_unavailable = [name for name, identity in current_identities.items()
+                           if _candidate_availability(identity, availability_context)["status"] == "unavailable"]
     weights: dict[str, float] = {}
     if goals is not None:
         if not goals or any(
@@ -988,6 +1063,8 @@ def _optimize_supports_locked(
             reason_codes = [*constraint_check["reasonCodes"], *reason_codes]
         measurement = {
             "status": "inconclusive",
+            "availabilityContext": availability_context,
+            "currentUnavailableSupports": current_unavailable,
             "checkpointEligible": False,
             "policyReason": reason_codes[0] if reason_codes else "support_capability_incomplete",
             "reasonCode": reason_codes[0] if reason_codes else "support_capability_incomplete",
@@ -1084,12 +1161,16 @@ def _optimize_supports_locked(
         for identity in resolved_identities.values()
         if identity.get("status") == "resolved" and identity.get("name")
     }
+    identities_by_canonical_name.update(current_identities)
     usage_contract = _usage_condition_contract(capability)
     condition_effect_ids = {entry[1] for entry in usage_contract or ()}
+    unavailable_condition_ids = {current_identities[name].get("effectId") for name in current_unavailable}
+    if usage_contract is not None:
+        usage_contract = tuple(entry for entry in usage_contract if entry[1] not in unavailable_condition_ids)
     condition_supports = []
     for name in current_supports:
         identity = identities_by_canonical_name.get(name) or _runtime_support_identity(engine, name)
-        if identity.get("effectId") in condition_effect_ids:
+        if identity.get("effectId") in condition_effect_ids and name not in current_unavailable:
             condition_supports.append(name)
     search_scope_hash = canonical_payload_hash(
         {
@@ -1103,6 +1184,7 @@ def _optimize_supports_locked(
                 for name, identity in sorted(resolved_identities.items())
             ],
             "supportCapacity": support_capacity,
+            "availabilityContext": availability_context["fingerprint"],
         },
         prefix="support-search-scope",
     )
@@ -1135,6 +1217,10 @@ def _optimize_supports_locked(
             measured_active_index = source_active_index
             if len(supports) > support_capacity or len(set(supports)) != len(supports):
                 return {}, "rejected", "duplicate_or_excess_supports"
+            if not original and any(_candidate_availability(identities_by_canonical_name.get(name) or {},
+                                                             availability_context)["status"] == "unavailable"
+                                    for name in supports):
+                return {}, "rejected", "support_unavailable_in_target_patch"
             if original:
                 engine.load_build_xml(snapshot, name="support-current-combination-reset")
                 if configurable_source and (error := activate_source_probe()):
@@ -1340,6 +1426,8 @@ def _optimize_supports_locked(
             if probe_capability.get("applicationCheck") == "failed":
                 return {}, "rejected", "source_support_not_applied"
             probe_usage_contract = _usage_condition_contract(probe_capability)
+            if probe_usage_contract is not None:
+                probe_usage_contract = tuple(entry for entry in probe_usage_contract if entry[1] not in unavailable_condition_ids)
             if usage_contract is None or probe_usage_contract is None:
                 return {}, "failed", "support_usage_condition_evidence_missing"
             if usage_contract != probe_usage_contract:
@@ -1429,6 +1517,7 @@ def _optimize_supports_locked(
         candidate_failure_codes: dict[str, int] = {}
         candidate_failure_details: list[dict[str, str]] = []
         unavailable_candidates: list[dict[str, Any]] = []
+        unavailable_in_game: list[dict[str, Any]] = []
         screen_measurements: dict[tuple[str, ...], tuple[dict[str, Any], str, str | None]] = {}
         observed_objective_keys = {key for key in keys if _finite_num(base_stats.get(key))}
 
@@ -1438,6 +1527,12 @@ def _optimize_supports_locked(
 
         for name in screen_names:
             identity = resolved_identities[name]
+            availability = _candidate_availability(identity, availability_context)
+            if availability["status"] == "unavailable":
+                rejected_candidate_count += 1
+                count_code(candidate_rejection_codes, "support_unavailable_in_target_patch", "")
+                unavailable_in_game.append({"requestedName": name, **availability})
+                continue
             if identity.get("status") == "model_unavailable":
                 rejected_candidate_count += 1
                 count_code(candidate_rejection_codes, "support_model_unavailable", "")
@@ -1493,8 +1588,8 @@ def _optimize_supports_locked(
         # Even a solo-neutral support can help when added to a complete, existing mechanism.
         pool = list(dict.fromkeys(nm for sc, nm in screened if math.isfinite(sc)))[:candidates]
 
-        chosen = list(current_supports)
-        cur = objective_score(current_stats)
+        chosen = list(condition_supports if current_unavailable else current_supports)
+        cur = objective_score(base_stats if current_unavailable else current_stats)
         progression: list[dict[str, Any]] = []
         rejected_combination_count = 0
         # A numerically unmodelled bare skill is a valid search seed; an explicit failed
@@ -1554,7 +1649,7 @@ def _optimize_supports_locked(
                 )
             return picked, picked_stats, steps
 
-        seeds = [(list(current_supports), current_stats)]
+        seeds = [] if current_unavailable else [(list(current_supports), current_stats)]
         if current_supports:
             seeds.append((list(condition_supports), base_stats))
         for seed, seed_stats in seeds:
@@ -1645,6 +1740,7 @@ def _optimize_supports_locked(
     candidate_legal = legality_comparison["regressed"] is False
     comparison_complete = (
         checkpoint_objective_eligible
+        and not current_unavailable
         and current_measurable
         and final_measurable
         and numeric_comparison
@@ -1684,7 +1780,7 @@ def _optimize_supports_locked(
         "candidateLegalityNonRegressing": candidate_legal,
         "finalHardLegalityReady": final_legality.get("status") == "passed",
         "legalityComparison": legality_comparison,
-        "sameContext": current_outcome == "measured" and final_outcome == "measured",
+        "sameContext": current_outcome == "measured" and final_outcome == "measured" and not current_unavailable,
         "candidateGroupFingerprint": candidate_group_fingerprint,
         "positiveGainProven": comparison_complete and float(net_gain) > 1e-9,
     }
@@ -1701,6 +1797,9 @@ def _optimize_supports_locked(
         and comparison_complete
     )
     measurement = {
+        "availabilityContext": availability_context,
+        "currentUnavailableSupports": current_unavailable,
+        "unavailableInGameCandidates": unavailable_in_game,
         "status": "complete" if checkpoint_eligible else "inconclusive",
         "checkpointEligible": checkpoint_eligible,
         "policyReason": None if checkpoint_eligible else "support_audit_policy_not_satisfied",
@@ -1850,6 +1949,7 @@ def optimize_supports(
     expected_fingerprint: str | None = None,
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
+    availability_reviews: list[gem_availability.SupportAvailabilityReview] | None = None,
 ) -> dict[str, Any]:
     """Run one read-only support search under a build-wide transaction and restore guard."""
 
@@ -1882,6 +1982,15 @@ def optimize_supports(
         snapshot = engine.get_xml()
         expected_state_hash = build_state_hash(snapshot)
         try:
+            try:
+                _register_availability_reviews(engine, availability_reviews or [])
+            except ValueError as exc:
+                return {"ok": False, "errorCode": "invalid_support_availability_review",
+                        "reason": "availability_review_schema_invalid" if isinstance(exc, ValidationError) else str(exc),
+                        "fieldErrors": [{"path": list(error["loc"]), "code": error["type"]}
+                                        for error in exc.errors(include_input=False)] if isinstance(exc, ValidationError) else [],
+                        "stateHash": expected_state_hash,
+                        "recoveryAction": "correct_exact_identity_patch_and_source_reviews_then_retry"}
             result = _optimize_supports_locked(
                 engine,
                 metric=metric,

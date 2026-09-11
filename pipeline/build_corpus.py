@@ -399,9 +399,12 @@ def build() -> dict[str, int]:
         "uniques": n_uniques,
         "mechanics": n_mech,
     }
+    from server.knowledge import gem_availability
+    availability = gem_availability.validate_corpus_bindings(con)
     for key, value in {
         "source": BASE,
         "schema_version": "4",
+        "gem_availability_catalog": availability["catalogRef"],
         "counts": json.dumps(counts),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_manifest": json.dumps({
