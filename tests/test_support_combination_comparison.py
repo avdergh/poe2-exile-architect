@@ -96,8 +96,9 @@ class CombinationOracle:
         self.probes.append(supports)
         value = self.values.get(supports, 110)
         if isinstance(value, dict):
-            return {"stats": deepcopy(value)}
-        return {"stats": {"TotalDPS": value, "ManaCost": 10, "SpiritReserved": 10}}
+            return {"stats": {"Life": 100, "LifeReserved": 0, "LifeUnreserved": 100, **deepcopy(value)}}
+        return {"stats": {"TotalDPS": value, "ManaCost": 10, "SpiritReserved": 10,
+                          "Life": 100, "LifeReserved": 0, "LifeUnreserved": 100}}
 
     def probe_regular_skill_group(
         self,
@@ -198,6 +199,18 @@ def run_oracle(monkeypatch, values=None, *, current=("Pair A", "Pair B"), **kwar
     result = supportopt.optimize_supports(engine, **kwargs)
     assert engine.get_xml() == before
     return engine, result
+
+
+def test_life_exhausting_candidate_does_not_hide_a_legal_alternative(monkeypatch):
+    _, result = run_oracle(monkeypatch, {
+        (): 100, ("Pair A",): 125, ("Pair B",): 105,
+        ("Solo C",): {"TotalDPS": 1000, "ManaCost": 10, "SpiritReserved": 0,
+                      "Life": 100, "LifeReserved": 100, "LifeUnreserved": 0},
+    }, current=())
+    assert result['supports'] == ['Pair A']
+    assert result['measurement']['candidateRejectionCodes']['life_reservation_exhausts_life'] == 1
+    assert result['measurement']['combinationComparison']['candidateConstraintsSatisfied'] is True
+    assert result['supportAudit']['positiveGainCombinationAvailable'] is True
 
 
 def test_installed_synergy_is_measured_and_never_replaced_by_inferior_solo(monkeypatch):
@@ -688,7 +701,8 @@ class RetentionSourceOracle(CombinationOracle):
             if self.later == "measurement_error":
                 return {"ok": False, "stats": {"TotalDPS": 400}}
             if self.later == "contradiction":
-                return {"stats": {"TotalDPS": 100, "ManaCost": 10, "SpiritReserved": 10}}
+                return {"stats": {"TotalDPS": 100, "ManaCost": 10, "SpiritReserved": 10,
+                                  "Life": 100, "LifeReserved": 0, "LifeUnreserved": 100}}
         return super().get_stats(keys)
 
 

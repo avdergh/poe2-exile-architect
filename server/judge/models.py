@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-EVALUATOR_VERSION = "judge_phase1_v11"
+EVALUATOR_VERSION = "judge_phase1_v12"
 WEIGHT_PROFILE = "judge_v6_evidence_separated"
 
 LIMITED_REWARD_CAVEATS = {

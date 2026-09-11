@@ -28,7 +28,7 @@ from .state import build_state_hash, canonical_payload_hash
 _AUDIT_LOCK = threading.RLock()
 _SUPPORT_AUDITS: WeakKeyDictionary[Any, dict[tuple[str, int], dict[str, Any]]] = WeakKeyDictionary()
 _AUDIT_LIMIT_PER_ENGINE = 96
-_SUPPORT_AUDIT_VERSION = "support_audit_v3"
+_SUPPORT_AUDIT_VERSION = "support_audit_v4"
 
 _CHECKPOINT_AUDIT_METRIC_DIRECTIONS = {
     "TotalDPS": "higher",
@@ -935,7 +935,7 @@ def _optimize_supports_locked(
         if weights
         else {"mode": "metric", "metric": metric, "direction": single_metric_direction}
     )
-    measurement_keys = list(keys)
+    measurement_keys = list(dict.fromkeys([*keys, "Life", "LifeReserved", "LifeUnreserved"]))
     if max_mana_cost is not None and "ManaCost" not in measurement_keys:
         measurement_keys.append("ManaCost")
     if spirit_limit is not None and "SpiritReserved" not in measurement_keys:
@@ -1356,6 +1356,11 @@ def _optimize_supports_locked(
             stats = measured.get("stats") if isinstance(measured, dict) else None
             if not isinstance(stats, dict) or measured.get("ok") is False:
                 return {}, "failed", "support_stats_missing"
+            reservation = hard_legality.life_reservation_check({"stats": stats})
+            if reservation["status"] == "unknown":
+                return {}, "failed", "life_reservation_evidence_missing"
+            if not original and reservation["failureCode"]:
+                return {}, "rejected", reservation["failureCode"]
             last_measured_group = deepcopy(actual)
             return stats, "measured", None
 
@@ -1389,7 +1394,10 @@ def _optimize_supports_locked(
             return -value if single_metric_direction == "lower" else value
 
         def constraints_satisfied(stats: dict[str, Any]) -> bool:
+            reservation = hard_legality.life_reservation_check({"stats": stats})
             return (
+                reservation["status"] == "passed"
+            ) and (
                 max_mana_cost is None
                 or (
                     _finite_num(stats.get("ManaCost"))

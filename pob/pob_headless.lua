@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 7
+local HEADLESS_RUNTIME_CONTRACT = 8
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -1214,28 +1214,81 @@ local function spiritState()
 end
 
 local function supportApplicationForGroup(group)
-	local application = {}
-	for gemIndex = 2, #(group.gemList or {}) do
-		local gem = group.gemList[gemIndex]
-		local gemEffect = gem and ((gem.gemData and gem.gemData.grantedEffect) or gem.grantedEffect)
-		if gemEffect and gemEffect.support then
-			local names = {}
-			for activeIndex, active in ipairs(group.displaySkillList or {}) do
-				local grantedEffect = active and active.activeEffect and active.activeEffect.grantedEffect
-				for _, effect in ipairs((active and active.supportList) or {}) do
-					if grantedEffect and effect.grantedEffect and effect.grantedEffect.id == gemEffect.id then
-						local supported = effect.supportedActiveEffectIds
-							and effect.supportedActiveEffectIds[grantedEffect.id] and true or false
-						if supported then names[#names + 1] = grantedEffect.name end
+	-- A support-granted effect cannot establish its own host. Start with native active
+	-- effects, then admit grants only after their owning support affects a reachable host.
+	-- This also rejects mutually dependent grants while preserving anchored support chains.
+	local activeList = group.displaySkillList or {}
+	local reachable, owners, supportGems, applied = {}, {}, {}, {}
+	for activeIndex, active in ipairs(activeList) do
+		local effect = active.activeEffect
+		local source = effect and effect.srcInstance
+		local sourceEffect = source and ((source.gemData and source.gemData.grantedEffect) or source.grantedEffect)
+		if sourceEffect and sourceEffect.support then
+			owners[activeIndex] = source
+		elseif effect and effect.grantedEffect and not hasType(effect.grantedEffect, "SkillGrantedBySupport") then
+			reachable[activeIndex] = true
+		end
+	end
+	for _, gem in ipairs(group.gemList or {}) do
+		local ge = (gem.gemData and gem.gemData.grantedEffect) or gem.grantedEffect
+		if ge and ge.support then
+			supportGems[#supportGems + 1] = { gem = gem, effect = ge }
+			applied[gem] = {}
+			for activeIndex, active in ipairs(activeList) do
+				local activeGe = active.activeEffect and active.activeEffect.grantedEffect
+				-- effectList contains only effects actually applied to this precise active.
+				for _, effect in ipairs(active.effectList or {}) do
+					if activeGe and effect.srcInstance == gem and effect.grantedEffect
+						and effect.grantedEffect.id == ge.id and effect.supportedActiveEffectIds
+						and effect.supportedActiveEffectIds[activeGe.id] then
+						applied[gem][activeIndex] = true
+					end
+				end
+			end
+		end
+	end
+	local licensed, changed = {}, true
+	while changed do
+		changed = false
+		for _, support in ipairs(supportGems) do
+			if not licensed[support.gem] then
+				for activeIndex in pairs(applied[support.gem]) do
+					if reachable[activeIndex] then
+						licensed[support.gem] = true
+						changed = true
 						break
 					end
 				end
 			end
-			application[#application + 1] = {
-				name = gem and gem.nameSpec or "",
-				activeSkills = names,
-			}
 		end
+		for activeIndex, owner in pairs(owners) do
+			if licensed[owner] and not reachable[activeIndex] then
+				reachable[activeIndex] = true
+				changed = true
+			end
+		end
+	end
+	local application = {}
+	for _, support in ipairs(supportGems) do
+		local names, rootedIds, unrootedIds = {}, {}, {}
+		for activeIndex, active in ipairs(activeList) do
+			if applied[support.gem][activeIndex] then
+				local ge = active.activeEffect.grantedEffect
+				if reachable[activeIndex] then
+					names[#names + 1] = ge.name
+					rootedIds[#rootedIds + 1] = ge.id
+				else
+					unrootedIds[#unrootedIds + 1] = ge.id
+				end
+			end
+		end
+		application[#application + 1] = {
+			name = support.gem.nameSpec or "",
+			supportEffectId = support.effect.id,
+			activeSkills = names,
+			rootedActiveEffectIds = rootedIds,
+			unrootedActiveEffectIds = unrootedIds,
+		}
 	end
 	return application
 end
@@ -1530,8 +1583,8 @@ function methods.inspect_support_evaluation_capability(p)
 		applicationCheck = "not_applicable"
 	elseif supportCount > 0 then
 		for _, applied in ipairs(application) do
-			-- A support may serve the meta host or a payload in this same group. PoB's
-			-- application map must prove that it affects at least one actual effect;
+			-- A support may serve the meta host or a reachable payload in this same group.
+			-- Its own grant or an unanchored grant cycle cannot authorize its application;
 			-- numerical capability below still belongs to the exact selected effect.
 			if #(applied.activeSkills or {}) == 0 then applicationCheck = "failed" end
 		end

@@ -16,12 +16,13 @@ from server.compute import completeness
 from . import rules, scoring
 
 
-AUDIT_VERSION = "hard_legality_v5"
+AUDIT_VERSION = "hard_legality_v6"
 SUPPORTED_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4", AUDIT_VERSION}
+    {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4",
+     "hard_legality_v5", AUDIT_VERSION}
 )
 ARTIFACT_COMPATIBLE_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", AUDIT_VERSION}
+    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", "hard_legality_v5", AUDIT_VERSION}
 )
 def audit_active_build(
     engine: Any,
@@ -112,6 +113,10 @@ def audit_build(
     if spirit_budget["failureCode"]:
         failures.append(str(spirit_budget["failureCode"]))
 
+    life_reservation = life_reservation_check(build)
+    if life_reservation["failureCode"]:
+        failures.append(str(life_reservation["failureCode"]))
+
     create_completion = check_create_completion(
         build,
         required=require_create_completion,
@@ -152,6 +157,7 @@ def audit_build(
             "activeGemRequirements": active_gem_requirements,
             "weaponCompatibility": weapon_check,
             "spiritBudget": spirit_budget,
+            "lifeReservation": life_reservation,
             "createCompletion": create_completion,
             "passiveBudget": passive_budget,
             "weaponSetBudget": weapon_set_budget,
@@ -161,6 +167,30 @@ def audit_build(
         },
         "sourceContext": source_context,
         "noRawMaterial": True,
+    }
+
+
+def life_reservation_check(build: dict[str, Any]) -> dict[str, Any]:
+    """Use PoB's rounded reservation result; a living build must retain at least one Life.
+
+    PoB caps LifeReserved at the pool but leaves LifeUnreserved uncapped. Inspect both,
+    including negative remaining Life, without inferring CI or recalculating reservation.
+    """
+    stats = build.get("stats") if isinstance(build.get("stats"), dict) else {}
+    values = {key: stats.get(key) for key in ("Life", "LifeReserved", "LifeUnreserved")}
+    observed = all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        for value in values.values()
+    ) and values["Life"] > 0
+    failure = bool(observed and values["LifeReserved"] > 0 and values["LifeUnreserved"] < 1)
+    return {
+        "status": "failed" if failure else "passed" if observed else "unknown",
+        "failureCode": "life_reservation_exhausts_life" if failure else None,
+        "source": "pob_output",
+        "life": values["Life"],
+        "reserved": values["LifeReserved"],
+        "unreserved": values["LifeUnreserved"],
+        "shortfall": max(0.0, 1 - values["LifeUnreserved"]) if observed else None,
     }
 
 
@@ -279,6 +309,7 @@ def compare_audits_for_regression(
                 )
 
     measurable_failures = {
+        "life_reservation_exhausts_life": ("lifeReservation", "shortfall"),
         "spirit_budget_exceeded": ("spiritBudget", "over"),
         "passive_budget_exceeded": ("passiveBudget", "over"),
         "weapon_set_budget_exceeded": ("weaponSetBudget", "overMax"),

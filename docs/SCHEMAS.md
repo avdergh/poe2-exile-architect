@@ -281,8 +281,14 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   新Research readback binding由生成器写`xmlInputSemanticsVersion/sourceInputStateHash`，
   对确受旧ET语义影响的输入缺失或不匹配时要求重验；仍独立校验原始`sourceSnapshotHash`。
   单独补标记不能授权旧数值，也不批量迁移或提高历史知识权限。
-- `support_audit_v3`：`measurement.combinationComparison`比较完整当前组合与完整候选组合，
+- `support_audit_v4`：`measurement.combinationComparison`比较完整当前组合与完整候选组合，
   两者必须绑定同一精确技能、目标、原始构筑状态并完整测量；合法性不得新增或加重错误。
+  辅助适用性沿 PoB 实际 source instance、effect ID 与已应用 effectList 追溯独立宿主，先授权
+  宿主上的辅助，再纳入它授予的子技能；自身授予和无根循环不能作为适用性证据。
+  `supportApplication` 保留 `supportEffectId/rootedActiveEffectIds/unrootedActiveEffectIds`，
+  `activeSkills` 只列有合法来源的已应用效果。合法宿主、负载与已授权子技能仍可分别受辅助作用。
+  全组合与每个候选测量均读取 `Life/LifeReserved/LifeUnreserved`；缺数值是测量缺口，
+  `life_reservation_exhausts_life` 是候选拒绝原因，仍继续搜索其他合法组合。旧 v3 必须重验。
   只有完整审计证明净正收益，才设置`positiveGainCombinationAvailable`并要求修改；
   `positiveGainSupportsMissing`为空不代表无需修改，纯移除方案由`supportsToRemove`表达。
   搜索从当前与最小辅助集合出发；最小集合保留PoB实际应用且增加`HasUsageCondition`的辅助。
@@ -419,10 +425,13 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
 Item Level，Unique 数量使用静态来源限制。Checkpoint/Judge 与 artifact 检查也纳入这些树珠宝。
 PoB 不把物品授予的免费槽写入 `Spec.nodes`，实时审计因此使用引擎读回的
 `allocatedPassiveJewelSocketIds`；XML-only 结构检查仅确认显式已分配槽，不提升免费槽数值权限。
-新保存要求 `hard_legality_v5` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
+新保存要求 `hard_legality_v6` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
 原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v9`，不复用旧检查。
-Python/Headless bridge 使用运行时合同 5，旧合同 4 的 user-data 引擎不能覆盖新版 bundle；
-属性切换与免费珠宝槽观察不会通过修改旧安装元数据获得权限。
+共享 `lifeReservation` 检查使用 PoB 已取整的保留与未保留生命读回；生命保留导致剩余生命不足 1 时
+返回 `life_reservation_exhausts_life`，同时用于辅助候选、装备候选、预检、Judge 和 artifact。
+CI 不豁免这条规则；普通生命保留在仍有可用生命时保持合法，不重算百分比，也不据辅助名称特判。
+Python/Headless bridge 当前使用运行时合同 8，旧合同的 user-data 引擎不能覆盖新版 bundle；
+属性、珠宝、辅助宿主与生命保留观察不会通过修改旧安装元数据获得权限。
 
 `evaluate_next_jewel_socket` 在任何天赋/数值探针前复用 `audit_jewel_input`，核对静态珠宝底材、
 Rare/Magic 的 Item Level、来源及共享物品合法性。普通词缀未识别时返回
@@ -591,7 +600,7 @@ P5.1 证据可信度边界：
   `invalid_class_ascendancy_pairing`；
 - recovery 主池：生命侧使用 `LifeUnreserved`，不是 `Life`；`Life`、`LifeReserved` 和
   `LifeUnreservedPercent` 仅用于诊断和 fallback；
-- CI：runtime contract 7 的 `get_build/get_defenses.defenseMechanics` 读取活动玩家 PoB
+- CI：runtime contract 7 起的 `get_build/get_defenses.defenseMechanics` 读取活动玩家 PoB
   `mainOutput.ChaosInoculation`，覆盖天赋、装备与珠宝授予的实际状态；`keystones` 仍只表示树分配。
   该观测包含 `schemaVersion=1/source=pob_main_output/status=observed|unavailable`；明确 false
   或不完整的新观测不回退到树节点。预检、Judge、防御评分和抗性目标共享同一防御状态投影。

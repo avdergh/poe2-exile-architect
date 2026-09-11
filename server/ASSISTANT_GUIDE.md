@@ -195,8 +195,11 @@ model. Proxy spawns and Herald procs require an independent
 rate; payload attack Speed and zero DPS cannot replace it. A duration/DoT object's positive partial
 impact readout cannot authorize whole-set damage ranking when duration and DoT outputs are absent. That broader gap
 retains its incomplete-model diagnosis and unsupported numeric ranking, while candidate review may
-continue. Unknown model coverage is not zero benefit or low adoption value. `support_audit_v3` compares full
-combinations, including removal-only changes. `item_socket_review_v2` distinguishes failed or
+continue. Unknown model coverage is not zero benefit or low adoption value. `support_audit_v4` compares full
+combinations, including removal-only changes. Support-granted effects need an independently valid host;
+self-grants and unanchored grant cycles cannot establish compatibility. Every candidate reads PoB Life,
+LifeReserved and LifeUnreserved; exhausting available Life is illegal even with CI or freed Spirit.
+Older support audits require revalidation. `item_socket_review_v2` distinguishes failed or
 unmodeled measurements from `no_positive`; pending `socketed/partial_socketed` plans need trusted
 equip, and a failed recheck revokes the prior pending plan.
 

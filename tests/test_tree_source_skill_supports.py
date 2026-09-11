@@ -159,7 +159,9 @@ class _AuditProbeEngine:
         raise AssertionError(method)
 
     def get_stats(self, _keys=None) -> dict:
-        return self.paste_skill(self.xml)
+        result = self.paste_skill(self.xml)
+        result['stats'] = {'Life': 100, 'LifeReserved': 0, 'LifeUnreserved': 100, **result['stats']}
+        return result
 
     def probe_regular_skill_group(
         self,
@@ -466,7 +468,7 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self.assertEqual(configured["skillLevel"], 14)
         self.assertEqual(configured["supportCapacity"], 3)
         self.assertEqual(
-            configured["supportApplication"],
+            [{key: row[key] for key in ("name", "activeSkills")} for row in configured["supportApplication"]],
             [{"name": "Precision I", "activeSkills": ["Life Remnants"]}],
         )
 
@@ -770,9 +772,8 @@ Grants Skill: Level 20 Herald of Ash""",
             result["measurement"]["candidateRejectionCodes"],
             {
                 "support_model_unavailable": 1,
-                "source_command_unsupported": 1,
                 "source_group_count_changed": 1,
-                "source_support_not_applied": 1,
+                "source_support_not_applied": 2,
             },
         )
         self.assertEqual(result["supportAudit"]["status"], "passed")
@@ -1155,7 +1156,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
 
         assert result["ok"] is False
         assert result["reasonCode"] == "trigger_rate_unmodelled"
-        assert result["supportAudit"]["auditVersion"] == "support_audit_v3"
+        assert result["supportAudit"]["auditVersion"] == "support_audit_v4"
         assert result["supportAudit"]["reasonClass"] == "capability_gap"
         assert result["supportAudit"]["verificationRequired"] is True
         assert result["measurement"]["screenedCandidates"] == 0

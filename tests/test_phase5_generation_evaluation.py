@@ -426,7 +426,7 @@ def test_current_runtime_verified_support_capability_gap_can_reach_judge(gap_kin
                         "groupIndex": 2,
                         "activeSkillIndex": 1,
                         "freshness": "current",
-                        "auditVersion": "support_audit_v3",
+                        "auditVersion": "support_audit_v4",
                         "status": "unknown",
                         "reasonClass": "capability_gap",
                         "verificationRequired": True,

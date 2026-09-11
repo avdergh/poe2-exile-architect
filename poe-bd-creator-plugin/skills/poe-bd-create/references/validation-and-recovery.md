@@ -40,14 +40,15 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
    当前状态适用的审计必须新鲜；`stale/missing`、明确失败、未应用正收益都先修复，不能靠
    早期探索结果进入 Judge。
    - Support 覆盖用户可编辑组及需要辅助的真实来源组，用精确 group 和新鲜 fingerprint。
-     `support_audit_v3`的`positiveGainCombinationAvailable=true`表示完整组合有已证实正收益；
+     `support_audit_v4`的`positiveGainCombinationAvailable=true`表示完整组合有已证实正收益；
      应按完整方案更新并重审，包括`positiveGainSupportsMissing`为空但`supportsToRemove`非空的纯移除。
      同条件的新测量错误或反证会撤销旧数值回执的沿用权限；缩窄查询或换目标不能洗掉已证实的整改。
      搜索保留PoB实际观察到的使用条件辅助；不能仅因更高DPS自动加入移动/站立/充能等使用门槛。
      Agent决定改变此类玩法条件时，先明确改组再重审；使用条件合同不证明实际覆盖率。
      辅助生成或删除附属effect后，按实际列表中的精确名称与PoB effectId确认输出，不能沿用旧序号。
-     辅助可以分别服务同组 host 与 payload，但每个辅助都必须由 PoB 确认至少作用于一个 active
-     effect，数值能力绑定所选精确输出。当应用、结构和约束检查完整，原生PoB明确识别数值模型
+     辅助可以分别服务同组 host 与 payload，但每个辅助都必须由 PoB 确认作用于有合法来源的 active
+     effect；自身授予或无根循环不能反向授权。生命保留不得耗尽可用生命，CI与释放Spirit均不豁免。
+     数值能力绑定所选精确输出。当应用、结构和约束检查完整，原生PoB明确识别数值模型
      缺口时，可按 `capability_gap` 以unknown继续Judge，交付仍为candidate；测量错误、证据不全和
      可修复缺口继续阻断。`noSupports=true` 不需制造辅助审计；不可写来源保留真实结构和验证缺口。
      代理或Herald缺频率时，不把负载速度或零DPS当有效全程排序；声明持续/耐久/持续伤害物体而

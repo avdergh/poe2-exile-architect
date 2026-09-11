@@ -2121,6 +2121,9 @@ def optimize_supports(
 ) -> dict[str, Any]:
     """Compare complete support sets for one exact active effect using PoB.
 
+    Support-granted effects require an independently valid host; self-grants and unanchored
+    cycles cannot prove compatibility. Candidates read PoB's Life, LifeReserved and LifeUnreserved:
+    a reservation that exhausts available Life is rejected even with CI or freed Spirit.
     Searches preserve runtime-observed support usage conditions across every effect in the group.
     A support that changes when a skill can be used is not an automatic numeric upgrade: the Agent
     must choose that gameplay change explicitly before re-auditing. This does not certify uptime.

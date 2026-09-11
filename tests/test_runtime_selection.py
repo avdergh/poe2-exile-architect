@@ -115,7 +115,7 @@ class PobRuntimeSelectionTests(unittest.TestCase):
         engine = PobEngine()
         try:
             self.assertEqual(engine.info["runtimeContract"], paths.POB_RUNTIME_CONTRACT)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 7)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 8)
         finally:
             engine.close()
 

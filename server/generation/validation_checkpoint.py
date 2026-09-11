@@ -479,7 +479,7 @@ def _create_quality_checklist(
         capability = audit.get("capability") or {}
         supported_model_gap = (
             context_matches
-            and audit.get("auditVersion") == "support_audit_v3"
+            and audit.get("auditVersion") == "support_audit_v4"
             and audit.get("status") == "inconclusive"
             and audit.get("reasonClass") == "capability_gap"
             and supportopt.support_capability_is_model_gap(capability)
