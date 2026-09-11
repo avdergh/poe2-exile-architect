@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 from server.compute import completeness
+from server.compute.defense_state import defense_keystones
 
 from . import hard_legality, modelability, models, rules, scoring
 
@@ -135,7 +136,7 @@ def evaluate_readback(
     resistance_gate = rules.check_endgame_resistance_gate(
         level=build.get("level"),
         resistances=defenses.get("resistances") or {},
-        keystones=build.get("keystones"),
+        keystones=defense_keystones(build),
         source_context=source_context,
     )
     hard_failures.extend(resistance_gate["hardFailures"])
@@ -147,7 +148,7 @@ def evaluate_readback(
         level=int(_num(build.get("level")) or 0),
         resistances=defenses.get("resistances") or {},
         blocked_dimensions=blocked_dimensions,
-        keystones=build.get("keystones"),
+        keystones=defense_keystones(build),
         source_context=source_context,
     )
     playability_failures = list(score.get("playabilityFailures") or score.get("failures") or [])
@@ -346,7 +347,7 @@ def _defense_model(
     defenses: dict[str, Any],
     score: dict[str, Any],
 ) -> dict[str, Any]:
-    keystones = {str(k) for k in (build.get("keystones") or [])}
+    keystones = set(defense_keystones(build) or [])
     life = _first_available_metric(metrics, "LifeUnreserved", "Life")
     life_total = _num(metrics.get("Life"))
     life_unreserved_percent = metrics.get("LifeUnreservedPercent")

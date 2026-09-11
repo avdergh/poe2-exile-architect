@@ -27,6 +27,7 @@ from scripts import create_build as generation_run_helper
 from . import paths
 from . import scaffold
 from .compute.engine import PobEngine
+from .compute.defense_state import has_chaos_inoculation
 from .compute.engine_pool import (
     SessionCallGate,
     SessionEnginePool,
@@ -342,7 +343,7 @@ def _import_caveats(eng: PobEngine) -> list[str]:
             )
         res = eng.get_defenses().get("resistances") or {}
         elems = ["fire", "cold", "lightning"]
-        if "Chaos Inoculation" not in (b.get("keystones") or []):
+        if not has_chaos_inoculation(b):
             elems.append("chaos")
         under = [
             f"{el} {res.get(el)}"
@@ -377,6 +378,8 @@ def get_build() -> dict[str, Any]:
     Returns class/level/ascendancy, the main skill group (gems + levels), allocated
     notables/keystones/ascendancy nodes, equipped gear by slot, passive points used, and
     summary stats — so you can see the whole build you've assembled.
+    `keystones` describes allocated tree nodes. `defenseMechanics.chaosInoculation` reports
+    the active player's native PoB CI state, including equipment and jewel grants.
     """
     build = get_engine().get_build()
     names = (
@@ -394,6 +397,7 @@ def get_defenses() -> dict[str, Any]:
     net of PoB's configured area penalty; the response includes the active `resistPenalty` and
     a note. Read caps as diagnostics, not an implicit optimization target: normal level-90
     softcore Create uses 60% elemental / 30% non-CI chaos unless the user requests 75%.
+    `defenseMechanics` reports native CI state from the active player's calculated output.
     """
     return get_engine().get_defenses()
 
@@ -1703,7 +1707,7 @@ def pinnacle_readiness(min_ehp: float = 20000, min_dps: float = 500000) -> dict[
     res = d.get("resistances") or {}
     over = d.get("resistOverCap") or {}
     stats = b.get("stats") or {}
-    ci = "Chaos Inoculation" in (b.get("keystones") or [])
+    ci = has_chaos_inoculation(b)
     ehp = d.get("totalEHP") or stats.get("TotalEHP") or 0
     dps = max(stats.get("FullDPS") or 0, stats.get("TotalDPS") or 0)
     elems = ("fire", "cold", "lightning")

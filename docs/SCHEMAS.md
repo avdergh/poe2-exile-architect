@@ -591,8 +591,13 @@ P5.1 证据可信度边界：
   `invalid_class_ascendancy_pairing`；
 - recovery 主池：生命侧使用 `LifeUnreserved`，不是 `Life`；`Life`、`LifeReserved` 和
   `LifeUnreservedPercent` 仅用于诊断和 fallback；
-- CI：`Chaos Inoculation` 以 build keystone readback 为权威；CI 下 chaos score 直接按混沌
-  免疫处理，不使用 `ChaosMaximumHitTaken` 的 nil/0/超大值反推；
+- CI：runtime contract 7 的 `get_build/get_defenses.defenseMechanics` 读取活动玩家 PoB
+  `mainOutput.ChaosInoculation`，覆盖天赋、装备与珠宝授予的实际状态；`keystones` 仍只表示树分配。
+  该观测包含 `schemaVersion=1/source=pob_main_output/status=observed|unavailable`；明确 false
+  或不完整的新观测不回退到树节点。预检、Judge、防御评分和抗性目标共享同一防御状态投影。
+  生命为 1、装备名字、非活动词条及混沌抗数值均不能证明 CI；卸除或禁用来源后重新观察。
+  CI 下 chaos score 按混沌免疫处理，不使用 `ChaosMaximumHitTaken` 的 nil/0/超大值反推。
+  旧静态 readback 保留树字段兼容，不因此获得新原生观测或升级历史回执；新运行使用匹配合同的桥接；
 - source hash：真实样本验收只输出 hash，不输出 raw source；
 - reproducibility：至少包含 evaluator version、tree version、latest tree version；版本不一致时
   必须追加 `version_mismatch_caveat`；

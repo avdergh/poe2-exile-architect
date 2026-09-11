@@ -23,6 +23,8 @@ from __future__ import annotations
 import concurrent.futures as cf
 from typing import Any
 
+from .defense_state import has_chaos_inoculation
+
 from ..knowledge import db as corpus
 from ..knowledge import refbuilds
 from . import craftopt, itemopt, supportopt
@@ -155,7 +157,7 @@ def _resistance_target_status(
     res_capped = all((missing.get(e) or 0) <= 0 for e in _RES_KEYS)
     elemental_target = int(profile["elementalResistTarget"])
     chaos_target = int(profile["chaosResistTarget"])
-    ci = "Chaos Inoculation" in set(build.get("keystones") or [])
+    ci = has_chaos_inoculation(build)
     resistance_target_met = all(
         (resistances.get(element) or 0) >= elemental_target for element in _RES_KEYS
     ) and (ci or (resistances.get("chaos") or 0) >= chaos_target)

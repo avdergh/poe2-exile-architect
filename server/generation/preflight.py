@@ -8,6 +8,7 @@ from typing import Any
 import xml.etree.ElementTree as ET
 
 from server.compute import completeness
+from server.compute.defense_state import defense_keystones
 from server.judge import hard_legality, rules
 
 
@@ -128,7 +129,7 @@ def inspect_generation_snapshot(
     resistance_gate = rules.check_endgame_resistance_gate(
         level=build.get("level"),
         resistances=(defenses.get("resistances") or {}) if isinstance(defenses, dict) else {},
-        keystones=build.get("keystones"),
+        keystones=defense_keystones(build),
     )
     readiness_failures = [str(value) for value in resistance_gate["hardFailures"]]
     mechanism_blockers = _dedupe(

@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 6
+local HEADLESS_RUNTIME_CONTRACT = 7
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -130,6 +130,19 @@ local function collectStats(keys)
 		end
 	end
 	return res
+end
+
+-- CalcDefence derives this flag from the active player's modDB, including granted keystones.
+-- FlagInternal returns nil when absent; only a calculated player output can prove absence.
+local function defenseMechanics(out)
+	local observed = type(out) == "table" and type(out.Life) == "number"
+	local result = {
+		schemaVersion = 1,
+		source = "pob_main_output",
+		status = observed and "observed" or "unavailable",
+	}
+	if observed then result.chaosInoculation = out.ChaosInoculation == true end
+	return result
 end
 
 -- PoE2 ascendancy point cap (a separate pool from passive points) — mirrors PoB's Build.lua ascMax.
@@ -3083,6 +3096,7 @@ function methods.get_build()
 		activeSkillGemLevelViolations = activeGemLevelViolations(),
 		notables = notables,
 		keystones = keystones,
+		defenseMechanics = defenseMechanics(mainOutput),
 		ascendancyNotables = asc,
 		gear = gear,
 		allocatedPassiveJewelSocketIds = allocatedPassiveJewelSocketIds,
@@ -3217,6 +3231,7 @@ function methods.get_defenses()
 	local cfg = (build.configTab and build.configTab.input) or {}
 	local penalty = cfg.resistancePenalty or -60
 	return {
+		defenseMechanics = defenseMechanics(o),
 		life = n("Life"),
 		energyShield = n("EnergyShield"),
 		mana = n("Mana"),

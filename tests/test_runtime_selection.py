@@ -111,11 +111,11 @@ class PobRuntimeSelectionTests(unittest.TestCase):
             ):
                 self.assertEqual(paths.pob_runtime_pair().source, "bundle")
 
-    def test_bundled_bridge_advertises_contract_five(self) -> None:
+    def test_bundled_bridge_advertises_native_defense_contract(self) -> None:
         engine = PobEngine()
         try:
-            self.assertEqual(engine.info["runtimeContract"], 6)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 6)
+            self.assertEqual(engine.info["runtimeContract"], paths.POB_RUNTIME_CONTRACT)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 7)
         finally:
             engine.close()
 

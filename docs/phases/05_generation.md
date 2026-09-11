@@ -560,6 +560,8 @@ Agent 负责：
 13. 人工判断候选是否值得继续推进。
 
 新生成的 80 级及以上候选必须达到火/冰/电各 60%、非 CI 混沌抗 30%；CI 只豁免混沌抗。
+CI 使用活动 PoB `defenseMechanics` 原生观测，包含装备／珠宝授予的状态；不得仅检查树分配、
+物品名称或生命为 1。预检与正式 Judge 采用同一投影，来源卸除或失效后重新判定。
 共享 `inspect_generation_checkpoint` 在正式 Judge 前执行该确定性门槛，失败不消耗 attempt。
 79 级及以下和可信第三方参考仍为 `diagnostic_only`；元素 Max Hit 和其他防御层继续评估。
 
