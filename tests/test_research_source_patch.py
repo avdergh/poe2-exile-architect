@@ -1,10 +1,21 @@
 import pytest
 
 from scripts import research_mature_builds
+from server.freshness import providers
 from server.knowledge import research_workflow
 
 
-def test_live_source_patch_is_independent_of_old_model_certification(monkeypatch):
+@pytest.fixture
+def old_model_certification(monkeypatch):
+    compatibility = providers.LocalCompatibility(
+        game_patch="0.5.4", passive_tree="0_5", pob_version="0.23.1",
+        pob_commit="7d6f530cbdab20389ff8bc6ba97a37ac27f74e41",
+    )
+    monkeypatch.setattr(providers, "current_local_compatibility", lambda: compatibility)
+    return compatibility
+
+
+def test_live_source_patch_is_independent_of_old_model_certification(monkeypatch, old_model_certification):
     report = {
         "decision": "blocked_conflict",
         "active_evidence": [
@@ -36,7 +47,8 @@ def test_live_source_patch_is_independent_of_old_model_certification(monkeypatch
         current_patch=source_patch, passive_tree_version=None, pob_version_or_commit=None
     )
     assert context["gamePatch"] == "0.5.5"
-    assert context["modelGamePatch"] == "0.5.4"
+    assert context["modelGamePatch"] == old_model_certification.game_patch == "0.5.4"
+    assert context["pobVersionOrCommit"] == old_model_certification.pob_version == "0.23.1"
     assert context["status"] == "source_patch_model_mismatch"
 
 

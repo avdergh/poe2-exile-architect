@@ -1,7 +1,9 @@
 import json
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
+import sys
 
 import pytest
 
@@ -143,3 +145,160 @@ def test_input_reader_holds_one_complete_snapshot_during_publication(monkeypatch
 def test_legacy_cache_does_not_gain_immutable_source_claims(tmp_path):
     (tmp_path / repoe_snapshot.MANIFEST_NAME).write_text(json.dumps({"exportedVersion": "4.5.5.2"}))
     assert repoe_snapshot.verify_snapshot(tmp_path) is None
+
+
+def _mock_transport(monkeypatch):
+    """Exercise Request/urlopen and the real snapshot publication, without network I/O."""
+    requests = []
+
+    class Response:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self): return self.body
+
+    def transport(request, *, timeout):
+        assert timeout == 120
+        url = request.full_url
+        requests.append(url)
+        if url == repoe_snapshot.HEAD_URL:
+            return Response(json.dumps({"sha": "b" * 40}).encode())
+        if url.endswith("exported-version.txt"):
+            return Response(b"4.5.5.2\n")
+        assert url.startswith(repoe_snapshot.REPOSITORY + "/")
+        return Response(json.dumps({"source": {"url": url}}).encode())
+
+    monkeypatch.setattr(repoe_snapshot, "urlopen", transport)
+    return requests, transport
+
+
+def _builder_inputs(monkeypatch, tmp_path):
+    from pipeline import build_corpus
+
+    raw_dir = tmp_path / "raw"
+    certificate = tmp_path / "corpus.json"
+    certificate.write_text(json.dumps({"repoeSourceCommit": COMMIT}))
+    database = tmp_path / "corpus.sqlite"
+    database.write_bytes(b"previous reviewed corpus")
+    monkeypatch.setattr(build_corpus, "RAW_DIR", raw_dir)
+    monkeypatch.setattr(build_corpus, "DB_PATH", database)
+    monkeypatch.setattr(build_corpus, "REVIEWED_SOURCE_PATH", certificate)
+    monkeypatch.setattr(build_corpus.wiki, "fetch_all", lambda **_kwargs: 0)
+    return build_corpus, raw_dir, certificate, database
+
+
+@pytest.mark.parametrize("cache", ["absent", "matching", "wrong_commit", "legacy", "damaged"])
+def test_reviewed_fetch_is_pinned_at_transport_boundary_and_replaces_wrong_cache(monkeypatch, tmp_path, cache):
+    build_corpus, raw_dir, _certificate, _database = _builder_inputs(monkeypatch, tmp_path)
+    requests, _ = _mock_transport(monkeypatch)
+    if cache != "absent":
+        repoe_snapshot.fetch_snapshot(raw_dir, commit="b" * 40 if cache == "wrong_commit" else COMMIT)
+        if cache == "legacy":
+            (raw_dir / repoe_snapshot.MANIFEST_NAME).unlink()
+        elif cache == "damaged":
+            (raw_dir / repoe_snapshot.SOURCE_FILES[0]).write_text('{"corrupt": {}}')
+        requests.clear()
+    build_corpus.fetch_all(expected_commit=build_corpus.reviewed_source_commit())
+    assert repoe_snapshot.HEAD_URL not in requests
+    assert len(requests) == (0 if cache == "matching" else len(repoe_snapshot.SOURCE_FILES) + 1)
+    assert all(f"/{COMMIT}/" in url for url in requests)
+    assert repoe_snapshot.verify_snapshot(raw_dir)["sourceCommit"] == COMMIT
+    for name in repoe_snapshot.SOURCE_FILES:
+        assert f"/{COMMIT}/" in (raw_dir / name).read_text()
+
+
+def test_plain_refresh_still_resolves_latest_upstream_head(monkeypatch, tmp_path):
+    build_corpus, raw_dir, _certificate, _database = _builder_inputs(monkeypatch, tmp_path)
+    requests, _ = _mock_transport(monkeypatch)
+    repoe_snapshot.fetch_snapshot(raw_dir, commit=COMMIT)
+    requests.clear()
+    build_corpus.fetch_all(refresh=True)
+    assert requests.count(repoe_snapshot.HEAD_URL) == 1
+    assert repoe_snapshot.verify_snapshot(raw_dir)["sourceCommit"] == "b" * 40
+
+
+def test_reviewed_fetch_failure_keeps_prior_raw_and_database(monkeypatch, tmp_path):
+    build_corpus, raw_dir, _certificate, database = _builder_inputs(monkeypatch, tmp_path)
+    _requests, transport = _mock_transport(monkeypatch)
+    repoe_snapshot.fetch_snapshot(raw_dir, commit="b" * 40)
+    before = {path.name: path.read_bytes() for path in raw_dir.iterdir()}
+
+    def failed(request, *, timeout):
+        if request.full_url.endswith("mods.json"):
+            raise OSError("incomplete reviewed download")
+        return transport(request, timeout=timeout)
+
+    monkeypatch.setattr(repoe_snapshot, "urlopen", failed)
+    with pytest.raises(OSError, match="incomplete reviewed"):
+        build_corpus.fetch_all(expected_commit=COMMIT)
+    assert {path.name: path.read_bytes() for path in raw_dir.iterdir()} == before
+    assert database.read_bytes() == b"previous reviewed corpus"
+
+
+def test_build_rechecks_expected_commit_under_lock_after_fetch_before_touching_db(monkeypatch, tmp_path):
+    build_corpus, raw_dir, _certificate, database = _builder_inputs(monkeypatch, tmp_path)
+    _mock_transport(monkeypatch)
+    build_corpus.fetch_all(expected_commit=COMMIT)
+    # Another publisher wins between CLI fetch and build; a bound, coherent snapshot
+    # is insufficient when it is no longer the reviewed source requested by this build.
+    repoe_snapshot.fetch_snapshot(raw_dir, commit="b" * 40)
+    real_guard = repoe_snapshot.snapshot_guard
+    real_verify = repoe_snapshot.verify_snapshot
+    locked = False
+
+    @contextmanager
+    def guarded(path):
+        nonlocal locked
+        with real_guard(path):
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+
+    def verified(path):
+        assert locked
+        return real_verify(path)
+
+    monkeypatch.setattr(repoe_snapshot, "snapshot_guard", guarded)
+    monkeypatch.setattr(repoe_snapshot, "verify_snapshot", verified)
+    monkeypatch.setattr(build_corpus, "_load", lambda _name: pytest.fail("must reject before loading inputs"))
+    with pytest.raises(ValueError, match="does not match the reviewed"):
+        build_corpus.build(expected_commit=COMMIT)
+    assert database.read_bytes() == b"previous reviewed corpus"
+
+
+@pytest.mark.parametrize("certificate", [{}, {"repoeSourceCommit": "master"}, {"repoeSourceCommit": "a" * 39},
+                                          {"repoeSourceCommit": "a" * 41}, {"repoeSourceCommit": None}, []])
+def test_reviewed_cli_rejects_missing_or_nonimmutable_certificate_before_io(monkeypatch, tmp_path, certificate):
+    build_corpus, _raw_dir, cert_path, database = _builder_inputs(monkeypatch, tmp_path)
+    cert_path.write_text(json.dumps(certificate))
+    requests, _ = _mock_transport(monkeypatch)
+    with pytest.raises(ValueError, match="full immutable SHA"):
+        build_corpus.main(["--reviewed-source"])
+    assert not requests
+    assert database.read_bytes() == b"previous reviewed corpus"
+
+
+@pytest.mark.parametrize("argv,refresh,expected", [([], False, None), (["--refresh"], True, None),
+                                                 (["--reviewed-source"], False, COMMIT)])
+def test_cli_passes_the_same_fixed_commit_to_fetch_and_build(monkeypatch, tmp_path, argv, refresh, expected):
+    build_corpus, _raw_dir, _cert_path, _database = _builder_inputs(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["build_corpus", "--refresh"])
+    monkeypatch.setattr(build_corpus, "fetch_all", lambda **kwargs: calls.append(("fetch", kwargs)))
+    monkeypatch.setattr(build_corpus, "build", lambda **kwargs: calls.append(("build", kwargs)) or {})
+    assert build_corpus.main(argv) == 0
+    assert calls == [("fetch", {"refresh": refresh, "expected_commit": expected}),
+                     ("build", {"expected_commit": expected})]
+
+
+@pytest.mark.parametrize("argv", [["--refresh", "--reviewed-source"], ["--reviewed-soruce"]])
+def test_cli_rejects_ambiguous_or_misspelled_source_selection(monkeypatch, tmp_path, argv):
+    build_corpus, _raw_dir, _cert_path, database = _builder_inputs(monkeypatch, tmp_path)
+    requests, _ = _mock_transport(monkeypatch)
+    with pytest.raises(SystemExit) as raised:
+        build_corpus.main(argv)
+    assert raised.value.code == 2
+    assert not requests
+    assert database.read_bytes() == b"previous reviewed corpus"

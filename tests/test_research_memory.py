@@ -2176,7 +2176,7 @@ def test_deep_record_normalizes_unknown_to_application_current_version(tmp_path)
         ).fetchone()
         assert row["game_patch"] == "0.5.4"
         assert row["passive_tree_version"] == "0_5"
-        assert row["pob_version_or_commit"] == "0.23.1"
+        assert row["pob_version_or_commit"] == "0.23.1-dev.20260910"
     finally:
         con.close()
 

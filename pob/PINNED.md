@@ -15,7 +15,9 @@ Compute 层通过 headless 方式驱动 Path of Building Community 的 **PoE2** 
 2026-09-13直连上游核验：正式版仍为0.23.1，但开发分支`ce566eac45ea8a86477f513c7ee65a1ebe60014e`
 与RePoE导出4.5.5.2（`bdfed992aed0d4c91b9ffb5ef1c3f1acd7af2537`）均已出现官方0.5.5新增的17个
 灵魂核心数据条目。上游资料可供升级验收，不再沿用9月5日“上游尚缺数据”作为当前结论。
-固定提交与本地补丁已更新；静态条目存在不等于全部数值已验证。计算认证仅在回归和独立审查完成后更新。
+固定提交与本地补丁已更新，并通过123项完整计算回归、17新增核心效果检查及独立审查。
+`data/compatibility/pob.json`以`0.23.1-dev.20260910`登记0.5.5覆盖；静态与数值证书分别保存。
+此覆盖不表示所有机制都已建模，现有unknown/unmodelled诊断保持。
 
 ## 复现 working copy
 
@@ -48,6 +50,7 @@ vendored copy 被 git-ignore，因此任何不可避免的 PoB-core 改动都应
 | `0005-refresh-synthetic-no-supports.patch` | Explode、Thorns等PoB合成来源组从XML恢复后必须重新标记为不可安装辅助，避免质量检查把合法合成效果误判为缺少辅助审计。 |
 | `0006-augment-limit-metadata.patch` | 仅为上游原生配额追加版本与精确文件证据；不覆盖效果数值、limit 或 limitId。旧手工共享组 ID 随模型升级失效。 |
 | `0007-standard-luajit-syntax.patch` | 把上游新增的空值运算、复合赋值、continue 与 lambda 语法等价展开为标准 LuaJIT 可解析形式；保留 nil/false 区别，不引入新的数值模型。 |
+| `0008-normalize-sparse-item-grant-levels.patch` | 物品技能的逻辑等级可能对应稀疏模型等级。属性/角色等级筛选前后复用 PoB 原生归一化，避免副武器校验把有效模型覆盖为不存在的等级并令导入失败；不改效果数值或凭显示名特判。 |
 
 ## Runtime requirements（M0 spike 已验证）
 

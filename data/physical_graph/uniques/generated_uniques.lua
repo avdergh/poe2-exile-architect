@@ -8,7 +8,6 @@ Time-Lost Diamond
 Source: Drops from unique{Zarokh, the Temporal}
 Limited to: 1
 Has Alt Variant: true
-Variant: Allocated Non Notables Grant Nothing
 Variant: Chaos Resistance
 Variant: Cold Resistance
 Variant: Damage As Chaos
@@ -17,7 +16,6 @@ Variant: Damage As Fire
 Variant: Damage As Lightning
 Variant: Fire Resistance
 Variant: Freeze Duration On Self
-Variant: Grant Stats From Non Notables
 Variant: Ignite Duration On Self
 Variant: Increased Life
 Variant: Increased Mana
@@ -37,31 +35,29 @@ Selected Variant: 1
 Selected Alt Variant: 2
 Radius: Small
 Implicits: 0
-{variant:1,30}Notable Passive Skills in Radius also grant Allocated Small Passive Skills in Radius grant nothing
-{variant:2,30}Small Passive Skills in Radius also grant +(2-3)% to Chaos Resistance
-{variant:3,30}Small Passive Skills in Radius also grant +(2-4)% to Cold Resistance
-{variant:4,30}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Chaos Damage
-{variant:5,30}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Cold Damage
-{variant:6,30}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Fire Damage
-{variant:7,30}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Lightning Damage
-{variant:8,30}Small Passive Skills in Radius also grant +(2-4)% to Fire Resistance
-{variant:9,30}Small Passive Skills in Radius also grant (4-6)% reduced Freeze Duration on you
-{variant:10,30}Notable Passive Skills in Radius also grant Grants all bonuses of Unallocated Small Passive Skills in Radius
-{variant:11,30}Small Passive Skills in Radius also grant (4-6)% reduced Ignite Duration on you
-{variant:12,30}Small Passive Skills in Radius also grant +8 to maximum Life
-{variant:13,30}Small Passive Skills in Radius also grant +8 to maximum Mana
-{variant:14,30}Small Passive Skills in Radius also grant 1% increased maximum Life
-{variant:15,30}Small Passive Skills in Radius also grant +(2-4)% to Lightning Resistance
-{variant:16,30}Small Passive Skills in Radius also grant 1% increased maximum Mana
-{variant:17,30}Notable Passive Skills in Radius also grant +1% to Maximum Chaos Resistance
-{variant:18,30}Notable Passive Skills in Radius also grant +1% to Maximum Cold Resistance
-{variant:19,30}Notable Passive Skills in Radius also grant +1% to Maximum Fire Resistance
-{variant:20,30}Notable Passive Skills in Radius also grant +1% to Maximum Lightning Resistance
-{variant:21,30}Notable Passive Skills in Radius also grant (2-3)% increased Dexterity
-{variant:22,30}Notable Passive Skills in Radius also grant (2-3)% increased Intelligence
-{variant:23,30}Notable Passive Skills in Radius also grant (2-3)% increased Strength
-{variant:24,30}Small Passive Skills in Radius also grant (4-6)% reduced Shock duration on you
-{variant:25,30}Notable Passive Skills in Radius also grant +(8-12) to Spirit
+{variant:1,28}Small Passive Skills in Radius also grant +(2-3)% to Chaos Resistance
+{variant:2,28}Small Passive Skills in Radius also grant +(2-4)% to Cold Resistance
+{variant:3,28}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Chaos Damage
+{variant:4,28}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Cold Damage
+{variant:5,28}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Fire Damage
+{variant:6,28}Notable Passive Skills in Radius also grant Gain (2-4)% of Damage as Extra Lightning Damage
+{variant:7,28}Small Passive Skills in Radius also grant +(2-4)% to Fire Resistance
+{variant:8,28}Small Passive Skills in Radius also grant (4-6)% reduced Freeze Duration on you
+{variant:9,28}Small Passive Skills in Radius also grant (4-6)% reduced Ignite Duration on you
+{variant:10,28}Small Passive Skills in Radius also grant +8 to maximum Life
+{variant:11,28}Small Passive Skills in Radius also grant +8 to maximum Mana
+{variant:12,28}Small Passive Skills in Radius also grant 1% increased maximum Life
+{variant:13,28}Small Passive Skills in Radius also grant +(2-4)% to Lightning Resistance
+{variant:14,28}Small Passive Skills in Radius also grant 1% increased maximum Mana
+{variant:15,28}Notable Passive Skills in Radius also grant +1% to Maximum Chaos Resistance
+{variant:16,28}Notable Passive Skills in Radius also grant +1% to Maximum Cold Resistance
+{variant:17,28}Notable Passive Skills in Radius also grant +1% to Maximum Fire Resistance
+{variant:18,28}Notable Passive Skills in Radius also grant +1% to Maximum Lightning Resistance
+{variant:19,28}Notable Passive Skills in Radius also grant (2-3)% increased Dexterity
+{variant:20,28}Notable Passive Skills in Radius also grant (2-3)% increased Intelligence
+{variant:21,28}Notable Passive Skills in Radius also grant (2-3)% increased Strength
+{variant:22,28}Small Passive Skills in Radius also grant (4-6)% reduced Shock duration on you
+{variant:23,28}Notable Passive Skills in Radius also grant +(8-12) to Spirit
 ]],
 [[
 From Nothing
@@ -2625,16 +2621,20 @@ Inflict Abyssal Wasting on Hit
 {variant:3}(60-100)% increased Magnitude of Abyssal Wasting you inflict
 {variant:4}Abyssal Wasting you inflict has Infinite Duration
 {variant:5}(10-20)% chance to gain Onslaught for 3 seconds when you kill an
+{variant:5} enemy affected by Abyssal Wasting
 {variant:6}Abyssal Wasting you inflict also prevents targets from dealing Critical Hits
 {variant:7}Gain 1 Rage when you kill an enemy affected by Abyssal Wasting
-{variant:8}Abyssal Wasting also applies {0:-d}% to Fire Resistance
+{variant:8}Abyssal Wasting also applies -(15-10)% to Fire Resistance
 {variant:9}+(20-30)% of Armour also applies to Elemental Damage
 {variant:10}Gain (8-12)% of Damage as Extra Fire Damage
 {variant:11}(10-20)% faster Curse Activation
 {variant:12}+(20-25) to Spirit while you have at least 200 Strength
 {variant:13}(30-40)% increased Armour
+{variant:13}+(20-30)% of Armour also applies to Elemental Damage
 {variant:14}Debuffs you inflict have (12-20)% increased Slow Magnitude
+{variant:14}(10-20)% reduced Slowing Potency of Debuffs on You
 {variant:15}Gain (8-12)% of Damage as Extra Fire Damage
+{variant:15}(4-6)% increased Strength
 {variant:16}(30-40)% increased Ignite Magnitude
 {variant:17}(30-40)% increased Armour
 {variant:18}(15-25)% increased Area of Effect of Curses
@@ -2655,8 +2655,9 @@ Inflict Abyssal Wasting on Hit
 {variant:33}(20-30)% of Mana Leeched from targets affected by Abyssal Wasting is Instant
 {variant:34}Abyssal Wasting you inflict also gives targets 10% chance to explode on death, dealing a tenth of their life as Physical Damage
 {variant:35}Abyssal Wasting you inflict also prevents targets from inflicting Elemental Ailments
-{variant:36}Abyssal Wasting also applies {0:-d}% to Cold Resistance
+{variant:36}Abyssal Wasting also applies -(15-10)% to Cold Resistance
 {variant:37}10% chance to revive one of your Persistent Minions when you kill an
+{variant:37} enemy affected by Abyssal Wasting
 {variant:38}Gain 1 Volatility when you kill an enemy affected by Abyssal Wasting
 {variant:39}(5-10)% chance to inflict Withered with Hits against targets affected by Abyssal Wasting
 {variant:40}(30-40)% increased Magnitude of Chill you inflict
@@ -2668,9 +2669,13 @@ Inflict Abyssal Wasting on Hit
 {variant:46}+(20-25) to Spirit while you have at least 200 Intelligence
 {variant:47}Gain Arcane Surge when a Minion Dies
 {variant:48}Gain Arcane Surge when a Minion Dies
+{variant:48}You and Allies in your Presence have (11-16)% increased Cast Speed
 {variant:49}(30-40)% increased maximum Energy Shield
+{variant:49}(15-25)% faster start of Energy Shield Recharge
 {variant:50}Gain (8-12)% of Damage as Extra Cold Damage
+{variant:50}(4-6)% increased Intelligence
 {variant:51}(5-10)% increased maximum Mana
+{variant:51}(10-14)% of Damage is taken from Mana before Life
 {variant:52}(30-40)% increased maximum Energy Shield
 {variant:53}(4-6)% increased Intelligence
 {variant:54}Spell Skills have (12-18)% increased Area of Effect
@@ -2685,9 +2690,10 @@ Inflict Abyssal Wasting on Hit
 {variant:63}(40-50)% increased chance to inflict Ailments against Enemies affected by Abyssal Wasting
 {variant:64}Targets affected by Abyssal Wasting you inflict are Blinded
 {variant:65}Enemies you kill while they are affected by Abyssal Wasting
+{variant:65} grant 100% increased Flask Charges
 {variant:66}(30-40)% increased Immobilisation buildup against targets affected by Abyssal Wasting
 {variant:67}(20-30)% of Life Leeched from targets affected by Abyssal Wasting is Instant
-{variant:68}Abyssal Wasting also applies {0:-d}% to Lightning Resistance
+{variant:68}Abyssal Wasting also applies -(15-10)% to Lightning Resistance
 {variant:69}Projectiles have (40-50)% chance for an additional Projectile when Forking
 {variant:70}(15-25)% increased Critical Damage Bonus
 {variant:71}Gain (8-12)% of Damage as Extra Lightning Damage
@@ -2696,10 +2702,15 @@ Inflict Abyssal Wasting on Hit
 {variant:74}+(20-25) to Spirit while you have at least 200 Dexterity
 {variant:75}Gain Onslaught for 4 seconds when a Minion Dies
 {variant:76}Gain Onslaught for 4 seconds when a Minion Dies
+{variant:76}You and Allies in your Presence have (7-12)% increased Attack Speed
 {variant:77}Projectiles have (40-50)% chance for an additional Projectile when Forking
+{variant:77}Projectiles have (15-20)% chance to Chain an additional time from terrain
 {variant:78}Gain (8-12)% of Damage as Extra Lightning Damage
+{variant:78}(4-6)% increased Dexterity
 {variant:79}(30-40)% increased Evasion Rating
+{variant:79}Gain Deflection Rating equal to (10-20)% of Evasion Rating
 {variant:80}(5-10)% increased maximum Life
+{variant:80}Recover (2-3)% of your maximum Life when an Enemy dies in your Presence
 {variant:81}(12-18)% increased Area of Effect for Attacks
 {variant:82}(4-6)% increased Dexterity
 {variant:83}(30-40)% increased Evasion Rating

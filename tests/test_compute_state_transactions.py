@@ -115,6 +115,15 @@ def _monk_with_two_groups(engine):
     engine.add_skill_group("Herald of Thunder")
 
 
+def _ordinary_group(listed, skill):
+    matches = [
+        group for group in listed["groups"]
+        if not group.get("source") and group["gems"][0]["name"] == skill
+    ]
+    assert len(matches) == 1, {"skill": skill, "groups": listed["groups"]}
+    return matches[0]
+
+
 def test_semantic_state_hash_ignores_pob_serialization_noise():
     first = """<PathOfBuilding2><Build className="Monk" level="80">
     <PlayerStat stat="TotalDPS" value="100"/></Build>
@@ -325,26 +334,29 @@ def test_quiver_equip_is_rejected_in_batches():
 def test_skill_group_replace_remove_and_stale_selector_fail_closed(engine):
     _monk_with_two_groups(engine)
     before = skillgroups.list_skill_groups(engine)
-    main_fingerprint = before["groups"][0]["fingerprint"]
-    secondary = before["groups"][1]
+    main_group = _ordinary_group(before, "Storm Wave")
+    main_fingerprint = main_group["fingerprint"]
+    secondary = _ordinary_group(before, "Herald of Thunder")
+    assert before["mainGroupIndex"] == main_group["index"]
 
     replaced = skillgroups.replace_skill_group(
         engine,
-        group_index=2,
+        group_index=secondary["index"],
         expected_fingerprint=secondary["fingerprint"],
         expected_state_hash=before["stateHash"],
         skill="Combat Frenzy",
     )
 
     assert replaced["ok"] is True
-    assert replaced["mainGroupIndex"] == 1
-    assert replaced["groups"][0]["fingerprint"] == main_fingerprint
-    assert replaced["groups"][1]["activeSkill"] == "Combat Frenzy"
+    assert replaced["mainGroupIndex"] == main_group["index"]
+    assert _ordinary_group(replaced, "Storm Wave")["fingerprint"] == main_fingerprint
+    assert _ordinary_group(replaced, "Combat Frenzy")["index"] == secondary["index"]
+    assert _ordinary_group(replaced, "Combat Frenzy")["activeSkill"] == "Combat Frenzy"
 
     state_after_replace = skillgroups.list_skill_groups(engine)
     stale = skillgroups.remove_skill_group(
         engine,
-        group_index=2,
+        group_index=secondary["index"],
         expected_fingerprint=secondary["fingerprint"],
     )
 
@@ -352,27 +364,33 @@ def test_skill_group_replace_remove_and_stale_selector_fail_closed(engine):
     assert stale["errorCode"] == "skill_group_conflict"
     assert skillgroups.list_skill_groups(engine)["stateHash"] == state_after_replace["stateHash"]
 
-    current_secondary = state_after_replace["groups"][1]
+    current_secondary = _ordinary_group(state_after_replace, "Combat Frenzy")
     removed = skillgroups.remove_skill_group(
         engine,
-        group_index=2,
+        group_index=current_secondary["index"],
         expected_fingerprint=current_secondary["fingerprint"],
         expected_state_hash=state_after_replace["stateHash"],
     )
 
     assert removed["ok"] is True
-    assert len(removed["groups"]) == 1
+    assert len(removed["groups"]) == len(before["groups"]) - 1
+    assert removed["mainGroupIndex"] == _ordinary_group(removed, "Storm Wave")["index"]
+    assert [group["source"] for group in removed["groups"] if group.get("source")] == [
+        group["source"] for group in before["groups"] if group.get("source")
+    ]
     assert engine.get_build()["mainSkill"] == "Storm Wave"
 
 
 def test_skill_group_main_invariants_and_rollback(engine):
     _monk_with_two_groups(engine)
     before = skillgroups.list_skill_groups(engine)
-    main = before["groups"][0]
+    main = _ordinary_group(before, "Storm Wave")
+    replacement = _ordinary_group(before, "Herald of Thunder")
+    assert before["mainGroupIndex"] == main["index"]
 
     disabled = skillgroups.set_skill_group_state(
         engine,
-        group_index=1,
+        group_index=main["index"],
         expected_fingerprint=main["fingerprint"],
         enabled=False,
         expected_state_hash=before["stateHash"],
@@ -383,7 +401,7 @@ def test_skill_group_main_invariants_and_rollback(engine):
 
     missing_replacement = skillgroups.remove_skill_group(
         engine,
-        group_index=1,
+        group_index=main["index"],
         expected_fingerprint=main["fingerprint"],
         expected_state_hash=before["stateHash"],
     )
@@ -393,14 +411,19 @@ def test_skill_group_main_invariants_and_rollback(engine):
 
     removed = skillgroups.remove_skill_group(
         engine,
-        group_index=1,
+        group_index=main["index"],
         expected_fingerprint=main["fingerprint"],
-        replacement_main_group_index=2,
+        replacement_main_group_index=replacement["index"],
         expected_state_hash=before["stateHash"],
     )
     assert removed["ok"] is True
-    assert removed["mainGroupIndex"] == 1
-    assert removed["groups"][0]["activeSkill"] == "Herald of Thunder"
+    promoted = _ordinary_group(removed, "Herald of Thunder")
+    assert removed["mainGroupIndex"] == promoted["index"]
+    assert promoted["activeSkill"] == "Herald of Thunder"
+    assert len(removed["groups"]) == len(before["groups"]) - 1
+    assert [group["source"] for group in removed["groups"] if group.get("source")] == [
+        group["source"] for group in before["groups"] if group.get("source")
+    ]
     assert engine.get_build()["mainSkill"] == "Herald of Thunder"
 
 

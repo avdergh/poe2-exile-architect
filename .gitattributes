@@ -4,3 +4,6 @@
 
 # Python sources stay LF so whole-file CRLF flips never pollute diffs again.
 *.py text eol=lf
+
+# 生成暗金文件按导出字节绑定语料/图来源，跨平台检出不得自动转换换行。
+data/physical_graph/uniques/generated_uniques.lua -text whitespace=cr-at-eol

@@ -1,0 +1,18 @@
+diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
+--- a/src/Modules/CalcSetup.lua
++++ b/src/Modules/CalcSetup.lua
+@@ -2174,7 +2174,13 @@
+ 			group.usingSkillSet = build.skillsTab:GetSocketGroupWeaponSet(group)
+ 			local sourceGem = group.gemList[1]
+ 			if sourceGem and sourceGem.fromItem and sourceGem.sourceLevel and sourceGem.gemData and group.usingSkillSet == env.weaponSet then
+-				local level = getGrantedSkillLevel(sourceGem.gemData, sourceGem.sourceLevel, build.characterLevel, env.modDB)
++				-- Logical item grants may use level 1 while their native model only
++				-- defines another level. Keep the existing PoB normalization before
++				-- requirement selection and on its fallback; never install a missing
++				-- level table into the source gem during weapon-set validation.
++				local maximumLevel = getNormalizedSkillLevel({ skillId = sourceGem.skillId, level = sourceGem.sourceLevel })
++				local level = getGrantedSkillLevel(sourceGem.gemData, maximumLevel, build.characterLevel, env.modDB)
++				level = getNormalizedSkillLevel({ skillId = sourceGem.skillId, level = level })
+ 				if sourceGem.level ~= level then
+ 					sourceGem.level = level
+ 					local grantedEffect = sourceGem.gemData.grantedEffect

@@ -14,8 +14,19 @@ def test_explicit_attribute_path_and_local_switch_survive_reload(engine, class_n
     engine.new_build()
     engine.set_class(class_name)
     engine.set_level(90)
+    # A long path can remain wholly inside the class's nonattribute starting cluster.
+    # Choose by actual PoB path membership so this exercises at least two switchable nodes.
+    attribute_ids = {
+        n["id"] for n in engine.search_passives(limit=6000)["results"] if n["isAttribute"]
+    }
     candidates = engine.search_passives(node_type="Notable", limit=6000)["results"]
-    target = next(n for n in candidates if n.get("pathDist", 0) >= 6)
+    target = min(
+        (
+            n for n in candidates
+            if n.get("pathDist", 0) >= 6 and len(attribute_ids.intersection(n["pathNodeIds"])) >= 2
+        ),
+        key=lambda n: (n["pathDist"], n["id"]),
+    )
     result = engine.alloc_passive(target["id"], path_attribute=attribute)
     assert result["ok"]
     nodes = engine.search_passives(limit=6000)["results"]
@@ -23,6 +34,9 @@ def test_explicit_attribute_path_and_local_switch_survive_reload(engine, class_n
     assert attributes and all(n["attribute"] == attribute for n in attributes)
     assert all(
         n["attributeOptions"] == ["Strength", "Dexterity", "Intelligence"] for n in attributes
+    )
+    assert all(
+        engine.get_passive(n["id"])["attributeOptions"] == n["attributeOptions"] for n in attributes
     )
     allocated_ids = {n["id"] for n in nodes if n["alloc"]}
     selected = attributes[0]["id"]

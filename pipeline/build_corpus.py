@@ -4,16 +4,16 @@ Fetches a small set of RePoE JSON files (cached under data/raw/), normalizes the
 writes data/corpus.sqlite with full-text search over item bases, skill/support gems, and
 ascendancies. Mods + stat-translation resolution are a follow-up (M2.1).
 
-Run:  uv run python -m pipeline.build_corpus  [--refresh]
+Run:  uv run python -m pipeline.build_corpus  [--refresh | --reviewed-source]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import hashlib
 import re
 import sqlite3
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from . import repoe_snapshot, wiki
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = REPO_ROOT / "data" / "raw"
 DB_PATH = REPO_ROOT / "data" / "corpus.sqlite"
+REVIEWED_SOURCE_PATH = REPO_ROOT / "data" / "compatibility" / "corpus.json"
 BASE = "https://repoe-fork.github.io/poe2/"
 SOURCE_FILES = list(repoe_snapshot.SOURCE_FILES)
 # Uniques (with full readable mods) come from the vendored PoB data, not RePoE.
@@ -170,14 +171,36 @@ def apply_radius_jewel_scope(mod_id: str, text: str, node_types: dict[str, int])
     return text
 
 
-def fetch_all(refresh: bool = False) -> None:
+def _source_commit(value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{40}", value) is None:
+        raise ValueError("reviewed corpus repoeSourceCommit must be a full immutable SHA")
+    return value
+
+
+def reviewed_source_commit() -> str:
+    certificate = json.loads(REVIEWED_SOURCE_PATH.read_text(encoding="utf-8"))
+    return _source_commit(certificate.get("repoeSourceCommit") if isinstance(certificate, dict) else None)
+
+
+def fetch_all(refresh: bool = False, *, expected_commit: str | None = None) -> None:
+    if expected_commit is not None:
+        expected_commit = _source_commit(expected_commit)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    if refresh or any(not (RAW_DIR / name).is_file() for name in SOURCE_FILES):
+    needs_fetch = refresh or any(not (RAW_DIR / name).is_file() for name in SOURCE_FILES)
+    if expected_commit is not None and not needs_fetch:
+        with repoe_snapshot.snapshot_guard(RAW_DIR):
+            try:
+                binding = repoe_snapshot.verify_snapshot(RAW_DIR)
+            except (OSError, ValueError):
+                binding = None
+            needs_fetch = binding is None or binding["sourceCommit"] != expected_commit
+    if needs_fetch:
         print("fetching one pinned RePoE export ...")
-        repoe_snapshot.fetch_snapshot(RAW_DIR)
+        repoe_snapshot.fetch_snapshot(RAW_DIR, commit=expected_commit)
     else:
         # Cached legacy files remain unbound; a newer remote marker cannot upgrade them.
-        repoe_snapshot.verify_snapshot(RAW_DIR)
+        with repoe_snapshot.snapshot_guard(RAW_DIR):
+            repoe_snapshot.verify_snapshot(RAW_DIR)
     print("fetching wiki mechanics ...")
     print("  wiki:", wiki.fetch_all(refresh=refresh))
 
@@ -186,9 +209,15 @@ def _load(name: str) -> dict:
     return json.loads((RAW_DIR / name).read_text("utf-8"))
 
 
-def build() -> dict[str, int]:
+def build(*, expected_commit: str | None = None) -> dict[str, int]:
+    if expected_commit is not None:
+        expected_commit = _source_commit(expected_commit)
     with repoe_snapshot.snapshot_guard(RAW_DIR):
         source_binding = repoe_snapshot.verify_snapshot(RAW_DIR)
+        if expected_commit is not None and (
+            source_binding is None or source_binding["sourceCommit"] != expected_commit
+        ):
+            raise ValueError("RePoE source does not match the reviewed corpus repoeSourceCommit")
         source_manifest = (
             json.loads((RAW_DIR / "source-manifest.json").read_text(encoding="utf-8"))
             if (RAW_DIR / "source-manifest.json").is_file() else {"exportedVersion": "unknown"}
@@ -412,9 +441,15 @@ def build() -> dict[str, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    refresh = "--refresh" in (argv or sys.argv[1:])
-    fetch_all(refresh=refresh)
-    counts = build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--refresh", action="store_true", help="Fetch the latest upstream export")
+    mode.add_argument("--reviewed-source", action="store_true",
+                      help="Rebuild from the immutable RePoE commit in data/compatibility/corpus.json")
+    args = parser.parse_args(argv)
+    expected_commit = reviewed_source_commit() if args.reviewed_source else None
+    fetch_all(refresh=args.refresh, expected_commit=expected_commit)
+    counts = build(expected_commit=expected_commit)
     print(f"built {DB_PATH}")
     print("counts:", counts)
     return 0

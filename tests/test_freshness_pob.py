@@ -37,6 +37,8 @@ LOCAL_PIN = "a82a33b4"
 REMOTE_COMMIT = "dc409a7073e4e2752e9a642db7544af53551d006"
 POB_054_CANDIDATE = "7d1aa43c8c938d7be150d197ed9cdec8a4c1c620"
 POB_022_RELEASE = "860f4268299739ce9df87c4f373abe35824101cf"
+POB_023_RELEASE = "7d6f530cbdab20389ff8bc6ba97a37ac27f74e41"
+POB_055_CANDIDATE = "ce566eac45ea8a86477f513c7ee65a1ebe60014e"
 VERIFIED_COMMIT = "1234567890abcdef1234567890abcdef12345678"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -588,7 +590,8 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     manifest = load_compatibility_manifest(Path("data/compatibility/pob.json"))
 
     assert manifest.schema_version == 1
-    assert len(manifest.entries) == 4
+    assert len(manifest.entries) == 5
+    assert manifest.current_pob_version == "0.23.1-dev.20260910"
 
     entries = {entry.commit: entry for entry in manifest.entries}
     release_entry = entries[REMOTE_COMMIT]
@@ -617,8 +620,22 @@ def test_repository_manifest_authorizes_only_the_certified_pob_pin():
     assert current_entry.passive_tree == "0_5"
     assert current_entry.verified_at.tzinfo is UTC
 
+    historical_release = entries[POB_023_RELEASE]
+    assert historical_release.pob_version == "0.23.1"
+    assert historical_release.game_patch == "0.5.4"
+    assert historical_release.passive_tree == "0_5"
+
+    current_candidate = entries[POB_055_CANDIDATE]
+    assert current_candidate.pob_version == manifest.current_pob_version
+    assert current_candidate.game_patch == "0.5.5"
+    assert current_candidate.passive_tree == "0_5"
+    assert "pob-dev-export" in current_candidate.verified_by
+    assert current_candidate.verified_at.tzinfo is UTC
+
     assert resolve_compatibility(POB_054_CANDIDATE, manifest) == candidate_entry
     assert resolve_compatibility(POB_022_RELEASE, manifest) == current_entry
+    assert resolve_compatibility(POB_023_RELEASE, manifest) == historical_release
+    assert resolve_compatibility(POB_055_CANDIDATE, manifest) == current_candidate
 
     # Certification remains exact: nearby or older PoB commits must not inherit these claims.
     assert resolve_compatibility(LOCAL_PIN, manifest) is None

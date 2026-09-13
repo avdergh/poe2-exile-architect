@@ -221,13 +221,25 @@ Has 1 Charm Slot"""
     )
     assert marginal["ok"] is True
 
-    groups = _tool(server_main.list_skill_groups)()["groups"]
+    def ordinary_group(current, name):
+        matches = [
+            group for group in current["groups"]
+            if not group.get("source") and group["gems"][0]["name"] == name
+        ]
+        assert len(matches) == 1, {"skill": name, "groups": current["groups"]}
+        return matches[0]
+
+    current = _tool(server_main.list_skill_groups)()
+    skills = ("Galvanic Shards", "Stormblast Bolts")
+    groups = [ordinary_group(current, name) for name in skills]
     assert [
-        sum(1 for gem in group["gems"] if gem.get("isSupport")) for group in groups[:2]
+        sum(1 for gem in group["gems"] if gem.get("isSupport")) for group in groups
     ] == [2, 2]
-    for group_index in (1, 2):
+    assert any(group.get("source") == "Default Attack" for group in current["groups"])
+    for name in skills:
         current = _tool(server_main.list_skill_groups)()
-        group = next(row for row in current["groups"] if row["index"] == group_index)
+        group = ordinary_group(current, name)
+        group_index = group["index"]
         audit = _tool(server_main.optimize_supports)(
             max_supports=2,
             candidates=6,
@@ -237,18 +249,19 @@ Has 1 Charm Slot"""
         assert audit["ok"] is True
         assert audit["supportAudit"]["groupIndex"] == group_index
 
+    boss_group = ordinary_group(_tool(server_main.list_skill_groups)(), "Stormblast Bolts")
     selection = engine.select_judge_skill(
-        offense_skill_group_index=2,
+        offense_skill_group_index=boss_group["index"],
         expected_skill_name="Stormblast Bolts",
     )
     checkpoint = _tool(server_main.inspect_generation_checkpoint)(
         True,
-        2,
+        boss_group["index"],
         "Stormblast Bolts",
     )
     assert selection["status"] == "selected"
-    assert selection["calculationContext"]["groupIndex"] == 2
-    assert checkpoint["calculationContext"]["groupIndex"] == 2
+    assert selection["calculationContext"]["groupIndex"] == boss_group["index"]
+    assert checkpoint["calculationContext"]["groupIndex"] == boss_group["index"]
     assert checkpoint["calculationContext"]["skillName"] == "Stormblast Bolts"
     assert checkpoint["lifecycleVerification"]["stage"] == "endgame_final"
 

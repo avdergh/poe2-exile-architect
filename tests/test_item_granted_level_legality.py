@@ -9,6 +9,7 @@ import pytest
 from server.compute import equipment
 from server.compute.engine import _find_luajit
 from server.compute.state import build_state_hash
+from server.judge import hard_legality
 
 
 ADONIA = """Rarity: UNIQUE
@@ -48,6 +49,44 @@ def test_fixed_item_grant_uses_pob_level_and_preserves_readback(engine, slot):
         assert gem["levelRequirementMet"] is True
         assert engine.get_build()["activeSkillGemLevelViolations"] == []
         assert build_state_hash(engine.get_xml()) == state
+
+
+@pytest.mark.parametrize("character_level", [1, 65])
+def test_native_item_grant_downgrade_keeps_equipment_requirements(engine, character_level):
+    engine.new_build()
+    engine.set_class("Sorceress")
+    engine.set_level(character_level)
+    engine.paste_skill("Spark 1/0 1")
+    result = equipment.equip_item_verified(engine, raw=ADONIA, slot="Weapon 1", craft_receipt_ref=None)
+    assert result["ok"], result
+    for reload in (False, True):
+        if reload:
+            engine.load_build_xml(engine.get_xml())
+        groups = engine.call("list_skill_groups")["groups"]
+        source_gems = {
+            group["gems"][0]["name"]: group["gems"][0]
+            for group in groups if group.get("sourceKind") == "item"
+        }
+        # Sparse fixed grants keep their native model; scalable grants can legitimately
+        # decrease with the character's actual level/attributes without losing item identity.
+        assert source_gems["Pinnacle of Power"]["level"] == 20
+        power = source_gems["Power Siphon"]
+        assert 1 <= power["level"] < 20
+        assert power["maximumLegalLevel"] == power["level"]
+        assert power["levelAuthority"] == "item_grant"
+        assert power["levelRequirementMet"] is True
+        build = engine.get_build()
+        assert build["activeSkillGemLevelViolations"] == []
+        audit = hard_legality.audit_build(
+            hard_legality.augment_build_with_snapshot_gear(build, engine.get_xml())
+        )
+        # Correct source authorization is not permission to use the weapon while its
+        # own character requirements remain unmet.
+        assert audit["hardLegalityReady"] is False
+        assert "attribute_requirement_unmet" in audit["hardFailures"]
+        assert ("equipped_item_level_requirement_unmet" in audit["hardFailures"]) == (
+            character_level < 65
+        )
 
 
 def test_manually_socketed_item_skill_cannot_borrow_item_level_authority(engine):
@@ -114,6 +153,15 @@ group.source = 'Item:2'; rejected(); group.source = 'Item:1'
 build.itemsTab.items[1] = {}; rejected(); build.itemsTab.items[1] = item
 grant.skillId = 'OtherSkill'; rejected(); grant.skillId = 'FixedGrant'
 grant.level = 19; rejected(); grant.level = 20
+effect.levels[19] = { levelRequirement = 0 }; gem.level = 19
+local downgraded = gemSummaryForSocketGroup(1)[1]
+assert(downgraded.levelAuthority == 'item_grant' and downgraded.maximumLegalLevel == 19)
+effect.levels[21] = { levelRequirement = 0 }; gem.level = 21; rejected(); gem.level = 20
+effect.levels[20].levelRequirement = 100
+local underlevelled = gemSummaryForSocketGroup(1)[1]
+assert(underlevelled.levelAuthority == 'item_grant')
+assert(underlevelled.levelRequirementMet == false and underlevelled.maximumLegalLevel == 0)
+assert(activeGemLevelViolationsForSocketGroup(1)[1].reason == 'character_level_below_gem_requirement')
 effect.levels = {}; rejected()
 """
     script = tmp_path / "item-grant-audit.lua"

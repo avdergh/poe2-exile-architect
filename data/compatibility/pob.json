@@ -1,13 +1,19 @@
 {
   "schema_version": 1,
-  "current_pob_version": "0.23.1",
+  "current_pob_version": "0.23.1-dev.20260910",
   "entries": [
     {
       "commit": "7d6f530cbdab20389ff8bc6ba97a37ac27f74e41",
       "pob_version": "0.23.1",
       "game_patch": "0.5.4",
       "passive_tree": "0_5",
-      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "pob-patch-contract", "upstream-release"],
+      "verified_by": [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "pob-patch-contract",
+        "upstream-release"
+      ],
       "verified_at": "2026-09-05T05:11:52Z"
     },
     {
@@ -15,7 +21,12 @@
       "pob_version": "0.21.1",
       "game_patch": "0.5.3",
       "passive_tree": "0_5",
-      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree"],
+      "verified_by": [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree"
+      ],
       "verified_at": "2026-06-25T10:03:52Z"
     },
     {
@@ -23,7 +34,13 @@
       "pob_version": "0.21.1-dev.20260625",
       "game_patch": "0.5.4",
       "passive_tree": "0_5",
-      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree", "pob-dev-export"],
+      "verified_by": [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree",
+        "pob-dev-export"
+      ],
       "verified_at": "2026-06-26T02:59:55Z"
     },
     {
@@ -31,8 +48,31 @@
       "pob_version": "0.22.0",
       "game_patch": "0.5.4",
       "passive_tree": "0_5",
-      "verified_by": ["golden-tests", "GGG-patch", "GGG-tree", "ninja-tree"],
+      "verified_by": [
+        "golden-tests",
+        "GGG-patch",
+        "GGG-tree",
+        "ninja-tree"
+      ],
       "verified_at": "2026-07-10T00:00:00Z"
+    },
+    {
+      "commit": "ce566eac45ea8a86477f513c7ee65a1ebe60014e",
+      "pob_version": "0.23.1-dev.20260910",
+      "game_patch": "0.5.5",
+      "passive_tree": "0_5",
+      "verified_by": [
+        "golden-tests",
+        "GGG-patch",
+        "pob-tree-export",
+        "pob-patch-contract",
+        "pob-dev-export",
+        "0.5.5-core-effects",
+        "native-config-readback",
+        "sparse-item-grant-readback"
+      ],
+      "verified_at": "2026-09-13T14:55:56.614238Z",
+      "scope": "固定dev数据与计算回归；17新增核心等级/条件效果；已知未建模机制继续按能力缺口呈现，不认证全部机制或任意BD"
     }
   ]
 }

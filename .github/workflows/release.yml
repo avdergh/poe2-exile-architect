@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           cp data/corpus.sqlite reviewed-corpus.sqlite
-          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.build_corpus --reviewed-source
           uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
       - name: Full non-compute release gate
         shell: pwsh
@@ -105,7 +105,7 @@ jobs:
         run: |
           cp data/corpus.sqlite reviewed-corpus.sqlite
           uv sync
-          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.build_corpus --reviewed-source
           uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
 
       - name: Assemble update payload + manifest

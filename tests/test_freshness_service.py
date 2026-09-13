@@ -363,8 +363,13 @@ def test_application_pob_version_enum_normalizes_unknown_version_and_commit():
     current = providers.current_local_compatibility()
 
     assert current is not None
-    assert current.pob_version == "0.23.1"
-    assert providers.resolve_pob_version_enum("unknown") == "0.23.1"
+    assert current.pob_version == "0.23.1-dev.20260910"
+    assert current.pob_commit == "ce566eac45ea8a86477f513c7ee65a1ebe60014e"
+    assert current.game_patch == "0.5.5"
+    assert providers.resolve_pob_version_enum("unknown") == "0.23.1-dev.20260910"
+    assert providers.resolve_pob_version_enum(current.pob_commit) == current.pob_version
+    assert providers.resolve_pob_version_enum("0.23.1") == "0.23.1"
+    assert providers.resolve_pob_version_enum("7d6f530cbdab20389ff8bc6ba97a37ac27f74e41") == "0.23.1"
     assert (
         providers.resolve_pob_version_enum("860f4268299739ce9df87c4f373abe35824101cf") == "0.22.0"
     )

@@ -99,6 +99,7 @@ end
             PATCH_ROOT / "0005-refresh-synthetic-no-supports.patch",
             PATCH_ROOT / "0006-augment-limit-metadata.patch",
             PATCH_ROOT / "0007-standard-luajit-syntax.patch",
+            PATCH_ROOT / "0008-normalize-sparse-item-grant-levels.patch",
         ]
         for patch in patches:
             self.assertTrue(patch.is_file(), patch)

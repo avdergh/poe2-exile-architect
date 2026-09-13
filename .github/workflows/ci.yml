@@ -49,7 +49,7 @@ jobs:
       - name: Build corpus
         run: |
           cp data/corpus.sqlite reviewed-corpus.sqlite
-          uv run python -m pipeline.build_corpus
+          uv run python -m pipeline.build_corpus --reviewed-source
           uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
 
       - name: Run tests (golden engine + corpus)

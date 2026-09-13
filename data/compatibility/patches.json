@@ -16,5 +16,16 @@
         "https://raw.githubusercontent.com/repoe-fork/poe2/master/exported-version.txt"
       ]
     }
-  ]
+  ],
+  "currentUpstreamAssessment": {
+    "verifiedAt": "2026-09-13T13:50:37.811158Z",
+    "gamePatch": "0.5.5",
+    "pobCommit": "ce566eac45ea8a86477f513c7ee65a1ebe60014e",
+    "pobVersion": "0.23.1-dev.20260910",
+    "repoeSourceCommit": "bdfed992aed0d4c91b9ffb5ef1c3f1acd7af2537",
+    "repoeExportedVersion": "4.5.5.2",
+    "status": "validated",
+    "scope": "固定dev数据与计算回归；17新增核心等级/条件效果；已知未建模机制继续按能力缺口呈现，不认证全部机制或任意BD",
+    "note": "patches中的upstreamGaps保留2026-09-05历史核验；当前静态与计算覆盖以本记录及独立兼容证书为准"
+  }
 }

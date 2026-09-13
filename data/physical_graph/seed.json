@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "snapshotId": "physical-graph-75c6bc1221fe42f77be8024d",
-  "snapshotFile": "snapshots/physical-graph-75c6bc1221fe42f77be8024d.json.gz",
-  "sha256": "180bcf34e569ecb915bcde6ffdf2f6c009b1f0c7ad3f33481c5c1902402e83fd",
+  "snapshotId": "physical-graph-41ec34610cc2259ef9610419",
+  "snapshotFile": "snapshots/physical-graph-41ec34610cc2259ef9610419.json.gz",
+  "sha256": "31eaf106a1cb1d760954037a6a3570ce9dfa96f1f9370c8981f778cbc53c67a9",
   "compressed": true,
-  "nodeCount": 48236,
-  "edgeCount": 101494,
+  "nodeCount": 48398,
+  "edgeCount": 101647,
   "sourceCount": 8
 }

@@ -142,19 +142,20 @@ class UniqueSource:
         return "\n".join(lines)
 
     def public_contract(self) -> dict:
+        modifier_templates: list[dict[str, str | list[int]]] = [
+            {
+                "text": modifier.text,
+                "kind": modifier.kind,
+                "variantIds": sorted(modifier.variants),
+            }
+            for modifier in self.modifiers
+        ]
         result = {
             "requiredSelections": self.slots,
             "allowDuplicateVariants": self.duplicates,
             "intrinsicCorrupted": self.intrinsic_corrupted,
             "options": [{"id": index, "name": label} for index, label in enumerate(self.labels, 1)],
-            "modifierTemplates": [
-                {
-                    "text": modifier.text,
-                    "kind": modifier.kind,
-                    "variantIds": sorted(modifier.variants),
-                }
-                for modifier in self.modifiers
-            ],
+            "modifierTemplates": modifier_templates,
             "note": "Select the required number of complete variants. Untagged modifiers are "
             "mandatory; an effect shared by selected variants applies once unless duplicates "
             "are allowed. The flattened readable text is not an equip-ready combination.",
@@ -198,7 +199,7 @@ class UniqueSource:
                     "Readable text retains all conditions and is not an equip-ready combination.",
                 }
             )
-            for template, modifier in zip(result["modifierTemplates"], self.modifiers, strict=True):
+            for template, modifier in zip(modifier_templates, self.modifiers, strict=True):
                 template.update(
                     versionIds=sorted(modifier.versions), groupIds=sorted(modifier.groups)
                 )
@@ -280,9 +281,9 @@ def parse_unique_source(raw: str, *, name: str, base: str) -> UniqueSource:
             modifiers.append(UniqueModifier(value, variants, kind, mod_versions, groups))
     group_options: dict[int, dict[int, set[int]]] = {}
     for modifier in modifiers:
-        for group in modifier.groups:
+        for group_id in modifier.groups:
             for variant in modifier.variants:
-                group_options.setdefault(group, {}).setdefault(variant, set()).update(
+                group_options.setdefault(group_id, {}).setdefault(variant, set()).update(
                     modifier.versions or {0}
                 )
     variant_groups = tuple(

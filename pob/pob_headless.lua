@@ -197,8 +197,11 @@ local function itemGrantedLevelForSocketGroup(sg, gem)
 				-- with only a level 20 model). Reuse that exact read-only routine.
 				local normalized = { grantedEffect = effect, level = grant.level }
 				calcLib.validateGemLevel(normalized)
-				if normalized.level == gem.level and effect.levels[gem.level] then
-					return asNumber(normalized.level)
+				-- Native PoB can lower an item grant for current character/attribute
+				-- requirements. Its real modeled level remains authorized only under
+				-- this exact equipped source's normalized upper bound.
+				if asNumber(gem.level) > 0 and gem.level <= normalized.level and effect.levels[gem.level] then
+					return asNumber(gem.level)
 				end
 			end
 		end
