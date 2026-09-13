@@ -1201,6 +1201,7 @@ def ingest_uniques(
     known_base_aliases: tuple[GraphAlias, ...] = (),
 ) -> GraphIngestionResult:
     """Ingest PoB unique text blocks into conservative unique/base/mod-text facts."""
+    from .unique_variants import parse_unique_source
 
     text = Path(path).read_text(encoding="utf-8")
     blocks = _unique_item_blocks(text)
@@ -1259,7 +1260,12 @@ def ingest_uniques(
                     evidence_refs=(source.source_id,),
                 )
             )
-        for line in _unique_mod_lines(block[2:]):
+        selection = parse_unique_source("\n".join(block), name=unique_name, base=base_name)
+        mod_lines = (
+            selection.readable_text(name=unique_name, base=base_name).splitlines()[2:]
+            if selection.uses_modern_selection else _unique_mod_lines(block[2:])
+        )
+        for line in mod_lines:
             mod_text_key = (
                 f"unique_mod_text:{_normalized_token(unique_name)}:{_stable_text_token(line)}"
             )

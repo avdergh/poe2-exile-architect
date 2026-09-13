@@ -768,8 +768,14 @@ def get_unique(name: str, *, include_source: bool = False) -> dict | None:
     }
     if row["raw"]:
         source = parse_unique_source(row["raw"], name=row["name"], base=row["base"])
-        if source.labels:
+        if source.labels or source.uses_modern_selection:
             result["variantSelection"] = source.public_contract()
+        if source.uses_modern_selection:
+            result["text"] = source.readable_text(name=row["name"], base=row["base"])
+            result["defaultSelectionText"] = "\n".join([
+                row["name"], row["base"], *source.properties, *source.project(source.selected),
+                *(["Corrupted"] if source.intrinsic_corrupted else []),
+            ])
         if include_source:
             result["pobSource"] = row["raw"]
     return result

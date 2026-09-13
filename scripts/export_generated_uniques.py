@@ -1,6 +1,6 @@
 """Export data.uniques.generated (Generated.lua) into a static block file.
 
-The physical-graph unique ingestion only parses static `[[...]]` blocks. Six 0.5.4
+The physical-graph unique ingestion only parses static `[[...]]` blocks. Some
 Time-Lost / generated uniques live in Data/Uniques/Special/Generated.lua as Lua-built
 text (never ingested). This script boots the headless engine once and dumps the
 generated texts into data/physical_graph/uniques/generated_uniques.lua so the graph
@@ -11,6 +11,7 @@ Usage: uv run python scripts/export_generated_uniques.py
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -24,13 +25,14 @@ from server.compute.engine import PobEngine  # noqa: E402
 OUT_FILE = REPO_ROOT / "data" / "physical_graph" / "uniques" / "generated_uniques.lua"
 
 
-def main() -> int:
-    out_file = OUT_FILE
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=OUT_FILE)
+    parser.add_argument("--pob-script", type=Path, default=REPO_ROOT / "pob" / "pob_headless.lua")
+    args = parser.parse_args(argv)
+    out_file = args.output
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    engine = PobEngine(
-        script=REPO_ROOT / "pob" / "pob_headless.lua",
-        src_dir=REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src",
-    )
+    engine = PobEngine(script=args.pob_script.resolve())
     try:
         result = engine.call("dump_generated_uniques")
     finally:

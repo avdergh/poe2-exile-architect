@@ -8,6 +8,8 @@ from mature build samples, safe metadata, wiki text, or inferred labels.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
+import hashlib
 import json
 import re
 import sys
@@ -20,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from server import paths  # noqa: E402
 from server.knowledge import copy_safety, physical_graph  # noqa: E402
+from pipeline import repoe_snapshot  # noqa: E402
 
 JSON_OUTPUT = REPO_ROOT / "phase4_local_physical_graph_snapshot_report.json"
 MD_OUTPUT = REPO_ROOT / "phase4_local_physical_graph_snapshot_report.md"
@@ -102,6 +105,21 @@ def build_local_snapshot_report(
     raw_data_dir: str | Path = REPO_ROOT / "data" / "raw",
     pob_src_dir: str | Path = REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src",
     output_dir: str | Path | None = None,
+    generated_uniques_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    with repoe_snapshot.snapshot_guard(Path(raw_data_dir)):
+        return _build_local_snapshot_report(
+            raw_data_dir=raw_data_dir, pob_src_dir=pob_src_dir, output_dir=output_dir,
+            generated_uniques_dir=generated_uniques_dir,
+        )
+
+
+def _build_local_snapshot_report(
+    *,
+    raw_data_dir: str | Path,
+    pob_src_dir: str | Path,
+    output_dir: str | Path | None,
+    generated_uniques_dir: str | Path | None,
 ) -> dict[str, Any]:
     raw_root = Path(raw_data_dir)
     pob_root = Path(pob_src_dir)
@@ -110,16 +128,28 @@ def build_local_snapshot_report(
     index_path = graph_root / "snapshot_index.sqlite"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
 
+    bound_export = repoe_snapshot.verify_snapshot(raw_root)
+    specs = ALLOWED_SOURCE_SPECS
+    if bound_export is not None:
+        bindings = {item["localFile"]: item for item in bound_export["files"]}
+        specs = tuple(
+            replace(spec, source_url=bindings[spec.relative_path]["sourceUrl"], claims=(
+                *spec.claims,
+                physical_graph.SourceClaim("source_commit", bound_export["sourceCommit"]),
+                physical_graph.SourceClaim("exported_version", bound_export["exportedVersion"]),
+                physical_graph.SourceClaim("content_sha256", bindings[spec.relative_path]["sha256"]),
+            )) if spec.kind == "repoe_raw" else spec for spec in specs
+        )
     sources = physical_graph.build_source_inventory(
         raw_data_dir=raw_root,
-        specs=ALLOWED_SOURCE_SPECS,
+        specs=specs,
         include_missing=False,
     )
     sources_by_id = {source.source_id: source for source in sources}
     ingestion_results: list[physical_graph.GraphIngestionResult] = []
     ingested_sources: list[dict[str, Any]] = []
 
-    for spec in ALLOWED_SOURCE_SPECS:
+    for spec in specs:
         source = sources_by_id[spec.source_id]
         source_path = raw_root / spec.relative_path
         result = INGESTERS[spec.source_id](source_path, source)
@@ -144,6 +174,7 @@ def build_local_snapshot_report(
             for node in result.nodes
             if node.node_type == "active_skill"
         },
+        generated_uniques_dir=Path(generated_uniques_dir) if generated_uniques_dir is not None else None,
     )
     ingestion_results.extend(static_ingestions)
     static_sources.extend(source for source, _result, _report in static_source_reports)
@@ -223,11 +254,13 @@ def write_local_snapshot_report(
     output_dir: str | Path | None = None,
     json_output: str | Path = JSON_OUTPUT,
     md_output: str | Path = MD_OUTPUT,
+    generated_uniques_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     report = build_local_snapshot_report(
         raw_data_dir=raw_data_dir,
         pob_src_dir=pob_src_dir,
         output_dir=output_dir,
+        generated_uniques_dir=generated_uniques_dir,
     )
     Path(json_output).write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -259,6 +292,7 @@ def _pob_static_ingestions(
     pob_root: Path,
     base_ingestion: physical_graph.GraphIngestionResult,
     known_skill_keys: set[str],
+    generated_uniques_dir: Path | None = None,
 ) -> tuple[
     list[physical_graph.GraphIngestionResult],
     list[tuple[physical_graph.GraphSource, physical_graph.GraphIngestionResult, dict[str, Any]]],
@@ -279,6 +313,7 @@ def _pob_static_ingestions(
             claims=(
                 physical_graph.SourceClaim("passive_tree_version", POB_PASSIVE_TREE_VERSION),
                 physical_graph.SourceClaim("source_scope", "pinned_pob_tree_data"),
+                physical_graph.SourceClaim("content_sha256", hashlib.sha256(passive_tree_path.read_bytes()).hexdigest()),
             ),
             expected_count=None,
             confidence=0.95,
@@ -317,6 +352,7 @@ def _pob_static_ingestions(
                 physical_graph.SourceClaim("passive_tree_version", "not_applicable"),
                 physical_graph.SourceClaim("source_scope", "pinned_pob_skill_data"),
                 physical_graph.SourceClaim("endpoint_kind", "minion_payload"),
+                physical_graph.SourceClaim("content_sha256", _static_file_set_hash(skill_paths, pob_root)),
             ),
             expected_count=len(skill_paths),
             confidence=0.95,
@@ -346,7 +382,7 @@ def _pob_static_ingestions(
         )
 
     unique_paths = sorted((pob_root / "Data" / "Uniques").glob("**/*.lua"))
-    exported_uniques_dir = REPO_ROOT / "data" / "physical_graph" / "uniques"
+    exported_uniques_dir = generated_uniques_dir if generated_uniques_dir is not None else REPO_ROOT / "data" / "physical_graph" / "uniques"
     if exported_uniques_dir.is_dir():
         unique_paths = sorted([*unique_paths, *exported_uniques_dir.glob("*.lua")])
     if unique_paths:
@@ -357,6 +393,7 @@ def _pob_static_ingestions(
             claims=(
                 physical_graph.SourceClaim("passive_tree_version", "not_applicable"),
                 physical_graph.SourceClaim("source_scope", "pinned_pob_unique_text"),
+                physical_graph.SourceClaim("content_sha256", _static_file_set_hash(unique_paths, pob_root)),
             ),
             expected_count=len(unique_paths),
             confidence=0.9,
@@ -391,6 +428,16 @@ def _pob_static_ingestions(
         )
 
     return ingestions, reports, excluded
+
+
+def _static_file_set_hash(files: list[Path], pob_root: Path) -> str:
+    entries = [
+        {"path": path.relative_to(pob_root).as_posix() if path.is_relative_to(pob_root)
+         else "generated_uniques/" + path.name,
+         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in files
+    ]
+    return hashlib.sha256(json.dumps(sorted(entries, key=lambda item: item["path"]), sort_keys=True).encode()).hexdigest()
 
 
 def _source_report(
@@ -578,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         default=str(REPO_ROOT / "pob" / "PathOfBuilding-PoE2" / "src"),
     )
     parser.add_argument("--output-dir", default=str(_default_graph_dir()))
+    parser.add_argument("--generated-uniques-dir")
     parser.add_argument("--json-output", default=str(JSON_OUTPUT))
     parser.add_argument("--md-output", default=str(MD_OUTPUT))
     args = parser.parse_args(argv)
@@ -585,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_data_dir=args.raw_data_dir,
         pob_src_dir=args.pob_src_dir,
         output_dir=args.output_dir,
+        generated_uniques_dir=args.generated_uniques_dir,
         json_output=args.json_output,
         md_output=args.md_output,
     )

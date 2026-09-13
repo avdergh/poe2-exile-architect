@@ -8,9 +8,14 @@ Compute 层通过 headless 方式驱动 Path of Building Community 的 **PoE2** 
 | --- | --- |
 | Repo | https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2 |
 | Branch | `dev` |
-| Pinned commit | `7d6f530cbdab20389ff8bc6ba97a37ac27f74e41`（2026-07-28，正式版 `0.23.1`；0.5.5 新核心尚缺上游数据） |
+| Pinned commit | `7d6f530cbdab20389ff8bc6ba97a37ac27f74e41`（2026-07-28，正式版 `0.23.1`；0.5.5 新核心未包含在该固定版本中） |
 | License | MIT |
 | Game data | game patch `0.5.4`，passive tree version `0_5` |
+
+2026-09-13直连上游核验：正式版仍为0.23.1，但开发分支`ce566eac45ea8a86477f513c7ee65a1ebe60014e`
+与RePoE导出4.5.5.2（`bdfed992aed0d4c91b9ffb5ef1c3f1acd7af2537`）均已出现官方0.5.5新增的17个
+灵魂核心数据条目。上游资料可供升级验收，不再沿用9月5日“上游尚缺数据”作为当前结论。
+此核验仅证明静态条目存在；尚未更换上述pin、合并本地patch或完成计算认证，当前模型版本保持0.5.4。
 
 ## 复现 working copy
 

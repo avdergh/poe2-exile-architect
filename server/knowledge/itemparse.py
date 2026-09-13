@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import db
-from .unique_variants import UniqueSource, parse_unique_source
+from .unique_variants import UniqueSource, has_selection_syntax, parse_unique_source
 
 # A numeric roll or a (signed) "(min-max)" range token -> a single placeholder, so an item line
 # like "118% increased Physical Damage" normalizes to the same template as the corpus mod
@@ -466,7 +466,7 @@ def _unique_modifier_lines(text: str, *, include_implicit: bool = False) -> list
 
     lines = [line.rstrip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
     info = _header([line.strip() for line in lines])
-    if any(line.strip().startswith("Variant:") for line in lines):
+    if has_selection_syntax(text):
         source = parse_unique_source(text, name=info["name"], base=info["base"])
         return source.project(source.selected, include_implicit=include_implicit)
     output: list[str] = []
@@ -524,6 +524,8 @@ def _unique_modifiers_match(actual: list[str], expected: list[str]) -> bool:
 
 def _unique_variant_combination_matches(actual: list[str], source: UniqueSource) -> bool:
     """Match a complete legal choice, pruning by actual lines before searching combinations."""
+    if source.uses_modern_selection:
+        return _unique_version_group_combination_matches(actual, source)
     if not source.labels:
         return _unique_modifiers_match(actual, source.project(()))
 
@@ -572,6 +574,51 @@ def _unique_variant_combination_matches(actual: list[str], source: UniqueSource)
     return choose(0, source.slots, fixed)
 
 
+def _unique_version_group_combination_matches(actual: list[str], source: UniqueSource) -> bool:
+    """Find one complete version/group assignment; never sum separate historical branches."""
+    for version in range(1, len(source.versions) + 1) if source.versions else (None,):
+        if not source.groups:
+            choices = ((value,) for value in range(1, len(source.labels) + 1)) if source.labels else [()]
+            if any(_unique_modifiers_match(actual, source.project(choice, version=version)) for choice in choices):
+                return True
+            continue
+
+        active = {index for index, modifier in enumerate(source.modifiers)
+                  if not modifier.versions or version in modifier.versions}
+        fixed = frozenset(index for index in active if not source.modifiers[index].variants)
+        candidates: list[list[tuple[int, frozenset[int]]]] = []
+        for group in source.groups:
+            eligible = group.eligible(version)
+            if not eligible:
+                continue
+            options = []
+            for variant in eligible:
+                indices = frozenset(index for index in active
+                                    if group.id in source.modifiers[index].groups
+                                    and variant in source.modifiers[index].variants)
+                if all(any(_unique_modifier_line_matches(line, source.modifiers[index].text)
+                           for line in actual) for index in indices):
+                    options.append((variant, indices))
+            candidates.append(options)
+        failed = set()
+
+        def choose(position: int, used: frozenset[int], indices: frozenset[int]) -> bool:
+            state = (position, used, indices)
+            if state in failed or len(indices) > len(actual):
+                return False
+            if position == len(candidates):
+                return _unique_modifiers_match(actual, [source.modifiers[index].text for index in sorted(indices)])
+            for variant, additions in candidates[position]:
+                if variant not in used and choose(position + 1, used | {variant}, indices | additions):
+                    return True
+            failed.add(state)
+            return False
+
+        if choose(0, frozenset(), fixed):
+            return True
+    return False
+
+
 def _unique_modifier_issue(
     text: str, unique: dict[str, Any], *, trusted_provenance: dict[str, Any] | None = None
 ) -> str | None:
@@ -597,19 +644,23 @@ def _unique_modifier_issue(
             )
             if source.intrinsic_corrupted and not semantic_item_structure(text)["corrupted"]:
                 return "unique_intrinsic_corruption_missing"
-            if re.search(r"(?m)^Variant:|\{variant:", text):
+            if has_selection_syntax(text):
                 actual_source = parse_unique_source(text, name=unique["name"], base=unique["base"])
                 if (
                     actual_source.labels != source.labels
-                    or actual_source.alt_slots != source.alt_slots
-                    or actual_source.duplicates != source.duplicates
-                    or any(value < 1 or value > len(source.labels) for value in actual_source.selected)
-                    or (not source.duplicates and len(set(actual_source.selected)) != source.slots)
+                    or (not source.uses_modern_selection and (
+                        actual_source.alt_slots != source.alt_slots
+                        or actual_source.duplicates != source.duplicates
+                    ))
+                    or actual_source.versions != source.versions
+                    or actual_source.groups != source.groups
+                    or not actual_source.selection_valid
                 ):
                     return "unique_variant_selection_invalid"
                 matches = _unique_modifiers_match(
                     natural(actual_source.project(actual_source.selected)),
-                    source.project(actual_source.selected),
+                    source.project(actual_source.selected, version=actual_source.selected_version,
+                                   groups=dict(actual_source.selected_groups)),
                 )
             else:
                 matches = _unique_variant_combination_matches(

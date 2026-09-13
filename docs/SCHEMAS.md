@@ -352,6 +352,9 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   时只保留未验证诊断，不能授权新的生成 artifact。
 - 暗金合法性从 corpus 保留的 pinned PoB `uniques.raw` 读取固定词条、隐式与完整变体组合。
   `get_unique.variantSelection` 返回 `requiredSelections/allowDuplicateVariants/options/modifierTemplates`；
+  新版PoB的Version与独立Variant组使用`selectionModel=version_group_v1`，附`versions/groups/defaultSelection`，
+  每条模板保留版本/组条件，默认选择跟随PoB源声明；不同版本或互斥组不得叠加。`defaultSelectionText`
+  只投影该明确默认选择，语料和图的可读文本保留其他选项及成立条件，不把历史效果写成常驻收益。
   展平的 `text` 仅供阅读，不代表所有变体可以同时装备。校验按 PoB 的 variant 共享与重复语义核对
   完整词条多重集、数值范围及选择数量，不允许任意子集、跨变体拼接或由调用者扩大选择容量。
   PoB来源中的词条种类标记（如`{desecrated}`）与剪贴板效果分开比较；仅统一效果文本，原始
