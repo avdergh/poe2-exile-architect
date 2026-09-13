@@ -104,7 +104,7 @@ adoption. Shared `contentRevisionRef` identifies text, not transferable source p
 | Bind Family | `record_generation_family_discovery`; terminal discovery receipt |
 | Prepare design | `construct_research_execution_contract`, then `validate_generation_blueprint` before PoB mutation/planning |
 | Validate implementation | `validate_generation_draft`; final exact offense group/name and observed implementation signature |
-| Inspect active candidate | `inspect_generation_checkpoint`; merged checks for one semantic state hash |
+| Inspect active candidate | `inspect_generation_checkpoint`; merge one semantic state within the same engine/process lifetime |
 | Formal generated-candidate Judge | `evaluate_generation_candidate`; exact snapshot and trusted receipt |
 | Preserve final candidate | `save_final_build_artifact`; exact passing Judge snapshot or explicitly selected protected baseline |
 | Verify saved artifact | `verify_lifecycle_stage(..., artifact_id=...)`; independent artifact-bound lifecycle receipt |

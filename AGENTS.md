@@ -173,6 +173,8 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 - 重复的 completeness、preflight、stats 和 defenses 检查使用
   `inspect_generation_checkpoint`，以语义 `build_state_hash` 合并；状态改变后必须生成新检查，
   正式 Judge 与 artifact-bound lifecycle verification 仍是独立可信步骤。
+  缓存只在同一引擎与实际PoB进程生命周期内复用；进程重建或runtime替换后同XML也必须重算，
+  `validationRef`不能跨引擎授权，不能凭旧Checkpoint恢复通过状态。
 - PoB输入读取与状态hash复用`server/compute/pob_xml_input.py`的pinned Lua语义，保留属性内换行，
   不把W3C实体解码或属性空白折叠当成PoB语义。该只读投影不得写回活动构筑；局部编辑保留其他
   原XML字节。受旧读取语义影响的回执须重验，不能仅补版本标记或批量重标来源。

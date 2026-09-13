@@ -437,7 +437,12 @@ Item Level，Unique 数量使用静态来源限制。Checkpoint/Judge 与 artifa
 PoB 不把物品授予的免费槽写入 `Spec.nodes`，实时审计因此使用引擎读回的
 `allocatedPassiveJewelSocketIds`；XML-only 结构检查仅确认显式已分配槽，不提升免费槽数值权限。
 新保存要求 `hard_legality_v7` 的正式 Judge 回执（含 baseline 恢复），旧版须重验；既有 artifact 的
-原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v10`，不复用旧检查。
+原审计版本与权限保留，不重写 manifest。Checkpoint 使用 `generation_checkpoint_v11`，不复用旧检查。
+数值、preflight与硬合法性缓存按引擎对象和实际PoB进程实例隔离，每个引擎最多保留48个状态；
+进程重建、同对象更换进程或运行时替换后，即使XML相同也必须重算，不凭可复用的OS进程号授权。
+`validationRef`同时绑定该进程生命周期、语义状态、精确输出选择器和可用性指纹，不持久化为跨会话
+凭据。会话释放不被缓存阻止；计算或缓存命中刷新期间上下文失效返回
+`generation_checkpoint_context_changed`，不得返回旧通过/失败或重新发布旧缓存。
 目录或会话审读排除改变时，Checkpoint以可用性上下文指纹区分同一PoB状态；恢复旧快照也重新应用
 本会话已有的排除。`agentAvailabilityReviews`保持Agent审读权限，可收紧交付，不能证明内部Research来源。
 共享 `lifeReservation` 检查使用 PoB 已取整的保留与未保留生命读回；生命保留导致剩余生命不足 1 时

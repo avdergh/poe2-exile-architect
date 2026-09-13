@@ -1,4 +1,4 @@
-"""State-hash keyed generation checks that collapse repeated read-only validation calls."""
+"""Engine/process-local generation checks that reuse unchanged semantic build states."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ import hashlib
 import threading
 from collections import OrderedDict
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from server.compute import attainability, completeness, craftopt, itemopt, supportopt, sustain
 from server.compute.state import build_state_hash
@@ -15,9 +18,19 @@ from server.knowledge import lifecycle_verification
 from . import lifecycle_observation, preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v10"
+CHECKPOINT_VERSION = "generation_checkpoint_v11"
 _CACHE_LIMIT = 48
-_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+
+@dataclass
+class _EngineCache:
+    # PoB loads runtime data once per process. Keep the process object, not its reusable OS pid.
+    process: Any
+    scope: str = field(default_factory=lambda: uuid4().hex)
+    entries: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
+
+
+_CACHE: WeakKeyDictionary[Any, _EngineCache] = WeakKeyDictionary()
 _LOCK = threading.RLock()
 _STAT_KEYS = [
     "CombinedDPS",
@@ -61,9 +74,11 @@ def inspect_generation_checkpoint(
     offense_skill_group_index: int | None = None,
     expected_skill_name: str | None = None,
 ) -> dict[str, Any]:
-    """Inspect one semantic build state once, then reuse the bounded result for identical states."""
+    """Reuse identical states only within the same engine and live process lifetime."""
 
     with engine.transaction_lock():
+        with _LOCK:
+            engine_cache = _cache_for_engine(engine)
         try:
             xml = engine.get_xml()
         except Exception:  # noqa: BLE001
@@ -79,18 +94,22 @@ def inspect_generation_checkpoint(
         availability_context = supportopt._availability_context(engine)
         cache_key = f"{CHECKPOINT_VERSION}:{state_hash}:{calculation_selector}:{availability_context['fingerprint']}"
         with _LOCK:
-            cached = _CACHE.get(cache_key)
+            cached = engine_cache.entries.get(cache_key)
             if cached is not None:
-                _CACHE.move_to_end(cache_key)
+                engine_cache.entries.move_to_end(cache_key)
                 result = deepcopy(cached)
-                result["cacheHit"] = True
-                _refresh_lifecycle(result, engine=engine, xml=xml)
-                _refresh_dynamic_quality(
-                    result,
-                    engine=engine,
-                    xml=xml,
-                    state_hash=state_hash,
-                )
+        if cached is not None:
+            # Dynamic session evidence can perform engine work. Never hold the global cache lock
+            # while refreshing it: another session must remain able to inspect its own engine.
+            result["cacheHit"] = True
+            _refresh_lifecycle(result, engine=engine, xml=xml)
+            _refresh_dynamic_quality(result, engine=engine, xml=xml, state_hash=state_hash)
+            with _LOCK:
+                if not _cache_is_current(engine, engine_cache):
+                    return _project_result(
+                        _error("generation_checkpoint_context_changed", state_hash=state_hash),
+                        strict_mode=strict_mode,
+                    )
                 return _project_result(result, strict_mode=strict_mode)
 
         try:
@@ -137,7 +156,7 @@ def inspect_generation_checkpoint(
             "status": "ready" if preflight_result.get("readyForJudge") else "blocked",
             "checkpointVersion": CHECKPOINT_VERSION,
             "availabilityContextRef": availability_context["fingerprint"],
-            "validationRef": _validation_ref(state_hash),
+            "validationRef": _validation_ref(f"{engine_cache.scope}:{cache_key}"),
             "stateHash": state_hash,
             "cacheHit": False,
             "buildSummary": {
@@ -175,15 +194,41 @@ def inspect_generation_checkpoint(
             state_hash=state_hash,
         )
         with _LOCK:
-            _CACHE[cache_key] = deepcopy(result)
-            _CACHE.move_to_end(cache_key)
-            while len(_CACHE) > _CACHE_LIMIT:
-                _CACHE.popitem(last=False)
+            if not _cache_is_current(engine, engine_cache):
+                return _project_result(
+                    _error("generation_checkpoint_context_changed", state_hash=state_hash),
+                    strict_mode=strict_mode,
+                )
+            engine_cache.entries[cache_key] = deepcopy(result)
+            engine_cache.entries.move_to_end(cache_key)
+            while len(engine_cache.entries) > _CACHE_LIMIT:
+                engine_cache.entries.popitem(last=False)
         return _project_result(result, strict_mode=strict_mode)
 
 
+def _cache_for_engine(engine: Any) -> _EngineCache:
+    """Caller holds _LOCK; fake engines without a process still have separate object lifetimes."""
+    process = getattr(engine, "proc", None)
+    cached = _CACHE.get(engine)
+    if cached is None or cached.process is not process:
+        cached = _EngineCache(process=process)
+        _CACHE[engine] = cached
+    return cached
+
+
+def _cache_is_current(engine: Any, cached: _EngineCache) -> bool:
+    """Reject reads that straddle process replacement, process exit or explicit invalidation."""
+    process = getattr(engine, "proc", None)
+    poll = getattr(process, "poll", None)
+    return (
+        _CACHE.get(engine) is cached
+        and cached.process is process
+        and (not callable(poll) or poll() is None)
+    )
+
+
 def clear_validation_checkpoint_cache() -> None:
-    """Test/runtime maintenance helper."""
+    """Invalidate every engine, including in-flight reads that must not repopulate old entries."""
 
     with _LOCK:
         _CACHE.clear()
@@ -888,8 +933,8 @@ def _project_result(result: dict[str, Any], *, strict_mode: bool) -> dict[str, A
     return projected
 
 
-def _validation_ref(state_hash: str) -> str:
-    digest = hashlib.sha256(f"{CHECKPOINT_VERSION}|{state_hash}".encode()).hexdigest()[:24]
+def _validation_ref(context_key: str) -> str:
+    digest = hashlib.sha256(context_key.encode()).hexdigest()[:24]
     return f"generation-checkpoint:{digest}"
 
 

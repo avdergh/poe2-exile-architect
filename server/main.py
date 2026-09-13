@@ -841,7 +841,8 @@ def inspect_generation_checkpoint(
 ) -> dict[str, Any]:
     """Merge repeated read-only generation checks by semantic build-state hash.
 
-    Completeness, preflight, bounded stats and defenses are computed once for an unchanged state.
+    Completeness, preflight, bounded stats and defenses are reused for an unchanged state only
+    within the same engine/process lifetime. Engine rebuilds and runtime swaps require fresh reads.
     A later call with the same semantic hash reuses the safe process-local result. Formal Judge and
     artifact-bound lifecycle verification remain separate trust steps. Subjective advisories are
     omitted unless ``strict_mode=true`` is supplied.

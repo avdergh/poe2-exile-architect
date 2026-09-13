@@ -71,10 +71,14 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
      `measurement_error/capability_gap`继续是验证缺口。重测失败会撤销该槽旧pending方案，
      不能复用旧方案结论。仅有`Rune:`声明而无匹配效果/receipt不算镶嵌。
 4. 调用 `mcp__poe_build__inspect_generation_checkpoint`，传本次反馈模式和 offense group/name。它合并
-   completeness、preflight、有界 stats 和 defenses；同一语义状态复用结果。先复读
+   completeness、preflight、有界 stats 和 defenses；仅同一引擎/PoB进程中的同一语义状态复用结果。先复读
    `buildSummary` 的职业、升华、等级和主技能，只有具名局部诊断才另读 `mcp__poe_build__get_build()`。
 
 ## 处理 checkpoint
+
+`generation_checkpoint_context_changed`表示检查期间引擎或缓存上下文已变化。先确认活动构筑及
+精确输出仍对应本候选，再重新调用checkpoint；进程重建丢失活动状态时，按已有可信恢复规则恢复
+构筑和所需证据后再检查。不能沿用旧validationRef或通过结论；此类重查不消耗正式Judge额度。
 
 先执行可恢复修正，再判断是否需要用户介入。发现辅助已移除、禁用或不适用时，查精确详情的
 `availability`与当前补丁；若尚未录入可用性目录，阅读官方页面与独立旁证，再向`mcp__poe_build__optimize_supports`
