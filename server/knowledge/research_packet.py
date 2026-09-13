@@ -23,6 +23,11 @@ from ..compute.pob_xml_input import (
     requires_preserved_input_semantics,
 )
 from ..compute.state import build_state_hash
+from ..compute.pob_config import (
+    CUSTOM_MODIFIER_SEMANTICS_VERSION,
+    active_custom_modifier_hash,
+    custom_modifier_projection,
+)
 
 PACKET_PREFIX = "poe-bd-creator-research-packet-"
 MAX_TTL_SECONDS = 24 * 60 * 60
@@ -1299,7 +1304,7 @@ def config_set_identity(root: ET.Element) -> dict[str, Any]:
     active = _config_id(declared) if declared else (None if explicit else "1")
     if declared and active is None:
         issues.append("invalid_active_config_set")
-    if explicit and any(child.tag in {"Input", "Placeholder"} for child in config):
+    if explicit and any(child.tag in {"Input", "Placeholder", "CustomModifierBlock"} for child in config):
         issues.append("mixed_legacy_and_config_sets")
     if not explicit:
         containers = [config] if config is not None else []
@@ -1325,6 +1330,8 @@ def config_set_identity(root: ET.Element) -> dict[str, Any]:
                 issues.append("duplicate_config_input")
             seen.add(key)
             value_type, value = _config_value(child)
+            if child.tag == "Input" and name == "customMods" and value_type != "string":
+                issues.append("invalid_custom_mods_type")
             if value_type == "unknown":
                 issues.append("invalid_config_input_type")
             elif value_type == "boolean" and value not in {"true", "false"}:
@@ -1473,7 +1480,8 @@ def validated_pob_readback(packet: dict[str, Any]) -> dict[str, Any] | None:
     binding = readback.get("stateBinding") or {}
     raw = normalized.get("rawContext") or {}
     xml = str(raw.get("rawXml") or "") if isinstance(raw, dict) else ""
-    sets = active_set_identity(parse_pob_xml(xml)) if xml else {"activeSets": {}, "issues": ["missing_source_xml"]}
+    root = parse_pob_xml(xml) if xml else None
+    sets = active_set_identity(root) if root is not None else {"activeSets": {}, "issues": ["missing_source_xml"]}
     metadata = normalized.get("safeMetadata") or {}
     source_ref = str(metadata.get("sourceRef") or "") if isinstance(metadata, dict) else ""
     if (
@@ -1495,6 +1503,16 @@ def validated_pob_readback(packet: dict[str, Any]) -> dict[str, Any] | None:
         )
         or not source_ref
         or readback.get("sourceHashRef") != source_ref
+        or (
+            root is not None and root.find(".//CustomModifierBlock") is not None
+            and (
+                binding.get("customModifierSemanticsVersion") != CUSTOM_MODIFIER_SEMANTICS_VERSION
+                or binding.get("sourceActiveCustomModifiersHash")
+                != active_custom_modifier_hash(root, identity["activeConfigSet"])
+                or binding.get("activeCustomModifiersHash")
+                != binding.get("sourceActiveCustomModifiersHash")
+            )
+        )
     ):
         return {
             "status": "unavailable",
@@ -1512,7 +1530,21 @@ def _config_items(root: ET.Element) -> list[dict[str, Any]]:
     containers = config.findall("ConfigSet") or [config]
     result: list[dict[str, Any]] = []
     for container, set_identity in zip(containers, identity["configSets"], strict=True):
-        for input_node in container:
+        custom = custom_modifier_projection(container)
+        block_index = 0
+        for source_index, input_node in enumerate(container):
+            if input_node.tag == "CustomModifierBlock":
+                block = custom["blocks"][block_index]
+                block_index += 1
+                result.append({
+                    **set_identity,
+                    **block,
+                    "kind": "custom_modifier_block",
+                    "name": "customMods",
+                    "valueType": "string",
+                    "appliesToActiveConfig": set_identity["isActive"] if block["effectiveInConfigSet"] else False,
+                })
+                continue
             if input_node.tag not in {"Input", "Placeholder"}:
                 continue
             value_type, value = _config_value(input_node)
@@ -1523,6 +1555,15 @@ def _config_items(root: ET.Element) -> list[dict[str, Any]]:
                 "value": value,
                 "valueType": value_type,
             })
+            if input_node.get("name") == "customMods" and (
+                input_node.tag == "Input" or input_node.get("string") is not None
+            ):
+                effective = custom["legacyEffectiveInConfigSet"] and source_index == custom["legacySourceIndex"]
+                result[-1].update({
+                    "effectiveInConfigSet": effective,
+                    "appliesToActiveConfig": set_identity["isActive"] if effective else False,
+                    "migratesToCustomModifierBlock": effective,
+                })
     return result
 
 

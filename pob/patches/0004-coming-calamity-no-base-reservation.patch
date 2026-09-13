@@ -1,10 +1,8 @@
 diff --git a/src/Classes/Item.lua b/src/Classes/Item.lua
-index e92af74..e2f0ebd 100644
+index f65e065..a97cfff 100644
 --- a/src/Classes/Item.lua
 +++ b/src/Classes/Item.lua
-@@ -2135,18 +2135,39 @@ function ItemClass:BuildModList()
- 			for _, mod in ipairs(modLine.modList) do
- 				baseList:ScaleAddMod(mod, effectModifier)
+@@ -2841,14 +2841,35 @@ function ItemClass:BuildModList()
  			end
  		end
  	end
@@ -41,32 +39,11 @@ index e92af74..e2f0ebd 100644
  				source = self.modSource,
  				triggered = skill.triggered,
  				triggerChance = skill.triggerChance,
- 			})
- 		end
-diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
-index 9f2bcd8..aacd735 100644
---- a/src/Modules/CalcSetup.lua
-+++ b/src/Modules/CalcSetup.lua
-@@ -1551,11 +1551,12 @@ function calcs.initEnv(build, mode, override, specEnv)
- 				activeGemInstance.level = grantedSkill.level
- 				activeGemInstance.gemId = data.gemForSkill[data.skills[grantedSkill.skillId]]
- 				activeGemInstance.enableGlobal1 = true
- 				activeGemInstance.noSupports = grantedSkill.noSupports
- 				group.noSupports = grantedSkill.noSupports
- 				activeGemInstance.noReservation = grantedSkill.noReservation
-+				activeGemInstance.noSpiritReservation = grantedSkill.noSpiritReservation
- 				activeGemInstance.triggered = grantedSkill.triggered
- 				activeGemInstance.triggerChance = grantedSkill.triggerChance
- 				local preservedSupports = { }
- 				if not grantedSkill.noSupports then
- 					for index = 2, #group.gemList do
 diff --git a/src/Modules/CalcActiveSkill.lua b/src/Modules/CalcActiveSkill.lua
-index e035876..4da3b09 100644
+index 238cf5b..882e0c6 100644
 --- a/src/Modules/CalcActiveSkill.lua
 +++ b/src/Modules/CalcActiveSkill.lua
-@@ -722,10 +722,14 @@ function calcs.buildActiveSkillModList(env, activeSkill)
- 		if activeStatSet and activeStatSet.levels then
- 			for k, v in pairs(activeStatSet.levels[activeEffect.level] or { }) do
+@@ -728,6 +728,10 @@ function calcs.buildActiveSkillModList(env, activeSkill)
  				grantedEffectLevel[k] = v
  			end
  		end
@@ -77,11 +54,7 @@ index e035876..4da3b09 100644
  		activeEffect.grantedEffectLevel = grantedEffectLevel
  		return
  	end
- 	-- Add support gem modifiers to skill mod list
- 	for _, skillEffect in pairs(activeSkill.effectList) do
-@@ -797,16 +801,20 @@ function calcs.buildActiveSkillModList(env, activeSkill)
- 	if activeStatSet and activeStatSet.levels then
- 		for k, v in pairs(activeStatSet.levels[activeEffect.level] or { }) do
+@@ -803,6 +807,10 @@ function calcs.buildActiveSkillModList(env, activeSkill)
  			grantedEffectLevel[k] = v
  		end
  	end
@@ -92,11 +65,15 @@ index e035876..4da3b09 100644
  	if activeEffect.srcInstance and activeEffect.srcInstance.noReservation then
  		for _, resource in ipairs({ "mana", "life", "spirit" }) do
  			grantedEffectLevel[resource.."ReservationFlat"] = 0
- 			grantedEffectLevel[resource.."ReservationPercent"] = 0
- 		end
- 	end
- 	activeEffect.grantedEffectLevel = grantedEffectLevel
- 
- 	-- Add extra modifiers from granted effect level
- 	local level = activeEffect.grantedEffectLevel
- 	if level.reservationMultiplier then
+diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
+index e6320d8..edb3576 100644
+--- a/src/Modules/CalcSetup.lua
++++ b/src/Modules/CalcSetup.lua
+@@ -1953,6 +1953,7 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 				activeGemInstance.noSupports = grantedSkill.noSupports
+ 				group.noSupports = grantedSkill.noSupports
+ 				activeGemInstance.noReservation = grantedSkill.noReservation
++				activeGemInstance.noSpiritReservation = grantedSkill.noSpiritReservation
+ 				activeGemInstance.triggered = grantedSkill.triggered
+ 				activeGemInstance.triggerChance = grantedSkill.triggerChance
+ 				group.gemList[1] = activeGemInstance

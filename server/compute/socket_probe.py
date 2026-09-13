@@ -81,6 +81,8 @@ def _default_derived_xml(group: Any, source: str, effect_id: str, label: str) ->
         "includeInFullDPS": "false",
         "mainActiveSkill": "1",
         "mainActiveSkillCalcs": "1",
+        "set1": "true",
+        "set2": "true",
     }
     if any(
         value != "nil" and group_defaults.get(key) != value for key, value in group.attrib.items()
@@ -154,7 +156,7 @@ def _only_new_default_derived_groups(engine: Any, expected: str, observed: str) 
             return False
         actual = matches[0]
         effects = [
-            {"index": index + 1, "name": label, "effectId": effect_id}
+            {"index": index + 1, "name": label, "effectId": effect_id, "effectiveLevel": 1}
             for index in range(len(group))
         ]
         if not (

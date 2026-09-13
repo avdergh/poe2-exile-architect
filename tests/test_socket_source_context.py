@@ -187,7 +187,7 @@ def test_real_pob_partial_socket_receipt_keeps_empty_capacity_without_inventing_
     assert lifesprig["constraints"][0]["evidencePatch"] == "0.5.5"
     quota = socket_limits.audit(engine.get_xml(), replacements={"Weapon 1": [lifesprig]})
     assert not quota["ok"], quota
-    assert quota["violations"][0]["group"] == "Aldur's Legacy"
+    assert quota["violations"][0]["group"] == "AldursLegacyLimit1"
 
 
 def test_empty_socket_sentinel_is_exact_and_unknown_rune_names_remain_visible():
@@ -206,10 +206,10 @@ def test_pinned_rune_options_publish_real_shared_and_individual_quota_evidence(e
     from server.compute import socket_limits
 
     assert socket_limits.constraints(options["Jiquani's Thesis"]) == [
-        {"group": "Ancient Augment", "limit": 1}
+        {"group": "AncientAugment", "limit": 1}
     ]
     assert socket_limits.constraints(options["Kurgal's Gaze"]) == [
-        {"group": "Ancient Augment", "limit": 1}
+        {"group": "AncientAugment", "limit": 1}
     ]
     assert socket_limits.constraints(options["Soul Core of Zalatl"]) == [
         {"group": "Soul Core of Zalatl", "limit": 1}

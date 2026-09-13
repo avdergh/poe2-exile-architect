@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
 from server.compute.pob_xml_input import XML_INPUT_SEMANTICS_VERSION, parse_pob_xml
+from server.compute.pob_config import CUSTOM_MODIFIER_SEMANTICS_VERSION, active_custom_modifier_hash
 from server.knowledge.research_packet import (
     active_set_identity,
     config_set_identity,
@@ -87,6 +88,7 @@ def build_safe_readback(
             "source_active_set_identity_invalid", version_context=version_context,
             detail=",".join(source_sets["issues"]),
         )
+    source_custom_hash = active_custom_modifier_hash(source_root, source_config["activeConfigSet"])
     try:
         with PobEngine(show_engine_logs=False) as engine:
             engine.load_build_xml(xml, name="research-readback")
@@ -112,6 +114,11 @@ def build_safe_readback(
             if observed_sets["issues"] or observed_sets["activeSets"] != source_sets["activeSets"]:
                 return _unavailable(
                     "pob_active_set_mismatch", version_context=version_context
+                )
+            observed_custom_hash = active_custom_modifier_hash(observed_root, observed_config["activeConfigSet"])
+            if observed_custom_hash != source_custom_hash:
+                return _unavailable(
+                    "pob_active_custom_modifiers_mismatch", version_context=version_context
                 )
             state_hash = build_state_hash(observed_xml)
     except Exception as exc:
@@ -160,6 +167,9 @@ def build_safe_readback(
             "sourceSnapshotHash": source_snapshot_hash(xml),
             "xmlInputSemanticsVersion": XML_INPUT_SEMANTICS_VERSION,
             "sourceInputStateHash": build_state_hash(xml),
+            "customModifierSemanticsVersion": CUSTOM_MODIFIER_SEMANTICS_VERSION,
+            "sourceActiveCustomModifiersHash": source_custom_hash,
+            "activeCustomModifiersHash": observed_custom_hash,
         },
         "versionContext": dict(version_context),
         "stats": bounded_stats,

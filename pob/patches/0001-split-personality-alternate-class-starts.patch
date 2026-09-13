@@ -1,8 +1,8 @@
 diff --git a/src/Classes/Item.lua b/src/Classes/Item.lua
-index 423f476..d8221ed 100644
+index 3720f43..f65e065 100644
 --- a/src/Classes/Item.lua
 +++ b/src/Classes/Item.lua
-@@ -1980,7 +1980,12 @@ function ItemClass:BuildModListForSlotNum(baseList, slotNum)
+@@ -2668,7 +2668,12 @@ function ItemClass:BuildModListForSlotNum(baseList, slotNum)
  			jewelData[value.key] = value.value
  		end
  		for _, className in ipairs(modList:List(nil, "AlternateClassStart")) do
@@ -16,10 +16,10 @@ index 423f476..d8221ed 100644
  		if modList:List(nil, "FromNothingKeystones") then
  			jewelData.fromNothingKeystones = { }
 diff --git a/src/Classes/PassiveSpec.lua b/src/Classes/PassiveSpec.lua
-index e532c4a..b72dbb8 100644
+index 154ddf2..54a25ce 100644
 --- a/src/Classes/PassiveSpec.lua
 +++ b/src/Classes/PassiveSpec.lua
-@@ -1230,11 +1230,16 @@ function PassiveSpecClass:BuildAllDependsAndPaths()
+@@ -1484,11 +1484,16 @@ function PassiveSpecClass:BuildAllDependsAndPaths()
  	for socketNodeId, itemId in pairs(self.jewels) do
  		if self.allocNodes[socketNodeId] then
  			local item = self:GetJewel(itemId)

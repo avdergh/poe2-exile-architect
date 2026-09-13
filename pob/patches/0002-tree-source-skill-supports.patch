@@ -1,10 +1,8 @@
 diff --git a/src/Modules/CalcActiveSkill.lua b/src/Modules/CalcActiveSkill.lua
-index 05aab91e..e0358768 100644
+index 8526eef..238cf5b 100644
 --- a/src/Modules/CalcActiveSkill.lua
 +++ b/src/Modules/CalcActiveSkill.lua
-@@ -212,10 +212,14 @@ function calcs.createActiveSkill(activeEffect, supportList, env, actor, socketGr
- 		if calcLib.canGrantedEffectSupportActiveSkill(supportEffect.grantedEffect, activeSkill) then
- 			t_insert(activeSkill.effectList, supportEffect)
+@@ -217,6 +217,10 @@ function calcs.createActiveSkill(activeEffect, supportList, env, actor, socketGr
  			-- Track how many active skills are supported by this support effect
  			if supportEffect.isSupporting and activeEffect.srcInstance then
  				supportEffect.isSupporting[activeEffect.srcInstance] = true
@@ -15,88 +13,3 @@ index 05aab91e..e0358768 100644
  				if supportEffect.srcInstance ~= activeEffect.srcInstance or not (activeEffect.gemData and activeEffect.gemData.grantedEffect.support) then
  					supportEffect.activeSkillLevel = activeEffect.level
  				end
- 			end
- 			if supportEffect.grantedEffect.addFlags and not summonSkill then
-diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
-index 38a68d62..9654916c 100644
---- a/src/Modules/CalcSetup.lua
-+++ b/src/Modules/CalcSetup.lua
-@@ -13,10 +13,28 @@ local m_min = math.min
- local m_max = math.max
- local band = AND64
- 
- local tempTable1 = { }
- 
-+local function getTreeGrantedSkillLevel(skillId, characterLevel, fallbackLevel)
-+	local grantedEffect = data.skills[skillId]
-+	if not grantedEffect or not grantedEffect.levels then
-+		return fallbackLevel
-+	end
-+	local gemId = data.gemForSkill[grantedEffect]
-+	local gemData = gemId and data.gems[gemId]
-+	local naturalMaxLevel = gemData and tonumber(gemData.naturalMaxLevel) or #grantedEffect.levels
-+	local selectedLevel = 1
-+	for level = 1, naturalMaxLevel do
-+		local levelData = grantedEffect.levels[level]
-+		if levelData and (tonumber(levelData.levelRequirement) or 0) <= (tonumber(characterLevel) or 1) then
-+			selectedLevel = level
-+		end
-+	end
-+	return selectedLevel
-+end
-+
- local function addGrantedPassiveNode(env, node)
- 	env.allocNodes[node.id] = env.spec.nodes[node.id] or node -- use the conquered node data, if available
- 	env.grantedPassives[node.id] = true
- 	env.extraRadiusNodeList[node.id] = nil
- end
-@@ -247,12 +265,12 @@ function calcs.buildModListForNode(env, node, incSmallPassiveSkill, includeKeyst
- 	node.grantedSkills = { }
- 	for _, skill in ipairs(modList:List(nil, "ExtraSkill")) do
- 		if skill.name ~= "Unknown" then
- 			t_insert(node.grantedSkills, {
- 				skillId = skill.skillId,
--				level = skill.level,
--				noSupports = true,
-+				level = getTreeGrantedSkillLevel(skill.skillId, env.build.characterLevel, skill.level),
-+				noSupports = skill.noSupports == true,
- 				source = "Tree:"..node.id
- 			})
- 		end
- 	end
- 
-@@ -1527,20 +1545,34 @@ function calcs.initEnv(build, mode, override, specEnv)
- 					nameSpec = grantedSkill.nameSpec,
- 					quality = 0,
- 					enabled = true,
- 				}
- 				activeGemInstance.fromItem = grantedSkill.sourceItem ~= nil
-+				activeGemInstance.fromNode = grantedSkill.sourceNode ~= nil
- 				activeGemInstance.level = grantedSkill.level
- 				activeGemInstance.gemId = data.gemForSkill[data.skills[grantedSkill.skillId]]
- 				activeGemInstance.enableGlobal1 = true
- 				activeGemInstance.noSupports = grantedSkill.noSupports
- 				group.noSupports = grantedSkill.noSupports
- 				activeGemInstance.noReservation = grantedSkill.noReservation
- 				activeGemInstance.triggered = grantedSkill.triggered
- 				activeGemInstance.triggerChance = grantedSkill.triggerChance
-+				local preservedSupports = { }
-+				if not grantedSkill.noSupports then
-+					for index = 2, #group.gemList do
-+						local supportGem = group.gemList[index]
-+						local supportEffect = supportGem.grantedEffect or data.skills[supportGem.skillId]
-+						if supportEffect and supportEffect.support then
-+							t_insert(preservedSupports, supportGem)
-+						end
-+					end
-+				end
- 				wipeTable(group.gemList)
- 				t_insert(group.gemList, activeGemInstance)
-+				for _, supportGem in ipairs(preservedSupports) do
-+					t_insert(group.gemList, supportGem)
-+				end
- 				build.skillsTab:ProcessSocketGroup(group)
- 			end
- 
- 			if #env.explodeSources ~= 0 then
- 				-- Check if a matching group already exists

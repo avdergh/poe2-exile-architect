@@ -459,7 +459,17 @@ def _create_quality_checklist(
         source_kind = str(group.get("sourceKind") or "").casefold()
         trusted_source = (source.startswith("Tree:") and source_kind == "tree") or (
             source.startswith("Item:") and source_kind == "item"
+        ) or (
+            source == "Default Attack" and source_kind == "default_attack"
         )
+        if (source_kind == "default_attack" and trusted_source
+                and group.get("role") != "pob_main_group"
+                and (calculation_context or {}).get("groupIndex") != group.get("groupIndex")
+                and not group.get("includeInFullDPS") and not group.get("supports")
+                and group.get("socketedActiveCount") == 1):
+            # An incidental native attack is always present for the weapon set;
+            # adopting it as output or adding supports opts into the full audit.
+            continue
         trusted_other_source = (
             bool(source) and source_kind == "other" and not source.startswith(("Tree:", "Item:"))
         )

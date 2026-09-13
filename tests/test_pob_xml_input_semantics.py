@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from pathlib import Path
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -126,7 +127,13 @@ def test_real_pob_multiline_changes_stats_and_hash_while_research_preserves_valu
     engine.paste_skill("Fireball 20/0  1")
     mods = "+2000 to maximum Mana\n100% increased Fire Damage"
     engine.set_config(custom_mods=mods)
-    original = engine.get_xml()
+    # The new runtime serializes native blocks, whose element text ET does not flatten.
+    # Keep this regression explicitly on the legacy attribute input it is meant to test.
+    original = re.sub(
+        r"<CustomModifierBlock\b[^>]*>.*?</CustomModifierBlock>",
+        lambda _match: f'<Input name="customMods" string="{mods}"/>',
+        engine.get_xml(), flags=re.DOTALL,
+    )
     flattened = ET.tostring(ET.fromstring(original), encoding="unicode")
     engine.load_build_xml(original)
     before = engine.get_stats(["Mana", "TotalDPS"])["stats"]
@@ -143,7 +150,7 @@ def test_real_pob_multiline_changes_stats_and_hash_while_research_preserves_valu
     assert readbacks[0]["snapshotRef"] != readbacks[1]["snapshotRef"]
     packet = {"rawContext": {"rawXml": original}, "pobReadback": readbacks[0],
               "safeMetadata": {"sourceRef": "source-hash:synthetic"}}
-    rows = research_packet.read_packet_section(packet, section="config")["items"]
+    rows = [match["item"] for match in research_packet.search_packet(packet, section="config", query="customMods")["matches"]]
     assert next(row for row in rows if row.get("name") == "customMods")["value"] == mods
     assert research_packet.validated_pob_readback(packet)["status"] == "available"
     packet["rawContext"]["rawXml"] = flattened

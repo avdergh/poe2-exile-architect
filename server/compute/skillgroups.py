@@ -210,7 +210,7 @@ def configure_source_skill_supports(
     expected_fingerprint: str,
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically replace supports on one real Tree or Item source group."""
+    """Atomically replace supports on a Tree, Item, or native default attack group."""
 
     if source_group_index < 1:
         return _error("invalid_group_index", "source_group_index must be at least 1")
@@ -277,12 +277,14 @@ def configure_source_skill_supports(
         source_kind = str(group.get("sourceKind") or "").strip().casefold()
         real_source = (source.startswith("Tree:") and source_kind == "tree") or (
             source.startswith("Item:") and source_kind == "item"
+        ) or (
+            source == "Default Attack" and source_kind == "default_attack"
         )
         if not real_source:
             return {
                 **_error(
                     "source_skill_supports_not_modelable",
-                    "the selected group is not backed by a current passive, Ascendancy, or item source",
+                    "the selected group is not backed by a current passive, Ascendancy, item, or native default attack source",
                 ),
                 "modelabilityBlocker": bool(source),
                 "source": source or None,
@@ -370,7 +372,7 @@ def configure_source_skill_supports(
             "operation": "configure_source_skill_supports",
             "sourceGroupIndex": source_group_index,
             "source": source,
-            "sourceKind": "item" if source.startswith("Item:") else "tree",
+            "sourceKind": source_kind,
             "beforeStateHash": before_hash,
             "afterStateHash": after_hash,
             "stateHash": after_hash,

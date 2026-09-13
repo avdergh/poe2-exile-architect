@@ -949,6 +949,8 @@ def _optimize_supports_locked(
     source_kind = str(selected_group.get("sourceKind") or "").casefold()
     configurable_source = (source.startswith("Tree:") and source_kind == "tree") or (
         source.startswith("Item:") and source_kind == "item"
+    ) or (
+        source == "Default Attack" and source_kind == "default_attack"
     )
     if selected_group.get("noSupports"):
         engine.load_build_xml(snapshot)

@@ -1,10 +1,8 @@
 diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
-index aacd735..83f9619 100644
+index edb3576..05d3418 100644
 --- a/src/Modules/CalcSetup.lua
 +++ b/src/Modules/CalcSetup.lua
-@@ -1586,10 +1586,11 @@ function calcs.initEnv(build, mode, override, specEnv)
- 				if not group then
- 					-- Create a new group for this skill
+@@ -1983,6 +1983,7 @@ function calcs.initEnv(build, mode, override, specEnv)
  					group = { label = "On Kill Monster Explosion", enabled = true, gemList = { }, source = "Explode", noSupports = true }
  					t_insert(build.skillsTab.socketGroupList, group)
  				end
@@ -12,11 +10,7 @@ index aacd735..83f9619 100644
  				-- Hack to remove duplicates
  				local explodeBySource = { }
  				for _, explodeSource in ipairs(env.explodeSources) do
- 					explodeBySource[explodeSource.modSource or explodeSource.id] = explodeSource
- 				end
-@@ -1614,10 +1615,11 @@ function calcs.initEnv(build, mode, override, specEnv)
- 							level = 1,
- 							triggered = true,
+@@ -2011,6 +2012,7 @@ function calcs.initEnv(build, mode, override, specEnv)
  							explodeSource = explodeSource,
  						}
  					end
@@ -24,11 +18,7 @@ index aacd735..83f9619 100644
  					t_insert(group.gemList, activeGemInstance)
  				end
  				markList[group] = true
- 				build.skillsTab:ProcessSocketGroup(group)
- 			end
-@@ -1665,20 +1667,22 @@ function calcs.initEnv(build, mode, override, specEnv)
- 				else
- 					if not group then
+@@ -2052,6 +2054,7 @@ function calcs.initEnv(build, mode, override, specEnv)
  						group = { label = "Thorns", enabled = true, gemList = { }, source = "Thorns", noSupports = true }
  						t_insert(build.skillsTab.socketGroupList, group)
  					end
@@ -36,10 +26,7 @@ index aacd735..83f9619 100644
  
  					group.thornsSources = env.thornsSources
  					wipeTable(group.gemList)
- 
- 					local activeGemInstance = {
- 						skillId = "ThornsPlayer",
- 						quality = 0,
+@@ -2062,6 +2065,7 @@ function calcs.initEnv(build, mode, override, specEnv)
  						enabled = true,
  						level = 1,
  						triggered = true,
@@ -47,5 +34,3 @@ index aacd735..83f9619 100644
  					}
  					t_insert(group.gemList, activeGemInstance)
  					markList[group] = true
- 					build.skillsTab:ProcessSocketGroup(group)
- 				end

@@ -344,10 +344,14 @@ def _receipt_error(receipt: dict[str, Any]) -> str | None:
 def _version_matches(receipt: Any, current: dict[str, Any]) -> bool:
     if not isinstance(receipt, dict):
         return False
+    # A missing model identity is not a wildcard. In particular, persisted
+    # pre-upgrade Rune quota IDs must never mix with another model's IDs.
+    if not _optional_text(receipt.get("pobCommit")) or not _optional_text(current.get("pobCommit")):
+        return False
     for key in _VERSION_FIELDS:
         left = _optional_text(receipt.get(key))
         right = _optional_text(current.get(key))
-        if left is not None and right is not None and left != right:
+        if left != right:
             return False
     return True
 

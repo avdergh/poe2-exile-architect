@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      POB_COMMIT: 7d6f530cbdab20389ff8bc6ba97a37ac27f74e41 # pinned PoB-PoE2 (see pob/PINNED.md)
+      POB_COMMIT: ce566eac45ea8a86477f513c7ee65a1ebe60014e # pinned PoB-PoE2 (see pob/PINNED.md)
     steps:
       - uses: actions/checkout@v4
 

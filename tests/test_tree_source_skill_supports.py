@@ -253,6 +253,21 @@ class _RuntimeTriggerAuditEngine(_TriggerAuditEngine):
         return super().call(method, **kwargs)
 
 
+def _find_source_group(listed: dict, *, kind: str, root_skill: str | None = None,
+                       source: str | None = None) -> dict:
+    """Locate one actual source group without relying on auto-group ordering."""
+    matches = [
+        group for group in listed["groups"]
+        if group.get("sourceKind") == kind
+        and (source is None or group.get("source") == source)
+        and (root_skill is None or group["gems"][0]["name"] == root_skill)
+    ]
+    if len(matches) != 1:
+        raise AssertionError({"kind": kind, "source": source, "rootSkill": root_skill,
+                              "matches": matches, "groups": listed["groups"]})
+    return matches[0]
+
+
 class TreeSourceSupportIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -271,26 +286,32 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
             self.assertTrue(self.engine.alloc_passive(node_id)["ok"])
         return skillgroups.list_skill_groups(self.engine)
 
-    def _select_command(self, group_index: int) -> dict:
+    def _tree_group(self, node_id: int, listed: dict | None = None) -> dict:
+        return _find_source_group(
+            listed or skillgroups.list_skill_groups(self.engine),
+            kind="tree", source=f"Tree:{node_id}",
+        )
+
+    def _select_command(self, node_id: int) -> dict:
         listed = skillgroups.list_skill_groups(self.engine)
-        group = listed["groups"][group_index - 1]
+        group = self._tree_group(node_id, listed)
         changed = skillgroups.set_skill_group_state(
             self.engine,
-            group_index=group_index,
+            group_index=group["index"],
             expected_fingerprint=group["fingerprint"],
             expected_state_hash=listed["stateHash"],
-            active_skill_index=2,
+            active_skill_index=next(effect["index"] for effect in group["activeSkills"] if effect["name"] == "Command"),
             make_main=True,
         )
         self.assertTrue(changed["ok"])
         return skillgroups.list_skill_groups(self.engine)
 
-    def _configure(self, group_index: int, supports: list[str]) -> dict:
+    def _configure(self, node_id: int, supports: list[str]) -> dict:
         listed = skillgroups.list_skill_groups(self.engine)
-        group = listed["groups"][group_index - 1]
+        group = self._tree_group(node_id, listed)
         return skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=group_index,
+            source_group_index=group["index"],
             supports=supports,
             expected_fingerprint=group["fingerprint"],
             expected_state_hash=listed["stateHash"],
@@ -298,10 +319,11 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
 
     def test_level_95_roots_have_five_slots_and_five_supports(self) -> None:
         listed = self._new_varashta(34207, 13289)
-        self.assertEqual([group["gems"][0]["level"] for group in listed["groups"]], [20, 20])
+        self.assertEqual(sum(group.get("sourceKind") == "tree" for group in listed["groups"]), 2)
+        self.assertEqual([self._tree_group(node_id, listed)["gems"][0]["level"] for node_id in (34207, 13289)], [20, 20])
 
-        self._select_command(1)
-        ruzhan = self._configure(1, RUZHAN_SUPPORTS)
+        self._select_command(34207)
+        ruzhan = self._configure(34207, RUZHAN_SUPPORTS)
         self.assertTrue(ruzhan["ok"])
         self.assertEqual(ruzhan["supportCapacity"], 5)
         self.assertEqual(len(ruzhan["supportApplication"]), 5)
@@ -309,22 +331,22 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
             any("Command" in value["activeSkills"] for value in ruzhan["supportApplication"])
         )
 
-        self._select_command(2)
-        kelari = self._configure(2, KELARI_SUPPORTS)
+        self._select_command(13289)
+        kelari = self._configure(13289, KELARI_SUPPORTS)
         self.assertTrue(kelari["ok"])
         self.assertEqual(kelari["skillLevel"], 20)
         self.assertEqual(kelari["supportCapacity"], 5)
 
         before_xml = self.engine.get_xml()
-        rejected = self._configure(2, [*KELARI_SUPPORTS, "Muster"])
+        rejected = self._configure(13289, [*KELARI_SUPPORTS, "Muster"])
         self.assertFalse(rejected["ok"])
         self.assertEqual(rejected["errorCode"], "source_support_capacity_exceeded")
         self.assertEqual(self.engine.get_xml(), before_xml)
 
     def test_roundtrip_preserves_source_supports_command_and_spirit(self) -> None:
         self._new_varashta(34207)
-        self._select_command(1)
-        configured = self._configure(1, RUZHAN_SUPPORTS)
+        self._select_command(34207)
+        configured = self._configure(34207, RUZHAN_SUPPORTS)
         self.assertTrue(configured["ok"])
         xml = self.engine.get_xml()
         before = skillgroups.list_skill_groups(self.engine)
@@ -336,11 +358,15 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
         after = skillgroups.list_skill_groups(self.engine)
         after_build = self.engine.get_build()
         self.assertEqual(len(after["groups"]), len(before["groups"]))
-        self.assertEqual(after["groups"][0]["source"], "Tree:34207")
-        self.assertEqual(after["groups"][0]["mainActiveSkillCalcs"], 2)
+        self.assertEqual(self._tree_group(34207, after)["source"], "Tree:34207")
+        restored_group = self._tree_group(34207, after)
         self.assertEqual(
-            [gem["name"] for gem in after["groups"][0]["gems"]],
-            [gem["name"] for gem in before["groups"][0]["gems"]],
+            restored_group["mainActiveSkillCalcs"],
+            next(effect["index"] for effect in restored_group["activeSkills"] if effect["name"] == "Command"),
+        )
+        self.assertEqual(
+            [gem["name"] for gem in self._tree_group(34207, after)["gems"]],
+            [gem["name"] for gem in self._tree_group(34207, before)["gems"]],
         )
         self.assertEqual(after_build.get("spiritUsed"), before_build.get("spiritUsed"))
 
@@ -348,10 +374,10 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
         listed = self._new_varashta(34207)
         original_xml = self.engine.get_xml()
         original_hash = build_state_hash(original_xml)
-        group = listed["groups"][0]
+        group = self._tree_group(34207, listed)
         duplicate = skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=1,
+            source_group_index=group["index"],
             supports=["Bidding I", "Bidding III"],
             expected_fingerprint=group["fingerprint"],
             expected_state_hash=listed["stateHash"],
@@ -361,7 +387,7 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
 
         unknown = skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=1,
+            source_group_index=group["index"],
             supports=["Definitely Not A Support"],
             expected_fingerprint=group["fingerprint"],
             expected_state_hash=listed["stateHash"],
@@ -371,7 +397,7 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
 
         stale = skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=1,
+            source_group_index=group["index"],
             supports=["Bidding III"],
             expected_fingerprint="skill-group:stale",
             expected_state_hash=listed["stateHash"],
@@ -381,7 +407,7 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
 
     def test_optimizer_measures_real_tree_group_but_exploratory_metric_is_not_audit(self) -> None:
         listed = self._new_varashta(34207)
-        self._select_command(1)
+        self._select_command(34207)
         listed = skillgroups.list_skill_groups(self.engine)
         original_xml = self.engine.get_xml()
         original_hash = build_state_hash(original_xml)
@@ -391,8 +417,8 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
             max_supports=1,
             candidates=4,
             screen=4,
-            group_index=1,
-            expected_fingerprint=listed["groups"][0]["fingerprint"],
+            group_index=self._tree_group(34207, listed)["index"],
+            expected_fingerprint=self._tree_group(34207, listed)["fingerprint"],
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["source"], "Tree:34207")
@@ -404,12 +430,12 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
         self.assertEqual(result["supportAudit"]["status"], "inconclusive")
         self.assertFalse(result["measurement"]["checkpointEligible"])
         self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, original_hash, 1)["status"],
+            supportopt.support_audit_for_state(self.engine, original_hash, self._tree_group(34207, listed)["index"])["status"],
             "inconclusive",
         )
         self.assertEqual(build_state_hash(self.engine.get_xml()), original_hash)
 
-        configured = self._configure(1, result["supports"])
+        configured = self._configure(34207, result["supports"])
         self.assertTrue(configured["ok"])
         self.assertIsNone(configured["supportAudit"])
 
@@ -439,14 +465,33 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
             self.engine.set_config(custom_mods="+200 to Spirit")
         armour = self.engine.add_item(COMING_CALAMITY, slot="Body Armour")
         self.assertTrue(armour["ok"], armour)
+        listed = skillgroups.list_skill_groups(self.engine)
+        ash = self._item_group(listed=listed)
+        selected = skillgroups.set_skill_group_state(
+            self.engine, group_index=ash["index"],
+            expected_fingerprint=ash["fingerprint"],
+            expected_state_hash=listed["stateHash"], make_main=True,
+        )
+        self.assertTrue(selected["ok"], selected)
         return skillgroups.list_skill_groups(self.engine)
 
-    def _configure(self, group_index: int, supports: list[str]) -> dict:
+    def _item_group(self, skill: str = "Herald of Ash", listed: dict | None = None) -> dict:
+        return _find_source_group(
+            listed or skillgroups.list_skill_groups(self.engine),
+            kind="item", root_skill=skill,
+        )
+
+    def _herald_groups(self, listed: dict) -> list[dict]:
+        return [self._item_group(skill, listed) for skill in (
+            "Herald of Ash", "Herald of Ice", "Herald of Thunder",
+        )]
+
+    def _configure(self, skill: str, supports: list[str]) -> dict:
         listed = skillgroups.list_skill_groups(self.engine)
-        group = listed["groups"][group_index - 1]
+        group = self._item_group(skill, listed)
         return skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=group_index,
+            source_group_index=group["index"],
             supports=supports,
             expected_fingerprint=group["fingerprint"],
             expected_state_hash=listed["stateHash"],
@@ -459,11 +504,11 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         equipped = self.engine.add_item(COVENANT, slot="Body Armour")
         self.assertTrue(equipped["ok"], equipped)
         listed = skillgroups.list_skill_groups(self.engine)
-        group = listed["groups"][0]
+        group = self._item_group("Life Remnants", listed)
         self.assertEqual(group["sourceKind"], "item")
         self.assertEqual(group["gems"][0]["level"], 14)
 
-        configured = self._configure(1, ["Precision I"])
+        configured = self._configure("Life Remnants", ["Precision I"])
         self.assertTrue(configured["ok"], configured)
         self.assertEqual(configured["skillLevel"], 14)
         self.assertEqual(configured["supportCapacity"], 3)
@@ -474,7 +519,7 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
 
         before_hash = build_state_hash(self.engine.get_xml())
         over_capacity = self._configure(
-            1,
+            "Life Remnants",
             ["Precision I", "Clarity I", "Vitality I", "Magnified Area I"],
         )
         self.assertEqual(over_capacity["errorCode"], "source_support_capacity_exceeded")
@@ -483,15 +528,17 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
 
     def test_item_sources_configure_independently_and_roundtrip(self) -> None:
         listed = self._new_calamity()
-        self.assertEqual([group["sourceKind"] for group in listed["groups"]], ["item"] * 3)
-        self.assertTrue(all(not group["noSupports"] for group in listed["groups"]))
+        self.assertEqual([group["sourceKind"] for group in self._herald_groups(listed)], ["item"] * 3)
+        self.assertEqual(len([group for group in listed["groups"] if group.get("sourceKind") == "item"]), 3)
+        self.assertTrue(any(group.get("source") == "Default Attack" for group in listed["groups"]))
+        self.assertTrue(all(not group["noSupports"] for group in self._herald_groups(listed)))
 
-        self.assertTrue(self._configure(1, ["Precision I"])["ok"])
-        self.assertTrue(self._configure(2, ["Magnified Area I"])["ok"])
-        self.assertTrue(self._configure(3, ["Deadly Herald"])["ok"])
+        self.assertTrue(self._configure("Herald of Ash", ["Precision I"])["ok"])
+        self.assertTrue(self._configure("Herald of Ice", ["Magnified Area I"])["ok"])
+        self.assertTrue(self._configure("Herald of Thunder", ["Deadly Herald"])["ok"])
         groups = skillgroups.list_skill_groups(self.engine)["groups"]
         self.assertEqual(
-            [[gem["name"] for gem in group["gems"]] for group in groups],
+            [[gem["name"] for gem in group["gems"]] for group in self._herald_groups({"groups": groups})],
             [
                 ["Herald of Ash", "Precision I"],
                 ["Herald of Ice", "Magnified Area I"],
@@ -517,11 +564,11 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         listed = skillgroups.list_skill_groups(self.engine)
         original_xml = self.engine.get_xml()
         original_hash = build_state_hash(original_xml)
-        group = listed["groups"][0]
+        group = self._item_group(listed=listed)
 
         stale_fingerprint = skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=1,
+            source_group_index=group["index"],
             supports=["Precision I"],
             expected_fingerprint="skill-group:stale",
             expected_state_hash=listed["stateHash"],
@@ -531,7 +578,7 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
 
         stale_state = skillgroups.configure_source_skill_supports(
             self.engine,
-            source_group_index=1,
+            source_group_index=group["index"],
             supports=["Precision I"],
             expected_fingerprint=group["fingerprint"],
             expected_state_hash="sha256:stale",
@@ -539,11 +586,11 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self.assertEqual(stale_state["errorCode"], "build_state_conflict")
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
 
-        incompatible = self._configure(1, ["Bidding III"])
+        incompatible = self._configure("Herald of Ash", ["Bidding III"])
         self.assertEqual(incompatible["errorCode"], "source_support_not_applied")
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
 
-        over_spirit = self._configure(1, ["Precision II"])
+        over_spirit = self._configure("Herald of Ash", ["Precision II"])
         self.assertEqual(over_spirit["errorCode"], "spirit_over_reserved")
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
 
@@ -551,21 +598,21 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self._new_calamity(extra_spirit=False)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 0)
 
-        precision = self._configure(1, ["Precision I"])
+        precision = self._configure("Herald of Ash", ["Precision I"])
         self.assertTrue(precision["ok"], precision)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 10)
 
-        area = self._configure(2, ["Magnified Area I"])
+        area = self._configure("Herald of Ice", ["Magnified Area I"])
         self.assertTrue(area["ok"], area)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 10)
 
-        deadly = self._configure(3, ["Deadly Herald"])
+        deadly = self._configure("Herald of Thunder", ["Deadly Herald"])
         self.assertTrue(deadly["ok"], deadly)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 30)
 
     def test_solid_plan_scales_only_the_support_spirit_cost(self) -> None:
         self._new_calamity(extra_spirit=False)
-        precision = self._configure(1, ["Precision I"])
+        precision = self._configure("Herald of Ash", ["Precision I"])
         self.assertTrue(precision["ok"], precision)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 10)
 
@@ -581,7 +628,7 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self.assertTrue(armour["ok"], armour)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 0)
 
-        precision = self._configure(1, ["Precision I"])
+        precision = self._configure("Herald of Ash", ["Precision I"])
         self.assertTrue(precision["ok"], precision)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 0)
 
@@ -590,7 +637,7 @@ class ItemSourceSupportIntegrationTests(unittest.TestCase):
         self.assertEqual(self.engine.get_build()["spiritRequested"], 10)
         groups = skillgroups.list_skill_groups(self.engine)["groups"]
         self.assertEqual(
-            [gem["name"] for gem in groups[0]["gems"]], ["Herald of Ash", "Precision I"]
+            [gem["name"] for gem in self._item_group(listed={"groups": groups})["gems"]], ["Herald of Ash", "Precision I"]
         )
 
     def test_no_reservation_rule_requires_the_exact_unique_and_base(self) -> None:
@@ -660,8 +707,8 @@ Grants Skill: Level 20 Herald of Ash""",
         listed = self._new_calamity()
         before_hash = listed["stateHash"]
         before_xml = self.engine.get_xml()
-        self._configure(1, ["Precision I"])
-        measured_group = skillgroups.list_skill_groups(self.engine)["groups"][0]
+        self._configure("Herald of Ash", ["Precision I"])
+        measured_group = self._item_group()
         self.engine.load_build_xml(before_xml)
         before_hash = build_state_hash(self.engine.get_xml())
         measurement = _complete_support_measurement("TotalDPS", recommended=["Precision I"])
@@ -671,14 +718,14 @@ Grants Skill: Level 20 Herald of Ash""",
         supportopt._record_support_audit(
             engine=self.engine,
             state_hash=before_hash,
-            group_index=1,
+            group_index=self._item_group(listed=listed)["index"],
             skill="Herald of Ash",
             current_supports=[],
             recommended_supports=["Precision I"],
             constraints={},
             measurement=measurement,
         )
-        configured = self._configure(1, ["Precision I"])
+        configured = self._configure("Herald of Ash", ["Precision I"])
         self.assertTrue(configured["ok"], configured)
         configured_hash = configured["stateHash"]
         self.assertEqual(
@@ -689,21 +736,21 @@ Grants Skill: Level 20 Herald of Ash""",
                     "candidateGroupFingerprint"
                 ],
                 "actualFingerprint": supportopt._comparison_group_fingerprint(
-                    skillgroups.list_skill_groups(self.engine)["groups"][0]
+                    self._item_group()
                 ),
                 "expectedGroup": measured_group,
-                "actualGroup": skillgroups.list_skill_groups(self.engine)["groups"][0],
-                "beforeAudit": supportopt.support_audit_for_state(self.engine, before_hash, 1),
+                "actualGroup": self._item_group(),
+                "beforeAudit": supportopt.support_audit_for_state(self.engine, before_hash, self._item_group(listed=listed)["index"]),
             },
         )
-        self.assertIsNotNone(supportopt.support_audit_for_state(self.engine, configured_hash, 1))
+        self.assertIsNotNone(supportopt.support_audit_for_state(self.engine, configured_hash, self._item_group(listed=listed)["index"]))
 
         replaced = self.engine.add_item(COMING_CALAMITY, slot="Body Armour")
         self.assertTrue(replaced["ok"], replaced)
         current = skillgroups.list_skill_groups(self.engine)
         self.assertNotEqual(configured_hash, current["stateHash"])
         self.assertTrue(all(len(group["gems"]) == 1 for group in current["groups"]))
-        self.assertIsNone(supportopt.support_audit_for_state(self.engine, current["stateHash"], 1))
+        self.assertIsNone(supportopt.support_audit_for_state(self.engine, current["stateHash"], self._item_group(listed=listed)["index"]))
 
     def test_optimizer_measures_the_real_item_source_group_without_proxy(self) -> None:
         listed = self._new_calamity()
@@ -720,16 +767,20 @@ Grants Skill: Level 20 Herald of Ash""",
                 max_supports=1,
                 candidates=4,
                 screen=6,
-                group_index=1,
-                expected_fingerprint=listed["groups"][0]["fingerprint"],
+                group_index=self._item_group(listed=listed)["index"],
+                expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
         self.assertTrue(result["ok"], result)
         self.assertTrue(str(result["source"]).startswith("Item:"))
-        self.assertEqual(result["groupIndex"], 1)
+        self.assertEqual(result["groupIndex"], self._item_group(listed=listed)["index"])
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
         groups = skillgroups.list_skill_groups(self.engine)["groups"]
-        self.assertEqual(len(groups), 3)
-        self.assertTrue(all(str(group.get("source") or "").startswith("Item:") for group in groups))
+        self.assertEqual(len(groups), len(listed["groups"]))
+        self.assertEqual(len(self._herald_groups({"groups": groups})), 3)
+        self.assertEqual(
+            [(group["source"], group["gems"][0]["name"]) for group in groups],
+            [(group["source"], group["gems"][0]["name"]) for group in listed["groups"]],
+        )
 
     def test_item_source_audit_classifies_authoritative_rejections(self) -> None:
         self._new_calamity()
@@ -756,8 +807,8 @@ Grants Skill: Level 20 Herald of Ash""",
             result = supportopt.optimize_supports(
                 self.engine,
                 metric="SpiritReserved",
-                group_index=1,
-                expected_fingerprint=listed["groups"][0]["fingerprint"],
+                group_index=self._item_group(listed=listed)["index"],
+                expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
 
         self.assertTrue(result["ok"], result)
@@ -778,7 +829,7 @@ Grants Skill: Level 20 Herald of Ash""",
         )
         self.assertEqual(result["supportAudit"]["status"], "passed")
         self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
+            supportopt.support_audit_for_state(self.engine, state_hash, self._item_group(listed=listed)["index"])["status"],
             "passed",
         )
         inspected = preflight.inspect_generation_snapshot(self.engine, self.engine.get_xml())
@@ -796,7 +847,7 @@ Grants Skill: Level 20 Herald of Ash""",
             },
             preflight_result={
                 "skillGroups": [
-                    group for group in inspected["skillGroups"] if group["groupIndex"] == 1
+                    group for group in inspected["skillGroups"] if group["groupIndex"] == self._item_group(listed=listed)["index"]
                 ]
             },
         )
@@ -815,8 +866,8 @@ Grants Skill: Level 20 Herald of Ash""",
             result = supportopt.optimize_supports(
                 self.engine,
                 goals={"SpiritReserved": 1},
-                group_index=1,
-                expected_fingerprint=listed["groups"][0]["fingerprint"],
+                group_index=self._item_group(listed=listed)["index"],
+                expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
 
         self.assertTrue(result["ok"], result)
@@ -859,8 +910,8 @@ Grants Skill: Level 20 Herald of Ash""",
                     result = supportopt.optimize_supports(
                         self.engine,
                         metric="SpiritReserved",
-                        group_index=1,
-                        expected_fingerprint=listed["groups"][0]["fingerprint"],
+                        group_index=self._item_group(listed=listed)["index"],
+                        expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
                     )
 
                 self.assertFalse(result["ok"])
@@ -873,7 +924,7 @@ Grants Skill: Level 20 Herald of Ash""",
                     {error_code: 1},
                 )
                 self.assertEqual(
-                    supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
+                    supportopt.support_audit_for_state(self.engine, state_hash, self._item_group(listed=listed)["index"])["status"],
                     "inconclusive",
                 )
                 self.assertEqual(state_hash, build_state_hash(self.engine.get_xml()))
@@ -913,8 +964,8 @@ Grants Skill: Level 20 Herald of Ash""",
             result = supportopt.optimize_supports(
                 self.engine,
                 metric="SpiritReserved",
-                group_index=1,
-                expected_fingerprint=listed["groups"][0]["fingerprint"],
+                group_index=self._item_group(listed=listed)["index"],
+                expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
 
         self.assertTrue(result["ok"], result)
@@ -927,7 +978,7 @@ Grants Skill: Level 20 Herald of Ash""",
             {"source_support_capacity_exceeded": 1},
         )
         self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
+            supportopt.support_audit_for_state(self.engine, state_hash, self._item_group(listed=listed)["index"])["status"],
             "inconclusive",
         )
         self.assertEqual(state_hash, build_state_hash(self.engine.get_xml()))
@@ -955,8 +1006,8 @@ Grants Skill: Level 20 Herald of Ash""",
             result = supportopt.optimize_supports(
                 self.engine,
                 metric="SpiritReserved",
-                group_index=1,
-                expected_fingerprint=listed["groups"][0]["fingerprint"],
+                group_index=self._item_group(listed=listed)["index"],
+                expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
 
         self.assertTrue(result["ok"], result)
@@ -967,7 +1018,7 @@ Grants Skill: Level 20 Herald of Ash""",
             "source_support_not_applied",
         )
         self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
+            supportopt.support_audit_for_state(self.engine, state_hash, self._item_group(listed=listed)["index"])["status"],
             "inconclusive",
         )
         self.assertEqual(state_hash, build_state_hash(self.engine.get_xml()))
@@ -976,10 +1027,11 @@ Grants Skill: Level 20 Herald of Ash""",
         self._new_calamity()
         self.engine.set_config(custom_mods="+201 to Spirit")
         listed = skillgroups.list_skill_groups(self.engine)
-        second = listed["groups"][1]
+        second = self._item_group("Herald of Ice", listed)
+        self.assertGreater(second["index"], 1)
         selected = skillgroups.set_skill_group_state(
             self.engine,
-            group_index=2,
+            group_index=self._item_group("Herald of Ice", listed)["index"],
             expected_fingerprint=second["fingerprint"],
             expected_state_hash=listed["stateHash"],
             make_main=True,
@@ -987,7 +1039,7 @@ Grants Skill: Level 20 Herald of Ash""",
         self.assertTrue(selected["ok"], selected)
         listed = skillgroups.list_skill_groups(self.engine)
         original_hash = listed["stateHash"]
-        second = listed["groups"][1]
+        second = self._item_group("Herald of Ice", listed)
 
         stale = supportopt.optimize_supports(
             self.engine,
@@ -1011,29 +1063,29 @@ Grants Skill: Level 20 Herald of Ash""",
             spirit_limit=301,
         )
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["groupIndex"], 2)
+        self.assertEqual(result["groupIndex"], second["index"])
         self.assertEqual(result["skill"], "Herald of Ice")
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
-        self.assertIsNone(supportopt.support_audit_for_state(self.engine, original_hash, 1))
+        self.assertIsNone(supportopt.support_audit_for_state(self.engine, original_hash, self._item_group(listed=listed)["index"]))
         self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, original_hash, 2)["status"],
+            supportopt.support_audit_for_state(self.engine, original_hash, second["index"])["status"],
             "inconclusive",
         )
 
     def test_optimizer_restores_after_exception_following_temporary_selection(self) -> None:
         listed = self._new_calamity()
         original_hash = listed["stateHash"]
-        self.assertEqual(listed["mainGroupIndex"], 1)
+        self.assertEqual(listed["mainGroupIndex"], self._item_group(listed=listed)["index"])
         with mock.patch.object(self.engine, "get_build", side_effect=RuntimeError("probe failure")):
             with self.assertRaisesRegex(RuntimeError, "probe failure"):
                 supportopt.optimize_supports(
                     self.engine,
-                    group_index=2,
-                    expected_fingerprint=listed["groups"][1]["fingerprint"],
+                    group_index=self._item_group("Herald of Ice", listed)["index"],
+                    expected_fingerprint=self._item_group("Herald of Ice", listed)["fingerprint"],
                 )
         restored = skillgroups.list_skill_groups(self.engine)
         self.assertEqual(restored["stateHash"], original_hash)
-        self.assertEqual(restored["mainGroupIndex"], 1)
+        self.assertEqual(restored["mainGroupIndex"], listed["mainGroupIndex"])
 
 
 class SupportAuditIntegrityTests(unittest.TestCase):
@@ -1409,6 +1461,15 @@ Ringmail Gauntlets
                 if group.get("source") == expected_source
             )
             self.assertTrue(before["noSupports"])
+            listed = skillgroups.list_skill_groups(self.engine)
+            selected = skillgroups.set_skill_group_state(
+                self.engine,
+                group_index=before["index"],
+                expected_fingerprint=before["fingerprint"],
+                expected_state_hash=listed["stateHash"],
+                make_main=True,
+            )
+            self.assertTrue(selected["ok"], selected)
 
             snapshot = self.engine.get_xml()
             self.engine.load_build_xml(snapshot, name=f"{expected_source}-roundtrip")

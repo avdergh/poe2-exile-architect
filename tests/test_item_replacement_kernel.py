@@ -215,16 +215,19 @@ def test_source_root_level_change_does_not_weaken_manual_support_binding(replace
     _source(engine)
     expected = engine.inspect_item_replacement_context()["calculationContext"]
     snapshot = engine.get_xml()
-    changed = snapshot.replace("Grants Skill: Level 20 Firebolt", "Grants Skill: Level 19 Firebolt")
+    # Current native Firebolt has three model levels. Exercise two real levels;
+    # an arbitrary level 19 is normalized to 3 by the upgraded PoB.
+    assert expected["rootLevel"] == 3
+    changed = snapshot.replace("Grants Skill: Level 20 Firebolt", "Grants Skill: Level 2 Firebolt")
     changed = re.sub(
         r'<Gem\b[^>]*\bskillId="FireboltPlayer"[^>]*/>',
-        lambda match: match.group().replace('level="20"', 'level="19"'),
+        lambda match: match.group().replace('level="3"', 'level="2"'),
         changed,
     )
     engine.load_build_xml(changed)
     resolved = engine.inspect_item_replacement_context(expected)
     assert resolved["ok"], resolved
-    assert resolved["calculationContext"]["rootLevel"] == 19
+    assert resolved["calculationContext"]["rootLevel"] == 2
     # User support quality/enable flags remain exact even when the root level can change.
     changed = re.sub(
         r'<Gem\b[^>]*\bskillId="SupportRapidCastingPlayerTwo"[^>]*/>',
@@ -362,7 +365,9 @@ def test_unselected_secondary_curse_default_does_not_fake_restore_failure(engine
     )
     socketed = craftopt._augment_item_with_runes(bare, [(rune["name"], rune["mods"])])
     before = engine.get_xml()
-    assert 'mainActiveSkill="nil"' in before
+    secondary = next(g for g in skillgroups.list_skill_groups(engine)["groups"]
+                     if g.get("activeSkill") == "Despair")
+    assert not secondary["isMain"] and secondary["mainActiveSkillCalcs"] == 1
     context = engine.inspect_item_replacement_context()["calculationContext"]
     keys = ["TotalDPS", "FullDPS", "ChaosResist", "CombinedDPS"]
     # Do not first call the full-reload oracle: that would normalise the secondary group's

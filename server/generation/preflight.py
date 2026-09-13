@@ -72,7 +72,7 @@ def inspect_generation_snapshot(
 
     blocking: list[str] = []
     group_diagnostics: list[dict[str, Any]] = []
-    signatures: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    signatures: list[tuple[Any, ...]] = []
     for group in parsed["groups"]:
         issues: list[str] = []
         active_ids = list(group["activeIds"])
@@ -83,7 +83,12 @@ def inspect_generation_snapshot(
         if len(support_ids) != len(set(support_ids)):
             issues.append("duplicate_support_gem")
             blocking.append("duplicate_support_gem")
-        signatures.append((tuple(sorted(active_ids)), tuple(sorted(support_ids))))
+        signature: tuple[Any, ...] = (tuple(sorted(active_ids)), tuple(sorted(support_ids)))
+        if group.get("sourceKind") == "default_attack":
+            # PoB creates one native attack per weapon set. Distinct, verified
+            # owners are not duplicate socketed groups with the same gem names.
+            signature += ("default_attack", group.get("slot"))
+        signatures.append(signature)
         group_diagnostics.append(
             {
                 "groupIndex": group["groupIndex"],
@@ -92,8 +97,10 @@ def inspect_generation_snapshot(
                 "mainActiveSkillCalcs": group.get("mainActiveSkillCalcs"),
                 "activeSkillSelectionError": group.get("activeSkillSelectionError"),
                 "supports": group["supportNames"],
+                "socketedActiveCount": len(active_ids),
                 "source": group.get("source"),
                 "sourceKind": group.get("sourceKind"),
+                "includeInFullDPS": bool(group.get("includeInFullDPS")),
                 "noSupports": bool(group.get("noSupports")),
                 "issues": issues,
             }
@@ -450,6 +457,8 @@ def _parse_skill_groups(xml: str) -> dict[str, Any]:
                 "supportIds": [_gem_identity(gem) for gem in supports],
                 "supportNames": [_gem_name(gem) for gem in supports],
                 "source": str(group.get("source") or "") or None,
+                "slot": str(group.get("slot") or ""),
+                "includeInFullDPS": _xml_bool(group.get("includeInFullDPS")),
             }
         )
     if not groups or not any(group["role"] == "pob_main_group" for group in groups):
@@ -502,11 +511,17 @@ def _decorate_runtime_active_names(engine: Any, parsed: dict[str, Any]) -> None:
             or not parsed_root_id
             or not runtime_root_id
             or parsed_root_id != runtime_root_id
+            or str(group.get("slot") or "") != str(runtime_group.get("slot") or "")
             or runtime_group.get("enabled") is False
         ):
             group["activeSkillSelectionError"] = "runtime_skill_group_identity_mismatch"
             continue
         effects = runtime_group.get("activeSkills")
+        if runtime_source == "Default Attack" and runtime_group.get("sourceKind") == "default_attack":
+            # The inactive weapon set has a native root without a calculated
+            # effect list. Preserve only its already matched source identity;
+            # selecting it for an audit still requires valid effect evidence.
+            group["sourceKind"] = "default_attack"
         if not isinstance(effects, list) or not effects:
             group["activeSkillSelectionError"] = "runtime_active_skills_missing"
             continue

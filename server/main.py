@@ -2141,7 +2141,7 @@ def optimize_supports(
     new hard illegality, can require application, including a removal-only improvement. Pass `goals`
     (e.g. {"TotalDPS":0.7,"TotalEHP":0.3}) to blend objectives; omit for a single `metric`.
     The build is restored. Apply ordinary-group results to the exact group with fresh fingerprint,
-    preserving activeGemSettings and supportGemSettings; Tree/Item groups use
+    preserving activeGemSettings and supportGemSettings; Tree/Item/native default attack groups use
     ``configure_source_skill_supports``. Exact-ID runtime-unavailable candidates are listed as
     uncovered, never measured as no gain. Other measurement failures block. For a rate-dependent target,
     a PoB-runtime-confirmed unmodelled trigger rate short-circuits before candidate enumeration and
@@ -2303,11 +2303,12 @@ def configure_source_skill_supports(
     expected_fingerprint: str,
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically configure supports on a real passive, Ascendancy, or item source skill.
+    """Atomically configure supports on a real passive, Ascendancy, item, or default attack skill.
 
     Read ``list_skill_groups`` first and pass its fingerprint (and preferably state hash). Names
     must resolve uniquely to support gems. Item sources are accepted only when the equipped item
     still grants that exact source group and PoB reports ``noSupports=false``.
+    Default attacks require PoB's current weapon-set grant, not an XML source label.
     """
 
     return skillgroups.configure_source_skill_supports(

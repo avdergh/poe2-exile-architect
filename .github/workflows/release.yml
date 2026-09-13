@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  POB_COMMIT: 7d6f530cbdab20389ff8bc6ba97a37ac27f74e41 # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
+  POB_COMMIT: ce566eac45ea8a86477f513c7ee65a1ebe60014e # pinned PoB-PoE2 (see pob/PINNED.md); CI checks out this exact SHA
   LUAJIT_COMMIT: 871db2c84ecefd70a850e03a6c340214a81739f0 # matches PoB's pinned LuaJIT
 
 jobs:

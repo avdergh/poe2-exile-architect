@@ -62,7 +62,11 @@ _DEFAULT_ATTRIBUTES: dict[str, dict[str, str]] = {
 
 
 def _semantic_element(node: ET.Element) -> list[Any]:
-    attrs = {key: value for key, value in node.attrib.items() if value != "nil"}
+    attrs = {key: value for key, value in node.attrib.items()
+             if value != "nil" or node.tag == "CustomModifierBlock"}
+    if node.tag == "CustomModifierBlock":
+        attrs["enabled"] = "true" if node.get("enabled") in {None, "true"} else "false"
+        attrs["title"] = node.get("title", "Default")
     for key, default in _DEFAULT_ATTRIBUTES.get(node.tag, {}).items():
         if attrs.get(key, default) == default:
             attrs.pop(key, None)
@@ -80,22 +84,45 @@ def _semantic_element(node: ET.Element) -> list[Any]:
                 attrs[key] = _sorted_csv_numbers_preserving_multiplicity(attrs[key])
 
     children: list[list[Any]] = []
+    custom_blocks: list[list[Any]] = []
+    ordered_legacy_custom = node.tag in {"Config", "ConfigSet"} and sum(
+        child.get("name") == "customMods" and (
+            child.tag == "Input" or (child.tag == "Placeholder" and child.get("string") is not None)
+        ) for child in node
+    ) > 1
     for child in node:
         if node.tag == "PathOfBuilding2" and child.tag in _ROOT_IGNORED:
             continue
         if node.tag == "Build" and child.tag in _BUILD_DERIVED:
             continue
-        if node.tag == "ConfigSet" and child.tag == "Placeholder":
+        if node.tag == "ConfigSet" and child.tag == "Placeholder" and not (
+            child.get("name") == "customMods" and child.get("string") is not None
+        ):
             continue
         if child.tag == "TradeSearchWeights":
             continue
         if node.tag == "Spec" and child.tag == "URL":
             continue
+        if node.tag in {"Config", "ConfigSet"} and child.tag == "CustomModifierBlock":
+            # ConfigTab adds modifier sources in block order. Preserve that ordering,
+            # while ordinary config mapping inputs remain independent of serialization.
+            custom_blocks.append(_semantic_element(child))
+            continue
+        if ordered_legacy_custom and child.get("name") == "customMods" and (
+            child.tag == "Input" or (child.tag == "Placeholder" and child.get("string") is not None)
+        ):
+            # A legacy string Placeholder writes input too: the last assignment wins.
+            custom_blocks.append(_semantic_element(child))
+            continue
         children.append(_semantic_element(child))
     if node.tag not in _ORDER_SENSITIVE_PARENTS:
         children.sort(key=_canonical_sort_key)
+    children.extend(custom_blocks)
 
-    text = (node.text or "").replace("\r\n", "\n").strip()
+    text = (node.text or "").replace("\r\n", "\n")
+    # PoB's modifier parser trims only Lua ASCII whitespace. NBSP/EM SPACE
+    # can make a modifier unrecognized and must not collide with a working line.
+    text = text.strip(" \t\n\r\v\f") if node.tag == "CustomModifierBlock" else text.strip()
     return [node.tag, sorted(attrs.items()), text, children]
 
 

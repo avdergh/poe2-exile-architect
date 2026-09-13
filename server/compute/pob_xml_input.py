@@ -18,6 +18,7 @@ _ENTITY = re.compile(r"&(.*?);", re.DOTALL)
 _TOKEN = re.compile(r"<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<[^>]*>", re.DOTALL)
 _START = re.compile(r"<([A-Za-z0-9:]+)(.*?)(/?)>\Z", re.DOTALL)
 _ATTRIBUTE = re.compile(r'''\s+([A-Za-z0-9]+)=(["'])(.*?)\2''', re.DOTALL)
+_LUA_WHITESPACE = " \t\n\r\v\f"
 
 
 def _decode_content(value: str) -> str:
@@ -55,6 +56,29 @@ def _project_start_tag(token: str) -> str:
     return f"<{tag}{''.join(projected)}{closing}>"
 
 
+def _custom_block_text(content: str) -> str:
+    """ConfigTab.Load consumes node[1], not concatenated XML text/CDATA segments."""
+    content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+    first: str | None = None
+    offset = 0
+    for match in _TOKEN.finditer(content):
+        preceding = content[offset:match.start()].strip(_LUA_WHITESPACE)
+        if first is None and preceding:
+            first = _decode_content(preceding)
+        token = match.group()
+        if token.startswith("<![CDATA["):
+            value = token[9:-3]
+            if first is None and value.strip(_LUA_WHITESPACE):
+                first = value
+        elif not token.startswith("<?"):
+            raise ET.ParseError("CustomModifierBlock must contain modifier text only")
+        offset = match.end()
+    tail = content[offset:].strip(_LUA_WHITESPACE)
+    if first is None and tail:
+        first = _decode_content(tail)
+    return first or ""
+
+
 def parse_pob_xml(xml: str) -> ET.Element:
     """Return a read-only XML tree with PoB's unnormalized input values.
 
@@ -63,7 +87,10 @@ def parse_pob_xml(xml: str) -> ET.Element:
     """
     pieces: list[str] = []
     offset = 0
-    for match in _TOKEN.finditer(xml):
+    tokens = list(_TOKEN.finditer(xml))
+    token_index = 0
+    while token_index < len(tokens):
+        match = tokens[token_index]
         pieces.append(_escape_for_et(_decode_content(xml[offset:match.start()])))
         token = match.group()
         if token.startswith("<!--"):
@@ -74,7 +101,20 @@ def parse_pob_xml(xml: str) -> ET.Element:
             pieces.append(token)
         else:
             pieces.append(_project_start_tag(token))
+            start = _START.fullmatch(token)
+            if start is not None and start.group(1) == "CustomModifierBlock" and not start.group(3):
+                close_index = token_index + 1
+                while close_index < len(tokens) and tokens[close_index].group() != "</CustomModifierBlock>":
+                    close_index += 1
+                if close_index == len(tokens):
+                    raise ET.ParseError("unclosed CustomModifierBlock")
+                close = tokens[close_index]
+                pieces.append(_escape_for_et(_custom_block_text(xml[match.end():close.start()])))
+                pieces.append(close.group())
+                match = close
+                token_index = close_index
         offset = match.end()
+        token_index += 1
     pieces.append(_escape_for_et(_decode_content(xml[offset:])))
     return ET.fromstring("".join(pieces))
 

@@ -1,0 +1,255 @@
+diff --git a/src/Classes/Item.lua b/src/Classes/Item.lua
+index 3720f43..5d9272c 100644
+--- a/src/Classes/Item.lua
++++ b/src/Classes/Item.lua
+@@ -723,10 +723,7 @@ function ItemClass:ParseRaw(raw, rarity, highQuality)
+ 				local backupAffixList = { }
+ 				for modId, modData in pairs(self.affixes) do
+ 					-- these can produce false positives, and only ever exist on the monk glove base
+-					if modId:match("^HandWraps") and not self.name:match("Fists of Stone") then
+-						continue
+-					end
+-					if modData.affix == modName then
++					if not (modId:match("^HandWraps") and not self.name:match("Fists of Stone")) and modData.affix == modName then
+ 						if self:GetModSpawnWeight(modData) > 0 then
+ 							if modData.type == "Prefix" then
+ 								t_insert(self.pendingAffixList, { modId = modId, table = self.prefixes })
+@@ -1418,7 +1415,7 @@ function ItemClass:ParseRaw(raw, rarity, highQuality)
+ 					local strippedModLine = getRuneLineParts(modLine.line)
+ 					if (disabledRuneLines[strippedModLine] or 0) > 0 then
+ 						modLine.disabled = true
+-						disabledRuneLines[strippedModLine] -= 1
++						disabledRuneLines[strippedModLine] = disabledRuneLines[strippedModLine] - 1
+ 					end
+ 				end
+ 			end
+@@ -1650,7 +1647,7 @@ function ItemClass:ParseRaw(raw, rarity, highQuality)
+ 		if #self.modMagnitudeMods > 0 then
+ 			for _, modMagnitudeMod in ipairs(self.modMagnitudeMods) do
+ 				if self:UsesVersionedOrGroupedVariants() and not self:CheckModLineVariant(modMagnitudeMod.sourceLine) then
+-					continue
++					goto next_mod_magnitude
+ 				end
+ 				local modLists
+ 				if modMagnitudeMod.modType then
+@@ -1662,7 +1659,7 @@ function ItemClass:ParseRaw(raw, rarity, highQuality)
+ 					for _, mod in ipairs(mods or {}) do
+ 						-- avoid scaling variant lines which are not active
+ 						if self:GetModLineVariantCount(mod) == 0 or mod.unscalable then
+-							continue
++							goto next_scaled_mod
+ 						end
+ 						-- Modifiers that grant skills are not affected by modifier magnitude.
+ 						local grantsSkill = false
+@@ -1712,8 +1709,10 @@ function ItemClass:ParseRaw(raw, rarity, highQuality)
+ 								mod.extra = extra
+ 							end
+ 						end
++						::next_scaled_mod::
+ 					end
+ 				end
++				::next_mod_magnitude::
+ 			end
+ 		end
+ 	end
+diff --git a/src/Classes/ItemsTab.lua b/src/Classes/ItemsTab.lua
+index 1ee5526..3cf444f 100644
+--- a/src/Classes/ItemsTab.lua
++++ b/src/Classes/ItemsTab.lua
+@@ -474,7 +474,7 @@ holding Shift will put it in the second.]])
+ 		if self.displayItem:UsesVersionedOrGroupedVariants() then
+ 			local rows = self.displayItem.versionList and #self.displayItem.versionList > 1 and 1 or 0
+ 			if self.displayItem.baseList and #self.displayItem.baseList then
+-				rows += 1
++				rows = rows + 1
+ 			end
+ 			if self.displayItem:HasIndependentVariants() then
+ 				rows = rows + (#self.displayItem.variantList > 1 and 1 or 0)
+@@ -535,8 +535,8 @@ holding Shift will put it in the second.]])
+ 	end)
+ 	self.controls.displayItemVariant.y = function()
+ 		local y = 0
+-		y += self.controls.displayItemBaseVariant:IsShown() and 24 or 0
+-		y += self.controls.displayItemVersion:IsShown() and 24 or 0
++		y = y + (self.controls.displayItemBaseVariant:IsShown() and 24 or 0)
++		y = y + (self.controls.displayItemVersion:IsShown() and 24 or 0)
+ 		return y
+ 	end
+ 	self.controls.displayItemVariant.maxDroppedWidth = 1000
+diff --git a/src/Classes/PassiveTreeView.lua b/src/Classes/PassiveTreeView.lua
+index 8449966..e3e5ab4 100644
+--- a/src/Classes/PassiveTreeView.lua
++++ b/src/Classes/PassiveTreeView.lua
+@@ -782,7 +782,7 @@ function PassiveTreeViewClass:Draw(build, viewPort, inputEvents)
+ 			connectorHandleQueue = { n = 0 }
+ 			self.connectorQueue[handleName] = connectorHandleQueue
+ 		end
+-		connectorHandleQueue.n += 1
++		connectorHandleQueue.n = connectorHandleQueue.n + 1
+ 		connectorHandleQueue[connectorHandleQueue.n] = connector
+ 	end
+ 
+@@ -2166,4 +2166,4 @@ function PassiveTreeViewClass:checkUnlockConstraints(build, node)
+ 			end
+ 	end
+ 	return true
+-end
+\ No newline at end of file
++end
+diff --git a/src/Classes/Tooltip.lua b/src/Classes/Tooltip.lua
+index 21f3dbb..6d46bd9 100644
+--- a/src/Classes/Tooltip.lua
++++ b/src/Classes/Tooltip.lua
+@@ -234,8 +234,8 @@ function TooltipClass:AddBuildPlannerNote(size, text, prefix)
+ 				depth, closeBrace = 1, openBrace + 1
+ 				while closeBrace <= finish and depth > 0 do
+ 					local char = text:sub(closeBrace, closeBrace)
+-					if char == "{" then depth += 1 elseif char == "}" then depth -= 1 end
+-					closeBrace += 1
++					if char == "{" then depth = depth + 1 elseif char == "}" then depth = depth - 1 end
++					closeBrace = closeBrace + 1
+ 				end
+ 			end
+ 			if validMarkup and depth == 0 then
+@@ -247,9 +247,9 @@ function TooltipClass:AddBuildPlannerNote(size, text, prefix)
+ 					if tag == "s" then lineSize = m_floor(size * 0.75 + 0.5) elseif tag == "m" then lineSize = size elseif tag == "l" then lineSize = m_floor(size * 1.25 + 0.5) end
+ 					if font ~= nil or lineSize then
+ 						local line = 1
+-						for _ in text:sub(1, tagStart - 1):gmatch("\n") do line += 1 end
++						for _ in text:sub(1, tagStart - 1):gmatch("\n") do line = line + 1 end
+ 						local lastLine = line
+-						for _ in text:sub(tagStart, closeBrace - 1):gmatch("\n") do lastLine += 1 end
++						for _ in text:sub(tagStart, closeBrace - 1):gmatch("\n") do lastLine = lastLine + 1 end
+ 						for index = line, lastLine do
+ 							lineStyles[index] = lineStyles[index] or { }
+ 							if font ~= nil then lineStyles[index].font = font end
+@@ -277,7 +277,7 @@ function TooltipClass:AddBuildPlannerNote(size, text, prefix)
+ 	for renderedLine in (renderedText .. "\n"):gmatch("([^\n]*)\n") do
+ 		local style = lineStyles[line]
+ 		self:AddLine(style and style.size or size, (line == 1 and (prefix or "") or "") .. renderedLine, style and style.font)
+-		line += 1
++		line = line + 1
+ 	end
+ end
+ 
+diff --git a/src/Export/Scripts/uModsToText.lua b/src/Export/Scripts/uModsToText.lua
+index ebc4ce1..6de98ec 100644
+--- a/src/Export/Scripts/uModsToText.lua
++++ b/src/Export/Scripts/uModsToText.lua
+@@ -201,7 +201,7 @@ for _, name in ipairs(itemTypes) do
+ 				if mod.modTags then
+ 					for _, tag in ipairs(mod.modTags) do
+ 						if tag == "unveiled_mod" then
+-							prefix ..= "{desecrated}"
++							prefix = prefix .. "{desecrated}"
+ 						end
+ 					end
+ 				end
+diff --git a/src/Modules/BuildExportPoE2.lua b/src/Modules/BuildExportPoE2.lua
+index 4294e54..b03653b 100644
+--- a/src/Modules/BuildExportPoE2.lua
++++ b/src/Modules/BuildExportPoE2.lua
+@@ -18,6 +18,11 @@ local dkjson = require "dkjson"
+ 
+ local M = {}
+ 
++local function optionalIndex(object, key)
++	if object == nil then return nil end
++	return object[key]
++end
++
+ local function safeFilename(name)
+ 	name = (name and name ~= "") and name or "Unnamed"
+ 	name = name:gsub("[\\/:%*%?\"<>|%c]", "-")
+@@ -144,16 +149,15 @@ local function buildSkills(skillSet)
+ 				-- inactive skill sets don't have a display skill list so we need to make one
+ 				activeGem = activeSkillGems(group)[activeIdx]
+ 			end
+-			if not activeGem then continue end
+-			local activeId = activeGem.gemData?.gameId
++			local activeId = activeGem and optionalIndex(activeGem.gemData, "gameId")
+ 			if activeId then
+ 				local entry = { id = activeId }
+ 				local activeText = gemAdditionalText(activeGem, false)
+ 				if activeText then entry.additional_text = activeText end
+ 				local supports = {}
+ 				for _, gem in ipairs(group.gemList) do
+-					if gem ~= activeGem and gem.enabled ~= false and gem.gemData?.grantedEffect.support then
+-						local supId = gem.gemData?.gameId
++					if gem ~= activeGem and gem.enabled ~= false and gem.gemData ~= nil and gem.gemData.grantedEffect.support then
++						local supId = gem.gemData.gameId
+ 						if supId then
+ 							local supText = gemAdditionalText(gem, true)
+ 							if supText then
+@@ -169,7 +173,7 @@ local function buildSkills(skillSet)
+ 				end
+ 				if #supports > 0 then entry.support_skills = supports end
+ 				t_insert(out, entry)
+-			else
++			elseif activeGem then
+ 				ConPrintf("[PoE2Export] skipping active gem with no id in group '%s'", tostring(group.label or "?"))
+ 			end
+ 		end
+@@ -272,9 +276,9 @@ function M.GetLoadouts(build)
+ 			t_insert(out, {
+ 				name = plainName,
+ 				fileName = displayName,
+-				specIndex = loadout?.specId,
+-				skillSetId = loadout?.skillSetId,
+-				itemSetId = loadout?.itemSetId,
++				specIndex = optionalIndex(loadout, "specId"),
++				skillSetId = optionalIndex(loadout, "skillSetId"),
++				itemSetId = optionalIndex(loadout, "itemSetId"),
+ 			})
+ 		end
+ 	end
+diff --git a/src/Modules/CalcOffence.lua b/src/Modules/CalcOffence.lua
+index 960a5e1..e0296fd 100644
+--- a/src/Modules/CalcOffence.lua
++++ b/src/Modules/CalcOffence.lua
+@@ -5188,7 +5188,7 @@ function calcs.offence(env, actor, activeSkill)
+ 			return baseVal
+ 		end
+ 
+-		local critMetatable = { __index = |_, key| -> skillCfg.skillCond[key] or cfg.skillCond[key] }
++		local critMetatable = { __index = function(_, key) return skillCfg.skillCond[key] or cfg.skillCond[key] end }
+ 		---Calculate global / breakdown values for a damaging ailment
+ 		---@param ailment string
+ 		---@param ailmentDamageType table
+diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
+index 76c1bd3..779d224 100644
+--- a/src/Modules/CalcSetup.lua
++++ b/src/Modules/CalcSetup.lua
+@@ -1733,7 +1733,7 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 					limit = { count = 0, max = dbMod.limit, names = { } }
+ 					augmentLimits[dbMod.limitId or augmentName] = limit
+ 				end
+-				limit.count += count
++				limit.count = limit.count + count
+ 				t_insert(limit.names, augmentName)
+ 			end
+ 		end
+diff --git a/src/Modules/Main.lua b/src/Modules/Main.lua
+index 69c4eec..6ff9913 100644
+--- a/src/Modules/Main.lua
++++ b/src/Modules/Main.lua
+@@ -170,7 +170,9 @@ function main:Init()
+ 							table.insert(bases, { variantName = "Runemastered", baseName = "Runemastered " .. baseBase })
+ 						end
+ 						if #bases > 1 then
+-						newItem.baseList = newItem.baseList ?? {}
++							if newItem.baseList == nil then
++								newItem.baseList = {}
++							end
+ 							local baseLines = {}
+ 							-- Add variants for each base
+ 							for _, base in ipairs(bases) do
+@@ -364,7 +366,7 @@ function main:SaveModCache()
+ 				out:write("end)();(function()\n")
+ 				count = 0
+ 			else
+-				count += 1
++				count = count + 1
+ 			end
+ 		end
+ 	end

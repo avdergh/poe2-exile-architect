@@ -204,6 +204,39 @@ def test_parser_separates_runes_corruption_and_explicit_affixes():
     assert structure["runeNames"] == ["Iron Rune"]
 
 
+@pytest.mark.parametrize("side", ["receipt", "current", "both"])
+@pytest.mark.parametrize("missing", [None, "unknown", ""])
+def test_persisted_receipt_requires_known_model_on_both_sides(tmp_path, monkeypatch, side, missing):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    original = _prepared()
+    previous = dict(original["runtimeVersion"])
+    current = dict(previous)
+    if side in {"receipt", "both"}:
+        previous["pobCommit"] = missing
+    if side in {"current", "both"}:
+        current["pobCommit"] = missing
+    receipt = craft_receipts.prepare_receipt(
+        ITEM, slot="Body Armour", item_level=82, runtime_context=previous
+    )
+    assert craft_receipts.persist_receipt(receipt)["status"] == "recorded"
+    # Exercise both explicit references and the implicit by-item lookup used
+    # when equipment-wide limits collect each equipped Rune's quota group.
+    for ref in (receipt["receiptRef"], None):
+        resolved = craft_receipts.resolve_receipt(
+            ITEM, slot="Body Armour", receipt_ref=ref, runtime_context=current
+        )
+        assert resolved == {"status": "rejected", "errorCode": "craft_receipt_version_mismatch"}
+
+
+def test_upgrade_rejects_old_pinned_model_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path)
+    previous = {**_prepared()["runtimeVersion"], "pobCommit": "7d6f530cbdab20389ff8bc6ba97a37ac27f74e41"}
+    receipt = craft_receipts.prepare_receipt(ITEM, slot="Body Armour", item_level=82, runtime_context=previous)
+    assert craft_receipts.persist_receipt(receipt)["status"] == "recorded"
+    current = {**previous, "pobCommit": "ce566eac45ea8a86477f513c7ee65a1ebe60014e"}
+    assert craft_receipts.resolve_receipt(ITEM, runtime_context=current)["errorCode"] == "craft_receipt_version_mismatch"
+
+
 def test_prepared_receipt_authorizes_exact_special_sources(monkeypatch):
     prepared = _prepared()
     seen_lines: list[str] = []

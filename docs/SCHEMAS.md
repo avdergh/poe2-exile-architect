@@ -319,6 +319,15 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   非活动物品来源组在每次完整snapshot重载后先设为计算主组，再选择精确active effect；不能在
   PoB尚未生成该来源的活动效果列表时同时要求有效序号。激活后仍核对来源、effectId和实际辅助，
   最终恢复原state hash。这仅选择计算焦点，不证明副武器切换、充能或增益覆盖已经验证。
+- PoB runtime contract 10 识别原生 `Default Attack`：`sourceKind=default_attack` 和宝石
+  `levelAuthority=default_attack` 必须绑定当前 MAIN 计算产生的 slot/effect/level 授予，XML标签不能授权。
+  默认攻击的 `activeSkills[].effectiveLevel` 与原始宝石 `level` 分开读回；前者含装备增级，后者负责等级合法性。
+  未选为主输出、未纳入FullDPS、只有一个原生根且没有辅助的默认组不要求优化审计；采用后照常执行。
+  两武器组的默认攻击按实际槽位分别标识，未活动组不能借缺少effect读数取得审计通过。
+  `configure_source_skill_supports` 支持该原生来源，仍核辅助实际适用性、资源、指纹和失败回滚。
+  设置普通主技能保留已有来源组及辅助；普通旧主组仍被替换。
+- 持久制作回执的 `pobCommit` 两侧必须已知，所有版本字段规范化后精确相等。缺失版本不能作为
+  通配证据，旧共享配额ID不可与新模型混用；拒绝不重写旧回执，重新制作或测量后生成新回执。
 - `GearAttainabilityPolicy`：只约束生成黄装候选的质量，不属于物品合法性。默认
   `realistic_trade` 每件最多五条显式词缀与两条深 T1；显式 `theoretical` 允许六词缀上限。
   `plan_gear / optimize_item / craft_item / rank_upgrades` 与 Checkpoint 使用同一 policy 及 tier 阶梯，
@@ -1475,6 +1484,11 @@ skillSet/itemSet/passiveSpec/configSet，来源与PoB实际导出不一致时为
 `activeConfigSet/sourceActiveConfigSet`、sourceHashRef与`sourceSnapshotHash`；快照指纹也覆盖
 Placeholder，不能用忽略该字段的通用语义hash授权旧读回。旧无绑定available receipt降级为unavailable，
 重新claim时重算。非活动配置可作有身份的场景证据，不能混入当前活动数值结论。
+新PoB的`CustomModifierBlock`在config视图保留`blockIndex/blockTitle/enabled/value`，并分别标记
+`effectiveInConfigSet/appliesToActiveConfig`。正文读取遵循原生Lua的首文本段语义，legacy迁移按
+实际赋值顺序判断；禁用块和其他ConfigSet不授权当前数值。现代块readback还绑定
+`customModifierSemanticsVersion/sourceActiveCustomModifiersHash/activeCustomModifiersHash`，
+来源与PoB实际活动修饰不一致时不可用；旧缺该绑定的现代块回执须重验，不批量提权。
 
 Spirit 总账区分 `spiritReservedCapped` 与真实 `spiritRequested`。requested 由 PoB 最终
 `Spirit - SpiritUnreserved` 得到；`spiritUsed` 仅作一个兼容周期的 requested 别名。合法性同时核对

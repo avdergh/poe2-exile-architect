@@ -69,7 +69,7 @@
     { "name": "plan_item_sockets_batch", "description": "Plan Rune or Soul Core decisions for up to eight equipped slots while preserving socket capacity and receipt-verifying installed effects." },
     { "name": "rank_upgrades", "description": "Rank realistic-trade upgrades by default, with an explicit theoretical ceiling profile." },
     { "name": "optimize_supports", "description": "Pick engine-measured supports, short-circuiting only runtime-confirmed rate-dependent model gaps." },
-    { "name": "configure_source_skill_supports", "description": "Atomically configure supports on real passive, Ascendancy, or item-granted source skills with rollback and Spirit validation." },
+    { "name": "configure_source_skill_supports", "description": "Atomically configure supports on real passive, Ascendancy, item-granted, or native default attack skills with rollback and Spirit validation." },
     { "name": "optimize_jewel", "description": "Craft an Item-Level-valid ordinary rare jewel, or validate and format Agent-selected exact modifiers for a positional radius jewel." },
     { "name": "plan_gear", "description": "Plan a whole gear set against stage resistance targets with cross-slot damage, defense, attribute, and Spirit budgets." },
     { "name": "search_items", "description": "Search item bases." },

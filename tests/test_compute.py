@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from server import main, paths
-from server.compute import buildopt, craftopt, itemopt, mutation_batch
+from server.compute import buildopt, craftopt, itemopt, mutation_batch, skillgroups
 from server.compute.engine import PobEngine
 from server.compute.pob_code import decode_code, encode_code
 from server.compute.state import build_state_hash
@@ -20,6 +20,20 @@ from server.knowledge import db, itemparse, refbuilds
 
 FIREBALL_DPS = 124.833
 FIREBALL_AVG = 149.8
+
+
+def _socketed_output(engine, skill: str, *, root_skill: str | None = None) -> tuple[dict, dict]:
+    """Resolve the exact ordinary skill/effect while retaining generated groups."""
+    matches = [
+        (group, effect)
+        for group in skillgroups.list_skill_groups(engine)["groups"]
+        if not group.get("source")
+        and (root_skill is None or group["gems"][0]["name"] == root_skill)
+        for effect in group["activeSkills"]
+        if effect["name"] == skill
+    ]
+    assert len(matches) == 1, {"skill": skill, "rootSkill": root_skill, "matches": matches}
+    return matches[0]
 
 
 def test_ping(engine):
@@ -33,10 +47,11 @@ def test_real_lifetap_signature_reads_life_cost_domain(engine):
     engine.set_class("Sorceress", "Stormweaver")
     engine.set_level(95)
     engine.paste_skill("Spark 20/20 1 / Lifetap")
+    group, _ = _socketed_output(engine, "Spark", root_skill="Spark")
 
     result = mechanism_signature.observe(
         engine,
-        {"offenseSkillGroupIndex": 1, "activeSkillName": "Spark"},
+        {"offenseSkillGroupIndex": group["index"], "activeSkillName": "Spark"},
     )
 
     assert result["ok"] is True
@@ -146,9 +161,10 @@ def test_witchhunter_on_kill_explosion_is_supplemental_not_primary(engine):
     code = (Path(__file__).parent / "fixtures" / "witchhunter_detonate.pobcode").read_text().strip()
     engine.new_build()
     engine.load_build_code(code)
+    group, _ = _socketed_output(engine, "Detonate Living")
 
     build = engine.select_judge_skill(
-        offense_skill_group_index=1,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Detonate Living",
     )
 
@@ -179,8 +195,9 @@ def test_reactive_thorns_is_supplemental_not_primary(engine):
         "101 to 220 Physical Thorns damage"
     )
 
+    group, _ = _socketed_output(engine, "Fireball", root_skill="Fireball")
     build = engine.select_judge_skill(
-        offense_skill_group_index=1,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Fireball",
     )
 
@@ -650,19 +667,19 @@ def test_optimize_supports_can_target_secondary_group_and_restore(engine):
     engine.paste_skill("Lightning Spear 20/20  1")
     engine.add_skill_group("Fireball 20/20  1")
     groups_before = skillgroups.list_skill_groups(engine)
-    target = next(group for group in groups_before["groups"] if group["index"] == 2)
+    target, _ = _socketed_output(engine, "Fireball", root_skill="Fireball")
 
     result = supportopt.optimize_supports(
         engine,
         metric="TotalDPS",
         max_supports=3,
-        group_index=2,
+        group_index=target["index"],
         expected_fingerprint=target["fingerprint"],
     )
 
     assert result["ok"] is True
     assert result["skill"] == "Fireball"
-    assert result["groupIndex"] == 2
+    assert result["groupIndex"] == target["index"]
     assert engine.get_build()["mainSkill"] == "Lightning Spear"
     assert skillgroups.list_skill_groups(engine)["groups"] == groups_before["groups"]
 
@@ -674,8 +691,9 @@ def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_me
     engine.set_class("Sorceress")
     engine.set_level(95)
     engine.paste_skill("Cast on Critical 20/20 1\nComet 20/20 1")
+    group, host = _socketed_output(engine, "Cast on Critical", root_skill="Cast on Critical")
 
-    rate_dependent = supportopt.optimize_supports(engine, metric="FullDPS")
+    rate_dependent = supportopt.optimize_supports(engine, metric="FullDPS", group_index=group["index"])
     assert rate_dependent["ok"] is False
     assert rate_dependent["reasonClass"] == "capability_gap"
     assert rate_dependent["measurement"]["screenedCandidates"] == 0
@@ -683,8 +701,8 @@ def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_me
 
     per_hit = engine.call(
         "inspect_support_evaluation_capability",
-        index=1,
-        activeIndex=1,
+        index=group["index"],
+        activeIndex=host["index"],
         objectiveKeys=["AverageDamage"],
     )
     assert per_hit["numericRanking"] == "supported"
@@ -702,8 +720,10 @@ def test_real_support_search_preserves_usage_conditions(engine, monkeypatch, ski
     engine.set_level(95)
     engine.add_item(f"Rarity: Normal\n{base}\nItem Level: 95", slot="Weapon 1")
     engine.paste_skill(f"{skill} 20/20 1 / Hit and Run")
+    group, output = _socketed_output(engine, skill, root_skill=skill)
     observed = engine.call(
-        "inspect_support_evaluation_capability", index=1, activeIndex=1, objectiveKeys=["TotalDPS"]
+        "inspect_support_evaluation_capability", index=group["index"],
+        activeIndex=output["index"], objectiveKeys=["TotalDPS"]
     )
     assert observed["applicationCheck"] == "verified"
     assert observed["usageConditionContractVersion"] == 1
@@ -712,9 +732,10 @@ def test_real_support_search_preserves_usage_conditions(engine, monkeypatch, ski
     ]
 
     engine.paste_skill(f"{skill} 20/20 1 / Rapid Attacks II")
+    group, _ = _socketed_output(engine, skill, root_skill=skill)
     before_hash = build_state_hash(engine.get_xml())
     monkeypatch.setattr(supportopt, "_screen_set", lambda *_: ["Rapid Attacks II", "Hit and Run"])
-    result = supportopt.optimize_supports(engine)
+    result = supportopt.optimize_supports(engine, group_index=group["index"])
     assert result["ok"] is True
     assert "Hit and Run" not in result["supports"]
     assert result["measurement"]["candidateRejectionCodes"]["support_usage_condition_changed"] == 1
@@ -734,16 +755,16 @@ def test_proxy_payload_attack_speed_does_not_prove_spawn_rate(engine, monkeypatc
     engine.set_level(95)
     engine.add_item(f"Rarity: Normal\n{base}\nItem Level: 95", slot="Weapon 1")
     engine.paste_skill(f"Mirage Archer 20/0 1 / {skill} 20/0 1 / Cooldown Recovery II")
-    groups = engine.call("list_skill_groups")["groups"]
-    output = next(value for value in groups[0]["activeSkills"] if value["name"] == skill)
-    engine.call("set_skill_group_state", index=1, activeSkillIndex=output["index"], makeMain=True)
+    group, output = _socketed_output(engine, skill, root_skill="Mirage Archer")
+    selected = engine.call("set_skill_group_state", index=group["index"], activeSkillIndex=output["index"], makeMain=True)
+    assert selected["ok"], selected
     before = build_state_hash(engine.get_xml())
 
     def no_search(*args):
         raise AssertionError("An unmodelled proxy rate must not start numeric support search")
 
     monkeypatch.setattr(supportopt, "_screen_set", no_search)
-    result = supportopt.optimize_supports(engine, group_index=1)
+    result = supportopt.optimize_supports(engine, group_index=group["index"])
 
     assert result["ok"] is False
     assert result["reasonClass"] == "capability_gap"
@@ -754,7 +775,7 @@ def test_proxy_payload_attack_speed_does_not_prove_spawn_rate(engine, monkeypatc
     assert build_state_hash(engine.get_xml()) == before
     per_hit = engine.call(
         "inspect_support_evaluation_capability",
-        index=1,
+        index=group["index"],
         activeIndex=output["index"],
         objectiveKeys=["AverageDamage"],
     )
@@ -770,10 +791,11 @@ def test_herald_without_proc_rate_is_not_a_zero_gain_dps_audit(engine, monkeypat
     engine.set_level(95)
     engine.add_item("Rarity: Normal\nGemini Bow\nItem Level: 95", slot="Weapon 1")
     engine.paste_skill(f"{skill} 20/0 1 / Elemental Focus")
+    group, _ = _socketed_output(engine, skill, root_skill=skill)
     before = build_state_hash(engine.get_xml())
     monkeypatch.setattr(supportopt, "_screen_set", lambda *_: pytest.fail("must not enumerate"))
 
-    result = supportopt.optimize_supports(engine, group_index=1)
+    result = supportopt.optimize_supports(engine, group_index=group["index"])
 
     assert result["ok"] is False
     assert result["reasonClass"] == "capability_gap"
@@ -790,6 +812,7 @@ def test_duration_dot_object_missing_model_rejects_partial_hit_ranking(engine, m
     engine.set_level(95)
     engine.add_item("Rarity: Normal\nGemini Bow\nItem Level: 95", slot="Weapon 1")
     engine.paste_skill("Tornado Shot 20/0 1 / Durability / Prolonged Duration II")
+    group, _ = _socketed_output(engine, "Tornado Shot", root_skill="Tornado Shot")
     observed = engine.get_stats(["TotalDPS", "TotalDot", "Duration"])["stats"]
     assert observed["TotalDPS"] > 0
     assert observed.get("TotalDot", 0) == 0
@@ -797,7 +820,7 @@ def test_duration_dot_object_missing_model_rejects_partial_hit_ranking(engine, m
     before = build_state_hash(engine.get_xml())
     monkeypatch.setattr(supportopt, "_screen_set", lambda *_: pytest.fail("must not enumerate"))
 
-    result = supportopt.optimize_supports(engine, group_index=1, metric=metric)
+    result = supportopt.optimize_supports(engine, group_index=group["index"], metric=metric)
 
     assert result["ok"] is False
     assert result["reasonClass"] == "capability_gap"
@@ -817,11 +840,12 @@ def test_modelled_spell_hit_and_dot_do_not_trigger_missing_object_guard(engine, 
     engine.set_class("Witch")
     engine.set_level(95)
     engine.paste_skill(f"{skill} 20/0 1")
+    group, output = _socketed_output(engine, skill, root_skill=skill)
 
     observed = engine.call(
         "inspect_support_evaluation_capability",
-        index=1,
-        activeIndex=1,
+        index=group["index"],
+        activeIndex=output["index"],
         objectiveKeys=["TotalDPS"],
     )
 
@@ -830,10 +854,10 @@ def test_modelled_spell_hit_and_dot_do_not_trigger_missing_object_guard(engine, 
     assert observed["reasonCodes"] == []
 
 
-@pytest.mark.parametrize("active_index", [1, 2])
+@pytest.mark.parametrize("selected_skill", ["Cast on Critical", "Comet"])
 @pytest.mark.parametrize("invalid_support", [False, True])
 def test_trigger_support_roles_are_verified_across_host_and_payload(
-    engine, active_index, invalid_support
+    engine, selected_skill, invalid_support
 ):
     from server.compute import supportopt
     from server.generation import evaluation, validation_checkpoint
@@ -845,10 +869,12 @@ def test_trigger_support_roles_are_verified_across_host_and_payload(
         "Cast on Critical 20/20 1 / Energy Retention\n"
         "Comet 20/20 1 / Controlled Destruction" + (" / Bidding III" if invalid_support else "")
     )
-    engine.call("set_skill_group_state", index=1, activeSkillIndex=active_index, makeMain=True)
+    group, output = _socketed_output(engine, selected_skill, root_skill="Cast on Critical")
+    selected = engine.call("set_skill_group_state", index=group["index"], activeSkillIndex=output["index"], makeMain=True)
+    assert selected["ok"], selected
     before_hash = build_state_hash(engine.get_xml())
 
-    result = supportopt.optimize_supports(engine, metric="FullDPS", group_index=1)
+    result = supportopt.optimize_supports(engine, metric="FullDPS", group_index=group["index"])
     application = {
         item["name"]: item["activeSkills"] for item in result["capability"]["supportApplication"]
     }
@@ -861,25 +887,27 @@ def test_trigger_support_roles_are_verified_across_host_and_payload(
     assert build_state_hash(engine.get_xml()) == before_hash
 
     checkpoint = validation_checkpoint.inspect_generation_checkpoint(
-        engine, offense_skill_group_index=1, expected_skill_name="Comet"
+        engine, offense_skill_group_index=group["index"], expected_skill_name="Comet"
     )
     support = checkpoint["createQualityChecklist"]["skillSupportAudit"]
-    assert support["status"] == ("failed" if invalid_support or active_index == 1 else "unknown")
-    if not invalid_support and active_index == 1:
-        assert "support_audit_calculation_context_mismatch:1" in support["reasons"]
+    assert support["status"] == ("failed" if invalid_support or selected_skill == "Cast on Critical" else "unknown")
+    if not invalid_support and selected_skill == "Cast on Critical":
+        assert f"support_audit_calculation_context_mismatch:{group['index']}" in support["reasons"]
         # A host capability receipt cannot authorize the payload. Re-audit that exact effect.
-        engine.call("set_skill_group_state", index=1, makeMain=True, activeSkillIndex=2)
+        payload_group, payload = _socketed_output(engine, "Comet", root_skill="Cast on Critical")
+        selected = engine.call("set_skill_group_state", index=payload_group["index"], makeMain=True, activeSkillIndex=payload["index"])
+        assert selected["ok"], selected
         refreshed = supportopt.optimize_supports(engine, metric="FullDPS")
         assert refreshed["reasonClass"] == "capability_gap"
         payload_checkpoint = validation_checkpoint.inspect_generation_checkpoint(
-            engine, offense_skill_group_index=1, expected_skill_name="Comet"
+            engine, offense_skill_group_index=payload_group["index"], expected_skill_name="Comet"
         )
         assert (
             payload_checkpoint["createQualityChecklist"]["skillSupportAudit"]["status"] == "unknown"
         )
     blockers = evaluation._final_check_blockers(checkpoint["createQualityChecklist"])
     assert any(reason.startswith("skillSupportAudit:") for reason in blockers) is (
-        invalid_support or active_index == 1
+        invalid_support or selected_skill == "Cast on Critical"
     )
     assert checkpoint["deliveryStatus"] != "recommended"
 
@@ -1410,14 +1438,15 @@ def test_tactician_95_real_engine_selects_declared_boss_group(engine):
     engine.add_item("Rarity: Normal\nMakeshift Crossbow\nItem Level: 1", slot="Weapon 1")
     engine.paste_skill("Galvanic Shards 20/20 1")
     engine.add_skill_group("Stormblast Bolts 20/20 1")
+    group, _ = _socketed_output(engine, "Stormblast Bolts", root_skill="Stormblast Bolts")
 
     selection = engine.select_judge_skill(
-        offense_skill_group_index=2,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Stormblast Bolts",
     )
 
     assert selection["status"] == "selected"
-    assert selection["calculationContext"]["groupIndex"] == 2
+    assert selection["calculationContext"]["groupIndex"] == group["index"]
     assert selection["calculationContext"]["skillName"] == "Stormblast Bolts"
 
 
@@ -1697,8 +1726,9 @@ def test_get_build_is_read_only_and_judge_selection_is_explicit(engine):
 
     assert b["mainSkill"] == "Plague Bearer"
     assert "judgeSelectedSkill" not in b
+    group, _ = _socketed_output(engine, "Fireball", root_skill="Fireball")
     selection = engine.select_judge_skill(
-        offense_skill_group_index=2,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Fireball",
     )
     selected = selection["selectedSkill"]
@@ -1718,8 +1748,9 @@ def test_get_build_exposes_weapon_requirement_mismatch_for_selected_skill(engine
         slot="Weapon 1",
     )
 
+    group, _ = _socketed_output(engine, "Lightning Spear", root_skill="Lightning Spear")
     selected = engine.select_judge_skill(
-        offense_skill_group_index=1,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Lightning Spear",
     )["selectedSkill"]
 
@@ -1734,12 +1765,13 @@ def test_judge_selected_skill_uses_isolated_full_dps_per_group(engine):
     # each candidate group during selection, or it will bind the global aggregate to one skill.
     _spark_caster(engine)
     engine.paste_skill("Spark 20/20  1")
+    first_group, _ = _socketed_output(engine, "Spark", root_skill="Spark")
     single_full = engine.get_stats(["FullDPS"])["stats"]["FullDPS"]
     engine.add_skill_group("Spark 20/20  1", include_in_full_dps=True)
     global_full = engine.get_stats(["FullDPS"])["stats"]["FullDPS"]
 
     selected = engine.select_judge_skill(
-        offense_skill_group_index=1,
+        offense_skill_group_index=first_group["index"],
         expected_skill_name="Spark",
     )["selectedSkill"]
 
@@ -1756,9 +1788,10 @@ def test_judge_selected_skill_exposes_active_skill_count_for_minion_math(engine)
     engine.set_class("Witch", "Infernalist")
     engine.set_level(90)
     engine.paste_skill("Fireball 20/20  3")
+    group, _ = _socketed_output(engine, "Fireball", root_skill="Fireball")
 
     selected = engine.select_judge_skill(
-        offense_skill_group_index=1,
+        offense_skill_group_index=group["index"],
         expected_skill_name="Fireball",
     )["selectedSkill"]
 

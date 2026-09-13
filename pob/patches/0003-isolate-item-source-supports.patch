@@ -1,42 +1,27 @@
 diff --git a/src/Modules/CalcSetup.lua b/src/Modules/CalcSetup.lua
-index 9654916..9f2bcd8 100644
+index 76c1bd3..c49544d 100644
 --- a/src/Modules/CalcSetup.lua
 +++ b/src/Modules/CalcSetup.lua
-@@ -1942,43 +1942,50 @@ function calcs.initEnv(build, mode, override, specEnv)
- 									-- add displayGemList for tooltip to display all gems linked to active skills
- 									group.displayGemList = copyTable(group.gemList, true)
- 									-- if skill granted by unique item, go through all support groups in slot
- 									if group.source then
- 										if supportLists[slotName] then
--											-- add socketed supports from other socketGroups
-+											-- Source groups own their directly attached supports.  Only ordinary
-+											-- source-less groups in the same item slot are shared across item-
-+											-- granted skills; otherwise sibling granted skills leak supports into
-+											-- each other and multiply reservation costs.
- 											for _, otherSocketGroup in ipairs(build.skillsTab.socketGroupList) do
--												if otherSocketGroup.slot and otherSocketGroup.slot == group.slot then
-+												if not otherSocketGroup.source and otherSocketGroup.slot and otherSocketGroup.slot == group.slot then
- 													for _, gem in ipairs(otherSocketGroup.gemList) do
- 														if gem.gemData and gem.gemData.grantedEffect and gem.gemData.grantedEffect.support then
- 															t_insert(group.displayGemList, gem)
- 														end
- 													end
- 												end
- 											end
--											for _, supportGroup in pairs(supportLists[slotName]) do
--												for _, supportEffect in ipairs(supportGroup) do
--													addBestSupport(supportEffect, appliedSupportList, env.mode)
-+											for supportSourceGroup, supportGroup in pairs(supportLists[slotName]) do
-+												if not supportSourceGroup.source then
-+													for _, supportEffect in ipairs(supportGroup) do
-+														addBestSupport(supportEffect, appliedSupportList, env.mode)
-+													end
- 												end
- 											end
- 										end
- 									end
- 									-- then add supports from crossLinked socketGroups
- 									for crossLinkedSupportSlot, crossLinkedSupportGroup in pairs(env.crossLinkedSupportGroups) do
+@@ -1963,8 +1963,17 @@ function calcs.initEnv(build, mode, override, specEnv)
+ 				build.skillsTab:ProcessSocketGroup(group)
+ 			end
+ 			if migratedLegacyGroups then
++				-- Cross-linked supports must keep their source-less slot owner. The
++				-- migration copies them into item skills; clearing the original slot
++				-- would silently disable sharing with the other linked equipment.
++				local linkedSupportSlots = { }
++				for _, mod in ipairs(env.modDB:Tabulate("LIST", nil, "LinkedSupport")) do
++					linkedSupportSlots[mod.mod.sourceSlot] = true
++				end
+ 				for legacyGroup in pairs(migratedLegacyGroups) do
+-					legacyGroup.slot = nil
++					if not linkedSupportSlots[legacyGroup.slot] then
++						legacyGroup.slot = nil
++					end
+ 				end
+ 			end
+ 
+@@ -2321,7 +2330,7 @@ function calcs.initEnv(build, mode, override, specEnv)
  										for _, crossLinkedSupportedSlot in ipairs(crossLinkedSupportGroup) do
  											if crossLinkedSupportedSlot == slotName and supportLists[crossLinkedSupportSlot] then
  												for _, otherSocketGroup in ipairs(build.skillsTab.socketGroupList) do
@@ -45,7 +30,7 @@ index 9654916..9f2bcd8 100644
  														for _, gem in ipairs(otherSocketGroup.gemList) do
  															if gem.gemData and gem.gemData.grantedEffect and gem.gemData.grantedEffect.support then
  																t_insert(group.displayGemList, gem)
- 															end
+@@ -2329,9 +2338,11 @@ function calcs.initEnv(build, mode, override, specEnv)
  														end
  													end
  												end
@@ -60,5 +45,3 @@ index 9654916..9f2bcd8 100644
  													end
  												end
  											end
- 										end
- 									end
