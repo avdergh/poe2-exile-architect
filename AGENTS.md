@@ -584,7 +584,11 @@ Memory；数值观察使用独立 PoB，回执仅 educational_only。详细合�
   会话 preset 到 `${DSH_HOME}/.agent-presets/poe-bd/`；放置时把组合里的
   `__POE_BD_CREATOR_ROOT__` / `__POE_BD_UV__` 占位符替换为真实项目路径与 uv，并在 preset 目录内
   额外出具一份填好路径的 layer-1 patch；`install --force` 把已保留的 `.bak` 改名为带时间戳的目录
-  以便重装，孤儿 backup 仍是冲突。不触碰宿主组合与随发行版 preset。
+  以便重装，孤儿 backup 仍是冲突。preset 的每个插件行名先与 `dsh-plugin-rows.json` 快照比对
+  （当前记录 DSH `0.1.6-alpha.1`），任何一行对不上都在写入前失败关闭——行名不匹配会让
+  `dsh-agent-presets` 把整个 preset 判为 broken、在预设列表里不可选；doctor 报告 `rowsResolvable`，
+  `--probe <DSH 检出>` 用 DSH 自己的 discovery 判定已放置 preset 能否挂载，
+  `--write-row-snapshot <DSH 检出>` 在 DSH 升级后刷新快照。不触碰宿主组合与随发行版 preset。
 - `dsh/`：DeepSeek Harness 适配层——`poe-bd.mcp.cordis.yml`（四个域 MCP server 的
   `dsh-mcp-client` 注册 patch，与 preset 二选一）、`agent-presets/poe-bd/`（preset 模板：组合 +
   改写 skills）、`bundle/`（声明 `dsh.bundle.patch` 的 DSH 包，`dsh plugin --profile <name> add`

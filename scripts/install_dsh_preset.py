@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,7 @@ PRESET_ID = "poe-bd"
 COMPOSITION_FILE = "agent.cordis.yml"
 METADATA_FILE = "preset.yml"
 EMITTED_PATCH_NAME = "poe-bd.mcp.cordis.yml"
+ROW_SNAPSHOT_FILE = "dsh-plugin-rows.json"
 REQUIRED_SKILLS = (
     "poe-bd-create",
     "poe-bd-learn",
@@ -69,6 +71,8 @@ TOKEN_PREFIX = "__POE_BD_"
 # installer still rewrites it so an edited copy keeps working.
 DEFAULT_ROOT_LITERAL = "E:/poe-bd-creator"
 _LEGACY_ROOT_LITERAL_RE = re.compile(re.escape(DEFAULT_ROOT_LITERAL))
+# A row's plugin name, in the composition's own indentation-tolerant form.
+_ROW_NAME_RE = re.compile(r"^\s*-?\s*name:\s*(.+?)\s*$")
 
 
 def dsh_home(environ: dict[str, str]) -> Path:
@@ -77,6 +81,55 @@ def dsh_home(environ: dict[str, str]) -> Path:
 
 def preset_target(dsh_home_dir: Path) -> Path:
     return dsh_home_dir / ".agent-presets" / PRESET_ID
+
+
+def row_names_in(composition: Path) -> set[str]:
+    """Every plugin name the composition names, groups included.
+
+    `serverName:` and other keys cannot match: the pattern anchors `name:` right
+    after the row's leading whitespace and dash.
+    """
+    names: set[str] = set()
+    for line in _read(composition).splitlines():
+        match = _ROW_NAME_RE.match(line)
+        if match:
+            names.add(match.group(1).strip().strip("'\""))
+    return names
+
+
+def snapshot_row_names(source: Path = SOURCE_PRESET) -> tuple[str, set[str]]:
+    """The recorded DSH version and its resolvable row names."""
+    path = source / ROW_SNAPSHOT_FILE
+    payload = json.loads(_read(path))
+    return str(payload.get("dshVersion", "")), {str(name) for name in payload["rowNames"]}
+
+
+def row_name_problems(source: Path = SOURCE_PRESET) -> list[str]:
+    """Rows this preset names that the recorded DSH version cannot resolve.
+
+    A row naming a plugin the running installation does not have makes
+    `dsh-agent-presets` report the WHOLE preset broken, which hides it from the
+    picker — that is exactly how a row copied from another DSH version breaks a
+    mount, so it fails here first. Builtin `cordis:` rows and preset-relative
+    rows are not package lookups.
+    """
+    composition = source / COMPOSITION_FILE
+    snapshot = source / ROW_SNAPSHOT_FILE
+    if not composition.is_file():
+        return [f"{composition}: missing composition"]
+    if not snapshot.is_file():
+        return [f"{snapshot}: missing row snapshot (regenerate with --write-row-snapshot)"]
+    version, known = snapshot_row_names(source)
+    problems: list[str] = []
+    for name in sorted(row_names_in(composition)):
+        if name.startswith("cordis:") or name.startswith(".") or name.startswith("file:"):
+            continue
+        if name not in known:
+            problems.append(
+                f"{composition}: row names {name!r}, which DSH {version} does not provide "
+                f"(refresh {snapshot.name} after a DSH upgrade, or fix the row)"
+            )
+    return problems
 
 
 def resolve_repo_root(explicit: str | None) -> Path:
@@ -129,6 +182,7 @@ def source_problems(source: Path) -> list[str]:
     for skill in REQUIRED_SKILLS:
         if not (source / "skills" / skill / "SKILL.md").is_file():
             problems.append(f"missing skills/{skill}/SKILL.md")
+    problems.extend(row_name_problems(source))
     return problems
 
 
@@ -143,6 +197,94 @@ def template_problems(source: Path) -> list[str]:
             "a placed preset would depend on one machine's absolute path"
         ]
     return []
+
+
+def write_row_snapshot(dsh_install: Path, *, source: Path = SOURCE_PRESET) -> dict[str, object]:
+    """Record the row names a DSH installation provides.
+
+    The union of every `name:` in its shipped presets and bundle patches, plus
+    the MCP client the CLI ships for patch layers. Run this after a DSH upgrade.
+    """
+    manifest = dsh_install / "package.json"
+    if not manifest.is_file():
+        return {"status": "error", "errorCode": "not_a_dsh_install", "path": str(dsh_install)}
+    version = json.loads(_read(manifest)).get("version", "unknown")
+    names: set[str] = set()
+    sources: list[str] = []
+    for pattern in (
+        "packages/preset/agent-presets/presets/*/agent.cordis.yml",
+        "packages/bundle/*/cordis.patch.yml",
+    ):
+        for path in sorted(dsh_install.glob(pattern)):
+            names |= row_names_in(path)
+            sources.append(path.relative_to(dsh_install).as_posix())
+    if not names:
+        return {"status": "error", "errorCode": "no_rows_found", "path": str(dsh_install)}
+    names.add("@deepseek-ai/dsh-mcp-client")
+    payload = {
+        "dshVersion": version,
+        "note": (
+            "Resolvable plugin row names for the DSH version above. Regenerate with "
+            "`python scripts/install_dsh_preset.py --write-row-snapshot <dsh-checkout>` "
+            "after a DSH upgrade."
+        ),
+        "sources": sources,
+        "rowNames": sorted(name for name in names if not name.startswith("cordis:")),
+    }
+    out = source / ROW_SNAPSHOT_FILE
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"status": "written", "path": str(out), "dshVersion": version,
+            "rowNames": len(payload["rowNames"])}
+
+
+def probe_preset(
+    *, dsh_install: Path, target: Path, harness_base: Path | None = None
+) -> dict[str, object]:
+    """Ask DSH's own preset discovery whether the PLACED preset is mountable.
+
+    Discovery resolves every row's plugin name exactly as the mount does, so its
+    verdict is the picker's verdict — the check that catches a row that no schema
+    validation would.
+    """
+    lib = dsh_install / "packages" / "preset" / "agent-presets" / "lib" / "index.js"
+    node = shutil.which("node")
+    if not lib.is_file() or node is None:
+        return {
+            "status": "unavailable",
+            "reason": (
+                "needs a DSH checkout with built libs and node on PATH; "
+                f"lib={lib.is_file()} node={node is not None}"
+            ),
+        }
+    base = harness_base or dsh_install / "apps" / "cli"
+    script = (
+        "import { discoverPresets, SHIPPED_PRESET_ROOT } from "
+        f"{json.dumps(lib.as_uri())};\n"
+        "import { pathToFileURL } from 'node:url';\n"
+        f"const base = pathToFileURL({json.dumps(str(base).replace(chr(92), '/') + '/')}).href;\n"
+        "const presets = await discoverPresets([\n"
+        "  { path: SHIPPED_PRESET_ROOT, trust: 'system' },\n"
+        f"  {{ path: {json.dumps(str(target.parent))}, trust: 'user' }},\n"
+        "], base);\n"
+        "for (const preset of presets) "
+        "console.log(`${preset.id}\\t${preset.broken ?? 'loadable'}`);\n"
+    )
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+    )
+    verdicts = {}
+    for line in proc.stdout.splitlines():
+        if "\t" in line:
+            preset_id, verdict = line.split("\t", 1)
+            verdicts[preset_id.strip()] = verdict.strip()
+    if not verdicts:
+        return {"status": "error", "detail": (proc.stderr or proc.stdout)[-400:]}
+    return {"status": "checked", "preset": PRESET_ID, "verdict": verdicts.get(PRESET_ID, "absent"),
+            "all": verdicts}
 
 
 def _read(path: Path) -> str:
@@ -303,6 +445,9 @@ def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
     uv_literal = resolve_uv()
     checks: dict[str, bool] = {
         "sourceComplete": not (source_problems(source) + template_problems(source)),
+        # A row the running DSH cannot resolve hides the preset from the picker,
+        # so it is reported here even though only a mount proves the whole tree.
+        "rowsResolvable": not row_name_problems(source),
         "installed": (target / COMPOSITION_FILE).is_file(),
         "skillsInstalled": all(
             (target / "skills" / skill / "SKILL.md").is_file() for skill in REQUIRED_SKILLS
@@ -348,7 +493,12 @@ def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "uninstall", "doctor"))
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("install", "uninstall", "doctor"),
+        help="preset action; omitted when --write-row-snapshot or --probe is used",
+    )
     parser.add_argument("--dsh-home", type=Path, help="override DSH_HOME (default env or ~/.dsh)")
     parser.add_argument("--source", type=Path, default=SOURCE_PRESET)
     parser.add_argument("--repo-root", help="checkout a placed preset must run from")
@@ -359,6 +509,23 @@ def _parser() -> argparse.ArgumentParser:
         help="reinstall over an existing preset by rotating its kept .bak to a timestamped name",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--write-row-snapshot",
+        type=Path,
+        metavar="DSH_CHECKOUT",
+        help="record that DSH installation's resolvable row names into the preset snapshot",
+    )
+    parser.add_argument(
+        "--probe",
+        type=Path,
+        metavar="DSH_CHECKOUT",
+        help="ask that DSH installation's own preset discovery whether the PLACED preset mounts",
+    )
+    parser.add_argument(
+        "--harness-base",
+        type=Path,
+        help="base the probe resolves plugin names against (default: <DSH_CHECKOUT>/apps/cli)",
+    )
     return parser
 
 
@@ -366,7 +533,13 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     home = args.dsh_home or dsh_home(dict(os.environ))
     target = preset_target(home)
-    if args.action == "install":
+    if args.write_row_snapshot is not None:
+        result = write_row_snapshot(args.write_row_snapshot, source=args.source)
+    elif args.probe is not None:
+        result = probe_preset(
+            dsh_install=args.probe, target=target, harness_base=args.harness_base
+        )
+    elif args.action == "install":
         result = install_preset(
             source=args.source,
             target=target,
@@ -377,13 +550,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.action == "uninstall":
         result = uninstall_preset(target=target, dry_run=args.dry_run)
-    else:
+    elif args.action == "doctor":
         result = doctor_preset(source=args.source, target=target)
+    else:
+        _parser().error("an action is required: install, uninstall or doctor")
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result["status"] == "checked":
+        return 0 if result.get("verdict") == "loadable" else 2
     return (
         0
         if result["status"]
-        in {"installed", "removed", "would_install", "would_remove", "not_installed", "healthy"}
+        in {
+            "installed",
+            "removed",
+            "would_install",
+            "would_remove",
+            "not_installed",
+            "healthy",
+            "written",
+        }
         else 2
     )
 

@@ -134,18 +134,42 @@ skill 正文已按此命名改写；`search_graph_components` / `resolve_graph_c
 ## 验证
 
 1. `uv run python scripts\install_dsh_preset.py doctor`（或 `.\install.ps1 -Doctor dsh`）
-   返回 `healthy`，且 `checks.tokensResolved` / `checks.emittedPatch` 为 `true`。
-2. 新建 DSH 会话并选择 **poe-bd**，确认工具列表出现 `mcp__poe_knowledge__*`、
+   返回 `healthy`，且 `checks.rowsResolvable` / `checks.tokensResolved` /
+   `checks.emittedPatch` 为 `true`。
+2. **行名必须与目标 DSH 版本匹配**：`checks.rowsResolvable` 比较 preset 引用的每个插件名与
+   `agent-presets/poe-bd/dsh-plugin-rows.json`（当前记录 DSH `0.1.6-alpha.1` 的 177 个可解析
+   行名）。行名对不上会让 `dsh-agent-presets` 把**整个 preset 判为 broken**（在预设列表里
+   显示加载失败、无法选中），而不是只坏那一行；安装器会在写入前直接失败关闭。
+3. 升级 DSH 后复检（需要 DSH 检出与 node）：
+
+   ```powershell
+   uv run python scripts\install_dsh_preset.py --probe <DSH 检出目录>
+   # { "preset": "poe-bd", "verdict": "loadable", ... } 且退出码 0
+   ```
+
+   它调用 DSH 自己的 `discoverPresets`（与 GUI 同一套解析）来判定已放置的 preset 能否挂载。
+   若报 broken：改对应行使其与本机 DSH 版本一致，然后刷新快照并跑测试：
+
+   ```powershell
+   uv run python scripts\install_dsh_preset.py --write-row-snapshot <DSH 检出目录>
+   python -m pytest tests/test_dsh_adapter.py -q
+   ```
+
+4. 新建 DSH 会话并选择 **poe-bd**，确认工具列表出现 `mcp__poe_knowledge__*`、
    `mcp__poe_build__*`、`mcp__poe_research__*`、`mcp__poe_learning__*`；四个 server
    各自拉起 headless PoB 引擎，日志中不应有启动错误。
-3. 在会话里让它调用 `engine_health`，再加载 `poe-bd-create` skill 提一个 BD 需求，
+5. 在会话里让它调用 `engine_health`，再加载 `poe-bd-create` skill 提一个 BD 需求，
    确认走完 `get_freshness_report → 渐进 Research 查询 → start_generation_run → …` 主链路。
-4. 改过 skill 或适配器时：`uv run python scripts\adapt_skills_for_dsh.py --check`
+6. 改过 skill 或适配器时：`uv run python scripts\adapt_skills_for_dsh.py --check`
    校验生成树无缺失/陈旧文件、裸工具名、旧前缀、重复前缀，并且每条宿主改写规则仍匹配
    源 skill；`python -m pytest tests/test_dsh_adapter.py -q` 覆盖安装器与生成器。
 
 ## 已知边界
 
+- **本 preset 的行名与 DSH 版本绑定**：组合里的每一行都对齐该版本随发行版交付的 `standard`
+  preset（当前 `0.1.6-alpha.1`）。DSH 改名或换行时，未同步的行会让整个 preset 变成
+  「加载失败」——这正是 0.1.6-alpha.1 上 `workflow-worker-thread` → `workflow-ptc` 的情况。
+  `dsh-plugin-rows.json` 快照、安装器的失败关闭与 `--probe` 三道检查覆盖它（见上）。
 - DSH 会把 MCP server 的 instructions 作为 prompt 文本注入会话（`### MCP server: …`，
   每个 server 默认上限 32768 字节，超限会让该实例连接失败）。因此
   `server/MCP_*_BOOTSTRAP.md` 会随 server 一起进入 DSH 会话；四个文件目前合计约

@@ -1,22 +1,25 @@
-# The `poe-bd` agent preset: the standard coding agent plus the Exile Architect
-# (poe-bd-creator) MCP toolset, its workflow skills (research, with an explicit
-# worker; create; learning; the experimental comparative-learning loop), and its
-# persona.
+# The `poe-bd` agent preset: the standard coding agent (as the shipped `standard`
+# preset defines it for DeepSeek Harness 0.1.6-alpha.1) plus the Exile Architect
+# (poe-bd-creator) MCP toolset, its workflow skills, and its persona.
+#
+# Every row below mirrors the shipped `standard` preset of that DSH version so a
+# version mismatch cannot make this preset unmountable: a row naming a plugin the
+# running installation does not have makes `dsh-agent-presets` report the whole
+# preset broken, which hides it from the picker. When DSH changes a row, change it
+# here too — `scripts/install_dsh_preset.py doctor` and the repo's DSH tests cover
+# the parts this repo can see, and `node .tmp/dsh_discover_check.mjs` (see the DSH
+# notes in dsh/README.md) reproduces the mount verdict locally.
 #
 # This file is an AGENT-PLANE composition. It is mounted under one agent's
 # scope context; every row here belongs to that session alone. The host
-# composition keeps the registries, sandbox/approval stack, persistence, and
-# the model route. A service row here MUST sit inside a group carrying an
+# composition keeps the registries, sandbox/approval stack, persistence, and the
+# model route. A service row here MUST sit inside a group carrying an
 # `isolate` realm; the `dsh-agent-presets` audit rejects a row that publishes a
 # process-global service.
 #
 # The MCP rows (`@deepseek-ai/dsh-mcp-client`, shipped with DSH) spawn the four
 # Exile Architect domain servers as stdio children and register their tools as
 # `mcp__poe_<server>__<tool>`. They provide no service, so they need no realm.
-#
-# Install location (user-authored preset, one directory per preset):
-#   ${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd/
-# See dsh/README.md and scripts/install_dsh_preset.py.
 #
 # Repo paths: every row resolves the checkout and the uv executable from
 # POE_BD_CREATOR_ROOT / POE_BD_UV, falling back to the placeholder tokens below.
@@ -25,17 +28,19 @@
 # copy, so a placed preset needs no environment variables at all.
 #
 # Do not also register these servers host-wide through
-# `dsh/poe-bd.mcp.cordis.yml`: that starts a second client per server (two PoB
-# engines) and makes the tools visible to sessions outside this preset.
+# `dsh/poe-bd.mcp.cordis.yml` or `dsh/bundle`: that starts a second client per
+# server (two PoB engines) and makes the tools visible to sessions outside this
+# preset.
 
 # ── identity ────────────────────────────────────────────────────────────────
 
+# The preset's own persona, shadowing the deployment default for this agent.
+# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
-      You are a coding agent powered by the {{model}} model, running on the
-      DeepSeek Harness. Your working directory is {{cwd}}.
+    prefix: |-
+      You are a coding agent powered by the {{model}} model, running on the DeepSeek Harness.
 
       This session mounts the `poe-bd` preset: the Exile Architect
       (poe-bd-creator) verification-first PoE2 BD research and generation
@@ -63,6 +68,7 @@
         of calling the MCP tools.
       - Keep user-facing output in natural language; never expose raw PoB
         XML / import codes, raw mature build material, or internal JSON.
+    suffix: Your working directory is {{cwd}}.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -71,8 +77,8 @@
 
 # ── shell ───────────────────────────────────────────────────────────────────
 
-# The shell tools consume the host registries; their executors stay on the
-# host plane. Repo-mode research CLI calls (<research-cli>) run through these.
+# Both shell tools consume the host registry from here; their executors
+# (`bash-sandbox`/`pwsh-sandbox`) are host-plane.
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
   disabled: !!js process.platform === 'win32'
@@ -83,8 +89,8 @@
 
 # ── filesystem ──────────────────────────────────────────────────────────────
 
-# Both register into the host `tools` registry and provide nothing, so they
-# need no realm.
+# Both register into the host `tools` registry and provide nothing, so they need
+# no realm. The `fs` service and its policy stay in the host.
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 
@@ -101,10 +107,10 @@
 
 # ── skills ──────────────────────────────────────────────────────────────────
 
-# The skill REGISTRY lives in the host composition and is layered per scope.
-# `baseUrl` is this preset's own directory, so the skills/ tree travels with
-# the preset wherever it is installed. The four user-facing skills plus the internal Research Worker are
-# discovered from there; the agent also sees any deployment/user skills.
+# The skill registry lives in the host composition and is layered per scope:
+# these rows register into THIS preset's layer, so they need no realm.
+# `baseUrl` is the preset's own directory, so the skills root resolves wherever
+# the preset is installed (the installer copies `skills/` beside this file).
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
@@ -116,13 +122,18 @@
 
 # ── goals ───────────────────────────────────────────────────────────────────
 
-# Only the model-facing tool; the goal service stays on the host plane.
+# The goal service and session driver stay on the host plane; the human command
+# and the model-facing tool register into this preset's scoped layers.
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
 
 # ── plan mode ───────────────────────────────────────────────────────────────
 
-# Plan state is per-agent by nature, so an entry-local realm is correct here.
+# Plan state is per-agent by nature, so an entry-local realm is the correct
+# lifetime here rather than a workaround.
 - id: planning
   name: cordis:group
   group: true
@@ -148,7 +159,7 @@
 # ── compaction ──────────────────────────────────────────────────────────────
 
 # `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner
-# must share this realm. The token meter stays on the host plane.
+# must share this realm rather than sit outside it.
 - id: compaction
   name: cordis:group
   group: true
@@ -171,10 +182,11 @@
 
 # ── delegation and workflows ────────────────────────────────────────────────
 
-# The `subagents` registry and its backends live in the HOST composition; this
-# preset contributes the delegation TOOLS. The learning/research loops map
-# Codex Desktop tasks to DSH subagents, so these rows are part of the preset.
-# `workflows` is per-agent, so its rows share one entry-local realm.
+# The `subagents` registry and its spawn/fork backends live in the host
+# composition; this preset contributes the delegation TOOLS, which resolve that
+# host registry. `workflows` is per-agent, so every row reaching it shares one
+# entry-local realm here. The Phase 7 research controller and learning loop drive
+# their work through these delegation tools.
 - id: delegation
   name: cordis:group
   group: true
@@ -192,6 +204,7 @@
       config:
         provider: spawn
         toolName: subagent
+        modelSelectionSettings: true
         backgroundMode: continuable
 
     - id: tool-subagent-fork
@@ -201,16 +214,39 @@
         toolName: subagent_fork
         backgroundMode: continuable
 
-    - id: workflow-worker-thread
-      name: '@deepseek-ai/dsh-workflow-worker-thread'
+    # Production dsh does not install these optional providers. Install the
+    # matching Bundle in this Profile and restart the Host, then copy this preset
+    # and remove `disabled` from the matching tool row.
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
       config:
         provider: spawn
 
     - id: tool-workflow
       name: '@deepseek-ai/dsh-tool-workflow'
 
+    # Off by default, matching the base row it mirrors.
     - id: tool-ralph
       name: '@deepseek-ai/dsh-tool-ralph'
+      disabled: true
       config:
         subagentProvider: spawn
         maxRounds: 64
@@ -226,17 +262,21 @@
     allowParallelInProgress: true
 
 # The `web` service and its search provider stay in the host composition; only
-# the model-facing tool is per-session.
+# the model-facing tool is per-session. Research and Create use it for live
+# references, so fetching is enabled.
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
   config:
-    fetch: false
+    fetch: true
     searchTimeoutMs: 60000
+
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
 
 # ── Exile Architect MCP servers ─────────────────────────────────────────────
 
-# One dsh-mcp-client instance per domain server (same split as the Codex
-# plugin's .mcp.json). Tools register as:
+# One dsh-mcp-client instance per domain server (same split as the Codex plugin's
+# .mcp.json). Tools register as:
 #   mcp__poe_knowledge__* / mcp__poe_build__* / mcp__poe_research__* /
 #   mcp__poe_learning__*
 # The stdio bridge scrubs credential-like ambient variables and DSH_* before

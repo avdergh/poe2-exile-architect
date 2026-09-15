@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 
 import pytest
@@ -20,6 +21,11 @@ def _write_source_preset(root: Path, *, marker: str = "new") -> Path:
         f"uv: !!js \"process.env.POE_BD_UV ?? '{installer.UV_TOKEN}'\"\n"
         f"marker: {marker}\n",
         encoding="utf-8",
+    )
+    # Fixture compositions name no plugin rows, so an empty row snapshot keeps the
+    # row-resolution gate meaningful without pinning a real DSH version here.
+    (source / installer.ROW_SNAPSHOT_FILE).write_text(
+        json.dumps({"dshVersion": "fixture", "rowNames": []}), encoding="utf-8"
     )
     (source / "preset.yml").write_text(f"name: {marker}\n", encoding="utf-8")
     for skill in installer.REQUIRED_SKILLS:
@@ -441,6 +447,52 @@ def test_dsh_bundle_manifest_and_patch_are_installable():
     # The preset keeps its own MCP rows, so the two registration paths are
     # mutually exclusive and both documents must say so.
     assert "二选一" in (bundle / "README.md").read_text(encoding="utf-8")
+
+
+def test_preset_rows_match_the_recorded_dsh_version():
+    """A row copied from another DSH version makes the whole preset unmountable."""
+    version, known = installer.snapshot_row_names()
+    assert version and known
+
+    assert installer.row_name_problems() == []
+    names = installer.row_names_in(installer.SOURCE_PRESET / installer.COMPOSITION_FILE)
+    # The toolset and the persona that carry the poe-bd behaviour are present...
+    assert {"@deepseek-ai/dsh-mcp-client", "@deepseek-ai/dsh-persona"} <= names
+    # ...and every package row is one this DSH version provides.
+    package_rows = {
+        name
+        for name in names
+        if not name.startswith(("cordis:", ".", "file:"))
+    }
+    assert package_rows <= known
+    # The delegation group must use this version's workflow row.
+    assert "@deepseek-ai/dsh-workflow-ptc" in names
+
+
+def test_row_snapshot_gate_rejects_a_row_from_another_version(tmp_path):
+    source = tmp_path / "preset"
+    shutil.copytree(installer.SOURCE_PRESET, source)
+    composition = source / installer.COMPOSITION_FILE
+    composition.write_text(
+        composition.read_text(encoding="utf-8").replace(
+            "name: '@deepseek-ai/dsh-workflow-ptc'",
+            "name: '@deepseek-ai/dsh-workflow-worker-thread'",
+        ),
+        encoding="utf-8",
+    )
+
+    problems = installer.row_name_problems(source)
+
+    assert problems and "dsh-workflow-worker-thread" in problems[0]
+    result = installer.install_preset(
+        source=source,
+        target=tmp_path / "home" / ".agent-presets" / "poe-bd",
+        repo_root=None,
+        uv_command="uv",
+    )
+    assert result["status"] == "error"
+    assert result["errorCode"] == "incomplete_source"
+    assert not (tmp_path / "home" / ".agent-presets" / "poe-bd").exists()
 
 
 def test_doctor_reports_staging_residue(tmp_path):
