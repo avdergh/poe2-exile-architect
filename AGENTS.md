@@ -7,6 +7,8 @@
 
 - `docs/` 仅在本地维护，加入 Git ignore，不提交或打包到公开仓库。README 不引用该目录；
   公开源码的测试与安装不得依赖本地 `docs/`，公开使用案例放在 `examples/`。
+- 用户明确授权 README 的 Create 案例展示本项目自生成构筑的 PoB 导入码及其分享链接；
+  此授权仅适用于选定的公开案例，不扩大第三方原料或其他私有产物的公开范围。
 - 根 README 按用户要求维护双语：`README.md` 为英文，`README.zh-CN.md` 为简体中文，顶部互链，
   功能、安装、示例和限制同步更新。`docs/ARCHITECTURE.md` 和 `docs/ARCHITECTURE.CN.md` 继续维护双语。
 - `server/ASSISTANT_GUIDE.md` 和 `server/MCP_*_BOOTSTRAP.md` 是直接注入不同 LLM client 的英文

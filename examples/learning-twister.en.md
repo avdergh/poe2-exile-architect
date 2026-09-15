@@ -1,8 +1,12 @@
-# Learning example: understanding the Twister combat loop
+# Learning example: the complete Twister guide
 
 [简体中文](learning-twister.zh-CN.md) · [Back to the project](../README.md)
 
-This is an English translation of an excerpt from an existing **level 100 Gemling Legionnaire** learning guide. The original output is a 14-chapter Chinese HTML reader with component icons, navigation, search, and concept explanations. This excerpt presents its opening explanation and a role table.
+**[Read all 14 chapters and the component explanations (Chinese)](learning-twister.zh-CN.md)** · **[Download the complete HTML reader](https://github.com/avdergh/poe2-exile-architect/raw/refs/heads/main/examples/learning-twister.zh-CN.zip)**
+
+Extract the ZIP and open `Twister-learning-guide.html` in a browser. Icons are embedded; navigation, search, and component explanations work offline.
+
+The original guide explains a **level 100 Gemling Legionnaire** build. The links above contain the complete Chinese output. Below is an English translation of its opening section; a complete English translation is not included.
 
 ## Opening excerpt
 

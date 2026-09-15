@@ -127,10 +127,10 @@ Outputs follow the language of your request unless you specify another language.
 
 ## Real output examples
 
-- [Twister learning guide excerpt](examples/learning-twister.en.md): a translated excerpt from an existing 14-chapter Chinese guide for a level 100 Gemling Legionnaire. It shows how the guide connects combat actions to build choices.
-- [Latest Create record](examples/create-latest.en.md): the most recent local generation record, with its actual completion and verification status.
+- [Complete Twister learning guide](examples/learning-twister.en.md): the original 14-chapter Chinese guide for a level 100 Gemling Legionnaire, with an English introduction. Read the full text or download the HTML reader with icons, search, and component explanations.
+- [Level 95 Twister build](examples/create-latest.en.md): the latest local export from 2026-09-12, with the complete PoB import code and an online share link to inspect its actual skills, equipment, and passives.
 
-These examples come from existing outputs. The Learning excerpt is not the full guide, and a saved Create result is not an in-game performance benchmark.
+These examples come from actual outputs. The Create build is an existing generated candidate and has not been revalidated for the current patch.
 
 ## Common questions
 

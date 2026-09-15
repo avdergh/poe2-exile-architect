@@ -127,10 +127,10 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 
 ## 真实产物案例
 
-- [Twister 学习指南节选](examples/learning-twister.zh-CN.md)：来自一份已有的 100 级 Gemling Legionnaire 中文指南，原指南共 14 章，展示如何把操作与构筑选择连起来讲解。
-- [最新 Create 记录](examples/create-latest.zh-CN.md)：采用本地最新一次生成记录，保留其实际完成情况与验证状态。
+- [Twister 完整学习指南](examples/learning-twister.zh-CN.md)：100 级 Gemling Legionnaire 的 14 章正文、组件与概念说明，可直接阅读，也可下载带图标、搜索和交互说明的 HTML 原版。
+- [95 级 Twister 构筑](examples/create-latest.zh-CN.md)：2026-09-12 的最新本地导出，提供完整 PoB 导入码和在线分享链接，可查看实际技能、装备与天赋。
 
-这些案例来自实际产物。Learning 展示的是节选；Create 已保存的结果不代表游戏内实战表现。
+这些案例来自实际产物；Create 以已有生成候选展示，未补验当前版本。
 
 ## 常见问题
 
