@@ -18,7 +18,9 @@ def test_large_support_failure_keeps_all_pairs_and_safe_readable_diagnostics(
         nodes=[
             SimpleNamespace(stable_key=key, display_name=f"Fixture component {index}")
             for index, key in enumerate([skill_key, *support_keys])
-        ]
+        ],
+        requirement_facts=(),
+        edges=(),
     )
     monkeypatch.setattr(acceptance, "_active_gem_endpoint_keys", lambda **_kwargs: [skill_key])
     monkeypatch.setattr(acceptance, "_source_socket_package_skill_keys", lambda **_kwargs: set())
@@ -32,7 +34,8 @@ def test_large_support_failure_keeps_all_pairs_and_safe_readable_diagnostics(
                     "excluded_reason": "excluded_types_matched",
                     "required_types_expr": ["Spell"],
                     "excluded_types_expr": ["FixtureExcludedType"],
-                    "matched_skill_types": [f"FixtureSkillType{index}" for index in range(24)],
+                    "host_skill_types": [f"FixtureSkillType{index}" for index in range(24)],
+                    "matched_skill_types": ["Spell"],
                 },
                 source_refs=["static:fixture-contract"],
             )
@@ -69,6 +72,7 @@ def test_large_support_failure_keeps_all_pairs_and_safe_readable_diagnostics(
     assert len(deferred[0]["unsupportedPairs"]) == pair_count
     assert {item["supportKey"] for item in deferred[0]["unsupportedPairs"]} == set(support_keys)
     assert all(len(item["endpointSkillTypes"]) == 24 for item in deferred[0]["unsupportedPairs"])
+    assert all(item["matchedSkillTypes"] == ["Spell"] for item in deferred[0]["unsupportedPairs"])
     assert "supportCoverageExceptions" in deferred[0]["caveats"][1]
     assert "source_coverage_gap" in deferred[0]["caveats"][1]
     acceptance._assert_safe({"deferredCandidates": deferred})

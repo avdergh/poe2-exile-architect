@@ -349,229 +349,72 @@ def _review_declares_jewels(review: dict[str, Any]) -> bool:
     return False
 
 
-def _is_unique_gem_identifier(*, skill_id: str = "", gem_id: str = "") -> bool:
-    """Whether a manifest id proves a unique (lineage) gem without the corpus.
-
-    Matches both id forms found in the raw gem data: ``SkillGemUnique*`` (Breach-style
-    unique gems) and ``UniqueSkillGem*`` (Herald-style), plus the granted skill ids they
-    expose on activeSkills (``UniqueBreachLightningBoltPlayer`` etc.). Prefix matching
-    avoids substring false positives; the corpus is_lineage field stays the authority
-    when present.
-    """
-    if skill_id.startswith("Unique"):
-        return True
-    if gem_id.startswith("Metadata/Items/Gem/SkillGemUnique") or gem_id.startswith(
-        "Metadata/Items/Gems/SkillGemUnique"
-    ):
-        return True
-    # UniqueSkillGem* currently only occurs under the plural Metadata/Items/Gems/ path.
-    if gem_id.startswith("Metadata/Items/Gems/UniqueSkillGem"):
-        return True
-    return False
 
 
 def _unique_gem_diagnostics(
     review: dict[str, Any],
     source_skill_manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Detect lineage (unique) support gems in the source and whether the review labeled them.
-
-    Tri-state lookup: True/False from the corpus ``is_lineage`` field; unknown when the corpus
-    is unavailable or the gem name does not resolve (never blocks). Unique gems whose corpus
-    entry is missing are still recognized through their manifest ids (``SkillGemUnique*`` /
-    ``UniqueSkillGem*`` gem ids or ``Unique*`` granted skill ids), so a unique main-skill gem
-    is never silently treated as an ordinary gem. Only names whose ``nameSource`` is
-    ``nameSpec`` are gem candidates: item/passive-granted skills fall back to
-    internal skill ids and are reported separately as ``nonGemSkillNames`` so they never pollute
-    gem diagnostics. A lineage gem counts as labeled when any record mentions it inside an
-    open_question/modelability_caveat record, or when the record prose explicitly labels its
-    lineage/unique identity. A bare component with role unique_enabler does not label it:
-    lineage gems are support_gem nodes, so that role fails resolver type checks (use
-    support_modifier with prose labeling instead). Otherwise any mention is reported as
-    unlabeled so the Researcher marks its unique identity.
-    """
+    """Project exact corpus gem identity; prose never grants or removes lineage identity."""
+    result: dict[str, Any] = {
+        "available": isinstance(source_skill_manifest, dict),
+        "diagnosticVersion": 3,
+        "uniqueGemCandidates": [],
+        "unlabeledUniqueGemNames": [],  # Deprecated compatibility field: no prose gate.
+        "corpusMissingGemNames": [],
+        "nonGemSkillNames": [],
+        "proseMentionedWithoutComponentNames": [],
+        "gemIdentityResolutions": [],
+    }
     if not isinstance(source_skill_manifest, dict):
-        return {
-            "available": False,
-            "diagnosticVersion": 2,
-            "uniqueGemCandidates": [],
-            "unlabeledUniqueGemNames": [],
-            "corpusMissingGemNames": [],
-            "nonGemSkillNames": [],
-            "proseMentionedWithoutComponentNames": [],
-            "gemIdentityResolutions": [],
-        }
-    gem_refs: list[dict[str, str]] = []
-    unique_by_id: list[str] = []
-    non_gem_names: list[str] = []
-    for group in source_skill_manifest.get("activeSkillGroups") or []:
-        if not isinstance(group, dict):
-            continue
-        for item in [
-            *(group.get("activeSkills") or []),
-            *(group.get("supports") or []),
-        ]:
-            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
-                continue
-            name = str(item["name"]).strip()
-            name_source = str(item.get("nameSource") or "gem_name")
-            if name_source == "gem_name":
-                gem_refs.append(
-                    {
-                        "name": name,
-                        "gemId": str(item.get("gemId") or "").strip(),
-                        "skillId": str(item.get("skillId") or "").strip(),
-                    }
-                )
-            else:
-                non_gem_names.append(name)
-            if _is_unique_gem_identifier(
-                skill_id=str(item.get("skillId") or ""),
-                gem_id=str(item.get("gemId") or ""),
-            ):
-                unique_by_id.append(name)
-    unique_candidates: list[str] = list(dict.fromkeys(unique_by_id))
-    corpus_missing_names: list[str] = []
-    try:
-        from server.knowledge import db as corpus_db
+        return result
+    from server.knowledge import db as corpus_db
 
-        corpus_available = True
-    except Exception:  # pragma: no cover - import layout drift guard
-        corpus_db = None
-        corpus_available = False
-    identity_resolutions: list[dict[str, Any]] = []
-    seen_gem_refs: set[tuple[str, str]] = set()
-    for gem_ref in gem_refs:
-        name = gem_ref["name"]
-        gem_id = gem_ref["gemId"]
-        ref_identity = (name.casefold(), gem_id)
-        if ref_identity in seen_gem_refs:
-            continue
-        seen_gem_refs.add(ref_identity)
-        if not corpus_available:
-            corpus_missing_names.append(name)
-            continue
-        try:
-            gem_candidates: dict[str, dict[str, Any]] = {}
-            if gem_id:
-                id_queries = [gem_id]
-                if "/" not in gem_id:
-                    id_queries.extend(
-                        [
-                            f"Metadata/Items/Gem/{gem_id}",
-                            f"Metadata/Items/Gems/{gem_id}",
-                        ]
-                    )
-                for query in id_queries:
-                    candidate = corpus_db.get_gem(query)
-                    if candidate is not None and str(candidate.get("id") or ""):
-                        gem_candidates[str(candidate["id"])] = candidate
-            gem = next(iter(gem_candidates.values())) if len(gem_candidates) == 1 else None
-            resolution_kind = "gem_id" if gem is not None else "display_name"
-            if gem is None and not gem_id:
-                gem = corpus_db.get_gem(name)
-        except Exception:
-            gem = None
-            resolution_kind = "unavailable"
-        if gem is None:
-            corpus_missing_names.append(name)
-            continue
-        identity_resolutions.append(
-            {
+    seen: set[tuple[str, str]] = set()
+    for group in source_skill_manifest.get("activeSkillGroups") or []:
+        for item in [*(group.get("activeSkills") or []), *(group.get("supports") or [])]:
+            name = str(item.get("name") or "").strip()
+            gem_id = str(item.get("gemId") or "").strip()
+            if not name or (name, gem_id) in seen:
+                continue
+            seen.add((name, gem_id))
+            if not gem_id and item.get("nameSource", "gem_name") != "gem_name":
+                result["nonGemSkillNames"].append(name)
+                continue
+            # A missing or ambiguous ID stays unknown. A display-name match or an ID prefix
+            # containing "Unique" is not an independent static identity fact.
+            queries = [gem_id] if "/" in gem_id else [
+                f"Metadata/Items/Gem/{gem_id}", f"Metadata/Items/Gems/{gem_id}"
+            ] if gem_id else []
+            candidates = {}
+            try:
+                for query in queries:
+                    gem = corpus_db.get_gem(query)
+                    if gem is not None and gem.get("id") == query:
+                        candidates[query] = gem
+            except Exception:
+                candidates = {}
+            gem = next(iter(candidates.values())) if len(candidates) == 1 else None
+            lineage = gem.get("is_lineage") if gem is not None else None
+            lineage = lineage if type(lineage) is bool else None
+            result["gemIdentityResolutions"].append({
                 "sourceName": name,
                 "sourceGemId": gem_id or None,
-                "canonicalName": str(gem.get("name") or name),
-                "resolutionKind": resolution_kind,
-            }
-        )
-        if gem.get("is_lineage") is True and name not in unique_candidates:
-            unique_candidates.append(name)
-    if not unique_candidates:
-        return {
-            "available": corpus_available,
-            "uniqueGemCandidates": [],
-            "unlabeledUniqueGemNames": [],
-            "corpusMissingGemNames": corpus_missing_names,
-            "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
-            "proseMentionedWithoutComponentNames": [],
-            "diagnosticVersion": 2,
-            "gemIdentityResolutions": identity_resolutions,
-        }
-    raw_records = review.get("deepResearchRecords") or []
-    raw_records = raw_records if isinstance(raw_records, list) else []
-    record_texts: list[tuple[str, list[str]]] = []
-    for record in raw_records:
-        if not isinstance(record, dict):
-            continue
-        parts = [
-            str(record.get("title") or ""),
-            str(record.get("summary") or ""),
-            str(record.get("content") or ""),
-            *[str(value) for value in record.get("conditions") or []],
-            *[str(value) for value in record.get("failureConditions") or []],
-        ]
-        record_texts.append((str(record.get("recordKind") or ""), parts))
-    unlabeled: list[str] = []
-    prose_only_mentions: list[str] = []
-    declared_component_names = {
-        str(component.get("candidateName") or "").casefold()
-        for record in raw_records
-        if isinstance(record, dict)
-        for component in record.get("components") or []
-        if isinstance(component, dict)
-    }
-    for gem_name in unique_candidates:
-        normalized = gem_name.casefold()
-        labeled = False
-        mentioned = False
-        in_prose = False
-        for record_kind, parts in record_texts:
-            in_text = any(normalized in part.casefold() for part in parts)
-            if not in_text:
-                continue
-            mentioned = True
-            in_prose = True
-            if record_kind in {"open_question", "modelability_caveat"}:
-                labeled = True
-            elif any(_mentions_unique_identity(part, normalized) for part in parts):
-                labeled = True
-        for record in raw_records:
-            if not isinstance(record, dict):
-                continue
-            for component in record.get("components") or []:
-                if not isinstance(component, dict):
-                    continue
-                if str(component.get("candidateName") or "").casefold() != normalized:
-                    continue
-                mentioned = True
-        if mentioned and not labeled:
-            unlabeled.append(gem_name)
-        if in_prose and normalized not in declared_component_names:
-            prose_only_mentions.append(gem_name)
-    return {
-        "available": corpus_available,
-        "uniqueGemCandidates": unique_candidates,
-        "unlabeledUniqueGemNames": sorted(unlabeled),
-        "corpusMissingGemNames": corpus_missing_names,
-        "nonGemSkillNames": sorted(dict.fromkeys(non_gem_names)),
-        "proseMentionedWithoutComponentNames": sorted(prose_only_mentions),
-        "diagnosticVersion": 2,
-        "gemIdentityResolutions": identity_resolutions,
-    }
+                "canonicalName": str(gem.get("name") or name) if gem else None,
+                "resolutionKind": "gem_id" if gem else "unavailable",
+                "isLineage": lineage,
+                "identityStatus": "lineage" if lineage is True else
+                    "standard" if lineage is False else "unknown",
+            })
+            if lineage is True:
+                result["uniqueGemCandidates"].append(name)
+            if gem is None:
+                result["corpusMissingGemNames"].append(name)
+    for field in ("uniqueGemCandidates", "corpusMissingGemNames", "nonGemSkillNames"):
+        result[field] = sorted(set(result[field]))
+    return result
 
 
-def _mentions_unique_identity(text: str, gem_name: str) -> bool:
-    """Whether a record's prose explicitly labels a gem's lineage/unique identity.
-
-    Matches AGENTS.md's allowance to keep a lineage gem's role as support_modifier while
-    labeling its unique identity in prose. The gem name itself is stripped first so a name
-    that literally contains "unique" (e.g. "Unique Breach Lightning Bolt") cannot self-label.
-    """
-    lowered = str(text or "").casefold()
-    if not lowered:
-        return False
-    stripped = lowered.replace(gem_name.casefold(), "")
-    return "lineage" in stripped or "unique" in stripped
 
 
 def accept_deep_review_candidates(
@@ -695,6 +538,7 @@ def accept_deep_review_candidates(
         source_evidence_diagnostics=source_evidence_diagnostics,
         deep_records=deep_payload.get("deep_research_records") or [],
         validated_readback_dispositions=validated_readback_dispositions,
+        source_skill_manifest=source_skill_manifest,
     )
     deep_payload, accepted_record_summaries, gear_context_deferred = (
         _filter_mechanic_records_without_gear_context(
@@ -729,6 +573,7 @@ def accept_deep_review_candidates(
             source_evidence_diagnostics=source_evidence_diagnostics,
             deep_records=deep_payload.get("deep_research_records") or [],
             validated_readback_dispositions=validated_readback_dispositions,
+            source_skill_manifest=source_skill_manifest,
         )
     blocked_pattern_dependencies = _blocked_pattern_dependencies(
         [
@@ -881,6 +726,13 @@ def accept_deep_review_candidates(
         "noRawQuery": True,
         "noRawMatureBuildMaterial": True,
     }
+    support_compatibility = _support_compatibility_summary(accepted_record_summaries, graph_service)
+    deep_payload = _without_source_support_bindings(deep_payload)
+    for summary in accepted_record_summaries:
+        summary["typedPayload"] = _without_source_support_bindings({"deep_research_records": [
+            {"typed_payload": summary.get("typedPayload") or {}}
+        ]})["deep_research_records"][0]["typed_payload"]
+        summary.pop("_supportCompatibility", None)
     pattern_validation = (
         service.validate_build_patterns(payload) if has_pattern_payload else empty_pattern_result
     )
@@ -932,6 +784,7 @@ def accept_deep_review_candidates(
                     case_coverage=case_coverage,
                     accepted_records=deep_payload.get("deep_research_records") or [],
                     candidate_reviews=_deep_record_reviews(review),
+                    support_compatibility=support_compatibility,
                 ),
                 supplement=bool(acceptance_context.get("supplement")),
                 source_context=acceptance_context.get("sourceContext"),
@@ -1155,6 +1008,7 @@ def accept_deep_review_candidates(
         "deferredCandidates": deferred,
         "deferredReasonCounts": _reason_counts(deferred),
         "uniqueGemDiagnostics": unique_gem_diagnostics,
+        "supportCompatibility": support_compatibility,
         "versionContext": durable_version_context,
         "caveats": [
             "Only structured safe candidate reviews were considered.",
@@ -1269,6 +1123,7 @@ def _acceptance_completion_diagnostics(
     case_coverage: dict[str, str],
     accepted_records: list[dict[str, Any]] | None = None,
     candidate_reviews: list[dict[str, Any]] | None = None,
+    support_compatibility: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the safe completion projection before the transactional commit."""
     # 旧调用只有位置索引，不能凭索引推断新记录解决了原条件。新版从本次
@@ -1312,7 +1167,7 @@ def _acceptance_completion_diagnostics(
     coverage_gaps = [
         dimension for dimension, status in case_coverage.items() if status == "evidence_missing"
     ]
-    return research_completion.completion_summary({
+    result = research_completion.completion_summary({
         "acceptanceMode": "partial_with_deferred"
         if deferred or unresolved or coverage_gaps else "clean",
         "deferredCandidateCount": len(deferred),
@@ -1337,6 +1192,22 @@ def _acceptance_completion_diagnostics(
         "caseCoverage": case_coverage,
         "caseCoverageGaps": coverage_gaps,
     })
+    if support_compatibility is not None:
+        result["supportCompatibility"] = support_compatibility
+    return result
+
+
+def _support_compatibility_summary(
+    records: list[dict[str, Any]], graph_service: graph_tools.GraphQueryService,
+) -> dict[str, Any]:
+    return {
+        "contractVersion": physical_graph.SUPPORT_COMPATIBILITY_VERSION,
+        "graphSnapshotId": graph_service.snapshot.snapshot_id,
+        "scope": "static_type_compatibility",
+        "applicationVerified": False,
+        "records": [{"recordIndex": index, "packages": record["_supportCompatibility"]}
+                    for index, record in enumerate(records) if record.get("_supportCompatibility")],
+    }
 
 
 def _pattern_validation_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -1465,6 +1336,7 @@ def _build_deep_record_payload(
             component_mentions=component_mentions,
             source_skill_manifest=source_skill_manifest,
             require_source_bindings=v3_contract,
+            preserve_source_bindings=True,
         )
         if typed_reference_issues:
             deferred.append(
@@ -1530,7 +1402,9 @@ def _build_deep_record_payload(
             "source_state_scope": item["sourceStateScope"],
         }
         validation = research_models.validate_researcher_output(
-            {"schema_version": output_schema_version, "deep_research_records": [record]}
+            _without_source_support_bindings(
+                {"schema_version": output_schema_version, "deep_research_records": [record]}
+            )
         )
         if validation.get("status") == "error":
             deferred.append(
@@ -1611,16 +1485,42 @@ def _build_deep_record_payload(
     )
 
 
+def _without_source_support_bindings(value: dict[str, Any]) -> dict[str, Any]:
+    """Remove lease-local socket identity only after source-bound validation."""
+    clean = json.loads(json.dumps(value))
+    for record in clean.get("deep_research_records") or []:
+        payload = record.get("typed_payload") or {}
+        packages = payload.get("supportPackages")
+        if not isinstance(packages, list):
+            continue
+        canonical = []
+        seen = set()
+        for package in packages:
+            entry = {key: item for key, item in package.items()
+                     if key not in {"sourceGroupRef", "rootSkillRef", "socketedItemRefs"}}
+            identity = (str(entry.get("skillKey") or ""),
+                        tuple(sorted(str(key) for key in entry.get("supportKeys") or [])),
+                        str(entry.get("deliveryRole") or "direct"),
+                        str(entry.get("hostSkillKey") or ""))
+            if identity not in seen:
+                canonical.append(entry)
+                seen.add(identity)
+        payload["supportPackages"] = canonical
+    return clean
+
+
 def _canonicalize_typed_payload_references(
     *,
     typed_payload: dict[str, Any],
     component_mentions: list[dict[str, Any]],
     source_skill_manifest: dict[str, Any] | None = None,
     require_source_bindings: bool = False,
+    preserve_source_bindings: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Resolve explicit name references without inferring research relationships."""
 
     normalized = json.loads(json.dumps(typed_payload))
+    normalized.pop("supportCompatibility", None)
     issues: list[dict[str, Any]] = []
 
     def resolve_name(
@@ -1695,7 +1595,7 @@ def _canonicalize_typed_payload_references(
             )
 
         canonical_packages: list[dict[str, Any]] = []
-        canonical_package_identities: set[tuple[str, tuple[str, ...], str, str]] = set()
+        canonical_package_identities: set[tuple[Any, ...]] = set()
         claimed_support_instances: set[str] = set()
         for index, package in enumerate(packages):
             if not isinstance(package, dict):
@@ -1859,13 +1759,16 @@ def _canonicalize_typed_payload_references(
                             source_bindings_valid = False
                 if not source_bindings_valid:
                     continue
-                canonical = {key: package[key] for key in stable_keys if key in package}
+                retained_keys = stable_keys | (source_binding_keys if preserve_source_bindings else set())
+                canonical = {key: package[key] for key in retained_keys if key in package}
                 canonical.setdefault("deliveryRole", "direct")
                 canonical_identity = (
                     str(canonical.get("skillKey") or ""),
                     tuple(sorted(str(value) for value in canonical.get("supportKeys") or [])),
                     str(canonical.get("deliveryRole") or "direct"),
                     str(canonical.get("hostSkillKey") or ""),
+                    str(canonical.get("sourceGroupRef") or ""),
+                    tuple(canonical.get("socketedItemRefs") or []),
                 )
                 if require_source_bindings and canonical_identity in canonical_package_identities:
                     continue
@@ -2930,216 +2833,65 @@ def _source_skill_id_resolutions(
 
 
 def _source_support_compatibility_diagnostics(
-    *,
-    graph_service: graph_tools.GraphQueryService,
+    *, graph_service: graph_tools.GraphQueryService,
     source_skill_manifest: dict[str, Any] | None,
     source_skill_resolutions: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Verify unambiguous source socket groups without guessing multi-skill ownership.
-
-    A source group identifies the active gem, but a single active gem can grant more than one
-    physical active-skill endpoint (for example, a setup/buff endpoint and its damage payload).
-    Compatibility is therefore checked against every statically linked endpoint of the same gem.
-    Explicit component queries keep their exact-endpoint semantics elsewhere.
-    """
-
-    empty = {
-        "sourceSupportCompatibilityCheckedPairCount": 0,
-        "unsupportedSourceSupportPairCount": 0,
-        "unsupportedSourceSupportPairs": [],
-        "unverifiedSourceSupportPairCount": 0,
-        "unverifiedSourceSupportPairs": [],
-        "multiActiveSkillSupportGroupCount": 0,
-        "sourceSupportCompatibilityBlocked": False,
-    }
-    if not isinstance(source_skill_manifest, dict):
-        return empty
-
-    checked_count = 0
-    unsupported: list[dict[str, Any]] = []
-    unverified: list[dict[str, Any]] = []
-    multi_active_count = 0
-    for group in source_skill_manifest.get("activeSkillGroups") or []:
-        if not isinstance(group, dict):
-            continue
-        group_ref = str(group.get("groupRef") or "")
-        active_skills = [
-            item
-            for item in group.get("activeSkills") or []
-            if isinstance(item, dict) and str(item.get("name") or "").strip()
-        ]
-        supports = [
-            item
-            for item in group.get("supports") or []
-            if isinstance(item, dict) and str(item.get("name") or "").strip()
-        ]
+    """Check each source container with the same engine-semantic helper as record packages."""
+    unsupported, unverified = [], []
+    checked_count = multi_active_count = 0
+    for group in (source_skill_manifest or {}).get("activeSkillGroups") or []:
+        supports = [item for item in group.get("supports") or [] if isinstance(item, dict)]
         if not supports:
             continue
-        if len(active_skills) != 1:
-            if len(active_skills) > 1:
-                multi_active_count += 1
-            continue
-
-        active_name = str(active_skills[0].get("name") or "").strip()
-        active_resolution = source_skill_resolutions.get(active_name.casefold()) or {}
-        skill_key = str(active_resolution.get("componentKey") or "")
-        if not skill_key:
-            unverified.extend(
-                {
-                    "groupRef": group_ref,
-                    "skillName": active_name,
-                    "supportName": str(item.get("name") or "").strip(),
-                    "reason": "source_skill_not_resolved",
-                }
-                for item in supports
+        active_skills = [item for item in group.get("activeSkills") or []
+                         if isinstance(item, dict) and item.get("enabled") is not False]
+        multi_active_count += len(active_skills) > 1
+        root = group.get("rootSkill") or next(iter(active_skills), {})
+        name = str(root.get("name") or "")
+        skill_key = str((source_skill_resolutions.get(name.casefold()) or {}).get("componentKey") or "")
+        resolved_supports = [(str(item.get("name") or ""), _resolve_source_support_key(
+            graph_service=graph_service, support=item)) for item in supports]
+        package = {"skillKey": skill_key, "supportKeys": [key for _, key in resolved_supports]}
+        if group.get("groupRef"):
+            package["sourceGroupRef"] = group["groupRef"]
+        if group.get("rootSkillRef"):
+            package["rootSkillRef"] = group["rootSkillRef"]
+        if all(item.get("socketedItemRef") for item in supports):
+            package["socketedItemRefs"] = [item["socketedItemRef"] for item in supports]
+        try:
+            if not skill_key or any(not key for _, key in resolved_supports):
+                raise ValueError("source_component_not_resolved")
+            _, outcomes = _support_package_outcomes(
+                graph_service=graph_service, package=package,
+                source_skill_manifest=source_skill_manifest,
             )
+        except ValueError as exc:
+            unverified.extend({
+                "groupRef": str(group.get("groupRef") or ""), "skillName": name,
+                "skillKey": skill_key, "supportName": support_name,
+                "supportKey": support_key, "reason": str(exc),
+            } for support_name, support_key in resolved_supports)
             continue
-
-        resolved_supports: list[tuple[str, str]] = []
-        for support in supports:
-            support_name = str(support.get("name") or "").strip()
-            support_key = _resolve_source_support_key(
-                graph_service=graph_service,
-                support=support,
-            )
-            if not support_key:
-                unverified.append(
-                    {
-                        "groupRef": group_ref,
-                        "skillName": active_name,
-                        "skillKey": skill_key,
-                        "supportName": support_name,
-                        "reason": "source_support_not_resolved",
-                    }
-                )
-                continue
-            resolved_supports.append((support_name, support_key))
-
-        endpoint_skill_keys = _active_gem_endpoint_keys(
-            snapshot=graph_service.snapshot,
-            skill_key=skill_key,
-        )
-        endpoint_group_results: dict[
-            tuple[str, str], dict[str, physical_graph.ComputedFactResult]
-        ] = {}
-        if len(resolved_supports) == len(supports):
-            for endpoint_skill_key in endpoint_skill_keys:
-                endpoint_kinds = ["active_skill"]
-                if physical_graph.minion_payload_skill_types(
-                    graph_service.snapshot, endpoint_skill_key
-                ):
-                    endpoint_kinds.append("minion_payload")
-                for endpoint_kind in endpoint_kinds:
-                    try:
-                        endpoint_group_results[(endpoint_skill_key, endpoint_kind)] = {
-                            str(result.request.inputs["support_key"]): result
-                            for result in physical_graph.support_skill_group_candidates(
-                                snapshot=graph_service.snapshot,
-                                support_keys=[support_key for _, support_key in resolved_supports],
-                                skill_key=endpoint_skill_key,
-                                endpoint_kind=endpoint_kind,
-                            )
-                        }
-                    except ValueError:
-                        continue
-
         for support_name, support_key in resolved_supports:
-            endpoint_results = [
-                (endpoint_skill_key, endpoint_kind, results[support_key])
-                for (endpoint_skill_key, endpoint_kind), results in endpoint_group_results.items()
-                if support_key in results
-            ]
-            known_endpoint_result = next(
-                (
-                    (endpoint_skill_key, endpoint_kind, candidate)
-                    for endpoint_skill_key, endpoint_kind, candidate in endpoint_results
-                    if candidate.status == "known"
-                ),
-                None,
-            )
-            all_endpoints_unsupported = bool(endpoint_results) and all(
-                candidate.status == "unsupported" for _, _, candidate in endpoint_results
-            )
-            selected_endpoint_result = known_endpoint_result or (
-                endpoint_results[0] if all_endpoints_unsupported else None
-            )
-            if endpoint_results and selected_endpoint_result is None:
-                unverified.append(
-                    {
-                        "groupRef": group_ref,
-                        "skillName": active_name,
-                        "skillKey": skill_key,
-                        "evaluatedSkillKeys": endpoint_skill_keys,
-                        "supportName": support_name,
-                        "supportKey": support_key,
-                        "reason": "compatibility_unknown_across_gem_endpoints",
-                    }
-                )
-                continue
-            group_result = (
-                selected_endpoint_result[2] if selected_endpoint_result is not None else None
-            )
-            matched_skill_key = (
-                selected_endpoint_result[0] if selected_endpoint_result is not None else skill_key
-            )
-            matched_endpoint_kind = (
-                selected_endpoint_result[1]
-                if selected_endpoint_result is not None
-                else "active_skill"
-            )
-            if group_result is not None:
-                status = group_result.status
-                facts = group_result.facts
-                source_refs = list(group_result.source_refs)
-                evaluation_mode = "support_group_fixed_point"
+            status, rows = _support_outcome(outcomes, support_key)
+            endpoint, result = rows[0] if rows else (skill_key, None)
+            facts = result.facts if result else {}
+            detail = {
+                "groupRef": str(group.get("groupRef") or ""), "skillName": name,
+                "skillKey": skill_key, "supportName": support_name, "supportKey": support_key,
+                "evaluatedSkillKeys": sorted(outcomes), "matchedSkillKey": endpoint,
+                "sourceRefs": list(result.source_refs) if result else [],
+                "evaluationMode": "support_group_fixed_point",
+            }
+            if status == "unknown":
+                unverified.append({**detail, "reason": facts.get("excluded_reason") or
+                                    "compatibility_unknown_across_gem_endpoints"})
             else:
-                result = graph_service.run_tool(
-                    "support_skill_candidate",
-                    {"support_key": support_key, "skill_key": skill_key},
-                )
-                status = str(result.get("status") or "")
-                facts = result.get("facts") or {}
-                source_refs = list(result.get("sourceRefs") or [])
-                evaluation_mode = "single_pair"
-            if status == "unsupported":
-                unsupported.append(
-                    {
-                        "groupRef": group_ref,
-                        "skillName": active_name,
-                        "skillKey": skill_key,
-                        "supportName": support_name,
-                        "supportKey": support_key,
-                        "evaluatedSkillKeys": endpoint_skill_keys,
-                        "matchedEndpointKind": matched_endpoint_kind,
-                        "excludedReason": str(
-                            facts.get("excluded_reason") or "support_not_compatible"
-                        ),
-                        "sourceRefs": source_refs,
-                        "evaluationMode": evaluation_mode,
-                    }
-                )
                 checked_count += 1
-                continue
-            if status == "known":
-                checked_count += 1
-                continue
-            unverified.append(
-                {
-                    "groupRef": group_ref,
-                    "skillName": active_name,
-                    "skillKey": skill_key,
-                    "evaluatedSkillKeys": endpoint_skill_keys,
-                    "matchedSkillKey": matched_skill_key,
-                    "supportName": support_name,
-                    "supportKey": support_key,
-                    "reason": str(
-                        (result.get("errorCode") if group_result is None else None)
-                        or status
-                        or "compatibility_unknown"
-                    ),
-                }
-            )
-
+                if status == "unsupported":
+                    unsupported.append({**detail, "excludedReason": facts.get("excluded_reason") or
+                                        "support_not_compatible"})
     return {
         "sourceSupportCompatibilityCheckedPairCount": checked_count,
         "unsupportedSourceSupportPairCount": len(unsupported),
@@ -3152,32 +2904,84 @@ def _source_support_compatibility_diagnostics(
     }
 
 
-def _active_gem_endpoint_keys(
-    *,
-    snapshot: physical_graph.GraphSnapshot,
-    skill_key: str,
-) -> list[str]:
-    """Return all active-skill endpoints granted by the same statically known active gem."""
+def _is_support_effect(snapshot: physical_graph.GraphSnapshot, skill_key: str) -> bool:
+    """The graph's active_skill category also contains native internal support effects."""
+    return any(fact.component_key == skill_key and fact.level_or_stage == "support_contract"
+               and fact.status == "known" for fact in snapshot.requirement_facts)
 
-    nodes_by_key = {node.stable_key: node for node in snapshot.nodes}
-    active_gem_keys = {
-        edge.target_key
-        for edge in snapshot.edges
-        if edge.edge_type == "granted_by"
-        and edge.source_key == skill_key
-        and nodes_by_key.get(edge.target_key) is not None
-        and nodes_by_key[edge.target_key].node_type == "skill_gem"
-    }
-    endpoint_keys = {skill_key}
-    endpoint_keys.update(
-        edge.target_key
-        for edge in snapshot.edges
-        if edge.edge_type == "grants_skill"
-        and edge.source_key in active_gem_keys
-        and nodes_by_key.get(edge.target_key) is not None
-        and nodes_by_key[edge.target_key].node_type == "active_skill"
-    )
-    return sorted(endpoint_keys)
+
+def _active_gem_endpoint_keys(
+    *, snapshot: physical_graph.GraphSnapshot, skill_key: str, gem_id: str | None = None,
+) -> list[str]:
+    """Expand only the exact observed gem instance; a skill ID never selects its granting gem."""
+    gem_id = str(gem_id or "").strip()
+    if not gem_id:
+        # Item/default effects and legacy material without a gem ID authorize only the
+        # observed effect, even when the graph happens to contain a unique granting gem.
+        return [] if _is_support_effect(snapshot, skill_key) else [skill_key]
+    nodes = {node.stable_key: node for node in snapshot.nodes}
+    gem_keys = {mapping.target_key for mapping in snapshot.id_mappings
+                if mapping.system == "repoe:gem_metadata" and mapping.external_id == gem_id}
+    gem_keys.update(node.stable_key for node in snapshot.nodes
+                    if node.node_type == "skill_gem" and (
+                        node.stable_key == f"gem:{gem_id}" or
+                        ("/" not in gem_id and
+                         node.stable_key.split(":", 1)[-1].rsplit("/", 1)[-1] == gem_id)))
+    gem_keys = {key for key in gem_keys if key in nodes and nodes[key].node_type == "skill_gem"}
+    if len(gem_keys) != 1:
+        raise ValueError("source_gem_identity_missing_or_ambiguous")
+    gem_key = next(iter(gem_keys))
+    endpoints = {edge.target_key for edge in snapshot.edges
+                 if edge.edge_type == "grants_skill" and edge.source_key == gem_key
+                 and edge.target_key in nodes and nodes[edge.target_key].node_type == "active_skill"
+                 and not _is_support_effect(snapshot, edge.target_key)}
+    if skill_key not in endpoints:
+        raise ValueError("source_gem_effect_mismatch")
+    return sorted(endpoints)
+
+
+def _source_support_grants(
+    *, snapshot: physical_graph.GraphSnapshot, group: dict[str, Any],
+    package: dict[str, Any], support_key: str,
+) -> tuple[list[str], bool]:
+    """Bind additional effects to a selected physical support instance, never its display name."""
+    nodes = {node.stable_key: node for node in snapshot.nodes}
+    children = sorted({edge.target_key for edge in snapshot.edges
+                       if edge.edge_type == "grants_skill" and edge.source_key == support_key
+                       and edge.target_key in nodes and nodes[edge.target_key].node_type == "active_skill"
+                       and not _is_support_effect(snapshot, edge.target_key)})
+    if not children:
+        return [], True
+    refs = package.get("socketedItemRefs")
+    selected_ref = refs[package["supportKeys"].index(support_key)] if refs is not None else None
+    instances = []
+    for instance in group.get("supports") or []:
+        if selected_ref is not None and instance.get("socketedItemRef") != selected_ref:
+            continue
+        gem_id = str(instance.get("gemId") or "").strip()
+        matches = {mapping.target_key for mapping in snapshot.id_mappings
+                   if mapping.system == "repoe:gem_metadata" and mapping.external_id == gem_id}
+        if gem_id and f"support:{gem_id}" in nodes:
+            matches.add(f"support:{gem_id}")
+        matches = {key for key in matches if key in nodes and nodes[key].node_type == "support_gem"}
+        if matches == {support_key}:
+            instances.append(instance)
+    if len(instances) != 1:
+        raise ValueError("source_support_grant_identity_missing_or_ambiguous")
+    instance = instances[0]
+    if instance.get("enabled") is False or instance.get("socketedUnderSkillRef") not in (
+        None, group.get("rootSkillRef")
+    ):
+        raise ValueError("source_support_grant_owner_mismatch")
+    # Without per-effect global flags in the static graph, a disabled/unknown toggle
+    # cannot authorize an additional effect. Keep it unknown, not incompatible.
+    enabled = _source_extra_effects_enabled(instance)
+    return children, enabled
+
+
+def _source_extra_effects_enabled(instance: dict[str, Any]) -> bool:
+    """Absent per-effect enablement cannot authorize unobserved additional effects."""
+    return all(instance.get(flag) is True for flag in ("enableGlobal1", "enableGlobal2"))
 
 
 def _resolve_source_support_key(
@@ -3233,6 +3037,14 @@ def _filter_records_with_unsupported_source_supports(
         claim_segments = _deep_record_claim_segments(record)
         matched: list[dict[str, Any]] = []
         for item in conflicts:
+            bound_packages = [package for package in
+                (record.get("typed_payload") or {}).get("supportPackages") or []
+                if package.get("skillKey") == item["skillKey"]
+                and item["supportKey"] in (package.get("supportKeys") or [])
+                and package.get("sourceGroupRef")]
+            if bound_packages and not any(package["sourceGroupRef"] == item.get("groupRef")
+                                          for package in bound_packages):
+                continue
             structured_pair = {
                 str(item["skillKey"]),
                 str(item["supportKey"]),
@@ -3283,7 +3095,7 @@ def _filter_records_with_unsupported_source_supports(
                 "componentKeys": summary["componentKeys"],
                 "unsupportedPairs": matched,
                 "caveats": [
-                    "The source socket group has exactly one active skill, and the static "
+                    "The exact source socket group was checked, and the static "
                     "support contract rejects at least one co-mentioned support. Component "
                     "resolution alone cannot authorize the mechanic claim."
                 ],
@@ -3297,178 +3109,293 @@ def _filter_records_with_unsupported_source_supports(
     )
 
 
+def _source_group_for_support_package(
+    *, source_skill_manifest: dict[str, Any] | None, package: dict[str, Any],
+    graph_service: graph_tools.GraphQueryService | None = None,
+) -> dict[str, Any] | None:
+    """Select one physical container, never a union of containers with similar contents."""
+    if not isinstance(source_skill_manifest, dict):
+        if any(package.get(key) for key in ("sourceGroupRef", "rootSkillRef", "socketedItemRefs")):
+            raise ValueError("source_skill_manifest_required")
+        return None
+    root_key = str(package.get("skillKey") or "")
+    display_names = {node.stable_key: node.display_name for node in graph_service.snapshot.nodes} if graph_service else {}
+    group_ref = str(package.get("sourceGroupRef") or "")
+    matches = []
+    for group in source_skill_manifest.get("activeSkillGroups") or []:
+        if not isinstance(group, dict) or (group_ref and group.get("groupRef") != group_ref):
+            continue
+        root = group.get("rootSkill") or next(iter(group.get("activeSkills") or []), {})
+        if root.get("enabled") is False:
+            continue
+        if not (_source_identity_tokens(root_key) &
+                _source_identity_tokens(root.get("skillId"), root.get("name"))):
+            continue
+        supports = [item for item in group.get("supports") or [] if isinstance(item, dict)]
+        keys = package.get("supportKeys") or []
+        if not all(any(_source_identity_tokens(key, display_names.get(key)) &
+                       _source_identity_tokens(item.get("gemId"), item.get("name"))
+                       for item in supports) for key in keys):
+            continue
+        matches.append(group)
+    if len(matches) != 1:
+        raise ValueError("source_support_group_missing_or_ambiguous")
+    group = matches[0]
+    root_ref = package.get("rootSkillRef")
+    if root_ref is not None and root_ref != group.get("rootSkillRef"):
+        raise ValueError("source_support_root_mismatch")
+    refs = package.get("socketedItemRefs")
+    if refs is not None:
+        keys = package.get("supportKeys") or []
+        if not isinstance(refs, list) or len(refs) != len(keys) or len(set(refs)) != len(refs):
+            raise ValueError("source_support_instances_invalid")
+        by_ref = {item.get("socketedItemRef"): item for item in group.get("supports") or []}
+        for key, ref in zip(keys, refs, strict=True):
+            item = by_ref.get(ref)
+            if item is None or not (_source_identity_tokens(key, display_names.get(key)) &
+                                    _source_identity_tokens(item.get("gemId"), item.get("name"))):
+                raise ValueError("source_support_instance_mismatch")
+            if item.get("socketedUnderSkillRef") not in (None, group.get("rootSkillRef")):
+                raise ValueError("source_support_owner_mismatch")
+    if graph_service is not None:
+        root = group.get("rootSkill") or next(iter(group.get("activeSkills") or []), {})
+        for instance in [root, *(group.get("activeSkills") or [])]:
+            if instance.get("enabled") is False or instance.get("socketedUnderSkillRef") not in (None, group.get("rootSkillRef")):
+                continue
+            skill_id = str(instance.get("skillId") or "").strip()
+            skill_key = (skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}") if skill_id else (
+                root_key if instance is root else "")
+            if not skill_key:
+                raise ValueError("source_socketed_effect_identity_missing")
+            _active_gem_endpoint_keys(snapshot=graph_service.snapshot, skill_key=skill_key,
+                                      gem_id=instance.get("gemId"))
+    return group
+
+
 def _source_socket_package_skill_keys(
-    *,
-    source_skill_manifest: dict[str, Any] | None,
-    root_skill_key: str,
-    support_keys: list[str],
+    *, source_skill_manifest: dict[str, Any] | None, root_skill_key: str,
+    support_keys: list[str], source_group_ref: str | None = None,
+    root_skill_ref: str | None = None, socketed_item_refs: list[str] | None = None,
+    graph_service: graph_tools.GraphQueryService | None = None,
 ) -> set[str]:
+    package: dict[str, Any] = {"skillKey": root_skill_key, "supportKeys": support_keys}
+    for key, value in (("sourceGroupRef", source_group_ref), ("rootSkillRef", root_skill_ref),
+                       ("socketedItemRefs", socketed_item_refs)):
+        if value is not None:
+            package[key] = value
+    group = _source_group_for_support_package(source_skill_manifest=source_skill_manifest, package=package,
+                                            graph_service=graph_service)
+    if group is None:
+        return set()
+    return {
+        skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}"
+        for active in group.get("activeSkills") or []
+        if isinstance(active, dict) and active.get("enabled") is not False
+        and (skill_id := str(active.get("skillId") or "").strip())
+        and active.get("socketedUnderSkillRef") in (None, group.get("rootSkillRef"))
+    }
+
+
+def _source_exception_group_refs(
+    *, exception: dict[str, Any], record: dict[str, Any],
+    source_skill_manifest: dict[str, Any] | None,
+    source_group_reviews: list[dict[str, Any]] | None = None,
+    graph_service: graph_tools.GraphQueryService | None = None,
+) -> set[str]:
+    """Bind a skill-level legacy exception to one observed container, or leave it unknown."""
     if not isinstance(source_skill_manifest, dict):
         return set()
-    wanted_root = _source_identity_tokens(root_skill_key)
-    result: set[str] = set()
+    skill_key = str(exception.get("skillKey") or "")
+    matching = set()
     for group in source_skill_manifest.get("activeSkillGroups") or []:
-        if not isinstance(group, dict):
+        active = [item for item in group.get("activeSkills") or []
+                  if item.get("socketedUnderSkillRef") in (None, group.get("rootSkillRef"))]
+        if group.get("rootSkill"):
+            active.append(group["rootSkill"])
+        if skill_key in _source_group_skill_keys(active_skills=active, graph_service=graph_service,
+                                                source_skill_resolutions={}):
+            matching.add(str(group.get("groupRef") or ""))
+    bound = set()
+    payload = record.get("typedPayload") or record.get("typed_payload") or {}
+    for package in payload.get("supportPackages") or []:
+        try:
+            group = _source_group_for_support_package(source_skill_manifest=source_skill_manifest,
+                package=package, graph_service=graph_service)
+        except ValueError:
             continue
-        root = group.get("rootSkill")
-        root = root if isinstance(root, dict) else {}
-        if not wanted_root & _source_identity_tokens(root.get("skillId"), root.get("name")):
-            continue
-        available_supports = [
-            _source_identity_tokens(support.get("gemId"), support.get("name"))
-            for support in group.get("supports") or []
-            if isinstance(support, dict)
-        ]
-        if not all(
-            any(_source_identity_tokens(support_key) & tokens for tokens in available_supports)
-            for support_key in support_keys
-        ):
-            continue
-        for active in group.get("activeSkills") or []:
-            if not isinstance(active, dict):
+        if group is not None and group.get("groupRef") in matching:
+            bound.add(group["groupRef"])
+    candidates = bound or matching
+    if source_group_reviews is not None:
+        title = str(record.get("title") or record.get("titleZh") or "")
+        candidates &= {str(item.get("groupRef") or "") for item in source_group_reviews
+                       if title in (item.get("affectedRecords") or [])}
+    return candidates if len(candidates) == 1 else set()
+
+
+def _support_package_outcomes(
+    *, graph_service: graph_tools.GraphQueryService, package: dict[str, Any],
+    source_skill_manifest: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, list[physical_graph.ComputedFactResult] | None]]:
+    group = _source_group_for_support_package(source_skill_manifest=source_skill_manifest, package=package,
+                                            graph_service=graph_service)
+    endpoints = set()
+    uncertain_endpoints: set[str] = set()
+    if group is None:
+        endpoints.add(str(package["skillKey"]))
+    else:
+        root = group.get("rootSkill") or next(iter(group.get("activeSkills") or []), {})
+        instances = [root, *(group.get("activeSkills") or [])]
+        for instance in instances:
+            if instance.get("enabled") is False or instance.get("socketedUnderSkillRef") not in (
+                None, group.get("rootSkillRef")):
                 continue
-            skill_id = str(active.get("skillId") or "").strip()
-            if skill_id:
-                result.add(skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}")
-    return result
+            skill_id = str(instance.get("skillId") or "").strip()
+            if not skill_id:
+                if instance is root:
+                    skill_id = str(package["skillKey"])
+                else:
+                    raise ValueError("source_socketed_effect_identity_missing")
+            skill_key = skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}"
+            expanded = set(_active_gem_endpoint_keys(
+                snapshot=graph_service.snapshot, skill_key=skill_key, gem_id=instance.get("gemId")))
+            if skill_key in expanded:
+                endpoints.add(skill_key)
+            additional = expanded - {skill_key}
+            if _source_extra_effects_enabled(instance):
+                endpoints.update(additional)
+            else:
+                uncertain_endpoints.update(additional)
+    # Mirror the native reachable/owner rule: a support-created skill must not
+    # establish its own host or bootstrap a cycle of otherwise unusable supports.
+    endpoints = {key for key in endpoints if not _is_support_effect(graph_service.snapshot, key)
+                 and "skillgrantedbysupport" not in physical_graph._skill_types_for(graph_service.snapshot, key)}
+    results: dict[str, list[physical_graph.ComputedFactResult] | None] = {
+        key: None for key in uncertain_endpoints}
+    licensed: set[str] = set()
+    evaluated: set[str] = set()
+    pending = endpoints
+    while pending:
+        for endpoint in sorted(pending):
+            evaluated.add(endpoint)
+            try:
+                results[endpoint] = list(physical_graph.support_skill_group_candidates(
+                    snapshot=graph_service.snapshot, support_keys=list(package["supportKeys"]),
+                    skill_key=endpoint,
+                ))
+            except ValueError:
+                results[endpoint] = None
+        pending = set()
+        if group is None:
+            break
+        for support_key in package["supportKeys"]:
+            if support_key in licensed or _support_outcome(results, support_key)[0] != "known":
+                continue
+            licensed.add(support_key)
+            children, enabled = _source_support_grants(
+                snapshot=graph_service.snapshot, group=group, package=package, support_key=support_key)
+            if enabled:
+                pending.update(child for child in children if child not in evaluated)
+            else:
+                for child in children:
+                    results.setdefault(child, None)
+    return group, results
+
+
+def _support_outcome(
+    outcomes: dict[str, list[physical_graph.ComputedFactResult] | None], support_key: str,
+) -> tuple[str, list[tuple[str, physical_graph.ComputedFactResult | None]]]:
+    rows = [(endpoint, next((result for result in results or []
+                             if result.request.inputs.get("support_key") == support_key), None))
+            for endpoint, results in outcomes.items()]
+    known = [(endpoint, result) for endpoint, result in rows
+             if result is not None and result.status == "known"]
+    if known:
+        return "known", known
+    if not rows or any(result is None or result.status != "unsupported" for _, result in rows):
+        return "unknown", sorted(rows, key=lambda row: row[1] is not None and row[1].status == "unsupported")
+    return "unsupported", rows
 
 
 def _filter_records_with_unsupported_structured_support_packages(
-    *,
-    graph_service: graph_tools.GraphQueryService,
-    deep_payload: dict[str, Any],
-    accepted_records: list[dict[str, Any]],
-    source_skill_manifest: dict[str, Any] | None = None,
+    *, graph_service: graph_tools.GraphQueryService, deep_payload: dict[str, Any],
+    accepted_records: list[dict[str, Any]], source_skill_manifest: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Validate a physical root-skill socket package across its root and socketed skill effects."""
-
+    """Validate physical packages without borrowing endpoints from another source container."""
     display_names = {node.stable_key: node.display_name for node in graph_service.snapshot.nodes}
-    kept_records: list[dict[str, Any]] = []
-    kept_summaries: list[dict[str, Any]] = []
-    deferred: list[dict[str, Any]] = []
-    for record, summary in zip(
-        deep_payload.get("deep_research_records") or [],
-        accepted_records,
-        strict=True,
-    ):
-        unsupported_pairs: list[dict[str, Any]] = []
-        packages = (record.get("typed_payload") or {}).get("supportPackages") or []
-        for package in packages:
-            if not isinstance(package, dict):
-                continue
+    kept_records, kept_summaries, deferred = [], [], []
+    for record, summary in zip(deep_payload.get("deep_research_records") or [],
+                               accepted_records, strict=True):
+        unsupported_pairs, unknown_pairs, checked_packages = [], [], []
+        binding_error = None
+        for package in (record.get("typed_payload") or {}).get("supportPackages") or []:
             skill_key = str(package.get("skillKey") or "")
-            support_keys = [str(value) for value in package.get("supportKeys") or [] if str(value)]
+            support_keys = list(package.get("supportKeys") or [])
             if not skill_key or not support_keys:
                 continue
-            # The Researcher may name any gem endpoint of the skill (buff, direct-hit or
-            # triggered variant). Judge the package against every endpoint of the same
-            # granting gem, matching the source-group evaluation semantics: a support that
-            # applies to any endpoint is valid, only all-endpoint unsupported is deferred.
-            endpoint_skill_keys = _active_gem_endpoint_keys(
-                snapshot=graph_service.snapshot,
-                skill_key=skill_key,
-            )
-            endpoint_skill_keys = sorted(
-                set(endpoint_skill_keys)
-                | _source_socket_package_skill_keys(
-                    source_skill_manifest=source_skill_manifest,
-                    root_skill_key=skill_key,
-                    support_keys=support_keys,
-                )
-            )
-            endpoint_results: dict[str, list[physical_graph.ComputedFactResult]] = {}
-            for endpoint_skill_key in endpoint_skill_keys:
-                try:
-                    endpoint_results[endpoint_skill_key] = list(
-                        physical_graph.support_skill_group_candidates(
-                            snapshot=graph_service.snapshot,
-                            support_keys=support_keys,
-                            skill_key=endpoint_skill_key,
-                        )
-                    )
-                except ValueError:
-                    # Resolver/schema validation owns missing or mistyped endpoints. Unknown
-                    # static contracts remain a Researcher caveat rather than a rejection.
-                    continue
+            try:
+                _, outcomes = _support_package_outcomes(
+                    graph_service=graph_service, package=package,
+                    source_skill_manifest=source_skill_manifest)
+            except ValueError as exc:
+                binding_error = str(exc)
+                break
+            matched_endpoints = set()
             for support_key in support_keys:
-                outcomes = [
-                    (endpoint_skill_key, result)
-                    for endpoint_skill_key, results in endpoint_results.items()
-                    for result in results
-                    if str(result.request.inputs.get("support_key") or "") == support_key
-                ]
-                if any(result.status == "known" for _, result in outcomes):
+                status, rows = _support_outcome(outcomes, support_key)
+                if status == "known":
+                    matched_endpoints.update(endpoint for endpoint, _ in rows)
                     continue
-                rejected_endpoints = [
-                    (endpoint_skill_key, result)
-                    for endpoint_skill_key, result in outcomes
-                    if result.status == "unsupported"
-                ]
-                if not rejected_endpoints:
-                    continue
-                for endpoint_skill_key, result in rejected_endpoints:
-                    facts = result.facts
-                    unsupported_pairs.append(
-                        {
-                            "skillKey": skill_key,
-                            "skillName": display_names.get(skill_key, skill_key),
-                            "endpointKey": endpoint_skill_key,
-                            "evaluatedSkillKeys": endpoint_skill_keys,
-                            "supportKey": support_key,
-                            "supportName": display_names.get(support_key, support_key),
-                            "excludedReason": str(
-                                facts.get("excluded_reason") or "support_not_compatible"
-                            ),
-                            "requiredTypesExpr": list(facts.get("required_types_expr") or []),
-                            "excludedTypesExpr": list(facts.get("excluded_types_expr") or []),
-                            "endpointSkillTypes": list(facts.get("matched_skill_types") or []),
-                            "sourceRefs": list(result.source_refs),
-                            "evaluationMode": "review_support_package_fixed_point",
-                        }
-                    )
-        if not unsupported_pairs:
+                for endpoint, result in rows or [(skill_key, None)]:
+                    facts = result.facts if result else {}
+                    detail = {
+                        "skillKey": skill_key, "skillName": display_names.get(skill_key, skill_key),
+                        "endpointKey": endpoint, "evaluatedSkillKeys": sorted(outcomes),
+                        "supportKey": support_key,
+                        "supportName": display_names.get(support_key, support_key),
+                        "excludedReason": facts.get("excluded_reason") or "static_contract_unavailable",
+                        "requiredTypesExpr": list(facts.get("required_types_expr") or []),
+                        "excludedTypesExpr": list(facts.get("excluded_types_expr") or []),
+                        "endpointSkillTypes": list(facts.get("host_skill_types") or []),
+                        "minionSkillTypes": list(facts.get("minion_skill_types") or []),
+                        "matchedSkillTypes": list(facts.get("matched_skill_types") or []),
+                        "sourceRefs": list(result.source_refs) if result else [],
+                        "evaluationMode": "review_support_package_fixed_point",
+                    }
+                    (unknown_pairs if status == "unknown" else unsupported_pairs).append(detail)
+            checked_packages.append({
+                "skillKey": skill_key, "supportKeys": support_keys,
+                "matchedEndpointKeys": sorted(matched_endpoints),
+            })
+        if not binding_error and not unsupported_pairs and not unknown_pairs:
             kept_records.append(record)
-            kept_summaries.append(summary)
+            kept_summaries.append({**summary, "_supportCompatibility": checked_packages})
             continue
-        # Keep every endpoint and its evidence in unsupportedPairs. Bound only the prose
-        # preview so a large legitimate failure cannot hide behind the copy-safety gate.
-        pair_summary = _bounded_join_diagnostics(
-            [
-                f"{item['skillName']}[{item['skillKey']}] + {item['supportName']}[{item['supportKey']}]"
-                f" (excluded: {item['excludedReason']}; requires {item['requiredTypesExpr'] or '?'}"
-                f" vs endpoint {item['endpointKey']} types {item['endpointSkillTypes'] or '?'})"
-                for item in unsupported_pairs
+        pairs = [*unsupported_pairs, *unknown_pairs]
+        pair_summary = _bounded_join_diagnostics([
+            f"{item['skillName']} + {item['supportName']} ({item['excludedReason']}; "
+            f"endpoint {item['endpointKey']}; host types {item['endpointSkillTypes']}; "
+            f"minion types {item['minionSkillTypes']})" for item in pairs
+        ], limit=500)
+        deferred.append({
+            "titleZh": summary["titleZh"], "recordKind": summary["recordKind"],
+            "sampleId": summary["sampleId"], "componentKeys": summary["componentKeys"],
+            "reason": "invalid_source_support_binding" if binding_error else
+                "unverified_structured_skill_support_pair" if unknown_pairs else
+                "unsupported_structured_skill_support_pair",
+            "unsupportedPairs": unsupported_pairs,
+            "unverifiedPairs": unknown_pairs,
+            "caveats": [
+                "Source-bound static applicability is not numerical benefit or game-wide legality.",
+                ("Binding: " + binding_error) if binding_error else
+                pair_summary + ". Verify the exact source container and static applicability. "
+                "Unverified model coverage is not proof of an ineffective support. "
+                "Preserve supportCoverageExceptions with source_coverage_gap for unresolved coverage; "
+                "not_applicable requires evidence and never substitutes for unknown.",
             ],
-            limit=500,
-        )
-        deferred.append(
-            {
-                "titleZh": summary["titleZh"],
-                "recordKind": summary["recordKind"],
-                "sampleId": summary["sampleId"],
-                "reason": "unsupported_structured_skill_support_pair",
-                "componentKeys": summary["componentKeys"],
-                "unsupportedPairs": unsupported_pairs,
-                "caveats": [
-                    "typedPayload.supportPackages preserves the source root-skill socket package, "
-                    "but the static fixed-point contract rejects the submitted support across both "
-                    "the root and every socketed active-skill endpoint found in that package.",
-                    "Unsupported pairs: " + pair_summary + ". Fix: verify the exported socket layout "
-                    "and component mapping, or remove the ineffective support from the durable "
-                    "package and describe the source mistake in content. When the "
-                    "source group truly cannot supply a compatible support, declare the pair in "
-                    "supportCoverageExceptions with reason=source_coverage_gap or "
-                    "not_applicable and explain it in detail there - the declared-exception path, "
-                    "not a silent bypass.",
-                ],
-                "candidateKind": "deep_research_record",
-            }
-        )
-    return (
-        {**deep_payload, "deep_research_records": kept_records},
-        kept_summaries,
-        deferred,
-    )
+            "candidateKind": "deep_research_record",
+        })
+    return ({**deep_payload, "deep_research_records": kept_records}, kept_summaries, deferred)
 
 
 def _deep_record_claim_segments(record: dict[str, Any]) -> list[str]:
@@ -5034,7 +4961,7 @@ def _source_group_skill_keys(
 
     keys: set[str] = set()
     for active in active_skills:
-        if str(active.get("nameSource") or "gem_name").strip().casefold() != "gem_name":
+        if active.get("enabled") is False:
             continue
         name = str(active.get("name") or "").strip()
         resolved_key = str(
@@ -5062,14 +4989,14 @@ def _source_group_skill_keys(
                     resolved_key = candidate
         if not resolved_key:
             continue
-        keys.add(resolved_key)
         if graph_service is not None:
-            keys.update(
-                _active_gem_endpoint_keys(
-                    snapshot=graph_service.snapshot,
-                    skill_key=resolved_key,
-                )
-            )
+            try:
+                keys.update(_active_gem_endpoint_keys(snapshot=graph_service.snapshot,
+                    skill_key=resolved_key, gem_id=active.get("gemId")))
+            except ValueError:
+                continue
+        else:
+            keys.add(resolved_key)
     return keys
 
 
@@ -5146,7 +5073,10 @@ def _source_skill_evidence_diagnostics(
 
     represented_skill_keys: set[str] = set()
     package_supports_by_skill: dict[str, set[str]] = {}
+    package_supports_by_group: dict[str, set[str]] = {}
+    package_instances_by_group: dict[str, set[str]] = {}
     exception_reasons_by_skill: dict[str, set[str]] = {}
+    exception_reasons_by_group: dict[str, set[str]] = {}
     for record in ownership_records:
         components = [item for item in record.get("components") or [] if isinstance(item, dict)]
         for component in components:
@@ -5160,6 +5090,18 @@ def _source_skill_evidence_diagnostics(
             skill_key = str(package.get("skillKey") or "")
             if not skill_key.startswith("skill:"):
                 continue
+            try:
+                source_group = _source_group_for_support_package(
+                    source_skill_manifest=source_skill_manifest, package=package, graph_service=graph_service)
+            except ValueError:
+                continue
+            if source_group is not None:
+                if v3_group_reviews_required and not all(package.get(field) for field in
+                    ("sourceGroupRef", "rootSkillRef", "socketedItemRefs")):
+                    continue
+                source_ref = str(source_group.get("groupRef") or "")
+                package_supports_by_group.setdefault(source_ref, set()).update(package.get("supportKeys") or [])
+                package_instances_by_group.setdefault(source_ref, set()).update(package.get("socketedItemRefs") or [])
             package_supports_by_skill.setdefault(skill_key, set()).update(
                 str(value)
                 for value in package.get("supportKeys") or []
@@ -5186,6 +5128,11 @@ def _source_skill_evidence_diagnostics(
                 exception_reasons_by_skill.setdefault(skill_key, set()).add(
                     str(exception.get("reason") or "")
                 )
+                for group_ref in _source_exception_group_refs(exception={**exception, "skillKey": skill_key},
+                    record=record, source_skill_manifest=source_skill_manifest,
+                    source_group_reviews=list(declared_group_reviews.values()) if v3_group_reviews_required else None,
+                    graph_service=graph_service):
+                    exception_reasons_by_group.setdefault(group_ref, set()).add(str(exception.get("reason") or ""))
     evidence_records = [record for record in records if record.get("recordKind") in evidence_kinds]
     record_text_parts: dict[str, list[str]] = {}
     for record in evidence_records:
@@ -5232,12 +5179,12 @@ def _source_skill_evidence_diagnostics(
             source_skill_resolutions=source_skill_resolutions,
         )
         represented = bool(group_skill_keys & represented_skill_keys)
-        group_exception_reasons = {
+        group_exception_reasons = exception_reasons_by_group.get(group_ref, set()) if isinstance(source_skill_manifest, dict) else {
             reason
             for skill_key in group_skill_keys
             for reason in exception_reasons_by_skill.get(skill_key, set())
         }
-        packaged_support_keys = {
+        packaged_support_keys = package_supports_by_group.get(group_ref, set()) if isinstance(source_skill_manifest, dict) else {
             support_key
             for skill_key in group_skill_keys
             for support_key in package_supports_by_skill.get(skill_key, set())
@@ -5248,7 +5195,8 @@ def _source_skill_evidence_diagnostics(
                 support.get("gemId"),
                 support.get("name"),
             )
-            packaged = any(
+            packaged = (str(support.get("socketedItemRef") or "") in
+                        package_instances_by_group.get(group_ref, set())) if v3_group_reviews_required else any(
                 source_tokens
                 & _source_identity_tokens(
                     support_key,
@@ -5454,6 +5402,7 @@ def _evaluate_case_coverage(
     source_evidence_diagnostics: dict[str, Any] | None = None,
     deep_records: list[dict[str, Any]] | None = None,
     validated_readback_dispositions: set[str] | None = None,
+    source_skill_manifest: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     declared = review.get("caseCoverage")
     advisories: list[str] = []
@@ -5477,7 +5426,8 @@ def _evaluate_case_coverage(
         readback_dispositions & {"reviewed", "unavailable", "unmodelled"}
     )
     source_evidence_diagnostics = source_evidence_diagnostics or {}
-    core_gaps = _core_skill_group_support_gaps(accepted_records)
+    core_gaps = _core_skill_group_support_gaps(accepted_records, source_skill_manifest=source_skill_manifest,
+        source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service)
     source_evidence_diagnostics["coreSkillGroupSupportGaps"] = core_gaps
     undisposed_group_items = [
         item
@@ -5485,7 +5435,8 @@ def _evaluate_case_coverage(
         if item.get("disposition") not in DISPOSED_SKILL_GROUP_STATES
     ]
     inferred = {
-        "supports": _support_packages_cover_core_skill_groups(accepted_records)
+        "supports": _support_packages_cover_core_skill_groups(accepted_records, source_skill_manifest=source_skill_manifest,
+            source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service)
         and not source_evidence_diagnostics.get("supportCoverageBlockedByStructuredOmission", False)
         and not undisposed_group_items,
         "rotation": "rotation" in record_kinds,
@@ -5682,76 +5633,72 @@ def _core_skill_mention_names(records: list[dict[str, Any]]) -> set[str]:
 
 
 def _support_packages_cover_core_skill_groups(
-    accepted_records: list[dict[str, Any]],
+    accepted_records: list[dict[str, Any]], *, source_skill_manifest: dict[str, Any] | None = None,
+    source_group_reviews: list[dict[str, Any]] | None = None,
+    graph_service: graph_tools.GraphQueryService | None = None,
 ) -> bool:
-    per_group_keys = _core_skill_identity_keys(accepted_records)
+    identities = _core_skill_identity_keys(accepted_records)
+    return bool(identities) and all(identities.values()) and not _core_skill_group_support_gaps(
+        accepted_records, source_skill_manifest=source_skill_manifest,
+        source_group_reviews=source_group_reviews, graph_service=graph_service)
+
+
+def _core_skill_group_support_gaps(
+    accepted_records: list[dict[str, Any]], *, source_skill_manifest: dict[str, Any] | None = None,
+    source_group_reviews: list[dict[str, Any]] | None = None,
+    graph_service: graph_tools.GraphQueryService | None = None,
+) -> list[str]:
+    """Core payloads use their observed physical host package, never a fabricated child package."""
+    core_by_research_group = _core_skill_identity_keys(accepted_records)
     records_by_group: dict[str, list[dict[str, Any]]] = {}
-    for item in accepted_records:
-        records_by_group.setdefault(str(item.get("researchGroupId") or ""), []).append(item)
-    if not records_by_group:
-        return False
-    for group_id, group_records in records_by_group.items():
-        core_skill_keys = per_group_keys.get(group_id, set())
-        package_supports: dict[str, set[str]] = {}
-        exceptions: set[str] = set()
-        for item in group_records:
-            typed_payload = item.get("typedPayload") or {}
-            for package in typed_payload.get("supportPackages") or []:
-                if not isinstance(package, dict):
-                    continue
-                skill_key = str(package.get("skillKey") or "")
-                package_supports.setdefault(skill_key, set()).update(
-                    str(value) for value in package.get("supportKeys") or [] if str(value)
-                )
-            for exception in typed_payload.get("supportCoverageExceptions") or []:
-                if not isinstance(exception, dict):
-                    continue
+    for record in accepted_records:
+        records_by_group.setdefault(str(record.get("researchGroupId") or ""), []).append(record)
+    gaps = []
+    for research_group, records in records_by_group.items():
+        supports_by_skill: dict[str, set[str]] = {}
+        source_packages_by_skill: dict[str, dict[str, set[str]]] = {}
+        exceptions = set()
+        source_exceptions: dict[str, set[str]] = {}
+        for record in records:
+            payload = record.get("typedPayload") or {}
+            for package in payload.get("supportPackages") or []:
+                root_key = str(package.get("skillKey") or "")
+                recipients = {root_key}
+                if isinstance(source_skill_manifest, dict):
+                    try:
+                        group = _source_group_for_support_package(
+                            source_skill_manifest=source_skill_manifest, package=package,
+                            graph_service=graph_service)
+                    except ValueError:
+                        continue
+                    if group is not None:
+                        recipients.update(_source_group_skill_keys(
+                            active_skills=[item for item in group.get("activeSkills") or []
+                                if item.get("socketedUnderSkillRef") in (None, group.get("rootSkillRef"))],
+                            graph_service=graph_service, source_skill_resolutions={}))
+                for skill_key in recipients:
+                    supports_by_skill.setdefault(skill_key, set()).update(package.get("supportKeys") or [])
+                    if isinstance(source_skill_manifest, dict) and group is not None:
+                        source_packages_by_skill.setdefault(skill_key, {}).setdefault(
+                            str(group.get("groupRef") or ""), set()).update(package.get("supportKeys") or [])
+            exceptions.update(str(item.get("skillKey") or "")
+                              for item in payload.get("supportCoverageExceptions") or []
+                              if item.get("reason") == "not_applicable")
+            for exception in payload.get("supportCoverageExceptions") or []:
                 if exception.get("reason") == "not_applicable":
-                    exceptions.add(str(exception.get("skillKey") or ""))
-        if not core_skill_keys or any(
-            len(package_supports.get(skill_key, set())) < 2 and skill_key not in exceptions
-            for skill_key in core_skill_keys
-        ):
-            return False
-    return True
-
-
-def _core_skill_group_support_gaps(accepted_records: list[dict[str, Any]]) -> list[str]:
-    """Return Family-core skill keys whose enabled group lacks >=2 packaged supports.
-
-    Mirrors ``_support_packages_cover_core_skill_groups`` but reports *which* core skills
-    are missing packaged supports, so the supports-coverage gap is attributable (e.g. a
-    triggered_payload group like Flame Wall that is automatic core-secondary metadata without
-    altering the Family identity key).
-    """
-    per_group_keys = _core_skill_identity_keys(accepted_records)
-    records_by_group: dict[str, list[dict[str, Any]]] = {}
-    for item in accepted_records:
-        records_by_group.setdefault(str(item.get("researchGroupId") or ""), []).append(item)
-    gaps: list[str] = []
-    for group_id, group_records in records_by_group.items():
-        core_skill_keys = per_group_keys.get(group_id, set())
-        if not core_skill_keys:
-            continue
-        package_supports: dict[str, set[str]] = {}
-        exceptions: set[str] = set()
-        for item in group_records:
-            typed_payload = item.get("typedPayload") or {}
-            for package in typed_payload.get("supportPackages") or []:
-                if not isinstance(package, dict):
-                    continue
-                skill_key = str(package.get("skillKey") or "")
-                package_supports.setdefault(skill_key, set()).update(
-                    str(value) for value in package.get("supportKeys") or [] if str(value)
-                )
-            for exception in typed_payload.get("supportCoverageExceptions") or []:
-                if not isinstance(exception, dict):
-                    continue
-                if exception.get("reason") == "not_applicable":
-                    exceptions.add(str(exception.get("skillKey") or ""))
-        for skill_key in sorted(core_skill_keys):
-            if len(package_supports.get(skill_key, set())) < 2 and skill_key not in exceptions:
-                gaps.append(skill_key)
+                    source_exceptions.setdefault(str(exception.get("skillKey") or ""), set()).update(
+                        _source_exception_group_refs(exception=exception, record=record,
+                            source_skill_manifest=source_skill_manifest,
+                            source_group_reviews=source_group_reviews, graph_service=graph_service))
+        for core in core_by_research_group.get(research_group, set()):
+            source_groups = source_packages_by_skill.get(core, {})
+            undercovered = any(len(keys) < 2 and ref not in source_exceptions.get(core, set())
+                               for ref, keys in source_groups.items()) if source_groups else (
+                len(supports_by_skill.get(core, set())) < 2)
+            waived = bool(source_exceptions.get(core)) if isinstance(source_skill_manifest, dict) and not source_groups else (
+                core in exceptions if not isinstance(source_skill_manifest, dict) else False)
+            if undercovered and not waived:
+                gaps.append(core)
     return sorted(set(gaps))
 
 

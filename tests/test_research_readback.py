@@ -39,6 +39,16 @@ class _FakeEngine:
             "spiritOverBy": 8,
             "spiritUsed": 259,
             "activeWeaponSet": 2,
+            "pointsUsed": 146,
+            "normalPassivePointsUsed": 124,
+            "pointsAvailable": 124,
+            "unspentPoints": 0,
+            "ascendancyPointsUsed": 8,
+            "ascendancyPointsMax": 8,
+            "secondaryAscendancyPointsUsed": 0,
+            "weaponSet1PointsUsed": 22,
+            "weaponSet2PointsUsed": 22,
+            "weaponSetPointsAvailable": 24,
         }
 
     def get_xml(self):
@@ -99,6 +109,10 @@ def test_safe_readback_recomputes_bounded_active_snapshot(monkeypatch):
     assert result["resources"]["spiritRequested"] == 259
     assert result["resources"]["spiritReservedCapped"] == 251
     assert result["resources"]["ledgerStatus"] == "consistent"
+    assert result["resources"]["ledgerScope"] == "model_snapshot_arithmetic"
+    assert any("does not establish source completeness or real-character legality" in caveat
+               for caveat in result["modelability"]["caveats"])
+    assert not any("DPS" in caveat for caveat in result["modelability"]["caveats"])
     assert result["stats"]["ManaPerSecondCost"] == 5968
     serialized = str(result).casefold()
     assert "rawxml" not in serialized and "<pathofbuilding" not in serialized
@@ -106,6 +120,43 @@ def test_safe_readback_recomputes_bounded_active_snapshot(monkeypatch):
     assert result["stateBinding"]["activeWeaponSet"] == 2
     assert result["schemaVersion"] == "research_pob_readback_v4"
     assert "supportOwnerEvidence" not in result
+
+
+def test_safe_readback_preserves_separate_passive_point_pools(monkeypatch):
+    monkeypatch.setattr(research_readback, "PobEngine", _FakeEngine)
+    result = research_readback.build_safe_readback(
+        "<PathOfBuilding/>", source_hash_ref="source-hash:test", version_context={}
+    )
+
+    assert result["passivePoints"] == {
+        "normalPassivePointsUsed": 124,
+        "pointsAvailable": 124,
+        "unspentPoints": 0,
+        "ascendancyPointsUsed": 8,
+        "ascendancyPointsMax": 8,
+        "secondaryAscendancyPointsUsed": 0,
+        "weaponSet1PointsUsed": 22,
+        "weaponSet2PointsUsed": 22,
+        "weaponSetPointsAvailable": 24,
+        "pointsAvailableBasis": "wrapper_level_progress_estimate_plus_ExtraPoints",
+    }
+    assert any("does not certify the source character's quest completion" in caveat
+               for caveat in result["modelability"]["caveats"])
+
+
+@pytest.mark.parametrize("invalid", [None, "24", True, -1, 1.5, float("nan"), float("inf")])
+def test_safe_readback_does_not_invent_missing_or_invalid_point_counts(monkeypatch, invalid):
+    class MissingPoints(_FakeEngine):
+        def get_build(self):
+            return {"pointsUsed": 146, "pointsAvailable": invalid}
+
+    monkeypatch.setattr(research_readback, "PobEngine", MissingPoints)
+    result = research_readback.build_safe_readback(
+        "<PathOfBuilding/>", source_hash_ref="source-hash:test", version_context={}
+    )
+
+    assert all(result["passivePoints"][key] is None
+               for key in research_readback.PASSIVE_POINT_KEYS)
 
 
 def test_safe_readback_rejects_string_and_boolean_spirit_fields(monkeypatch):

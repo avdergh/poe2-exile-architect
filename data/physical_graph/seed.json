@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "snapshotId": "physical-graph-41ec34610cc2259ef9610419",
-  "snapshotFile": "snapshots/physical-graph-41ec34610cc2259ef9610419.json.gz",
-  "sha256": "31eaf106a1cb1d760954037a6a3570ce9dfa96f1f9370c8981f778cbc53c67a9",
+  "snapshotId": "physical-graph-1180e14e34ae6de9af75d945",
+  "snapshotFile": "snapshots/physical-graph-1180e14e34ae6de9af75d945.json.gz",
+  "sha256": "ed85810d50c73a837b6a8b7fe3f42afe0f66c51526417097378057aab79b4faf",
   "compressed": true,
   "nodeCount": 48398,
   "edgeCount": 101647,

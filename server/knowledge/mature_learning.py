@@ -732,7 +732,7 @@ CREATE TABLE IF NOT EXISTS research_revalidation_events (
     safe_evidence_refs TEXT NOT NULL,
     affected_component_keys TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern')),
+    CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern', 'deep_research_record')),
     CHECK (outcome IN ('still_valid', 'invalidated', 'changed_scope', 'needs_review'))
 );
 
@@ -788,8 +788,10 @@ def connect(db_path: Path | None = None, *, read_only: bool = False) -> sqlite3.
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     from .patch_reviews import register_sql
+    from .research_memory import register_deep_revalidation_sql
 
     register_sql(con)
+    register_deep_revalidation_sql(con)
     return con
 
 
@@ -809,6 +811,17 @@ def initialize_store(db_path: Path | None = None) -> Path:
                 )
             if existing == SCHEMA_VERSION:
                 if research_content.installed(con) and research_claims.installed(con):
+                    revalidation_schema = con.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' "
+                        "AND name='research_revalidation_events'"
+                    ).fetchone()
+                    if revalidation_schema and "'deep_research_record'" not in str(revalidation_schema[0]):
+                        # Add one event target without changing any source record, evidence
+                        # projection, or old receipt. Preserve the existing schema-7 data.
+                        _backup_before_schema_upgrade(con, path=path, existing=existing)
+                        con.execute("BEGIN IMMEDIATE")
+                        _migrate_revalidation_events_target_kind_check(con)
+                        con.commit()
                     if not _v5_structure_complete(con):
                         _backup_before_schema_upgrade(con, path=path, existing=existing)
                         con.execute("BEGIN IMMEDIATE")
@@ -832,6 +845,7 @@ def initialize_store(db_path: Path | None = None) -> Path:
                 con.execute("PRAGMA foreign_keys = OFF")
                 con.execute("BEGIN IMMEDIATE")
                 research_claims.migrate(con)
+                _migrate_revalidation_events_target_kind_check(con)
                 research_content.validate_storage(con)
                 research_claims.validate_storage(con)
                 con.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
@@ -847,6 +861,7 @@ def initialize_store(db_path: Path | None = None) -> Path:
                     _migrate_research_memory_v5(con, apply_known_repairs=False)
                 research_content.migrate(con, invalidate_receipts=False)
                 research_claims.migrate(con)
+                _migrate_revalidation_events_target_kind_check(con)
                 research_content.validate_storage(con)
                 research_claims.validate_storage(con)
                 con.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
@@ -1992,7 +2007,7 @@ def _migrate_revalidation_events_target_kind_check(con: sqlite3.Connection) -> N
         """
     ).fetchone()
     sql = str(row["sql"] if row else "")
-    if "target_kind IN ('fragment', 'semantic_edge')" not in sql:
+    if not sql or "'deep_research_record'" in sql:
         return
     con.execute(
         "ALTER TABLE research_revalidation_events RENAME TO research_revalidation_events_old"
@@ -2009,7 +2024,7 @@ def _migrate_revalidation_events_target_kind_check(con: sqlite3.Connection) -> N
             safe_evidence_refs TEXT NOT NULL,
             affected_component_keys TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern')),
+            CHECK (target_kind IN ('fragment', 'semantic_edge', 'build_pattern', 'deep_research_record')),
             CHECK (outcome IN ('still_valid', 'invalidated', 'changed_scope', 'needs_review'))
         )
         """

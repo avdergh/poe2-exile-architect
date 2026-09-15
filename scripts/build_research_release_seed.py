@@ -101,7 +101,15 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
         con.row_factory = sqlite3.Row
         if mature_learning.schema_version(con) != mature_learning.SCHEMA_VERSION:
             raise ValueError("Research Memory source schema does not match the release runtime")
+        # Review holds must be evaluated while their original events and receipts
+        # still exist. Deleting operational history first would restore held records.
+        held_records = [
+            (row["record_id"],)
+            for row in con.execute("SELECT * FROM deep_research_records").fetchall()
+            if research_memory.pending_hold_for_record(con, row)
+        ]
         con.execute("PRAGMA foreign_keys = OFF")
+        con.executemany("DELETE FROM deep_research_records WHERE record_id=?", held_records)
         for table in _OPERATIONAL_TABLES:
             con.execute(f"DELETE FROM {table}")
         safe_scope = (

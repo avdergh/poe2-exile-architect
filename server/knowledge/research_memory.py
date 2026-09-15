@@ -114,9 +114,10 @@ def _deep_record_read_predicates(
             "EXISTS (SELECT 1 FROM research_build_families AS family "
             "WHERE family.knowledge_scope = deep_research_records.knowledge_scope "
             "AND family.build_family_key = deep_research_records.build_family_key)",
+            "research_deep_revalidation_pending(record_id, ?) = 0",
         ]
     )
-    return where, [knowledge_scope, source_case_ref]
+    return where, [knowledge_scope, source_case_ref, source_case_ref]
 
 
 def _normalize_deep_record_version_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -829,6 +830,15 @@ class ResearchMemoryService:
                 ["Blind Research retrieval is restricted to global_seed by the server claim"],
             )
         source_case_ref = str(source_case_ref or "").strip() or None
+        if response_profile == "full" and source_case_ref:
+            return research_models.public_error(
+                "source_case_filter_requires_compact_profile",
+                [
+                    "source_case_ref is not supported by the full diagnostic profile. "
+                    "Use exact record_ids from the source write receipt for diagnostic reads; "
+                    "do not switch to create_compact merely to filter a diagnostic query."
+                ],
+            )
         if ascendancy_key and not ascendancy_key.startswith("ascendancy:"):
             return research_models.public_error(
                 "invalid_identity_parameter",
@@ -1118,6 +1128,15 @@ class ResearchMemoryService:
             if game_patch:
                 for result, row in zip(deep_records, record_rows):
                     result["targetApplicability"] = patch_reviews.applicability(con, row, game_patch)
+            for result, row in zip(deep_records, record_rows):
+                pending = pending_hold_for_record(con, row, source_case_ref=selected_lane_case)
+                if pending:
+                    result["revalidation"] = pending
+                    result["targetApplicability"] = {
+                        **result.get("targetApplicability", {}),
+                        "adoptionAllowed": False,
+                        "revalidationPending": True,
+                    }
             if not explicit_family_filter and not family_discovery:
                 selected_family_keys = sorted(
                     {str(row["build_family_key"]) for row in record_rows if row["build_family_key"]}
@@ -2849,6 +2868,31 @@ class ResearchMemoryService:
                 "memoryRevisionAfter": revision,
                 "memoryRevision": revision,
             }
+            # Produced by the managed acceptance validator, never read from the
+            # caller's review or record payload. Preserve this alongside the exact
+            # writtenMapping so later audits can identify which static contract ran.
+            if isinstance((acceptance_diagnostics or {}).get("supportCompatibility"), dict):
+                acceptance_summary["supportCompatibility"] = deepcopy(
+                    acceptance_diagnostics["supportCompatibility"]
+                )
+            if not semantic_mutation:
+                prospective_summary = {
+                    **acceptance_summary,
+                    "memoryRevisionAfter": revision_before + 1,
+                    "memoryRevision": revision_before + 1,
+                }
+                if receipt_releases_pending_hold(con, {
+                    "provenance": "transactional",
+                    "contract_version": contract_version,
+                    "acceptance_summary": prospective_summary,
+                    "record_writes_json": deep_result.get("recordWrites") or [],
+                }):
+                    revision = research_runtime.bump_memory_revision(con)
+                    acceptance_summary.update({
+                        "memoryRevisionAfter": revision,
+                        "memoryRevision": revision,
+                        "revalidationEvidenceAdded": True,
+                    })
             if _copy_safety_error(acceptance_summary) is not None:
                 con.rollback()
                 return research_models.rejection("unsafe_research_acceptance_context")
@@ -3036,6 +3080,8 @@ class ResearchMemoryService:
             reasons.append("copy_safety")
         if head["status"] != "valid" or head["superseded_by_id"] is not None:
             reasons.append("status")
+        if pending_hold_for_record(con, head, source_case_ref=source_case_ref):
+            reasons.append("revalidation_hold")
         if int(head["record_schema_version"] or 1) < 2:
             reasons.append("legacy_schema")
         if (
@@ -4832,7 +4878,17 @@ class ResearchMemoryService:
         new_version_context: dict[str, str],
         safe_evidence_refs: list[str],
         affected_component_keys: list[str],
+        expected_projection_hash: str | None = None,
     ) -> dict[str, Any]:
+        if target_kind == "deep_research_record":
+            return self._submit_deep_record_revalidation_hold(
+                target_id=target_id,
+                outcome=outcome,
+                original_version_context=new_version_context,
+                safe_evidence_refs=safe_evidence_refs,
+                affected_component_keys=affected_component_keys,
+                expected_projection_hash=expected_projection_hash,
+            )
         if new_version_context.get("game_patch") in patch_reviews.RECALL_PREDECESSORS:
             return research_models.rejection("target_patch_review_required", suggested_repair="Use submit_research_patch_review with independent review evidence.")
         if target_kind not in VALID_REVALIDATION_TARGET_KINDS:
@@ -4959,6 +5015,158 @@ class ResearchMemoryService:
             "noRawQuery": True,
             "noRawMatureBuildMaterial": True,
         }
+
+    def _submit_deep_record_revalidation_hold(
+        self,
+        *,
+        target_id: str,
+        outcome: str,
+        original_version_context: dict[str, str],
+        safe_evidence_refs: list[str],
+        affected_component_keys: list[str],
+        expected_projection_hash: str | None,
+    ) -> dict[str, Any]:
+        """Append a projection-bound hold without rewriting a source claim or its evidence."""
+        from ..runtime.file_lock import interprocess_file_lock
+
+        if outcome not in {"needs_review", "invalidated"}:
+            return research_models.rejection("invalid_deep_revalidation_outcome")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(expected_projection_hash or "")):
+            return research_models.rejection("deep_revalidation_projection_required")
+        version_keys = {"game_patch", "passive_tree_version", "pob_version_or_commit"}
+        if (
+            not isinstance(original_version_context, dict)
+            or set(original_version_context) != version_keys
+            or any(not isinstance(value, str) or not value for value in original_version_context.values())
+        ):
+            return research_models.rejection("deep_revalidation_original_version_required")
+        if (
+            not isinstance(safe_evidence_refs, list)
+            or not safe_evidence_refs
+            or any(not isinstance(value, str) or not value.strip() for value in safe_evidence_refs)
+            or len(safe_evidence_refs) > 64
+            or any(len(value) > 240 for value in safe_evidence_refs)
+        ):
+            return research_models.rejection("deep_revalidation_evidence_required")
+        if (
+            not isinstance(affected_component_keys, list)
+            or any(not isinstance(value, str) or not value.strip() for value in affected_component_keys)
+        ):
+            return research_models.rejection("invalid_deep_revalidation_components")
+        request = {
+            "target_kind": "deep_research_record",
+            "target_id": target_id,
+            "outcome": outcome,
+            "original_version_context": dict(original_version_context),
+            "expected_projection_hash": expected_projection_hash,
+            "safe_evidence_refs": sorted({value.strip() for value in safe_evidence_refs}),
+            "affected_component_keys": sorted(set(affected_component_keys)),
+        }
+        copy_error = _copy_safety_error(request)
+        if copy_error is not None:
+            return copy_error
+        event_id = "rev-" + _stable_hash(request)[:24]
+        db_path = self.db_path or mature_learning.mature_learning_path()
+        with interprocess_file_lock(research_runtime.research_write_lock_path(db_path)):
+            con = mature_learning.connect(db_path)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                existing_event = con.execute(
+                    "SELECT * FROM research_revalidation_events WHERE event_id=?", (event_id,)
+                ).fetchone()
+                if existing_event is not None:
+                    context = _loads(existing_event["new_version_context"], {})
+                    binding = context.get("holdBinding", {})
+                    if binding.get("requestHash") != _stable_hash(request):
+                        con.rollback()
+                        return research_models.rejection("deep_revalidation_event_conflict")
+                    con.rollback()
+                    return _deep_revalidation_hold_result(existing_event, idempotent=True)
+                row = con.execute(
+                    "SELECT * FROM deep_research_records WHERE record_id=?", (target_id,)
+                ).fetchone()
+                if row is None:
+                    con.rollback()
+                    return research_models.rejection("missing_revalidation_target")
+                if (
+                    row["projection_hash"] != expected_projection_hash
+                    or research_runtime.projection_hash(row) != expected_projection_hash
+                ):
+                    con.rollback()
+                    return research_models.rejection("deep_revalidation_projection_conflict")
+                if any(row[key] != original_version_context[key] for key in version_keys):
+                    con.rollback()
+                    return research_models.rejection("deep_revalidation_version_conflict")
+                if (
+                    row["status"] not in {"valid", "needs_revalidation"}
+                    or row["superseded_by_id"] is not None
+                    or row["copy_safety_state"] != "passed"
+                    or not row["knowledge_key"]
+                ):
+                    con.rollback()
+                    return research_models.rejection("deep_revalidation_target_not_current")
+                if set(request["affected_component_keys"]) - set(_loads(row["component_keys"], [])):
+                    con.rollback()
+                    return research_models.rejection("deep_revalidation_component_mismatch")
+                claims = con.execute(
+                    "SELECT source_case_ref,source_claim_key,game_patch,passive_tree_version,"
+                    "pob_version_or_commit FROM deep_research_record_evidence "
+                    "WHERE record_id=? AND knowledge_scope=? AND knowledge_key=? "
+                    "AND accepted_projection_hash=? AND binding_issue IS NULL "
+                    "AND game_patch=? AND passive_tree_version=? AND pob_version_or_commit=? "
+                    "ORDER BY source_case_ref,source_claim_key,game_patch,passive_tree_version",
+                    (target_id, row["knowledge_scope"], row["knowledge_key"], expected_projection_hash,
+                     row["game_patch"], row["passive_tree_version"], row["pob_version_or_commit"]),
+                ).fetchall()
+                if not claims:
+                    con.rollback()
+                    return research_models.rejection("deep_revalidation_source_binding_missing")
+                revision = research_runtime.bump_memory_revision(con)
+                binding = {
+                    "version": 1,
+                    "requestHash": _stable_hash(request),
+                    "knowledgeScope": row["knowledge_scope"],
+                    "knowledgeKey": row["knowledge_key"],
+                    "projectionHash": expected_projection_hash,
+                    "holdMemoryRevision": revision,
+                    "sourceClaims": [
+                        {
+                            "sourceCaseRef": claim["source_case_ref"],
+                            "sourceClaimKey": claim["source_claim_key"],
+                            "gamePatch": claim["game_patch"],
+                            "passiveTreeVersion": claim["passive_tree_version"],
+                            "pobVersionOrCommit": claim["pob_version_or_commit"],
+                            "sourceHash": _deep_revalidation_source_hash(con, row, claim),
+                        }
+                        for claim in claims
+                    ],
+                }
+                context = {**original_version_context, "holdBinding": binding}
+                event = {
+                    "event_id": event_id,
+                    "target_kind": "deep_research_record",
+                    "target_id": target_id,
+                    "outcome": outcome,
+                    "old_version_context": row["current_version_context"],
+                    "new_version_context": _json(context),
+                    "safe_evidence_refs": _json(request["safe_evidence_refs"]),
+                    "affected_component_keys": _json(request["affected_component_keys"]),
+                    "created_at": _now(),
+                }
+                con.execute(
+                    "INSERT INTO research_revalidation_events(event_id,target_kind,target_id,outcome,"
+                    "old_version_context,new_version_context,safe_evidence_refs,affected_component_keys,"
+                    "created_at) VALUES (:event_id,:target_kind,:target_id,:outcome,:old_version_context,"
+                    ":new_version_context,:safe_evidence_refs,:affected_component_keys,:created_at)",
+                    event,
+                )
+                con.commit()
+                return _deep_revalidation_hold_result(event, idempotent=False)
+            except BaseException:
+                con.rollback()
+                raise
+            finally:
+                con.close()
 
     def _query_rows(
         self,
@@ -5332,12 +5540,14 @@ class ResearchMemoryService:
     ) -> dict[str, Any]:
         rows = con.execute(
             """
-            SELECT record.record_schema_version, record.source_state_scope,
+            SELECT record.record_id, record.record_schema_version, record.source_state_scope,
                    record.projection_hash, record.status,
                    evidence.accepted_projection_hash,
                    evidence.source_state_scope AS evidence_state_scope,
                    evidence.binding_issue,
-                   provenance.source_case_ref AS provenance_source_case_ref
+                   provenance.source_case_ref AS provenance_source_case_ref,
+                   research_deep_revalidation_pending(record.record_id, evidence.source_case_ref)
+                       AS revalidation_pending
             FROM deep_research_records AS record
             LEFT JOIN deep_research_record_evidence AS evidence
               ON evidence.knowledge_scope = record.knowledge_scope
@@ -5367,11 +5577,14 @@ class ResearchMemoryService:
             and row["accepted_projection_hash"] == row["projection_hash"]
             and row["binding_issue"] is None
             and row["provenance_source_case_ref"]
+            and not row["revalidation_pending"]
             for row in rows
         )
         if authorized:
             return {"status": "authorized", "blockers": []}
         blockers: list[str] = []
+        if any(row["revalidation_pending"] for row in rows):
+            blockers.append("revalidation_hold")
         if any(int(row["record_schema_version"] or 1) < 2 for row in rows):
             blockers.append("record_schema_version_1")
         if any(row["source_state_scope"] not in authorizing_states for row in rows):
@@ -5561,6 +5774,7 @@ class ResearchMemoryService:
               AND evidence.accepted_projection_hash = record.projection_hash
               AND evidence.binding_issue IS NULL
               AND COALESCE(json_extract(record.typed_payload, '$.availability'), 'standard') = 'standard'
+              AND research_deep_revalidation_pending(record.record_id, evidence.source_case_ref) = 0
               {filtered_where}
             GROUP BY evidence.knowledge_scope, evidence.source_case_ref
             """,
@@ -5717,6 +5931,7 @@ class ResearchMemoryService:
             for row in family_rows:
                 record_id = str(row["record_id"])
                 record_kind = str(row["record_kind"])
+                pending = pending_hold_for_record(con, row, source_case_ref=source_case_ref)
                 component_keys = _loads(row["component_keys"], [])
                 typed_payload = _loads(row["typed_payload"], {}) or {}
                 gear_responsibilities = typed_payload.get("gearResponsibilities") or []
@@ -5747,6 +5962,7 @@ class ResearchMemoryService:
                             "summary": row["summary"],
                             "componentKeys": component_keys,
                             "returnedInThisResponse": False,
+                            **({"revalidation": pending, "adoptionAllowed": False} if pending else {}),
                         }
                     )
                 if record_kind not in MECHANISM_RECORD_KINDS:
@@ -5773,6 +5989,7 @@ class ResearchMemoryService:
                                 "premiseType": premise_type,
                                 "text": text,
                                 "componentKeys": component_keys,
+                                **({"revalidationPending": True, "adoptionAllowed": False} if pending else {}),
                             }
                         )
             eligible_count = len(family_rows)
@@ -5901,6 +6118,11 @@ class ResearchMemoryService:
                 reason = "source_provenance"
             elif not row["scoped_family_key"]:
                 reason = "scoped_family"
+            elif con.execute(
+                "SELECT research_deep_revalidation_pending(?, ?)",
+                (row["record_id"], source_case_ref),
+            ).fetchone()[0]:
+                reason = "revalidation_hold"
             elif game_patch and not con.execute(
                 "SELECT research_patch_adoptable(?, ?, ?)",
                 (row["record_id"], row["projection_hash"], game_patch),
@@ -6541,6 +6763,7 @@ class ResearchMemoryService:
             "ascendancyKey": row["ascendancy_key"],
             "gamePatch": row["game_patch"],
             "passiveTreeVersion": row["passive_tree_version"],
+            "pobVersionOrCommit": row["pob_version_or_commit"],
             "status": row["status"],
             "copySafetyState": row["copy_safety_state"],
             "recordSchemaVersion": int(row["record_schema_version"] or 1),
@@ -7120,6 +7343,281 @@ def _observation_matches_pattern_bucket(
         and observation.passive_tree_version == pattern.passive_tree_version
         and observation.pob_version_or_commit == pattern.pob_version_or_commit
     )
+
+
+def _deep_revalidation_hold_result(event: Any, *, idempotent: bool) -> dict[str, Any]:
+    binding = _loads(event["new_version_context"], {})["holdBinding"]
+    return {
+        "status": "accepted",
+        "targetKind": "deep_research_record",
+        "targetId": event["target_id"],
+        "outcome": event["outcome"],
+        "eventId": event["event_id"],
+        "holdRecorded": True,
+        "heldProjectionHash": binding["projectionHash"],
+        "memoryRevision": binding["holdMemoryRevision"],
+        "affectedSourceClaimCount": len(binding["sourceClaims"]),
+        "idempotentReplay": idempotent,
+        "noRawQuery": True,
+        "noRawMatureBuildMaterial": True,
+    }
+
+
+def _deep_revalidation_receipt_parts(receipt: Any) -> tuple[dict[str, Any], list[Any]]:
+    summary = receipt["acceptance_summary"]
+    writes = receipt["record_writes_json"]
+    summary = _loads(summary, {}) if isinstance(summary, str) else summary
+    writes = _loads(writes, []) if isinstance(writes, str) else writes
+    return (summary if isinstance(summary, dict) else {}, writes if isinstance(writes, list) else [])
+
+
+def _deep_revalidation_receipts(con: sqlite3.Connection, source_ref: str) -> list[sqlite3.Row]:
+    return con.execute(
+        "SELECT * FROM research_record_write_receipts WHERE provenance='transactional' "
+        "AND json_extract(acceptance_summary, '$.sourceContext.sourceHashRef')=?",
+        (source_ref,),
+    ).fetchall()
+
+
+def _deep_revalidation_source_hash(con: sqlite3.Connection, row: Any, claim: Any) -> str | None:
+    """Freeze an already bound full source hash; never expand a short source reference."""
+    hashes: set[str] = set()
+    for receipt in _deep_revalidation_receipts(con, claim["source_case_ref"]):
+        summary, writes = _deep_revalidation_receipt_parts(receipt)
+        context = summary.get("sourceContext") or {}
+        source_hash = context.get("sourceHash")
+        if not isinstance(source_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+            continue
+        if (
+            context.get("knowledgeScope") != row["knowledge_scope"]
+            or context.get("gamePatch") != claim["game_patch"]
+            or context.get("passiveTreeVersion") != claim["passive_tree_version"]
+            or context.get("pobVersionOrCommit") != claim["pob_version_or_commit"]
+        ):
+            continue
+        if any(
+            isinstance(write, dict)
+            and write.get("recordId") == row["record_id"]
+            and write.get("knowledgeScope") == row["knowledge_scope"]
+            and write.get("knowledgeKey") == row["knowledge_key"]
+            and write.get("afterProjectionHash") == row["projection_hash"]
+            and claim["source_case_ref"] in (write.get("writtenSourceCaseRefs") or [])
+            and write.get("sourceClaimKey", "default") == claim["source_claim_key"]
+            and write.get("sourceGamePatch") == claim["game_patch"]
+            and write.get("sourcePassiveTreeVersion") == claim["passive_tree_version"]
+            and write.get("sourcePobVersionOrCommit") == claim["pob_version_or_commit"]
+            for write in writes
+        ):
+            hashes.add(source_hash)
+    return next(iter(hashes)) if len(hashes) == 1 else None
+
+
+def _matching_deep_revalidation_holds(con: sqlite3.Connection, row: Any) -> list[sqlite3.Row]:
+    """A hold follows the exact scoped projection, including an unchanged variant ID."""
+    return con.execute(
+        "SELECT * FROM research_revalidation_events WHERE target_kind='deep_research_record' "
+        "AND outcome IN ('needs_review','invalidated') "
+        "AND json_extract(new_version_context, '$.holdBinding.knowledgeScope')=? "
+        "AND json_extract(new_version_context, '$.holdBinding.knowledgeKey')=? "
+        "AND json_extract(new_version_context, '$.holdBinding.projectionHash')=?",
+        (row["knowledge_scope"], row["knowledge_key"], row["projection_hash"]),
+    ).fetchall()
+
+
+def _deep_revalidation_receipt_covers_claim(
+    receipt: Any, binding: dict[str, Any], claim: dict[str, Any], *, record_id: str,
+) -> bool:
+    from .physical_graph import SUPPORT_COMPATIBILITY_VERSION
+
+    if (
+        receipt["provenance"] != "transactional"
+        or receipt["contract_version"] != research_contracts.SAFE_REVIEW_CONTRACT_VERSION
+    ):
+        return False
+    summary, writes = _deep_revalidation_receipt_parts(receipt)
+    context = summary.get("sourceContext") or {}
+    compatibility = summary.get("supportCompatibility") or {}
+    revision = summary.get("memoryRevisionAfter")
+    hold_revision = binding.get("holdMemoryRevision")
+    if (
+        not isinstance(revision, int) or isinstance(revision, bool)
+        or not isinstance(hold_revision, int) or isinstance(hold_revision, bool)
+        or revision <= hold_revision
+        or research_completion.completion_summary(summary)["researchCompletion"] != "complete"
+        or summary.get("completionScope") != "case"
+        or context.get("reResearchScope") != "full_case"
+        or not claim.get("sourceHash")
+        or context.get("sourceHash") != claim["sourceHash"]
+        or context.get("sourceHashRef") != claim.get("sourceCaseRef")
+        or context.get("knowledgeScope") != binding.get("knowledgeScope")
+        or context.get("gamePatch") != claim.get("gamePatch")
+        or context.get("passiveTreeVersion") != claim.get("passiveTreeVersion")
+        or context.get("pobVersionOrCommit") != claim.get("pobVersionOrCommit")
+        or compatibility.get("contractVersion") != SUPPORT_COMPATIBILITY_VERSION
+        or compatibility.get("scope") != "static_type_compatibility"
+        or not compatibility.get("graphSnapshotId")
+    ):
+        return False
+    return any(
+        isinstance(write, dict)
+        and write.get("recordId") == record_id
+        and write.get("knowledgeScope") == binding.get("knowledgeScope")
+        and write.get("knowledgeKey") == binding.get("knowledgeKey")
+        and write.get("afterProjectionHash") == binding.get("projectionHash")
+        and claim["sourceCaseRef"] in (write.get("writtenSourceCaseRefs") or [])
+        and write.get("sourceClaimKey", "default") == claim.get("sourceClaimKey")
+        and write.get("sourceGamePatch") == claim.get("gamePatch")
+        and write.get("sourcePassiveTreeVersion") == claim.get("passiveTreeVersion")
+        and write.get("sourcePobVersionOrCommit") == claim.get("pobVersionOrCommit")
+        for write in writes
+    )
+
+
+def pending_hold_for_record(
+    con: sqlite3.Connection, row: Any, source_case_ref: str | None = None,
+    *, _holds: list[Any] | None = None,
+    _receipt_cache: dict[str, list[sqlite3.Row]] | None = None,
+) -> dict[str, Any] | None:
+    """Return pending exact-projection holds, without upgrading any source's old evidence."""
+    events = _matching_deep_revalidation_holds(con, row) if _holds is None else _holds
+    if not events:
+        return None
+    current_claims = [dict(claim) for claim in con.execute(
+        "SELECT source_case_ref AS sourceCaseRef,source_claim_key AS sourceClaimKey,"
+        "game_patch AS gamePatch,passive_tree_version AS passiveTreeVersion,"
+        "pob_version_or_commit AS pobVersionOrCommit FROM deep_research_record_evidence "
+        "WHERE record_id=? AND knowledge_scope=? AND knowledge_key=? "
+        "AND accepted_projection_hash=? AND binding_issue IS NULL "
+        "AND game_patch=? AND passive_tree_version=? AND pob_version_or_commit=? "
+        "AND source_state_scope=?",
+        (row["record_id"], row["knowledge_scope"], row["knowledge_key"], row["projection_hash"],
+         row["game_patch"], row["passive_tree_version"], row["pob_version_or_commit"],
+         row["source_state_scope"]),
+    ).fetchall()]
+    if source_case_ref is not None:
+        current_claims = [claim for claim in current_claims if claim["sourceCaseRef"] == source_case_ref]
+    identity_fields = ("sourceCaseRef", "sourceClaimKey", "gamePatch", "passiveTreeVersion",
+                       "pobVersionOrCommit")
+    pending_events: set[str] = set()
+    pending_sources: set[str] = set()
+    for event in events:
+        binding = _loads(event["new_version_context"], {})["holdBinding"]
+        frozen_claims = {
+            tuple(claim[field] for field in identity_fields): claim
+            for claim in binding["sourceClaims"]
+        }
+        if not current_claims:
+            # Removing a binding or moving the unchanged projection is not a revalidation.
+            pending_events.add(event["event_id"])
+            pending_sources.update(
+                [source_case_ref] if source_case_ref is not None
+                else [claim["sourceCaseRef"] for claim in binding["sourceClaims"]]
+            )
+            continue
+        for current_claim in current_claims:
+            source_ref = current_claim["sourceCaseRef"]
+            claim = frozen_claims.get(tuple(current_claim[field] for field in identity_fields))
+            if claim is None:
+                # Global/publication checks must include sources and branches added after the hold.
+                pending_events.add(event["event_id"])
+                pending_sources.add(source_ref)
+                continue
+            if _receipt_cache is None:
+                receipts = _deep_revalidation_receipts(con, source_ref)
+            else:
+                if source_ref not in _receipt_cache:
+                    _receipt_cache[source_ref] = _deep_revalidation_receipts(con, source_ref)
+                receipts = _receipt_cache[source_ref]
+            if not any(
+                _deep_revalidation_receipt_covers_claim(
+                    receipt, binding, claim, record_id=row["record_id"],
+                )
+                for receipt in receipts
+            ):
+                pending_events.add(event["event_id"])
+                pending_sources.add(claim["sourceCaseRef"])
+    if not pending_events:
+        return None
+    return {
+        "revalidationPending": True,
+        "adoptionAllowed": False,
+        "heldProjectionHash": row["projection_hash"],
+        "eventIds": sorted(pending_events),
+        "sourceCaseRefs": sorted(pending_sources),
+    }
+
+
+def receipt_releases_pending_hold(con: sqlite3.Connection, receipt: Any) -> bool:
+    """Check a prospective managed receipt before committing its one revision increment."""
+    _, writes = _deep_revalidation_receipt_parts(receipt)
+    for write in writes:
+        if not isinstance(write, dict) or not write.get("recordId"):
+            continue
+        row = con.execute(
+            "SELECT * FROM deep_research_records WHERE record_id=?", (write["recordId"],)
+        ).fetchone()
+        if row is None or row["projection_hash"] != write.get("afterProjectionHash"):
+            continue
+        for event in _matching_deep_revalidation_holds(con, row):
+            binding = _loads(event["new_version_context"], {})["holdBinding"]
+            for claim in binding["sourceClaims"]:
+                if (
+                    not any(
+                        _deep_revalidation_receipt_covers_claim(
+                            previous, binding, claim, record_id=row["record_id"],
+                        )
+                        for previous in _deep_revalidation_receipts(con, claim["sourceCaseRef"])
+                    )
+                    and _deep_revalidation_receipt_covers_claim(
+                        receipt, binding, claim, record_id=row["record_id"],
+                    )
+                ):
+                    return True
+    return False
+
+
+def register_deep_revalidation_sql(con: sqlite3.Connection) -> None:
+    """Install the same hold check before SQL pagination, with a connection-local cache."""
+    stamp: tuple[int, int, int] | None = None
+    holds: dict[tuple[str, str, str], list[Any]] = {}
+    receipts: dict[str, list[sqlite3.Row]] = {}
+    results: dict[tuple[str, str | None], bool] = {}
+
+    def pending(record_id: str, source_case_ref: str | None) -> int:
+        nonlocal stamp
+        current_stamp = (
+            research_runtime.get_memory_revision(con), con.total_changes,
+            int(con.execute("PRAGMA data_version").fetchone()[0]),
+        )
+        if current_stamp != stamp:
+            holds.clear()
+            receipts.clear()
+            results.clear()
+            for event in con.execute(
+                "SELECT * FROM research_revalidation_events WHERE target_kind='deep_research_record' "
+                "AND outcome IN ('needs_review','invalidated')"
+            ).fetchall():
+                binding = _loads(event["new_version_context"], {}).get("holdBinding") or {}
+                key = (binding.get("knowledgeScope"), binding.get("knowledgeKey"),
+                       binding.get("projectionHash"))
+                holds.setdefault(key, []).append(event)
+            stamp = current_stamp
+        if not holds:
+            return 0
+        query_key = (record_id, source_case_ref)
+        if query_key not in results:
+            row = con.execute(
+                "SELECT * FROM deep_research_records WHERE record_id=?", (record_id,)
+            ).fetchone()
+            if row is None:
+                return 1
+            key = (row["knowledge_scope"], row["knowledge_key"], row["projection_hash"])
+            results[query_key] = bool(pending_hold_for_record(
+                con, row, source_case_ref, _holds=holds.get(key, []), _receipt_cache=receipts,
+            ))
+        return int(results[query_key])
+
+    con.create_function("research_deep_revalidation_pending", 2, pending)
 
 
 def _revalidation_target_table(target_kind: str) -> tuple[str, str]:

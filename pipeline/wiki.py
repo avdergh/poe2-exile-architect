@@ -24,6 +24,7 @@ WIKI_RAW = REPO_ROOT / "data" / "raw" / "wiki"
 
 API = "https://www.poe2wiki.net/api.php"
 PAGE_URL = "https://www.poe2wiki.net/wiki/{}"
+PERMANENT_URL = "https://www.poe2wiki.net/index.php?oldid={}"
 LICENSE = "CC BY-NC-SA 3.0"
 SOURCE = "PoE2 Wiki (poe2wiki.net)"
 UA = {"User-Agent": "poe2-exile-architect/0.1 (+https://github.com/avdergh/poe2-exile-architect)"}
@@ -134,11 +135,13 @@ def _api(params: dict) -> dict:
 
 
 def _fetch_extract(title: str) -> dict | None:
-    """Return {title,text,url} for a page, or None if the page is missing."""
+    """Fetch text and its revision in the same response; never re-sign cached text."""
     res = _api(
         {
             "action": "query",
-            "prop": "extracts",
+            "prop": "extracts|info|revisions",
+            "rvlimit": 1,
+            "rvprop": "ids|timestamp",
             "explaintext": 1,
             "exsectionformat": "plain",
             "redirects": 1,
@@ -153,12 +156,33 @@ def _fetch_extract(title: str) -> dict | None:
         if not text:
             return None
         real_title = p.get("title") or title
+        revision = (p.get("revisions") or [{}])[0]
         return {
             "title": real_title,
             "text": text[:MAX_CHARS],
             "url": PAGE_URL.format(urllib.parse.quote(real_title.replace(" ", "_"))),
+            **revision_provenance({
+                "pageId": p.get("pageid"),
+                "revisionId": revision.get("revid"),
+                "revisionTimestamp": revision.get("timestamp"),
+            }),
         }
     return None
+
+
+def revision_provenance(record: dict) -> dict:
+    """Only IDs stored alongside the text can identify that text's revision."""
+    page_id, revision_id = record.get("pageId"), record.get("revisionId")
+    if not all(type(value) is int and value > 0 for value in (page_id, revision_id)):
+        return {"provenanceStatus": "revision_unknown"}
+    return {
+        "pageId": page_id,
+        "revisionId": revision_id,
+        "revisionTimestamp": str(record.get("revisionTimestamp") or ""),
+        "permanentUrl": PERMANENT_URL.format(revision_id),
+        "sourceRef": f"poe2wiki:page:{page_id}:rev:{revision_id}",
+        "provenanceStatus": "revision_pinned",
+    }
 
 
 def fetch_all(refresh: bool = False, delay: float = 0.4) -> dict[str, int]:
@@ -192,7 +216,7 @@ def fetch_all(refresh: bool = False, delay: float = 0.4) -> dict[str, int]:
 
 
 def load_pages() -> list[dict]:
-    """Read cached wiki pages into mechanics records (id,title,text,url,license,source)."""
+    """Read cached text and its original provenance; legacy caches stay unpinned."""
     out: list[dict] = []
     if not WIKI_RAW.exists():
         return out
@@ -213,6 +237,7 @@ def load_pages() -> list[dict]:
                 "url": rec.get("url") or PAGE_URL.format(urllib.parse.quote(title)),
                 "license": LICENSE,
                 "source": SOURCE,
+                **revision_provenance(rec),
             }
         )
     return out

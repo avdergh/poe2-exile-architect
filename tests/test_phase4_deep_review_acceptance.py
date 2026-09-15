@@ -2000,6 +2000,22 @@ def test_v3_group_review_schema_requires_dispositions_reason_and_exact_record_ti
 
 
 def test_acceptance_resolves_name_based_support_ownership_before_schema_validation(tmp_path):
+    from dataclasses import replace
+
+    graph_service = _graph_service()
+    snapshot = graph_service.snapshot
+    contract_key = "skill:FixtureSupportContract"
+    graph_service = gt.GraphQueryService(replace(
+        snapshot,
+        nodes=(*snapshot.nodes, pg.GraphNode(contract_key, "active_skill", "Fixture contract",
+                                             ("fixture:deep_review",))),
+        edges=(*snapshot.edges, pg.GraphEdge("grants_skill", "support:FixtureSupport", contract_key,
+                                             ("fixture:deep_review",))),
+        requirement_facts=(*snapshot.requirement_facts, pg.RequirementFact(
+            component_key=contract_key, level_or_stage="support_contract",
+            requirements={"allowed_types_expr": [], "excluded_types_expr": []},
+            source_refs=("fixture:deep_review",))),
+    ))
     review_file = _write_review(
         tmp_path,
         filename="name-based-support-review.json",
@@ -2037,7 +2053,7 @@ def test_acceptance_resolves_name_based_support_ownership_before_schema_validati
         json_output=tmp_path / "report.json",
         md_output=tmp_path / "report.md",
         review_file=review_file,
-        graph_service=_graph_service(),
+        graph_service=graph_service,
         validation_only=True,
     )
 
@@ -2505,7 +2521,7 @@ def test_typed_jewel_socket_states_close_active_and_other_spec_anomalies():
     assert deferred[0]["reason"] == "unresolved_jewel_sockets"
 
 
-def test_unique_gem_diagnostics_labels_lineage_support_identity():
+def test_unique_gem_diagnostics_projects_lineage_without_prose_labels():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -2547,28 +2563,12 @@ def test_unique_gem_diagnostics_labels_lineage_support_identity():
 
     assert diagnostics["available"] is True
     assert "Bhatair's Vengeance" in diagnostics["uniqueGemCandidates"]
-    assert "Bhatair's Vengeance" in diagnostics["unlabeledUniqueGemNames"]
+    assert diagnostics["unlabeledUniqueGemNames"] == []
 
 
-def test_unique_gem_identifier_matches_both_unique_id_forms():
-    from scripts import run_phase4_deep_review_acceptance as acceptance
-
-    assert acceptance._is_unique_gem_identifier(skill_id="UniqueBreachLightningBoltPlayer")
-    assert acceptance._is_unique_gem_identifier(skill_id="UniqueSkillGemHeraldOfAshPlayer")
-    assert acceptance._is_unique_gem_identifier(
-        gem_id="Metadata/Items/Gem/SkillGemUniqueBreachLightningBolt"
-    )
-    assert acceptance._is_unique_gem_identifier(
-        gem_id="Metadata/Items/Gems/UniqueSkillGemHeraldOfAsh"
-    )
-    assert not acceptance._is_unique_gem_identifier(skill_id="LightningBoltPlayer")
-    assert not acceptance._is_unique_gem_identifier(
-        gem_id="Metadata/Items/Gems/SkillGemLightningBolt"
-    )
-    assert not acceptance._is_unique_gem_identifier(skill_id="", gem_id="")
 
 
-def test_unique_gem_diagnostics_recognizes_unique_main_skill_by_skill_id():
+def test_unique_gem_diagnostics_does_not_infer_lineage_from_skill_id():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -2589,7 +2589,7 @@ def test_unique_gem_diagnostics_recognizes_unique_main_skill_by_skill_id():
         {"safeArtifactOnly": True, "deepResearchRecords": []}, manifest
     )
 
-    assert "Lightning Bolt" in diagnostics["uniqueGemCandidates"]
+    assert diagnostics["uniqueGemCandidates"] == []
 
     mentioned = acceptance._unique_gem_diagnostics(
         {
@@ -2606,10 +2606,10 @@ def test_unique_gem_diagnostics_recognizes_unique_main_skill_by_skill_id():
         },
         manifest,
     )
-    assert "Lightning Bolt" in mentioned["unlabeledUniqueGemNames"]
+    assert mentioned["unlabeledUniqueGemNames"] == []
 
 
-def test_unique_gem_diagnostics_recognizes_unique_support_by_gem_id_prefix():
+def test_unique_gem_diagnostics_does_not_infer_lineage_from_id_prefix():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -2630,10 +2630,10 @@ def test_unique_gem_diagnostics_recognizes_unique_support_by_gem_id_prefix():
         {"safeArtifactOnly": True, "deepResearchRecords": []}, manifest
     )
 
-    assert "Earthbound" in diagnostics["uniqueGemCandidates"]
+    assert diagnostics["uniqueGemCandidates"] == []
 
 
-def test_unique_gem_diagnostics_exempts_open_question_but_not_enabler_role():
+def test_unique_gem_identity_is_independent_of_record_kind_or_role():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -2692,7 +2692,7 @@ def test_unique_gem_diagnostics_exempts_open_question_but_not_enabler_role():
         ],
     }
     diagnostics = acceptance._unique_gem_diagnostics(enabler_review, manifest)
-    assert diagnostics["unlabeledUniqueGemNames"] == ["Bhatair's Vengeance"]
+    assert diagnostics["unlabeledUniqueGemNames"] == []
 
 
 def test_unique_gem_diagnostics_handles_missing_manifest():
@@ -2751,27 +2751,6 @@ def test_unique_gem_diagnostics_accepts_prose_lineage_label_with_support_role():
     assert diagnostics["unlabeledUniqueGemNames"] == []
 
 
-def test_unique_gem_diagnostics_gem_name_with_unique_word_does_not_self_label():
-    from scripts import run_phase4_deep_review_acceptance as acceptance
-
-    assert (
-        acceptance._mentions_unique_identity(
-            "Bhatair's Vengeance is a lineage support gem with fixed affixes",
-            "Bhatair's Vengeance",
-        )
-        is True
-    )
-    assert (
-        acceptance._mentions_unique_identity(
-            "uses Unique Breach Lightning Bolt as the main skill", "Unique Breach Lightning Bolt"
-        )
-        is False
-    )
-    assert (
-        acceptance._mentions_unique_identity("pair with Flash Grenade", "Bhatair's Vengeance")
-        is False
-    )
-    assert acceptance._mentions_unique_identity("", "Bhatair's Vengeance") is False
 
 
 def test_source_support_diagnostics_use_resolved_physical_type_not_functional_role(tmp_path):
@@ -3062,7 +3041,8 @@ def test_single_active_source_group_uses_support_type_fixed_point_and_contract_g
                 "activeSkills": [{"name": "Fixture Attack", "skillId": "FixtureAttackPlayer"}],
                 "supports": [
                     {"name": "Fixture Dependent"},
-                    {"name": "Fixture Payload Support"},
+                    {"name": "Fixture Payload Support", "gemId": "FixturePayloadSupport",
+                     "enableGlobal1": True, "enableGlobal2": True},
                     {"name": "Fixture Type Grant"},
                 ],
             }
@@ -3165,7 +3145,9 @@ def test_source_group_accepts_support_known_on_sibling_endpoint_of_same_active_g
         "activeSkillGroups": [
             {
                 "groupRef": "skill-set:1:group:1",
-                "activeSkills": [{"name": "Fixture Composite", "skillId": "FixtureCompositeSetup"}],
+                "activeSkills": [{"name": "Fixture Composite", "skillId": "FixtureCompositeSetup",
+                                  "gemId": "FixtureCompositeSkill", "enableGlobal1": True,
+                                  "enableGlobal2": True}],
                 "supports": [{"name": "Fixture Payload Support"}],
             }
         ]
@@ -3267,7 +3249,10 @@ def test_recommended_minion_support_stays_gap_when_all_endpoints_lack_required_t
                     {
                         "name": "Fixture Minion",
                         "skillId": "FixtureSummonMinionPlayer",
+                        "gemId": "FixtureCommandableMinion",
                         "nameSource": "gem_name",
+                        "enableGlobal1": True,
+                        "enableGlobal2": True,
                     }
                 ],
                 "supports": [{"name": "Fixture Minion Damage"}],
@@ -3292,11 +3277,12 @@ def test_recommended_minion_support_stays_gap_when_all_endpoints_lack_required_t
         for edge in snapshot.edges
     )
     assert diagnostics["multiActiveSkillSupportGroupCount"] == 0
-    assert diagnostics["unsupportedSourceSupportPairCount"] == 1
-    pair = diagnostics["unsupportedSourceSupportPairs"][0]
+    assert diagnostics["unsupportedSourceSupportPairCount"] == 0
+    assert diagnostics["unverifiedSourceSupportPairCount"] == 1
+    pair = diagnostics["unverifiedSourceSupportPairs"][0]
     assert pair["evaluatedSkillKeys"] == [command_key, summon_key]
-    assert pair["excludedReason"] == "required_types_not_matched"
-    assert diagnostics["sourceSupportCompatibilityBlocked"] is True
+    assert pair["reason"] in {"minion_skill_types_unavailable", "minion_support_flags_unavailable"}
+    assert diagnostics["sourceSupportCompatibilityBlocked"] is False
 
 
 def test_unrelated_unsupported_source_pair_does_not_erase_confirmed_support_coverage():
@@ -3462,7 +3448,8 @@ def test_structured_support_packages_reject_cross_assigned_multi_active_supports
     )
 
     assert corrected_payload["deep_research_records"] == [record]
-    assert corrected_summaries == [summary]
+    assert [{k: v for k, v in row.items() if k != "_supportCompatibility"}
+            for row in corrected_summaries] == [summary]
     assert corrected_deferred == []
 
 
@@ -3538,6 +3525,14 @@ def _endpoint_gem_graph(*, with_triggered: bool) -> gt.GraphQueryService:
 
 def test_structured_support_package_valid_when_any_gem_endpoint_matches(tmp_path):
     graph_service = _endpoint_gem_graph(with_triggered=True)
+    source_root = {"name": "Fixture Skill", "skillId": "FixtureSkillPlayer", "gemId": "FixtureSkillGem",
+                   "enableGlobal1": True, "enableGlobal2": True}
+    manifest = {"activeSkillGroups": [{
+        "groupRef": "group:fixture", "rootSkillRef": "group:fixture:root:1",
+        "rootSkill": source_root, "activeSkills": [source_root],
+        "supports": [{"name": "Fixture Attack Support", "gemId": "FixtureAttackSupport",
+                      "socketedItemRef": "group:fixture:socketed:2"}],
+    }]}
     record = {
         "component_keys": ["skill:FixtureSkillPlayer", "support:FixtureAttackSupport"],
         "component_mentions": [],
@@ -3562,11 +3557,13 @@ def test_structured_support_package_valid_when_any_gem_endpoint_matches(tmp_path
             graph_service=graph_service,
             deep_payload={"schema_version": 5, "deep_research_records": [record]},
             accepted_records=[summary],
+            source_skill_manifest=manifest,
         )
     )
 
     assert deferred == []
-    assert kept_summaries == [summary]
+    assert [{k: v for k, v in row.items() if k != "_supportCompatibility"}
+            for row in kept_summaries] == [summary]
     assert kept_payload["deep_research_records"] == [record]
 
 
@@ -6267,7 +6264,7 @@ def test_resource_defense_coverage_uses_only_bound_readback_disposition() -> Non
     assert coverage["resourceDefense"] == "covered"
 
 
-def test_unique_gem_diagnostics_reports_prose_mention_without_component():
+def test_unique_gem_diagnostics_leaves_prose_coverage_to_source_group_diagnostics():
     from scripts import run_phase4_deep_review_acceptance as acceptance
 
     manifest = {
@@ -6306,8 +6303,8 @@ def test_unique_gem_diagnostics_reports_prose_mention_without_component():
     }
     diagnostics = acceptance._unique_gem_diagnostics(review, manifest)
 
-    assert "Bhatair's Vengeance" in diagnostics["proseMentionedWithoutComponentNames"]
-    assert diagnostics["unlabeledUniqueGemNames"] == ["Bhatair's Vengeance"]
+    assert diagnostics["proseMentionedWithoutComponentNames"] == []
+    assert diagnostics["unlabeledUniqueGemNames"] == []
 
 
 def test_unique_gem_diagnostics_component_declaration_clears_prose_only():

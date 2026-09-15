@@ -59,6 +59,36 @@ def _unit_kwargs():
     }
 
 
+def test_static_support_contract_is_bound_to_original_write_receipt(tmp_path):
+    service = research_memory.ResearchMemoryService(
+        db_path=tmp_path / "memory.sqlite", graph_service=_graph_service()
+    )
+    support_diagnostics = {
+        "contractVersion": "fixture-support-v2",
+        "graphSnapshotId": "physical-graph-fixture",
+        "scope": "static_type_compatibility",
+        "records": [{"recordIndex": 0, "packages": []}],
+    }
+    accepted = service.accept_research_unit(
+        **_unit_kwargs(),
+        acceptance_diagnostics={**_clean(), "supportCompatibility": support_diagnostics},
+    )
+    assert accepted["status"] == "accepted"
+    receipt = service.get_research_write_receipt(accepted["writeReceiptRef"])
+    assert receipt["acceptanceSummary"]["supportCompatibility"] == support_diagnostics
+    assert receipt["writtenMapping"][0]["recordId"]
+
+    replay = service.accept_research_unit(
+        **_unit_kwargs(),
+        acceptance_diagnostics={
+            **_clean(),
+            "supportCompatibility": {**support_diagnostics, "contractVersion": "newer"},
+        },
+    )
+    assert replay["idempotentReplay"] is True
+    assert replay["supportCompatibility"] == support_diagnostics
+
+
 @pytest.mark.parametrize("queue_summary,expected", [(_partial(), "needs_followup"), (_clean(), "unknown")])
 def test_legacy_receipt_preservation_keeps_known_gaps_without_promoting_completion(
     tmp_path, queue_summary, expected,

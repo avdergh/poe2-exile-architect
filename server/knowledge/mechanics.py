@@ -120,8 +120,16 @@ def explain(topic: str) -> dict:
     if curated:
         out["principle"] = curated[1]
     if wiki:
-        out["wiki"] = {k: wiki[k] for k in ("title", "text", "url", "license", "source")}
-        out["attribution"] = f"{wiki['source']}, {wiki['license']} — {wiki['url']}"
+        out["wiki"] = dict(wiki)
+        out["wiki"]["matchKind"] = "local_corpus"
+        out["attribution"] = (
+            f"{wiki['source']}, {wiki['license']} — {wiki.get('permanentUrl') or wiki['url']}"
+        )
+        if wiki.get("provenanceStatus") != "revision_pinned":
+            out["note"] += (
+                " This cached text has no revision provenance; use lookup_mechanic for a "
+                "revision-pinned review. Never attach a current revision to this older text."
+            )
     return out
 
 

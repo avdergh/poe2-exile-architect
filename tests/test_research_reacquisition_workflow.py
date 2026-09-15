@@ -36,7 +36,7 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "mature_learning_path", lambda: tmp_path / "memory.sqlite")
     monkeypatch.setattr(runs, "DEFAULT_INTAKE_LEDGER_PATH", ledger)
     monkeypatch.setattr(runs, "_identity_resolvability_hint", lambda **_: {})
-    monkeypatch.setattr(runs, "_studied_source_hashes", lambda: set())
+    monkeypatch.setattr(runs, "_studied_source_hashes", lambda **_: set())
     monkeypatch.setattr(workflow, "_source_patch_for_run", lambda **_: ("0.5.5", "runesofaldur"))
     monkeypatch.setattr(followup, "_accepted_receipt_matches", lambda *args, **kwargs: True, raising=False)
     identity = intake.character_ref("fixture-account", "fixture-character")

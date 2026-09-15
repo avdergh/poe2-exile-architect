@@ -61,7 +61,7 @@ skills["OrdinaryPlayer"] = {
     }
 
 
-def test_support_candidate_uses_minion_payload_types_without_widening_summon():
+def test_support_candidate_requires_pinned_minion_flags_without_widening_summon():
     source = _source()
     skill_key = "skill:SummonFixturePlayer"
     support_key = "support:FixtureAttackSupport"
@@ -113,10 +113,13 @@ def test_support_candidate_uses_minion_payload_types_without_widening_summon():
         endpoint_kind="minion_payload",
     )
 
-    assert active.status == "unsupported"
+    assert active.status == "unknown"
     assert active.facts["endpoint_kind"] == "active_skill"
-    assert payload.status == "known"
+    assert active.facts["excluded_reason"] == "minion_support_flags_unavailable"
+    assert payload.status == "unknown"
     assert payload.facts["endpoint_kind"] == "minion_payload"
+    assert payload.facts["host_skill_types"] == ["minion"]
+    assert payload.facts["minion_skill_types"] == ["attack", "damage"]
 
 
 def test_source_claims_preserve_unknown_and_not_applicable_without_fake_versions():

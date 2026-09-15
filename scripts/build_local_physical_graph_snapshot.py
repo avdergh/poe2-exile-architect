@@ -351,17 +351,20 @@ def _pob_static_ingestions(
             claims=(
                 physical_graph.SourceClaim("passive_tree_version", "not_applicable"),
                 physical_graph.SourceClaim("source_scope", "pinned_pob_skill_data"),
-                physical_graph.SourceClaim("endpoint_kind", "minion_payload"),
+                physical_graph.SourceClaim("type_context", "minion_payload_and_support_flags"),
                 physical_graph.SourceClaim("content_sha256", _static_file_set_hash(skill_paths, pob_root)),
             ),
             expected_count=len(skill_paths),
             confidence=0.95,
-            schema_version="pob_generated_skill_lua_v1",
+            schema_version="pob_generated_skill_lua_v2",
         )
-        result = physical_graph.ingest_pob_minion_payload_types(
-            skill_paths,
-            source=source,
-            known_skill_keys=known_skill_keys,
+        result = physical_graph.merge_ingestion_results(
+            physical_graph.ingest_pob_minion_payload_types(
+                skill_paths, source=source, known_skill_keys=known_skill_keys,
+            ),
+            physical_graph.ingest_pob_support_flags(
+                skill_paths, source=source, known_skill_keys=known_skill_keys,
+            ),
         )
         ingestions.append(result)
         reports.append(

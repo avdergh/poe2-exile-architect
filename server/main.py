@@ -3934,7 +3934,12 @@ def query_research_memory(
     blind_global_only: bool = False,
     continuation_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """Query safe Family memory with optional exact identity and record-kind filters."""
+    """Query safe Family memory with optional exact identity and record-kind filters.
+
+    source_case_ref selects a source lane only in create_compact. The full diagnostic
+    profile rejects that parameter; use exact record_ids from a source write receipt
+    for diagnostic reads without changing evidence authority.
+    """
     if continuation_cursor:
         return _research_memory_service_with_graph().continue_retrieval_session(continuation_cursor)
     blind_claim_bound = False
@@ -4404,8 +4409,15 @@ def submit_revalidation_result(
     new_version_context: dict[str, str],
     safe_evidence_refs: list[str],
     affected_component_keys: list[str],
+    expected_projection_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Submit a Phase 4 patch revalidation result for a fragment, semantic edge, or build pattern."""
+    """Submit a bounded Research revalidation result.
+
+    A deep_research_record accepts only needs_review/invalidated with its exact current
+    expected_projection_hash and unchanged original version context. This creates a
+    pending review hold, never changes source content or certifies a replacement.
+    Other target kinds keep their existing patch-review contract.
+    """
     return _research_memory_service().submit_revalidation_result(
         target_kind=target_kind,
         target_id=target_id,
@@ -4413,6 +4425,7 @@ def submit_revalidation_result(
         new_version_context=new_version_context,
         safe_evidence_refs=safe_evidence_refs,
         affected_component_keys=affected_component_keys,
+        expected_projection_hash=expected_projection_hash,
     )
 
 

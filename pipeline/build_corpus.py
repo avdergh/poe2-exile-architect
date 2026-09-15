@@ -58,8 +58,10 @@ CREATE VIRTUAL TABLE uniques_fts USING fts5(unique_id UNINDEXED, name, base, tex
 
 -- Wiki-sourced mechanics (CC BY-NC-SA 3.0; attributed via url/license/source columns). This is
 -- the auto-refreshable "how mechanics work" tier, kept segregated from our own prose.
+-- Revision columns are optional additive metadata; legacy schema-4 corpora remain readable.
 CREATE TABLE mechanics(
-    id TEXT PRIMARY KEY, title TEXT, text TEXT, url TEXT, license TEXT, source TEXT);
+    id TEXT PRIMARY KEY, title TEXT, text TEXT, url TEXT, license TEXT, source TEXT,
+    page_id INTEGER, revision_id INTEGER, revision_timestamp TEXT);
 CREATE VIRTUAL TABLE mechanics_fts USING fts5(mech_id UNINDEXED, title, text);
 
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
@@ -396,8 +398,10 @@ def build(*, expected_commit: str | None = None) -> dict[str, int]:
     n_mech = 0
     for m in wiki.load_pages():
         cur.execute(
-            "INSERT INTO mechanics(id,title,text,url,license,source) VALUES(?,?,?,?,?,?)",
-            (m["id"], m["title"], m["text"], m["url"], m["license"], m["source"]),
+            "INSERT INTO mechanics(id,title,text,url,license,source,page_id,revision_id,revision_timestamp) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (m["id"], m["title"], m["text"], m["url"], m["license"], m["source"],
+             m.get("pageId"), m.get("revisionId"), m.get("revisionTimestamp")),
         )
         cur.execute(
             "INSERT INTO mechanics_fts(mech_id,title,text) VALUES(?,?,?)",

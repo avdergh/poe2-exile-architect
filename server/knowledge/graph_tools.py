@@ -758,14 +758,42 @@ class GraphQueryService:
                     context=_context_payload(typed_input.context),
                 )
             source_refs = [item["source_id"] for item in evidence]
+            stat_nodes = sorted({
+                edge.target_key
+                for edge in self.snapshot.edges
+                if edge.source_key == typed_input.node_key
+                and edge.edge_type == "has_stat_text"
+                and edge.target_key in self._nodes_by_key
+                and self._nodes_by_key[edge.target_key].node_type == "passive_stat_text"
+            })
+            stat_edges = [
+                {"edgeType": "has_stat_text", "sourceKey": typed_input.node_key, "targetKey": key}
+                for key in stat_nodes
+            ]
+            source_refs = sorted(set(source_refs)
+                                 | set(self._source_refs_for_keys(stat_nodes))
+                                 | {ref for edge in self.snapshot.edges
+                                    if edge.source_key == typed_input.node_key
+                                    and edge.edge_type == "has_stat_text"
+                                    and edge.target_key in stat_nodes
+                                    for ref in edge.evidence_refs})
             return self._envelope(
                 query_family="explain_graph_evidence",
                 status="known",
-                facts={"node_key": typed_input.node_key, "evidence": evidence},
+                facts={
+                    "node_key": typed_input.node_key,
+                    "evidence": evidence,
+                    "statTexts": [
+                        {"stableKey": key, "text": self._nodes_by_key[key].display_name,
+                         "sourceRefs": list(self._nodes_by_key[key].source_refs)}
+                        for key in stat_nodes
+                    ],
+                    "statTextScope": "static_snapshot_not_allocation_or_application",
+                },
                 resolved_subject=self._node_summary(typed_input.node_key),
                 source_refs=source_refs,
                 evidence_path=self._evidence_path(
-                    nodes=[typed_input.node_key], source_refs=source_refs
+                    nodes=[typed_input.node_key, *stat_nodes], edges=stat_edges, source_refs=source_refs
                 ),
                 context=_context_payload(typed_input.context),
             )

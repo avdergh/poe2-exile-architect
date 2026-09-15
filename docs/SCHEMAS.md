@@ -1061,6 +1061,22 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - `pobReadbackAudit`：`reviewed/unmodelled` 必须绑定当前 lease packet 的精确 `snapshotRef`，
   `unavailable` 必须匹配该 packet 的真实状态；未绑定的自报 disposition 不能关闭
   `resourceDefense` coverage，也不能形成 clean。
+  Spirit 账本一致只说明导入模型的字段算术自洽，不认证来源完整或游戏角色合法；Research 的
+  天赋分池读数复用 wrapper，普通可用点数包含按等级估计的任务进度，不能由节点条目数判超点。
+- `query_research_memory(response_profile="full")` 不支持 `source_case_ref`，此组合明确返回
+  `source_case_filter_requires_compact_profile`，不执行宽查询或签发查询回执。普通诊断以来源
+  write receipt 的精确 `record_ids` 深读；不得仅为过滤来源而切换 Create 授权通路。
+- 新验收在既有 write receipt 的 `supportCompatibility` 保存服务端实际执行的静态兼容版本、
+  图快照与最终记录索引；它不证明 PoB 实际应用或数值收益，也不接受 Agent 自报版本。
+  同一回执幂等重放保持原版本，旧回执不得补标记。
+  v3 的辅助授予子技能须由本包中精确绑定的辅助先作用于独立宿主，再沿有根授予链展开；
+  不借用未选辅助、其他容器或无根循环。内部辅助效果不作为活动端点。额外效果的启用证据
+  不足时保留 unknown，不以静态类型判定替代 PoB 的动态效果启用与实际应用。
+- `submit_revalidation_result(target_kind="deep_research_record")` 仅以原版本、精确
+  `expected_projection_hash` 和安全证据追加 `needs_review/invalidated` 待复核事件，不改原记录、
+  projection 或来源声明。匹配的记录在 Create、索引、前提、回执资格及发布中受限；普通 Research
+  保留明确标记的诊断。恢复要求较晚的同完整来源 `full_case` 新回执、完整研究覆盖及当前辅助
+  兼容合同；共享记录逐来源验证，旧回执、普通提案、新来源或改记录 ID 不能代替重验。
 - `CleanFragmentProposal`：机制级可复用原则，必须带 title、summary、reusable principle、
   safe evidence refs、source case refs、confidence、copyability risk、lifecycle、modelability、
   verification tasks、patch/tree/PoB version 和 visibility/split/scope。
@@ -1082,6 +1098,8 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   `socketedItemRefs` 逐项对应；验收以物理实例 ref 拒绝同一实例的重复归属，但允许不同根技能下的
   不同实例使用同一个 support stable key。验收后只持久化根技能与其 socketed support topology，
   source-local refs 不进入 durable record 或知识身份。新 review 的 `deliveryRole` 只允许 `direct`；
+  这些实例引用必须保留到整组兼容与覆盖检查完成，再在持久化前剥离；重复宿主不能借用另一组的
+  负载。核心负载的辅助覆盖可由其真实宿主容器及同组兼容证据授权，不制造独立负载插槽。
   socketed active payload 的 host/payload 机制由组件角色和机制记录表达，
   不得用 PoB 计算影响对象改写物理插槽关系。`gearSubjects` 区分正文型装备主题，`sourceStateScope` 区分
   active/alternate/state-agnostic/unknown。`mechanicAudit.wiki` 保存候选来源 `matchKind` 与 Agent 的
@@ -1093,6 +1111,13 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
 - Typed review transport：`initialize_research_review` 返回内存安全对象，
   `validate_research_review` 保存并校验 Agent 提交的 safe review，`accept_research_review` 对调用方提交的
   同一完整 safe review 再执行正式验收；Agent 不直接编辑运行态文件。
+- 普通在线采样以解析后的联盟和同一 intake ledger 为锁身份，在锁内重新读取去重记录、分页补足并
+  持久化队列。历史已研究快照只由 transactional write receipt 的完整 hash、原版本和精确来源绑定
+  授权去重；unknown 建模或来源状态不等于未研究，也不因此获得 Create 或缺口闭合权限。
+  本地输入、显式同源补研和受控重取沿用各自入口。新登记以队列的 `intake_record_id` 绑定现有
+  自增实例，ledger schema 2 的 `requires_instance_binding` 阻止 legacy cleanup 误删后来的同身份登记。
+  失败补偿只释放本实例；已提交或读取不确定的队列保留 runRef，补偿失败的精确身份保存在恢复元数据，
+  经现有 cleanup 的显式放弃或锁定期限处理，并清理关联临时 packet；不能把恢复当作研究完成。
 - `ResearchWriteReceipt`：一案一行，绑定 run/sample、attempt/packet/review/contract hash，保存
   candidate→scope/key/recordId、write action、evidence 与 before/after projection hash。pattern、deep、
   edge、receipt 和一次 `memory_revision` 在同一 `BEGIN IMMEDIATE` 事务提交；queue/ledger 在提交后

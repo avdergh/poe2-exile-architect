@@ -251,3 +251,39 @@ def test_local_graph_snapshot_installer_writes_safe_json_and_markdown(tmp_path):
 def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_local_snapshot_collects_pinned_support_flags_with_payload_types(tmp_path):
+    skill_dir = tmp_path / "Data" / "Skills"
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "fixture.lua"
+    text = '''skills["SummonFixture"] = {
+    minionSkillTypes = { [SkillType.Spell] = true, },
+}
+skills["SupportFixture"] = {
+    support = true,
+    ignoreMinionTypes = true,
+}
+'''
+    skill_path.write_text(text, encoding="utf-8")
+    ingestions, reports, _ = local_snapshot._pob_static_ingestions(
+        pob_root=tmp_path, base_ingestion=pg.GraphIngestionResult(),
+        known_skill_keys={"skill:SummonFixture", "skill:SupportFixture"},
+    )
+    facts = {(fact.component_key, fact.level_or_stage): fact
+             for ingestion in ingestions for fact in ingestion.requirement_facts}
+    assert facts[("skill:SummonFixture", "minion_payload_types")].requirements["skill_types"] == ["Spell"]
+    flags = facts[("skill:SupportFixture", "pob_support_flags")]
+    assert flags.requirements == {"ignore_minion_types": True}
+    source = next(source for source, _, _ in reports
+                  if source.source_id == local_snapshot.POB_SKILL_PAYLOAD_TYPES_SOURCE_ID)
+    assert source.schema_version == "pob_generated_skill_lua_v2"
+    assert flags.source_refs == (source.source_id,)
+
+    skill_path.write_text(text.replace("ignoreMinionTypes = true,", "ignoreMinionTypes = false,"), encoding="utf-8")
+    _, changed_reports, _ = local_snapshot._pob_static_ingestions(
+        pob_root=tmp_path, base_ingestion=pg.GraphIngestionResult(),
+        known_skill_keys={"skill:SummonFixture", "skill:SupportFixture"},
+    )
+    changed = next(item for item, _, _ in changed_reports if item.source_id == source.source_id)
+    assert source.claim("content_sha256") != changed.claim("content_sha256")

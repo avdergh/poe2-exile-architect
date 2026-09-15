@@ -31,14 +31,20 @@ extraction method, not an optional reading list.
    clear propagation, optional chase upgrade, replaceable rare, cost, and opportunity cost. An
    equipped unique is not automatically required; a many-mod rare is not automatically affordable.
 6. Analyze passive/jewel structure locally: stable shell anchors, variant anchors, item-allocated
-   passives, radius-jewel effects, conversions, and weapon-set-only nodes. Do not flatten two weapon
-   states into one always-active tree.
+   passives, radius-jewel effects, conversions, and weapon-set-only nodes. Follow each relevant
+   equipment grant to its resolved node and actual effect; a source grant omitted from a tree
+   summary is not absent evidence. Keep declared grants separate from PoB-observed application,
+   and do not flatten two weapon states into one always-active tree.
 7. Reconstruct the playable rotation: pre-combat state, engage, generation, sustained loop, burst
    spend, defense reaction, refresh, and boss-without-adds variant. Mark inference separately from
    direct evidence.
 8. Separate PoB-direct evidence, partial PoB evidence, mechanic text, cross-sample pattern,
    researcher inference, gameplay validation needs, and tool gaps. A bad selected actor or missing
-   composite rollup is a modelability caveat, not proof that the mechanism is bad.
+   composite rollup is a modelability caveat, not proof that the mechanism is bad. Spirit ledger
+   consistency proves model arithmetic only, not complete source coverage or real-character
+   legality. Verify supply and enabled-state evidence before calling a deficit a build failure
+   or requiring changes to the source build. Ordinary passive points include the wrapper's level
+   progress estimate and ExtraPoints; keep ordinary, ascendancy and weapon-set pools separate.
 9. Produce several focused records. Concrete record kinds such as skill_package, mechanic_chain,
    rotation, gear_synergy, passive_package, defense_engine, and resource_engine must name concrete
    components. Generic advice with no skill/item/passive/ascendancy/mechanic anchor is not a deep
@@ -68,11 +74,9 @@ lookup_mechanic sourceRef when available; wiki unavailability is normal for foru
 not lower adoption or require extra labeling.
 
 ## UNIQUE GEM / RADIUS JEWEL CHECKLIST
-Unique gems (Ailith's Chimes, Uhtred's series, ...) and unique jewels carry fixed effects and
-often positional power. When a case uses them: mark the unique identity in the record
-(support_modifier role with the lineage/unique identity stated in prose, or an
-open_question/modelability_caveat record; unique_enabler role fails resolver checks because
-lineage gems are support_gem nodes), keep radius/Time-Lost jewel mods
+Confirm lineage/unique gem identity from static facts bound to the exact source gem ID;
+lineage gems keep the support_modifier role because they are support_gem nodes. Identity does
+not depend on English keywords in the prose. For unique jewels, keep radius/Time-Lost jewel mods
 ("Small/Notable Passive Skills in Radius also grant X") verbatim in conditions or
 verificationTasks, never treat a radius grant as a global grant, and record which allocated
 passive types sit in the radius. Data caveats: the bundled unique-jewel table misses the PoE2
@@ -181,10 +185,11 @@ def build_researcher_prompt_package(
         f"{DEEP_RESEARCH_PLAYBOOK}\n\n"
         "## STEP 2: Query, Compare, and Deduplicate (Mandatory Before Writing)\n"
         "After the independent working model is formed, call "
-        'query_research_memory(detail_level="summary", response_profile="create_compact") with a '
-        "query derived from your own current case analysis. Use the compact profile for wide recall "
-        'queries; switch to detail_level="record" with record_ids=[...] only for the few records '
-        "you deep-read. Before the first comparison, resolve the case's ascendancy and class with "
+        'query_research_memory(detail_level="summary", response_profile="full") with a '
+        "query derived from your own current case analysis. Research keeps the full comparison "
+        'profile; use detail_level="record", response_profile="full" and record_ids=[...] to '
+        "deep-read relevant records until key roles, conditions and failure premises are covered. "
+        "Before the first comparison, resolve the case's ascendancy and class with "
         "search_graph_components + resolve_graph_component and filter the memory query with their "
         'STABLE keys (for example ascendancy_key="ascendancy:monk:martial_artist", '
         'class_key="class:monk", build_family_keys=[...]); display names such as "Martial Artist" '
@@ -195,15 +200,19 @@ def build_researcher_prompt_package(
         "already-known mechanisms (for example an existing same-family record may already define "
         "charge generation/consumption roles). Use the returned dedupeQueryRef when proposing new "
         "fragments. If a returned deep-record summary is highly relevant, call "
-        'query_research_memory(detail_level="record", record_ids=[...]) to read only those records. '
+        'query_research_memory(detail_level="record", response_profile="full", record_ids=[...]). '
         "Compare the current case against memory for exact duplicates, variants, conflicts, missing "
         "conditions, stronger evidence, and genuinely new knowledge. Do not rewrite the current "
-        "analysis merely to match an older record.\n"
+        "analysis merely to match an older record. Corrections must bind this source's current "
+        "record and projection; a matching title or another source's receipt cannot authorize "
+        "a revision or establish the cause of a model discrepancy.\n"
         "- Config condition closure: list every packet config condition (conditionEnemyChilled, "
         "conditionEnemyBleeding, conditionEnemyBlinded, conditionEnemyIgnited, conditionCritRecently, "
         "conditionBeenHitRecently, usePowerCharges, ...) and close each one with either (a) a "
-        "structured source component and its causal chain, or (b) an explicit caveat/verification "
-        "task that the assumption is unproven. An enemy-state condition with no proven source "
+        "structured source component whose actual content and causal chain you have read, or "
+        "(b) an explicit caveat/verification task that the assumption is unproven. A config "
+        "checkbox or placeholder does not prove the condition or its uptime. An enemy-state "
+        "condition with no proven source "
         "(for example ignited with no ignite provider) must be recorded as a modelability caveat, "
         "never silently adopted.\n"
         "- If the exact or near-equivalent insight already exists, call append_evidence_to_fragment "

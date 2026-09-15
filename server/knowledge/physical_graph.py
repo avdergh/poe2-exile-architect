@@ -7,6 +7,7 @@ must satisfy before facts can enter a durable physical graph snapshot.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from contextlib import closing
 from datetime import UTC, datetime
@@ -59,6 +60,7 @@ CAPABILITY_STATUSES: frozenset[str] = frozenset(
     {"exportable", "unsupported", "ambiguous", "requires_phase6_mapping"}
 )
 FACT_STATUSES: frozenset[str] = frozenset({"known", "unknown", "unsupported", "ambiguous"})
+SUPPORT_COMPATIBILITY_VERSION = "pob_support_type_compatibility_v3"
 ALLOCATION_STATES: frozenset[str] = frozenset(
     {"normal", "weapon_set_1", "weapon_set_2", "both_sets"}
 )
@@ -482,14 +484,36 @@ def ingest_skills(path: str | Path, *, source: GraphSource) -> GraphIngestionRes
     )
 
 
+_POB_SKILL_DECLARATION_RE = re.compile(
+    r'^skills\["(?P<skill_id>[^"]+)"\][ \t]*=[ \t]*\{', re.MULTILINE
+)
 _POB_SKILL_BLOCK_RE = re.compile(
-    r'^skills\["(?P<skill_id>[^"]+)"\]\s*=\s*\{\s*$'
-    r'(?P<body>.*?)'
-    r'^\}\s*$',
+    _POB_SKILL_DECLARATION_RE.pattern + r'[ \t]*\r?$'
+    r'(?P<body>(?:(?!^skills\[|^\}).)*?)'
+    r'^\}[ \t]*(?:end[ \t]*)?\r?$',
     re.MULTILINE | re.DOTALL,
 )
 _POB_MINION_TYPES_RE = re.compile(r"minionSkillTypes\s*=\s*\{(?P<body>.*?)\}", re.DOTALL)
 _POB_SKILL_TYPE_RE = re.compile(r"\[SkillType\.([A-Za-z0-9_]+)\]\s*=\s*true")
+_POB_SUPPORT_RE = re.compile(r"^\s*support\s*=\s*true\s*,?\s*$", re.MULTILINE)
+_POB_IGNORE_MINION_ASSIGNMENT_RE = re.compile(
+    r"^\s*ignoreMinionTypes\s*=\s*([^\n]+)$", re.MULTILINE
+)
+
+
+def _pob_skill_blocks(text: str) -> list[tuple[str, str | None]]:
+    """Read generated effect boundaries, including the final wrapper's inline end.
+
+    Do not consume the next declaration or a malformed top-level closing line.
+    Retain incomplete declarations so another copy cannot authorize default flags.
+    This reads the pinned generator's layout; it does not execute or parse Lua.
+    """
+
+    blocks: list[tuple[str, str | None]] = []
+    for declaration in _POB_SKILL_DECLARATION_RE.finditer(text):
+        match = _POB_SKILL_BLOCK_RE.match(text, declaration.start())
+        blocks.append((declaration.group("skill_id"), match.group("body") if match else None))
+    return blocks
 
 
 def ingest_pob_minion_payload_types(
@@ -504,11 +528,11 @@ def ingest_pob_minion_payload_types(
     known = set(known_skill_keys)
     for raw_path in sorted(Path(value) for value in paths):
         text = raw_path.read_text(encoding="utf-8")
-        for match in _POB_SKILL_BLOCK_RE.finditer(text):
-            skill_key = f"skill:{match.group('skill_id')}"
-            if skill_key not in known:
+        for skill_id, body in _pob_skill_blocks(text):
+            skill_key = f"skill:{skill_id}"
+            if skill_key not in known or body is None:
                 continue
-            payload_match = _POB_MINION_TYPES_RE.search(match.group("body"))
+            payload_match = _POB_MINION_TYPES_RE.search(body)
             if payload_match is None:
                 continue
             skill_types = sorted(set(_POB_SKILL_TYPE_RE.findall(payload_match.group("body"))))
@@ -521,6 +545,57 @@ def ingest_pob_minion_payload_types(
                     "endpoint_kind": "minion_payload",
                     "skill_types": skill_types,
                 },
+                source_refs=(source.source_id,),
+            )
+    return GraphIngestionResult(requirement_facts=tuple(facts.values()))
+
+
+def ingest_pob_support_flags(
+    paths: list[str | Path] | tuple[str | Path, ...],
+    *,
+    source: GraphSource,
+    known_skill_keys: set[str] | frozenset[str],
+) -> GraphIngestionResult:
+    """Read support flags from exact pinned-PoB effect blocks, not RePoE defaults.
+
+    A missing ignoreMinionTypes field means false only after its actual support block
+    was read. Repeated effect declarations can corroborate the same boolean; any
+    unknown, non-support or conflicting declaration makes that effect unknown,
+    independent of file order. Unrelated effect fields are outside this fact's scope.
+    """
+
+    facts: dict[str, RequirementFact] = {}
+    invalid_skill_keys: set[str] = set()
+    for raw_path in sorted(Path(value) for value in paths):
+        text = raw_path.read_text(encoding="utf-8")
+        for skill_id, body in _pob_skill_blocks(text):
+            skill_key = f"skill:{skill_id}"
+            if skill_key not in known_skill_keys or skill_key in invalid_skill_keys:
+                continue
+            if body is None or not _POB_SUPPORT_RE.search(body):
+                invalid_skill_keys.add(skill_key)
+                facts.pop(skill_key, None)
+                continue
+            assignments = _POB_IGNORE_MINION_ASSIGNMENT_RE.findall(body)
+            if not assignments:
+                ignore_minion_types = False
+            elif len(assignments) == 1 and assignments[0].strip().rstrip(",").strip() in {
+                "true", "false"
+            }:
+                ignore_minion_types = assignments[0].strip().rstrip(",").strip() == "true"
+            else:
+                invalid_skill_keys.add(skill_key)
+                facts.pop(skill_key, None)
+                continue
+            previous = facts.get(skill_key)
+            if previous and previous.requirements["ignore_minion_types"] != ignore_minion_types:
+                invalid_skill_keys.add(skill_key)
+                facts.pop(skill_key, None)
+                continue
+            facts[skill_key] = RequirementFact(
+                component_key=skill_key,
+                level_or_stage="pob_support_flags",
+                requirements={"ignore_minion_types": ignore_minion_types},
                 source_refs=(source.source_id,),
             )
     return GraphIngestionResult(requirement_facts=tuple(facts.values()))
@@ -908,17 +983,17 @@ def ingest_passive_tree(
                     )
                 )
 
-        ascendancy_name = node_record.get("ascendancyName")
-        if isinstance(ascendancy_name, str) and ascendancy_name.strip():
-            ascendancy_key = _ascendancy_key_for_name(
-                nodes, ascendancy_name, rename_targets=ascendancy_rename_targets
+        node_ascendancy_name = node_record.get("ascendancyName")
+        if isinstance(node_ascendancy_name, str) and node_ascendancy_name.strip():
+            node_ascendancy_key = _ascendancy_key_for_name(
+                nodes, node_ascendancy_name, rename_targets=ascendancy_rename_targets
             )
-            if ascendancy_key is not None:
+            if node_ascendancy_key is not None:
                 edges.add(
                     GraphEdge(
                         edge_type="belongs_to",
                         source_key=passive_key,
-                        target_key=ascendancy_key,
+                        target_key=node_ascendancy_key,
                         evidence_refs=(source.source_id,),
                     )
                 )
@@ -1544,7 +1619,12 @@ def support_skill_candidate(
     skill_key: str,
     endpoint_kind: str = "active_skill",
 ) -> ComputedFactResult:
-    """Evaluate source-backed support-vs-skill legality without promoting candidate tags."""
+    """Evaluate static type compatibility in the selected skill's native summon context.
+
+    endpoint_kind is retained as a caller label; a minion payload never bypasses its
+    summon's exclusions or a support's ignoreMinionTypes flag. This is not live PoB
+    support-application or actor/item-source legality evidence.
+    """
 
     normalized_skill_key = _required_text(skill_key, "skill key")
     if endpoint_kind not in {"active_skill", "minion_payload"}:
@@ -1553,11 +1633,8 @@ def support_skill_candidate(
         snapshot=snapshot,
         support_key=support_key,
         skill_key=normalized_skill_key,
-        skill_types=(
-            _minion_payload_types_for(snapshot, normalized_skill_key)
-            if endpoint_kind == "minion_payload"
-            else _skill_types_for(snapshot, normalized_skill_key)
-        ),
+        skill_types=_skill_types_for(snapshot, normalized_skill_key),
+        minion_skill_types=_minion_payload_types_for(snapshot, normalized_skill_key),
         endpoint_kind=endpoint_kind,
     )
 
@@ -1575,7 +1652,11 @@ def support_skill_group_candidates(
     skill_key: str,
     endpoint_kind: str = "active_skill",
 ) -> tuple[ComputedFactResult, ...]:
-    """Evaluate one active skill's support group after the PoB skill-type fixed point."""
+    """Evaluate a support group using PoB's separate host/minion type sets.
+
+    Only compatible supports add addSkillTypes to the host fixed point. The imported
+    added_minion_types field is not propagated: the pinned native path does not do so.
+    """
 
     normalized_skill_key = _required_text(skill_key, "skill key")
     normalized_support_keys = tuple(_required_text(value, "support key") for value in support_keys)
@@ -1584,11 +1665,8 @@ def support_skill_group_candidates(
     if endpoint_kind not in {"active_skill", "minion_payload"}:
         raise ValueError("endpoint_kind must be active_skill or minion_payload")
 
-    skill_types = (
-        _minion_payload_types_for(snapshot, normalized_skill_key)
-        if endpoint_kind == "minion_payload"
-        else _skill_types_for(snapshot, normalized_skill_key)
-    )
+    skill_types = _skill_types_for(snapshot, normalized_skill_key)
+    minion_skill_types = _minion_payload_types_for(snapshot, normalized_skill_key)
     rejected: list[str] = []
     for normalized_support_key in normalized_support_keys:
         result = _support_skill_candidate_for_types(
@@ -1596,6 +1674,7 @@ def support_skill_group_candidates(
             support_key=normalized_support_key,
             skill_key=normalized_skill_key,
             skill_types=skill_types,
+            minion_skill_types=minion_skill_types,
             endpoint_kind=endpoint_kind,
         )
         if result.status == "known":
@@ -1612,6 +1691,7 @@ def support_skill_group_candidates(
                 support_key=normalized_support_key,
                 skill_key=normalized_skill_key,
                 skill_types=skill_types,
+                minion_skill_types=minion_skill_types,
                 endpoint_kind=endpoint_kind,
             )
             if result.status == "known":
@@ -1629,6 +1709,7 @@ def support_skill_group_candidates(
             support_key=normalized_support_key,
             skill_key=normalized_skill_key,
             skill_types=skill_types,
+            minion_skill_types=minion_skill_types,
             endpoint_kind=endpoint_kind,
         )
         for normalized_support_key in normalized_support_keys
@@ -1641,9 +1722,10 @@ def _support_skill_candidate_for_types(
     support_key: str,
     skill_key: str,
     skill_types: set[str],
+    minion_skill_types: set[str],
     endpoint_kind: str = "active_skill",
 ) -> ComputedFactResult:
-    """Evaluate a support against an already accumulated set of active-skill types."""
+    """Apply the pinned native type predicate to the accumulated host types."""
 
     normalized_support_key = _required_text(support_key, "support key")
     normalized_skill_key = _required_text(skill_key, "skill key")
@@ -1659,75 +1741,80 @@ def _support_skill_candidate_for_types(
     if skill_node.node_type != "active_skill":
         raise ValueError(f"node is not an active skill: {normalized_skill_key}")
 
-    _, contract_requirements = _support_contract_for(snapshot, normalized_support_key)
+    contract_key, contract_requirements = _support_contract_for(snapshot, normalized_support_key)
+    flags = _requirement_fact_for(
+        snapshot, component_key=contract_key, level_or_stage="pob_support_flags"
+    )
+    flag_value = flags.requirements.get("ignore_minion_types") if flags and flags.status == "known" else None
+    ignore_minion_types = flag_value if isinstance(flag_value, bool) else None
+    payload_fact = _requirement_fact_for(
+        snapshot, component_key=normalized_skill_key, level_or_stage="minion_payload_types"
+    )
+    minion_types_known = bool(payload_fact and payload_fact.status == "known") or not (
+        skill_types & {"minion", "createsminion", "commandableminion"}
+    )
+    allowed_expr = _string_tuple(contract_requirements.requirements.get("allowed_types_expr"))
+    excluded_expr = _string_tuple(contract_requirements.requirements.get("excluded_types_expr"))
+    required_types = skill_types | (minion_skill_types if ignore_minion_types is False else set())
+
+    def result(status: str, reason: str | None, candidate_status: str | None = None) -> ComputedFactResult:
+        return _support_candidate_result(
+            snapshot=snapshot,
+            support_key=normalized_support_key,
+            skill_key=normalized_skill_key,
+            status=status,
+            candidate_status=candidate_status or status,
+            excluded_reason=reason,
+            matched_skill_types=sorted({
+                token.casefold() for token in allowed_expr
+                if token.casefold() not in {"and", "or", "not"}
+                and token.casefold() in required_types
+            }),
+            shared_tags=_shared_component_tags(snapshot, normalized_support_key, normalized_skill_key),
+            required_types_expr=allowed_expr,
+            excluded_types_expr=excluded_expr,
+            endpoint_kind=endpoint_kind,
+            host_skill_types=skill_types,
+            minion_skill_types=minion_skill_types,
+            minion_types_known=minion_types_known,
+            ignore_minion_types=ignore_minion_types,
+            effective_required_skill_types=(
+                None
+                if (ignore_minion_types is None and minion_skill_types)
+                or (ignore_minion_types is not True and not minion_types_known)
+                else required_types
+            ),
+            source_refs=_source_refs_for_components(snapshot, (contract_key,)),
+        )
 
     supports_gems_only = bool(contract_requirements.requirements.get("supports_gems_only", False))
     is_gem_granted = _is_skill_granted_by_gem(snapshot, normalized_skill_key)
     if supports_gems_only and not is_gem_granted:
-        return _support_candidate_result(
-            snapshot=snapshot,
-            support_key=normalized_support_key,
-            skill_key=normalized_skill_key,
-            status="unsupported",
-            candidate_status="unsupported",
-            excluded_reason="supports_gems_only",
-            matched_skill_types=(),
-            shared_tags=_shared_component_tags(
-                snapshot, normalized_support_key, normalized_skill_key
-            ),
-            required_types_expr=_string_tuple(
-                contract_requirements.requirements.get("allowed_types_expr")
-            ),
-            excluded_types_expr=_string_tuple(
-                contract_requirements.requirements.get("excluded_types_expr")
-            ),
-            endpoint_kind=endpoint_kind,
-        )
+        return result("unsupported", "supports_gems_only")
 
-    allowed_expr = _string_tuple(contract_requirements.requirements.get("allowed_types_expr"))
-    excluded_expr = _string_tuple(contract_requirements.requirements.get("excluded_types_expr"))
-    matched_skill_types = sorted(
-        {
-            token.casefold()
-            for token in allowed_expr
-            if token not in {"AND", "OR", "NOT"} and token.casefold() in skill_types
-        }
-    )
+    if not skill_types and (allowed_expr or excluded_expr):
+        return result("unknown", "host_skill_types_unavailable")
     excluded_match = bool(excluded_expr) and _type_expression_matches(excluded_expr, skill_types)
     if excluded_match:
-        return _support_candidate_result(
-            snapshot=snapshot,
-            support_key=normalized_support_key,
-            skill_key=normalized_skill_key,
-            status="unsupported",
-            candidate_status="unsupported",
-            excluded_reason="excluded_types_matched",
-            matched_skill_types=matched_skill_types,
-            shared_tags=_shared_component_tags(
-                snapshot, normalized_support_key, normalized_skill_key
-            ),
-            required_types_expr=allowed_expr,
-            excluded_types_expr=excluded_expr,
-            endpoint_kind=endpoint_kind,
-        )
+        return result("unsupported", "excluded_types_matched")
 
-    required_match = not allowed_expr or _type_expression_matches(allowed_expr, skill_types)
-    if not required_match:
-        return _support_candidate_result(
-            snapshot=snapshot,
-            support_key=normalized_support_key,
-            skill_key=normalized_skill_key,
-            status="unsupported",
-            candidate_status="unsupported",
-            excluded_reason="required_types_not_matched",
-            matched_skill_types=matched_skill_types,
-            shared_tags=_shared_component_tags(
-                snapshot, normalized_support_key, normalized_skill_key
-            ),
-            required_types_expr=allowed_expr,
-            excluded_types_expr=excluded_expr,
-            endpoint_kind=endpoint_kind,
+    if allowed_expr and ignore_minion_types is not True:
+        # Positive expressions already satisfied by the host remain true regardless
+        # of missing payload types. NOT can change that result and needs the context.
+        host_satisfies_positive = (
+            not any(token.casefold() == "not" for token in allowed_expr)
+            and _type_expression_matches(allowed_expr, skill_types)
         )
+        if not minion_types_known and not host_satisfies_positive:
+            return result("unknown", "minion_skill_types_unavailable")
+        if ignore_minion_types is None and minion_skill_types:
+            host_match = _type_expression_matches(allowed_expr, skill_types)
+            combined_match = _type_expression_matches(allowed_expr, skill_types | minion_skill_types)
+            if host_match != combined_match:
+                return result("unknown", "minion_support_flags_unavailable")
+    required_match = not allowed_expr or _type_expression_matches(allowed_expr, required_types)
+    if not required_match:
+        return result("unsupported", "required_types_not_matched")
 
     recommended = any(
         edge.edge_type == "recommended_for"
@@ -1736,17 +1823,7 @@ def _support_skill_candidate_for_types(
         for edge in snapshot.edges
     )
     candidate_status = "recommended" if recommended else "hard_compatible"
-    return _support_candidate_result(
-        snapshot=snapshot,
-        support_key=normalized_support_key,
-        skill_key=normalized_skill_key,
-        status="known",
-        candidate_status=candidate_status,
-        excluded_reason=None,
-        matched_skill_types=matched_skill_types,
-        shared_tags=_shared_component_tags(snapshot, normalized_support_key, normalized_skill_key),
-        endpoint_kind=endpoint_kind,
-    )
+    return result("known", None, candidate_status)
 
 
 def socket_support_legality(
@@ -3641,12 +3718,12 @@ def merge_ingestion_results(*results: GraphIngestionResult) -> GraphIngestionRes
             aliases[(alias.normalized_alias, alias.target_key)] = alias
         for mapping in result.id_mappings:
             key = (mapping.system, mapping.external_id, mapping.status)
-            existing = id_mappings.get(key)
-            id_mappings[key] = _merge_id_mapping(existing, mapping) if existing else mapping
+            existing_mapping = id_mappings.get(key)
+            id_mappings[key] = _merge_id_mapping(existing_mapping, mapping) if existing_mapping else mapping
         for fact in result.requirement_facts:
             requirement_facts[(fact.component_key, fact.level_or_stage)] = fact
-        for fact in result.resource_facts:
-            resource_facts[(fact.component_key, fact.level_or_stage)] = fact
+        for resource_fact in result.resource_facts:
+            resource_facts[(resource_fact.component_key, resource_fact.level_or_stage)] = resource_fact
         for choice in result.passive_choices:
             passive_choices[choice.choice_key] = choice
         for option in result.allocation_options:
@@ -3817,9 +3894,9 @@ class GraphSnapshot:
         for fact in requirement_facts:
             _ensure_sources_exist(fact.source_refs, source_ids, "requirement fact")
             _ensure_node_exists(fact.component_key, node_keys, "requirement component")
-        for fact in resource_facts:
-            _ensure_sources_exist(fact.source_refs, source_ids, "resource fact")
-            _ensure_node_exists(fact.component_key, node_keys, "resource component")
+        for resource_fact in resource_facts:
+            _ensure_sources_exist(resource_fact.source_refs, source_ids, "resource fact")
+            _ensure_node_exists(resource_fact.component_key, node_keys, "resource component")
         for choice in passive_choices:
             _ensure_sources_exist(choice.source_refs, source_ids, "passive choice")
             _ensure_node_exists(choice.parent_passive_key, node_keys, "parent passive")
@@ -4603,6 +4680,12 @@ def _support_candidate_result(
     required_types_expr: list[str] | tuple[str, ...] | None = None,
     excluded_types_expr: list[str] | tuple[str, ...] | None = None,
     endpoint_kind: str = "active_skill",
+    host_skill_types: set[str] | None = None,
+    minion_skill_types: set[str] | None = None,
+    minion_types_known: bool = True,
+    ignore_minion_types: bool | None = None,
+    effective_required_skill_types: set[str] | None = None,
+    source_refs: tuple[str, ...] = (),
 ) -> ComputedFactResult:
     facts: dict[str, Any] = {
         "support_key": support_key,
@@ -4611,6 +4694,17 @@ def _support_candidate_result(
         "matched_skill_types": list(matched_skill_types),
         "shared_tags": list(shared_tags),
         "endpoint_kind": endpoint_kind,
+        "contract_version": SUPPORT_COMPATIBILITY_VERSION,
+        "evaluation_scope": "static_type_compatibility",
+        "host_skill_types": sorted(host_skill_types or ()),
+        "minion_skill_types": sorted(minion_skill_types or ()),
+        "minion_skill_types_status": "known" if minion_types_known else "unavailable",
+        "ignore_minion_types": ignore_minion_types,
+        "effective_required_skill_types": (
+            sorted(effective_required_skill_types)
+            if effective_required_skill_types is not None else None
+        ),
+        "application_verified": False,
     }
     if excluded_reason is not None:
         facts["excluded_reason"] = excluded_reason
@@ -4629,7 +4723,9 @@ def _support_candidate_result(
         ),
         status=status,
         facts=facts,
-        source_refs=_source_refs_for_components(snapshot, (support_key, skill_key)),
+        source_refs=tuple(sorted(
+            set(_source_refs_for_components(snapshot, (support_key, skill_key))) | set(source_refs)
+        )),
     )
 
 
@@ -5036,7 +5132,7 @@ def _fact_status(value: str) -> str:
     return status
 
 
-def _reject_duplicate_texts(values: object, label: str) -> None:
+def _reject_duplicate_texts(values: Iterable[str], label: str) -> None:
     seen: set[str] = set()
     for value in values:
         text = _required_text(value, label)

@@ -314,6 +314,7 @@ def _cases_from_ninja(
     intake_ledger_path: str | Path | None = None,
     collector_stats: dict[str, Any] | None = None,
     target_character_refs: set[str] | None = None,
+    studied_source_hashes: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Collect cases from poe.ninja, paginating until the requested limit of
     *new* characters is reached.
@@ -341,8 +342,8 @@ def _cases_from_ninja(
     wanted_ascendancies = {item.casefold() for item in ascendancies if item.strip()}
     wanted_ninja_classes = {item.casefold() for item in normalized_ninja_classes}
     ledger_seen = (
-        research_intake_ledger.seen_character_refs(intake_ledger_path, resolved_league)
-        if intake_ledger_path is not None
+        research_intake_ledger.seen_character_refs(intake_ledger_path, resolved_league, strict=True)
+        if intake_ledger_path is not None and targets is None
         else set()
     )
     stats = collector_stats if collector_stats is not None else {}
@@ -436,6 +437,8 @@ def _cases_from_ninja(
                 target_count=(None if target is None else max(0, target - len(cases))),
                 seen_identity_hashes=seen_identity_hashes,
                 case_start_index=len(cases) + 1,
+                studied_source_hashes=studied_source_hashes if targets is None else None,
+                collector_stats=stats,
             )
         )
     if targets is not None:
@@ -471,6 +474,8 @@ def _payload_cases_from_rows(
     target_count: int | None = None,
     seen_identity_hashes: set[str] | None = None,
     case_start_index: int = 1,
+    studied_source_hashes: set[str] | None = None,
+    collector_stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     target = None if target_count is None else max(0, int(target_count))
     if target == 0:
@@ -495,6 +500,12 @@ def _payload_cases_from_rows(
             continue
         source = str(extracted["importCode"]).strip()
         source_hash = _safe_hash(source)
+        if source_hash in (studied_source_hashes or set()):
+            if collector_stats is not None:
+                collector_stats["skippedAlreadyStudied"] = int(
+                    collector_stats.get("skippedAlreadyStudied") or 0
+                ) + 1
+            continue
         case = _case_from_source(
                 source,
                 source_hash=source_hash,

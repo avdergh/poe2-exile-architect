@@ -226,7 +226,25 @@ def start_run(
             retention_days=retention_days,
             re_research_scope=re_research_scope,
         )
-    except BaseException:
+    except BaseException as exc:
+        failed_db = run_dir / research_mature_builds.QUEUE_DB_FILENAME
+        intake_recovery = research_mature_builds.has_pending_intake_recovery(failed_db)
+        if intake_recovery or research_mature_builds.has_committed_queue_cases(failed_db):
+            if not isinstance(exc, Exception):
+                raise
+            return {
+                "status": "recovery_required",
+                "errorCode": ("research_intake_release_recovery_required" if intake_recovery
+                              else "research_queue_creation_incomplete"),
+                "runId": run_id, "runRef": _run_ref(run_id),
+                "recoveryRequired": True,
+                "nextAction": (
+                    "Inspect this retained run; explicit abandonment retries the exact failed intake release."
+                    if intake_recovery else
+                    "Inspect the retained run and continue its queued cases before starting another queue."
+                ),
+                "noRawMatureBuildMaterial": True,
+            }
         shutil.rmtree(run_dir, ignore_errors=True)
         raise
     public = _without_paths(report)

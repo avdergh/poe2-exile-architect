@@ -21,7 +21,7 @@ def run_case(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "mature_learning_path", lambda: tmp_path / "memory.sqlite")
     monkeypatch.setattr(runs, "DEFAULT_INTAKE_LEDGER_PATH", tmp_path / "intake.sqlite")
     monkeypatch.setattr(runs, "_identity_resolvability_hint", lambda **_: {})
-    monkeypatch.setattr(runs, "_studied_source_hashes", lambda: set())
+    monkeypatch.setattr(runs, "_studied_source_hashes", lambda **_: set())
     monkeypatch.setattr(runs.research_readback, "build_safe_readback", lambda *_, **__: {
         "status": "unavailable", "reason": "synthetic_readback",
     })

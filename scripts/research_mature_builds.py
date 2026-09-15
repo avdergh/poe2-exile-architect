@@ -23,6 +23,7 @@ import threading
 import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -66,13 +67,13 @@ _ACCEPT_LOCK = threading.RLock()
 MAX_LEASE_SECONDS = 24 * 60 * 60
 
 RESEARCH_MANDATORY_CHECKS = (
-    "暗金/lineage 宝石必须标注 unique 身份；unique support gem 保持 support_modifier role，"
+    "暗金/lineage 宝石身份由精确 gem ID 与静态语料确认；unique support gem 保持 support_modifier role，"
     "不得误用 unique_enabler。",
     "已分配天赋树珠宝槽必须显式声明空置或已插珠宝及 radius/Time-Lost 覆盖；装备珠宝孔不能替代树槽。",
     "评估全部 persistent buff 的 Spirit/reservation 预算与来源，并写入资源闭环记录。",
     "盘点全部启用技能组；Family 核心和结论依赖的高影响组必须提供 supportPackages 或 "
     "supportCoverageExceptions，其他组也不得静默丢弃。",
-    "辅助机制结论以 review 内 support_skill_group_candidates 组合校验为准；单对查询只用于候选发现，"
+    "辅助适用性须通过验收工具内置的整组静态兼容校验；单对查询只用于候选发现，"
     "机制语义不得按名称猜测。",
     "Memory 对照前先用 search_graph_components + resolve_graph_component 解析身份 stable key，"
     "再检查 familyRecordCoverage、familyRecordIndex 与 familyPremiseCatalog。",
@@ -123,6 +124,26 @@ def _accept_lock_path(memory_db_path: str | Path) -> Path:
     return memory_path.with_name(f".{memory_path.name}.research-accept.lock")
 
 
+def _serialized_online_intake(function):
+    @wraps(function)
+    def guarded(**kwargs):
+        ordinary_online = not any((
+            kwargs.get("resume"), kwargs.get("dry_run"), kwargs.get("source_files"),
+            kwargs.get("source_batch_files"), kwargs.get("re_research_run_dir"),
+            kwargs.get("target_character_refs") is not None,
+        ))
+        if not ordinary_online:
+            return function(**kwargs)
+        league = legacy_batch._resolve_league_url(kwargs.get("league_url", "current"))
+        ledger = kwargs.get("intake_ledger_path") or DEFAULT_INTAKE_LEDGER_PATH
+        with interprocess_file_lock(research_intake_ledger.collection_lock_path(ledger, league)):
+            # Resolve current only once, before selecting the shared league lock. The collector
+            # reads its ledger snapshot inside this lock, including a preceding run's writes.
+            return function(**{**kwargs, "league_url": league})
+    return guarded
+
+
+@_serialized_online_intake
 def queue_cases(
     *,
     league_url: str = "current",
@@ -211,6 +232,15 @@ def queue_cases(
     normalized_supplement_ids = _normalize_supplement_sample_ids(supplement_sample_ids)
     normalized_ninja_classes = legacy_batch._normalize_ninja_classes(ninja_classes or [])
     local_sources = legacy_batch._local_sources(source_file_values, source_batch_file_values)
+    ordinary_online = not (local_sources or source_file_values or source_batch_file_values
+                           or re_research_run_dir or target_character_refs is not None)
+    studied_source_hashes = (
+        _studied_source_hashes(
+            game_patch=version_context["gamePatch"],
+            passive_tree_version=version_context["passiveTreeVersion"],
+            memory_db_path=memory_db_path,
+        ) if ordinary_online else set()
+    )
     collector_stats: dict[str, Any] = {
         "pagesFetched": 0,
         "pageRowsSeen": 0,
@@ -285,7 +315,7 @@ def queue_cases(
                 local_sources,
                 sample_start_index=sample_start_index,
             )
-            if local_sources
+            if source_file_values or source_batch_file_values
             else legacy_batch._cases_from_ninja(
                 league_url=league_url,
                 limit=limit,
@@ -296,6 +326,7 @@ def queue_cases(
                 ninja_classes=normalized_ninja_classes,
                 intake_ledger_path=effective_ledger,
                 collector_stats=collector_stats,
+                **({"studied_source_hashes": studied_source_hashes} if studied_source_hashes else {}),
                 **({"target_character_refs": target_character_refs} if target_character_refs is not None else {}),
             )
         )
@@ -317,6 +348,9 @@ def queue_cases(
     source_input_summary["intakeSkippedAlreadyResearched"] = int(
         collector_stats.get("skippedAlreadyResearched") or 0
     )
+    source_input_summary["intakeSkippedAlreadyStudied"] = int(
+        collector_stats.get("skippedAlreadyStudied") or 0
+    )
 
     if dry_run:
         report = _queue_report(
@@ -329,7 +363,7 @@ def queue_cases(
             intake_ledger_summary=_intake_ledger_summary(
                 effective_ledger,
                 league=(str(collector_stats.get("resolvedLeague") or "") or league_url),
-                local_sources=local_sources,
+                local_sources=source_file_values or source_batch_file_values,
             ),
         )
         _assert_safe_payload(report)
@@ -431,8 +465,6 @@ def queue_cases(
     inserted = 0
     skipped_duplicates = 0
     ledger_recorded = 0
-    studied_source_hashes = _studied_source_hashes()
-    skipped_already_studied = 0
     for case in cases:
         if case.get("status") != "pending":
             packet_id = ""
@@ -450,30 +482,21 @@ def queue_cases(
             )
             packet_id = str(packet["packetId"])
             packet_safe_hash = str(packet["packetSafeHash"])
-        source_hash = str(case.get("sourceHash") or "").strip()
-        if (
-            source_hash
-            and source_hash in studied_source_hashes
-            and not dry_run
-            and not local_sources
-            and not re_research_run_dir
-            and target_character_refs is None
-        ):
-            # The same mature build (byte-identical PoB text) was already researched and
-            # accepted into durable memory; re-queueing it would duplicate knowledge and
-            # split families. Skip it and report the count truthfully.
-            skipped_already_studied += 1
-            continue
         row = _safe_case_row_from_case(
             case,
             packet_id=packet_id,
             packet_safe_hash=packet_safe_hash,
         )
-        was_inserted = _insert_case_if_absent(db_path, row)
+        character_ref = str(case.get("characterRef") or "").strip()
+        if ordinary_online and character_ref.startswith("character-hash:"):
+            was_inserted = _insert_online_case_with_intake(effective_ledger, db_path, row)
+            ledger_recorded += int(was_inserted)
+        else:
+            was_inserted = _insert_case_if_absent(db_path, row)
         inserted += 1 if was_inserted else 0
         skipped_duplicates += 0 if was_inserted else 1
-        character_ref = str(case.get("characterRef") or "").strip()
-        if was_inserted and character_ref.startswith("character-hash:") and target_character_refs is None:
+        if (not ordinary_online and was_inserted and character_ref.startswith("character-hash:")
+                and target_character_refs is None):
             if research_intake_ledger.record_case(
                 effective_ledger,
                 league=str(case.get("league") or league_url),
@@ -486,12 +509,11 @@ def queue_cases(
             ):
                 ledger_recorded += 1
     source_input_summary["intakeLedgerRecordedCount"] = ledger_recorded
-    source_input_summary["intakeSkippedAlreadyStudied"] = skipped_already_studied
     resolved_league = str(collector_stats.get("resolvedLeague") or "") or league_url
     intake_ledger_summary = _intake_ledger_summary(
         effective_ledger,
         league=resolved_league,
-        local_sources=local_sources,
+        local_sources=source_file_values or source_batch_file_values,
     )
     _write_metadata(
         db_path,
@@ -565,6 +587,7 @@ def _run_lock_path(db_path: Path) -> Path:
 
 def _acceptance_source_context(
     row: sqlite3.Row, version_context: dict[str, Any], pob_readback: dict[str, Any] | None,
+    *, re_research_scope: str = "case",
 ) -> dict[str, Any]:
     context = {
         "sourceHashRef": str(row["source_hash_ref"]),
@@ -573,6 +596,7 @@ def _acceptance_source_context(
         "passiveTreeVersion": str(version_context.get("passiveTreeVersion") or ""),
         "pobVersionOrCommit": str(version_context.get("pobVersionOrCommit") or ""),
         "knowledgeScope": _authoritative_knowledge_scope(row),
+        "reResearchScope": re_research_scope if re_research_scope in {"full_case", "supplement"} else "case",
     }
     if isinstance(pob_readback, dict) and pob_readback.get("status") == "available":
         binding = pob_readback.get("stateBinding") or {}
@@ -1730,7 +1754,10 @@ def accept_case(
                     "canonicalReviewHash": canonical_review_hash,
                     "contractVersion": review_contract_version,
                     "expectedOriginState": "claimed",
-                    "sourceContext": _acceptance_source_context(row, version_context, pob_readback),
+                    "sourceContext": _acceptance_source_context(
+                        row, version_context, pob_readback,
+                        re_research_scope=str(_read_metadata(db_path).get("reResearchScope") or "case"),
+                    ),
                     "supplement": bool(row["supplement"]),
                 },
             )
@@ -2471,7 +2498,10 @@ def retry_accept_case(
                     "canonicalReviewHash": canonical_review_hash,
                     "contractVersion": review_contract_version,
                     "expectedOriginState": "acceptance_rejected",
-                    "sourceContext": _acceptance_source_context(row, version_context, pob_readback),
+                    "sourceContext": _acceptance_source_context(
+                        row, version_context, pob_readback,
+                        re_research_scope=str(_read_metadata(db_path).get("reResearchScope") or "case"),
+                    ),
                     "supplement": bool(row["supplement"]),
                 },
             )
@@ -2863,6 +2893,7 @@ def queue_status(
         "intakePagesFetched": int(metadata.get("intakePagesFetched") or 0),
         "intakePageRowsSeen": int(metadata.get("intakePageRowsSeen") or 0),
         "intakeSkippedAlreadyResearched": int(metadata.get("intakeSkippedAlreadyResearched") or 0),
+        "intakeSkippedAlreadyStudied": int(metadata.get("intakeSkippedAlreadyStudied") or 0),
         "intakeLedgerRecordedCount": int(metadata.get("intakeLedgerRecordedCount") or 0),
     }
     intake_ledger_source = "snapshot"
@@ -2882,7 +2913,7 @@ def queue_status(
                 intake_ledger_summary = persisted
         except (json.JSONDecodeError, TypeError):
             intake_ledger_summary = None
-    return _queue_report(
+    report = _queue_report(
         status=status_override or persisted_status or "ok",
         db_path=db_path,
         requested_worker_count=_effective_worker_count(
@@ -2896,6 +2927,13 @@ def queue_status(
         intake_ledger_summary=intake_ledger_summary,
         intake_ledger_source=intake_ledger_source,
     )
+    if metadata.get("intakeRecoveryCase"):
+        report.update(
+            status="recovery_required", recoveryRequired=True,
+            errorCode="research_intake_release_recovery_required",
+            nextAction="Continue retained queued cases, or explicitly abandon this run to retry the exact intake release.",
+        )
+    return report
 
 
 def _pending_cleanup_path(runs_root: Path) -> Path:
@@ -3081,7 +3119,7 @@ def _restore_released_intake_rows(ledger_path: Path, rows: list[dict[str, Any]])
     failures: list[str] = []
     for row in rows:
         try:
-            research_intake_ledger.record_case(
+            restored = research_intake_ledger.record_case(
                 ledger_path,
                 league=str(row.get("league") or ""),
                 character_ref=str(row.get("characterRef") or ""),
@@ -3090,7 +3128,20 @@ def _restore_released_intake_rows(ledger_path: Path, rows: list[dict[str, Any]])
                 ascendancy=str(row.get("ascendancy") or ""),
                 main_skill=str(row.get("mainSkill") or ""),
                 sample_id=str(row.get("sampleId") or ""),
+                refresh_existing=False,
+                record_id=row.get("intakeRecordId"),
+                require_instance_binding=row.get("intakeRecordId") is not None,
             )
+            if not restored:
+                instance = research_intake_ledger.registration_id(
+                    ledger_path, league=str(row.get("league") or ""),
+                    character_ref=str(row.get("characterRef") or ""),
+                    source_hash=str(row.get("sourceHash") or ""),
+                    sample_id=str(row.get("sampleId") or ""),
+                )
+                if instance is None or (row.get("intakeRecordId") is not None
+                                        and instance != row["intakeRecordId"]):
+                    failures.append(str(row.get("sampleId") or ""))
         except (OSError, sqlite3.Error, ValueError):
             failures.append(str(row.get("sampleId") or ""))
     return failures
@@ -3113,13 +3164,17 @@ def _release_abandoned_intake_rows(
         character_ref = str(row.get("characterRef") or "").strip()
         if not character_ref.startswith("character-hash:"):
             continue
-        outcome = research_intake_ledger.release_queued_case(
-            ledger_path,
-            league=str(row.get("league") or ""),
-            character_ref=character_ref,
-            source_hash=str(row.get("sourceHash") or ""),
-            sample_id=str(row.get("sampleId") or ""),
-        )
+        try:
+            outcome = research_intake_ledger.release_queued_case(
+                ledger_path,
+                league=str(row.get("league") or ""),
+                character_ref=character_ref,
+                source_hash=str(row.get("sourceHash") or ""),
+                sample_id=str(row.get("sampleId") or ""),
+                expected_record_id=row.get("intakeRecordId"),
+            )
+        except (OSError, sqlite3.Error):
+            outcome = "release_error"
         if outcome == "released":
             released_rows.append(row)
             continue
@@ -3137,7 +3192,7 @@ def _release_abandoned_intake_rows(
             "sampleId": str(row.get("sampleId") or ""),
             "releasedIntakeLedgerCount": len(released_rows),
             "ledgerRollbackFailedSampleIds": rollback_failures,
-            "recoveryRequired": bool(rollback_failures),
+            "recoveryRequired": bool(rollback_failures) or outcome == "release_error",
         }
     return {
         "status": "ok",
@@ -3251,6 +3306,11 @@ def _cleanup_completed_run_locked(
         return {"status": "rejected", "errorCode": "research_run_not_found"}
     rows = _fetch_cases(db_path)
     metadata = _read_metadata(db_path)
+    try:
+        intake_recovery_rows = _intake_recovery_rows(metadata)
+    except ValueError:
+        return {"status": "rejected", "errorCode": "research_intake_recovery_identity_invalid",
+                "recoveryRequired": True}
     retention = research_retention.inspect_policy(metadata, rows, now=_now())
     if retention["activeLeaseCount"] or retention["invalidLeaseCount"]:
         return {"status": "rejected", "errorCode": "research_active_claim_lease", "retention": retention}
@@ -3263,6 +3323,9 @@ def _cleanup_completed_run_locked(
         return {"status": "rejected", "errorCode": "research_acceptance_recovery_required"}
     retention_expired = retention["expiredCleanupAllowed"]
     discard_incomplete = abandon_incomplete or retention_expired
+    if intake_recovery_rows and not discard_incomplete:
+        return {"status": "rejected", "errorCode": "research_intake_release_recovery_required",
+                "recoveryRequired": True}
     if not discard_incomplete:
         allowed_statuses = {"accepted", "acceptance_rejected"} if allow_rejected else {"accepted"}
         if not rows or any(str(row.get("status") or "") not in allowed_statuses for row in rows):
@@ -3315,10 +3378,12 @@ def _cleanup_completed_run_locked(
         abandon_incomplete=abandon_incomplete,
     )
     if discard_incomplete:
-        ledger_release = _release_abandoned_intake_rows(rows=rows, metadata=metadata)
+        ledger_release = _release_abandoned_intake_rows(rows=rows + intake_recovery_rows, metadata=metadata)
         if ledger_release.get("status") != "ok":
             return ledger_release
-    packet_hashes = {str(row.get("packetSafeHash") or "") for row in rows}
+    packet_hashes = {
+        str(row.get("packetSafeHash") or "") for row in rows + intake_recovery_rows
+    }
     evidence = {
         "caseCount": len(rows),
         "acceptedDeepRecordCount": sum(
@@ -3622,6 +3687,7 @@ def _preserve_run_audit(
         "reacquisitionParentRunRef": metadata.get("reacquisitionParentRunRef") or None,
         "reacquisitionParentSampleId": metadata.get("reacquisitionParentSampleId") or None,
         "reacquisitionRequestId": metadata.get("reacquisitionRequestId") or None,
+        "intakeRecoveryCases": _intake_recovery_rows(metadata),
         "abandonedIncomplete": abandon_incomplete,
         "preservedWriteReceiptRefs": receipt_refs,
         "sampleCount": len(samples), "samples": samples,
@@ -3840,6 +3906,8 @@ def _init_db(db_path: Path, *, allow_create: bool = True) -> None:
             """
         )
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(cases)")}
+        if "intake_record_id" not in columns:
+            conn.execute("ALTER TABLE cases ADD COLUMN intake_record_id INTEGER")
         if "character_ref" not in columns:
             conn.execute("ALTER TABLE cases ADD COLUMN character_ref TEXT NOT NULL DEFAULT ''")
         if "accepted_deep_record_count" not in columns:
@@ -3898,6 +3966,108 @@ def _read_metadata(db_path: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in rows}
 
 
+def _insert_online_case_with_intake(ledger: Path, db_path: Path, row: dict[str, Any]) -> bool:
+    """Called under the league collection lock; a committed case keeps its reservation."""
+    identity = {
+        "league": row["league"], "character_ref": row["characterRef"],
+        "source_hash": row["sourceHash"], "sample_id": row["sampleId"],
+    }
+    if row["characterRef"] in research_intake_ledger.seen_character_refs(
+        ledger, row["league"], strict=True,
+    ):
+        raise ValueError("research_intake_changed_during_collection")
+    recorded: bool | None = None
+    try:
+        recorded = research_intake_ledger.record_case(
+            ledger, **identity, level=row["level"], ascendancy=row["ascendancy"],
+            main_skill=row["mainSkill"], refresh_existing=False, require_instance_binding=True,
+        )
+        if not recorded:
+            raise ValueError("research_intake_changed_during_collection")
+        row["intakeRecordId"] = research_intake_ledger.registration_id(ledger, **identity)
+        if row["intakeRecordId"] is None:
+            raise RuntimeError("research_intake_registration_missing")
+        inserted = _insert_case_if_absent(db_path, row)
+        if not inserted:
+            raise ValueError("research_intake_queue_identity_conflict")
+        return True
+    except BaseException:
+        if recorded is not False:
+            # An insertion can raise after its SQLite commit. Check durable identity before
+            # releasing anything; inability to inspect keeps the reservation for recovery.
+            with closing(_connect_queue(db_path)) as con:
+                committed = con.execute(
+                    "SELECT 1 FROM cases WHERE sample_id=? AND source_hash=? "
+                    "AND league=? AND character_ref=?",
+                    (row["sampleId"], row["sourceHash"], row["league"], row["characterRef"]),
+                ).fetchone()
+            if committed is None:
+                try:
+                    if row.get("intakeRecordId") is None:
+                        row["intakeRecordId"] = research_intake_ledger.registration_id(ledger, **identity)
+                    released = research_intake_ledger.release_queued_case(
+                        ledger, **identity, expected_record_id=row.get("intakeRecordId"),
+                    )
+                    if released not in {"released", "missing", "accepted_preserved"}:
+                        raise RuntimeError("research_intake_release_recovery_required")
+                except BaseException:
+                    # Failed compensation needs the same typed run/cleanup entrypoint even
+                    # when no queue row committed. This is safe recovery evidence, not a claim.
+                    recovery = {key: row[key] for key in (
+                        "sampleId", "sourceHash", "sourceHashRef", "characterRef", "league",
+                        "packetSafeHash", "sourceType",
+                    )}
+                    recovery["intakeRecordId"] = row.get("intakeRecordId")
+                    _write_metadata(db_path, {"intakeRecoveryCase": json.dumps(recovery, sort_keys=True)})
+                    raise
+        raise
+
+
+def _intake_recovery_rows(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("intakeRecoveryCase")
+    if not raw:
+        return []
+    try:
+        row = json.loads(raw)
+        patterns = {
+            "sampleId": r"[A-Za-z0-9:._-]{1,240}", "sourceHash": r"[0-9a-f]{64}",
+            "sourceHashRef": r"source-hash:(?:[0-9a-f]{16}|[0-9a-f]{64})",
+            "characterRef": r"character-hash:[0-9a-f]{16}", "league": r"[a-z0-9][a-z0-9-]*",
+            "packetSafeHash": r"(?:[0-9a-f]{64})?", "sourceType": r"poe_ninja_import_code",
+        }
+        if (not isinstance(row, dict) or set(row) != set(patterns) | {"intakeRecordId"}
+                or any(not isinstance(row[key], str) or not re.fullmatch(pattern, row[key])
+                       for key, pattern in patterns.items())
+                or type(row["intakeRecordId"]) is not int or row["intakeRecordId"] <= 0
+                or row["sourceHashRef"] not in {
+                    "source-hash:" + row["sourceHash"], "source-hash:" + row["sourceHash"][:16],
+                }):
+            raise ValueError("research_intake_recovery_identity_invalid")
+        return [row]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ValueError("research_intake_recovery_identity_invalid") from exc
+
+
+def has_pending_intake_recovery(db_path: Path) -> bool:
+    if not db_path.is_file():
+        return False
+    try:
+        return bool(_read_metadata(db_path).get("intakeRecoveryCase"))
+    except sqlite3.Error:
+        return True
+
+
+def has_committed_queue_cases(db_path: Path) -> bool:
+    """Preserve a partially created queue after a failure, including uncertain reads."""
+    if not db_path.is_file():
+        return False
+    try:
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as con:
+            return con.execute("SELECT 1 FROM cases LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return True
+
+
 def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
     now = _now_iso()
     with closing(_connect_queue(db_path)) as conn, conn:
@@ -3907,9 +4077,9 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
                 sample_id, status, source_type, source_hash, source_hash_ref,
                 character_ref, league, level, class_name, ascendancy, main_skill,
                 safe_error, packet_id, packet_safe_hash, supplement, supplement_context,
-                created_at, updated_at
+                created_at, updated_at, intake_record_id
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["sampleId"],
@@ -3930,6 +4100,7 @@ def _insert_case_if_absent(db_path: Path, row: dict[str, Any]) -> bool:
                 str(row.get("supplementContext") or ""),
                 now,
                 now,
+                row.get("intakeRecordId"),
             ),
         )
         conn.commit()
@@ -3971,6 +4142,7 @@ def _fetch_cases(db_path: Path) -> list[dict[str, Any]]:
                 "sourceHash": str(row["source_hash"]),
                 "sourceHashRef": str(row["source_hash_ref"]),
                 "characterRef": str(row["character_ref"] or ""),
+                "intakeRecordId": row["intake_record_id"] if "intake_record_id" in row.keys() else None,
                 "league": str(row["league"]),
                 "level": int(row["level"] or 0),
                 "className": str(row["class_name"]),
@@ -4928,40 +5100,69 @@ def _queue_report(
     return report
 
 
-def _studied_source_hashes() -> set[str]:
-    """Return source-hash values already durably researched in the mature-learning store.
+def _studied_source_hashes(
+    *, game_patch: str | None = None, passive_tree_version: str | None = None,
+    memory_db_path: str | Path | None = None,
+) -> set[str]:
+    """Use committed public Research receipts, never expand legacy short source refs.
 
-    Matches on the byte-identical PoB text hash stored in record ``source_case_refs``
-    (``source-hash:<sha>``). This catches the historical-duplicate case that the
-    character-level intake ledger cannot (accounts are not persisted for older runs).
+    This is an intake index, not a fresh knowledge/modelability approval. Explicit same-source
+    revisits bypass it. Historical rows without a complete receipt identity remain unknown.
     """
     try:
-        from server.knowledge import mature_learning
-
-        db = mature_learning.mature_learning_path()
+        db = Path(memory_db_path) if memory_db_path is not None else mature_learning.mature_learning_path()
         if not Path(db).is_file():
             return set()
-        con = mature_learning.connect(db)
+        con = sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        studied: set[str] = set()
         try:
             rows = con.execute(
-                "SELECT DISTINCT source_case_refs FROM deep_research_records "
-                "WHERE knowledge_scope = 'global_seed' AND status = 'valid' "
-                "AND superseded_by_id IS NULL"
+                "SELECT receipt_ref FROM research_record_write_receipts "
+                "WHERE provenance = 'transactional' AND contract_version = ?",
+                (research_contracts.SAFE_REVIEW_CONTRACT_VERSION,),
             ).fetchall()
+            for row in rows:
+                try:
+                    receipt = research_followups._receipt(con, row["receipt_ref"])
+                except research_followups.FollowupError:
+                    continue
+                context = receipt["summary"].get("sourceContext")
+                identity = receipt["identity"]
+                if (not isinstance(context, dict)
+                        or not re.fullmatch(r"[0-9a-f]{64}", str(context.get("sourceHash") or ""))
+                        or not re.fullmatch(r"source-hash:(?:[0-9a-f]{16}|[0-9a-f]{64})",
+                                            str(identity.get("sourceHashRef") or ""))
+                        or any(identity.get(field) in (None, "", "unknown")
+                               for field in ("gamePatch", "passiveTreeVersion"))
+                        or identity.get("knowledgeScope") != "global_seed"
+                        or context.get("sourceHash") != identity.get("sourceHash")
+                        or any(context.get(field) != identity.get(field) for field in (
+                            "sourceHashRef", "gamePatch", "passiveTreeVersion", "knowledgeScope",
+                        ))
+                        or (game_patch is not None and identity.get("gamePatch") != game_patch)
+                        or (passive_tree_version is not None
+                            and identity.get("passiveTreeVersion") != passive_tree_version)
+                        or not receipt["writes"]):
+                    continue
+                if any(
+                    set(write.get("writtenSourceCaseRefs", [])) != {identity["sourceHashRef"]}
+                    or write.get("knowledgeScope") != "global_seed"
+                    or write.get("sourceGamePatch") != identity["gamePatch"]
+                    or write.get("sourcePassiveTreeVersion") != identity["passiveTreeVersion"]
+                    or (context.get("pobVersionOrCommit") not in (None, "", "unknown")
+                        and write.get("sourcePobVersionOrCommit") != context["pobVersionOrCommit"])
+                    for write in receipt["writes"]
+                ):
+                    continue
+                # unknown state/modelability diagnostics still require explicit follow-up, but
+                # do not erase the complete snapshot identity already processed by Research.
+                studied.add(identity["sourceHash"])
         finally:
             con.close()
-    except Exception:  # noqa: BLE001 - queue proceeds without the historical index
+    except (OSError, sqlite3.Error):
+        # A legacy or missing receipt store supplies no historical identity authority.
         return set()
-    studied: set[str] = set()
-    for row in rows:
-        try:
-            refs = json.loads(str(row[0] or "[]"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            refs = []
-        for ref in refs if isinstance(refs, list) else []:
-            text = str(ref or "")
-            if text.startswith("source-hash:"):
-                studied.add(text[len("source-hash:") :])
     return studied
 
 

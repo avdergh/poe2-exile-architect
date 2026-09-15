@@ -23,7 +23,7 @@ from urllib.parse import unquote
 
 from .. import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LEDGER_FILENAME = "research_intake.sqlite"
 DEFAULT_STATUS = "queued"
 ACCEPTED_STATUS = "accepted"
@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS intake_records (
     main_skill TEXT NOT NULL DEFAULT '',
     first_sample_id TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'queued',
+    requires_instance_binding INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(league, character_ref)
@@ -80,14 +81,30 @@ def init_db(db_path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(_SCHEMA_SQL)
+        # Different leagues have independent collection locks. Schema discovery and upgrade
+        # still share the database writer transaction, so they cannot both ALTER a missing column.
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(intake_records)")}
+        if "requires_instance_binding" not in columns:
+            conn.execute(
+                "ALTER TABLE intake_records ADD COLUMN requires_instance_binding INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE meta.value<>excluded.value",
             (str(SCHEMA_VERSION),),
         )
         conn.commit()
 
 
-def seen_character_refs(db_path: str | Path, league: str) -> set[str]:
+def collection_lock_path(db_path: str | Path, league: str) -> Path:
+    """Serialize one resolved league's collection through durable queue insertion."""
+    path = Path(db_path).resolve()
+    league_hash = hashlib.sha256(str(league).strip().encode("utf-8")).hexdigest()[:20]
+    return path.with_name(f".{path.name}.{league_hash}.intake.lock")
+
+
+def seen_character_refs(db_path: str | Path, league: str, *, strict: bool = False) -> set[str]:
     """Return character refs already recorded for one league.
 
     A missing ledger file reads as empty: read-only consumers never create it.
@@ -98,6 +115,8 @@ def seen_character_refs(db_path: str | Path, league: str) -> set[str]:
     try:
         init_db(path)
     except sqlite3.Error:
+        if strict:
+            raise
         return set()
     with sqlite3.connect(path) as conn:
         rows = conn.execute(
@@ -117,11 +136,16 @@ def record_case(
     ascendancy: str = "",
     main_skill: str = "",
     sample_id: str = "",
+    refresh_existing: bool = True,
+    record_id: int | None = None,
+    require_instance_binding: bool = False,
 ) -> bool:
     """Record one queued character; returns True when newly inserted.
 
     An existing row keeps its status (queued -> accepted is never downgraded),
-    only safe metadata is refreshed.
+    only safe metadata is refreshed. New managed queues require their immutable registration
+    ID for release; refreshing an older entry never changes that protection. ``record_id``
+    restores an already released instance during cleanup rollback, without replacing an owner.
     """
     init_db(db_path)
     now = _now_iso()
@@ -129,12 +153,13 @@ def record_case(
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO intake_records(
-                league, character_ref, source_hash, level, ascendancy, main_skill,
-                first_sample_id, status, created_at, updated_at
+                id, league, character_ref, source_hash, level, ascendancy, main_skill,
+                first_sample_id, status, requires_instance_binding, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
             """,
             (
+                record_id,
                 str(league or "").strip(),
                 str(character_ref or "").strip(),
                 str(source_hash or "").strip(),
@@ -142,12 +167,13 @@ def record_case(
                 str(ascendancy or "")[:160],
                 str(main_skill or "")[:160],
                 str(sample_id or "")[:240],
+                int(require_instance_binding),
                 now,
                 now,
             ),
         )
         inserted = cur.rowcount == 1
-        if not inserted:
+        if not inserted and refresh_existing:
             conn.execute(
                 """
                 UPDATE intake_records
@@ -171,6 +197,21 @@ def record_case(
             )
         conn.commit()
     return inserted
+
+
+def registration_id(
+    db_path: str | Path, *, league: str, character_ref: str, source_hash: str, sample_id: str,
+) -> int | None:
+    """Read an exact registration instance; repeated identities do not authorize ABA release."""
+    if not Path(db_path).is_file():
+        return None
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM intake_records WHERE league=? AND character_ref=? "
+            "AND source_hash=? AND first_sample_id=?",
+            (league, character_ref, source_hash, sample_id),
+        ).fetchone()
+    return int(row[0]) if row else None
 
 
 def mark_accepted(db_path: str | Path, *, league: str, character_ref: str) -> bool:
@@ -267,6 +308,7 @@ def release_queued_case(
     character_ref: str,
     source_hash: str,
     sample_id: str,
+    expected_record_id: int | None = None,
 ) -> str:
     """Release one abandoned queue reservation without touching accepted history.
 
@@ -284,7 +326,7 @@ def release_queued_case(
     try:
         row = conn.execute(
             """
-            SELECT id, status, source_hash, first_sample_id
+            SELECT id, status, source_hash, first_sample_id, requires_instance_binding
               FROM intake_records
              WHERE league = ?
                AND character_ref = ?
@@ -298,6 +340,10 @@ def release_queued_case(
             return "accepted_preserved"
         if status != DEFAULT_STATUS:
             return "status_mismatch"
+        if row[4] and expected_record_id is None:
+            return "registration_binding_required"
+        if expected_record_id is not None and int(row[0]) != expected_record_id:
+            return "registration_mismatch"
         stored_source_hash = str(row[2] or "")
         stored_sample_id = str(row[3] or "")
         if (
@@ -306,8 +352,11 @@ def release_queued_case(
         ):
             return "ownership_mismatch"
         cur = conn.execute(
-            "DELETE FROM intake_records WHERE id = ? AND status = 'queued'",
-            (int(row[0]),),
+            "DELETE FROM intake_records WHERE id = ? AND status = 'queued' "
+            "AND league = ? AND character_ref = ? AND source_hash = ? AND first_sample_id = ? "
+            "AND requires_instance_binding = ?",
+            (int(row[0]), str(league or "").strip(), str(character_ref or "").strip(),
+             stored_source_hash, stored_sample_id, int(row[4])),
         )
         conn.commit()
     finally:

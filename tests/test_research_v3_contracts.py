@@ -582,7 +582,8 @@ def test_local_source_hash_does_not_mark_public_source_as_studied(tmp_path, monk
     service.propose_deep_research_records(
         {"schema_version": 6, "deep_research_records": [public]}
     )
-    assert "sharedpublic" in research_mature_builds._studied_source_hashes()
+    # Public record prose and its short ref alone do not establish the full snapshot hash.
+    assert "sharedpublic" not in research_mature_builds._studied_source_hashes()
 
 
 def test_local_family_expansion_never_relocates_global_records(tmp_path) -> None:

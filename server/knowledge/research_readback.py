@@ -37,6 +37,17 @@ STAT_KEYS = (
     "LightningResist",
     "ChaosResist",
 )
+PASSIVE_POINT_KEYS = (
+    "normalPassivePointsUsed",
+    "pointsAvailable",
+    "unspentPoints",
+    "ascendancyPointsUsed",
+    "ascendancyPointsMax",
+    "secondaryAscendancyPointsUsed",
+    "weaponSet1PointsUsed",
+    "weaponSet2PointsUsed",
+    "weaponSetPointsAvailable",
+)
 
 
 def normalize_version_context(value: dict[str, str]) -> dict[str, str]:
@@ -181,6 +192,11 @@ def build_safe_readback(
             "spiritRequested": spirit_requested,
             "spiritOverBy": spirit_over_by,
             "ledgerStatus": ledger_status,
+            "ledgerScope": "model_snapshot_arithmetic",
+        },
+        "passivePoints": {
+            **{key: _build_point_count(build, key) for key in PASSIVE_POINT_KEYS},
+            "pointsAvailableBasis": "wrapper_level_progress_estimate_plus_ExtraPoints",
         },
         "modelability": {
             "status": "partial",
@@ -188,7 +204,11 @@ def build_safe_readback(
                 *_version_caveats(version_context),
                 "Active-snapshot numbers do not prove Boss uptime or alternate weapon state.",
                 "Only the bound active ConfigSet supplies these numbers; other sets are separate scenarios.",
-                "Meta-trigger FullDPS may remain unmodelled by the pinned engine.",
+                "Spirit ledger consistency only checks model arithmetic; it does not establish "
+                "source completeness or real-character legality. Verify supply and enabled-state "
+                "evidence before treating a deficit as a build failure.",
+                "Normal pointsAvailable uses the wrapper's level-progress estimate plus PoB "
+                "ExtraPoints; it does not certify the source character's quest completion.",
             ],
         },
         "noRawMatureBuildMaterial": True,
@@ -224,6 +244,13 @@ def _finite_number(value: Any) -> float | None:
 
 def _build_number(build: Any, key: str) -> float | None:
     return _finite_number(build.get(key)) if isinstance(build, dict) else None
+
+
+def _build_point_count(build: Any, key: str) -> int | None:
+    number = _build_number(build, key)
+    if number is None or not number.is_integer() or number < 0:
+        return None
+    return int(number)
 
 
 def _build_integer(build: Any, key: str) -> int | None:

@@ -50,6 +50,8 @@ mcp__poe_research__accept_research_review / mcp__poe_research__retry_research_re
   的组可 needs_followup/caveat，不静默丢弃或机械否定整案。
 - 技能、天赋与装备效果来自案例证据或 typed 事实。有价值的推断明确标为推断，
   不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实。
+  装备声明授予的节点须解析并深读实际效果；声明授予不等于 PoB 已应用。特殊宝石身份由精确
+  gem ID 的静态事实确认，辅助仍用 support_modifier，不依赖正文中的英文 unique/lineage 字样。
 - PoB 字段语义：`enableGlobal1` / `enableGlobal2` 是单颗 gem 的 granted-effect 开关，绝不是
   武器组标志；`weaponSetScope` 才是技能组级字段，取值为 `global` / `weapon_set_1` /
   `weapon_set_2`。不得根据任一 gem 的 global-effect 开关推断武器切换、轮转状态或插槽关系。
@@ -109,8 +111,11 @@ mcp__poe_research__accept_research_review / mcp__poe_research__retry_research_re
      无图节点的黄装按合同显式声明内容型装备证据，在正文写槽位、目标词条与档位。
    - sourceStateScope 区分活动/副武器/未知状态，后两者不能当常驻收益。pobReadbackAudit 按合同绑定
      pob-readback 的真实状态与精确 snapshotRef，数值只说明本 case 活动快照，不外推为 Family 通用值。
+     Spirit 账本自洽只证明模型算术，须先核供给与启用状态，不能仅据差额要求修改原 BD；成因按本来源
+     验证，不搬用他案遗漏原因。天赋使用现有分池读数，节点条目数不是消费点，缺值不能补零。
      config 的 `configSetId/isActive/valueType` 保留场景归属；仅 `stateBinding.activeSets` 绑定的
      活动组合支撑当前数值，非活动条件独立研究，身份无效或读回 unavailable 时不混用其他场景。
+     配置勾选与 placeholder 仅声明情景，不证明条件已经发生或具备持续覆盖。
    - 同主题修订沿用稳定来源声明；跨主题使用上述显式修订绑定。废弃旧结论说明失效理由，不能凭同名覆盖。
 
 5. 在 typed validation 和正式 accept 前复核每个最终对象的 title、summary、content、conditions、
@@ -139,3 +144,5 @@ mcp__poe_research__accept_research_review / mcp__poe_research__retry_research_re
 7. claim 成功后的任何结束路径都返回 `sampleId + safe outcome`；accepted 时附 safe acceptance 摘要：
    writeReceiptRef、acceptanceMode、researchCompletion、created/updated/evidence counts、semantic edge count、deferred reasons、
    unresolved mention/unique component counts 和 mechanic/unique-gem diagnostics。不得输出 raw material。
+   validation-only 的候选 recordId 不代表持久身份；验收后以 `mcp__poe_knowledge__get_research_write_receipt` 的
+   `writtenMapping` 为准，再按其中实际 recordId 读回，不能把预览 ID 查询为空当作未入库。
