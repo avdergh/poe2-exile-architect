@@ -12,11 +12,21 @@
 # `mcp__poe_build__<tool>`, `mcp__poe_research__<tool>`,
 # `mcp__poe_learning__<tool>`.
 #
-# Paths: each stdio row resolves the repo root from the POE_BD_CREATOR_ROOT
-# environment variable, falling back to the literal checkout path below. The
-# fallback points at this machine's checkout; edit it or export
-# POE_BD_CREATOR_ROOT=<repo-root> on other machines. The command uses the
-# repo-bundled uv (repo mode, same shape as scripts/configure_agent_host.py).
+# Paths: every row resolves the checkout and the uv executable from the
+# environment, falling back to the placeholder tokens below. A placeholder is
+# NOT a usable path. Fill them in with either
+#
+#   scripts/install_dsh_preset.py install      # also writes a filled-in copy
+#   install.ps1 -FromCheckout dsh             # Windows, one command
+#   install.sh --from-checkout dsh            # macOS / Linux, one command
+#
+# or export POE_BD_CREATOR_ROOT=<repo-root> and, only when uv is not on PATH,
+# POE_BD_UV=<uv executable>. uv on PATH covers every install documented in the
+# root README.
+#
+# Use EITHER this patch (host-wide registration) OR the `poe-bd` preset. Applying
+# both starts a second MCP client per server — two PoB engines — and exposes the
+# tools to every session instead of just the poe-bd one.
 
 - insert:
     - id: poe-knowledge-mcp
@@ -24,11 +34,11 @@
       config:
         serverName: poe_knowledge
         transport: stdio
-        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        command: !!js "process.env.POE_BD_UV ?? '__POE_BD_UV__'"
         args: [run, python, -m, server.mcp.knowledge_server]
-        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
         env:
-          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
           PYTHONUTF8: '1'
 
     - id: poe-build-mcp
@@ -36,11 +46,11 @@
       config:
         serverName: poe_build
         transport: stdio
-        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        command: !!js "process.env.POE_BD_UV ?? '__POE_BD_UV__'"
         args: [run, python, -m, server.mcp.build_server]
-        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
         env:
-          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
           PYTHONUTF8: '1'
 
     - id: poe-research-mcp
@@ -48,11 +58,11 @@
       config:
         serverName: poe_research
         transport: stdio
-        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        command: !!js "process.env.POE_BD_UV ?? '__POE_BD_UV__'"
         args: [run, python, -m, server.mcp.research_server]
-        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
         env:
-          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
           PYTHONUTF8: '1'
 
     - id: poe-learning-mcp
@@ -60,9 +70,9 @@
       config:
         serverName: poe_learning
         transport: stdio
-        command: !!js "process.env.POE_BD_UV ?? (process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT ? process.env.POE_BD_CREATOR_ROOT + '/.tools/uv/uv.exe' : 'E:/poe-bd-creator/.tools/uv/uv.exe') : 'uv')"
+        command: !!js "process.env.POE_BD_UV ?? '__POE_BD_UV__'"
         args: [run, python, -m, server.mcp.learning_server]
-        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
         env:
-          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'E:/poe-bd-creator'"
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? '__POE_BD_CREATOR_ROOT__'"
           PYTHONUTF8: '1'

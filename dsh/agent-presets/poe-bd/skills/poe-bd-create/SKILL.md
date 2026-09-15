@@ -61,7 +61,7 @@ Agent 主导理解需求、查询取舍、机制设计、PoB 实装和失败修�
   来源与重复计数处理。建模覆盖不决定技能价值，未建模不按零收益或低优先级处理。可信Judge、artifact和
   Research回执不能自造、改hash或跨run复用。研究结论保留成立条件、失败窗口与验证任务。
 - 必须通过 MCP 工具调用，不搜索调用者仓库、安装路径或运行文件，不用PowerShell/CLI代替。
-  普通Create的知识工具在 `poe-knowledge-mcp`，PoB/计算/Judge在 `poe-build-mcp`；
+  普通Create的知识工具在 `mcp__poe_knowledge__*`，PoB/计算/Judge在 `mcp__poe_build__*`；
   Blind所需Learning工具由其claim入口提供。工具名有宿主前缀，以下只写末尾名称。
 - 所有PoB/计算工具共享活动构筑，必须串行调用；只有不接触活动构筑的知识查询可并行。
   机械写入使用职能小事务、最新state hash/fingerprint；只有 `rolledBack=true` 才确认恢复。

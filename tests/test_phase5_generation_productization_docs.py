@@ -190,6 +190,17 @@ def test_installers_register_poe2_mcp_server_for_supported_hosts():
     assert "validate_research_skill_pair" in sh
     assert "must both exist" in ps1
     assert "must both exist" in sh
+    # DeepSeek Harness installs through its own preset path, documented in both
+    # README languages and reachable from both installers.
+    for text in (readme, (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")):
+        assert "DeepSeek Harness" in text
+        assert "(dsh/README.md)" in text
+        assert "--from-checkout dsh" in text
+    for text in (ps1, sh):
+        assert "dsh-preset" in text
+        assert "install_dsh_preset" in text
+    assert "$DshHome = if ($env:DSH_HOME)" in ps1
+    assert 'DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"' in sh
 
 
 def test_phase5_distribution_includes_generation_runtime_contracts():

@@ -6,14 +6,31 @@ it into the user-authored preset root that DSH's roster scans:
 
     ${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd/
 
-It never touches the shipped preset install or the host composition. Layer-1
-MCP registration is a separate opt-in (`dsh web --patch dsh/poe-bd.mcp.cordis.yml`),
-printed as a next step.
+The shipped preset carries the whole toolset: the three workflows the project
+presents to users (research, with an explicit worker; create; learning) plus the
+experimental comparative-learning loop driver.
+
+While copying, it fills in the two placeholder tokens the checked-in
+compositions carry, so the placed preset needs no environment variables:
+
+    __POE_BD_CREATOR_ROOT__  -> the checkout this installer runs from
+                                    (`--repo-root` overrides it)
+    __POE_BD_UV__            -> `uv` from PATH, or the checkout's own uv when
+                                    PATH has none
+
+It also writes a filled-in copy of the layer-1 MCP patch
+(`dsh/poe-bd.mcp.cordis.yml`) beside the preset, for cases where the four
+servers are registered host-wide instead of through the preset. Register one or
+the other, never both: both start a second MCP client per server (two PoB
+engines) and expose the tools to every session.
+
+It never touches the shipped preset install or the host composition.
 
 Usage (from the repo root):
 
-    python scripts/install_dsh_preset.py install            # install (dry-run: --dry-run)
+    python scripts/install_dsh_preset.py install            # dry-run: --dry-run
     python scripts/install_dsh_preset.py install --repo-root E:/other/poe-bd-creator
+    python scripts/install_dsh_preset.py install --force    # reinstall (rotates the kept .bak)
     python scripts/install_dsh_preset.py uninstall
     python scripts/install_dsh_preset.py doctor
 """
@@ -22,15 +39,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PRESET = ROOT / "dsh" / "agent-presets" / "poe-bd"
 PATCH_FILE = ROOT / "dsh" / "poe-bd.mcp.cordis.yml"
 PRESET_ID = "poe-bd"
+COMPOSITION_FILE = "agent.cordis.yml"
+METADATA_FILE = "preset.yml"
+EMITTED_PATCH_NAME = "poe-bd.mcp.cordis.yml"
 REQUIRED_SKILLS = (
     "poe-bd-create",
     "poe-bd-learn",
@@ -38,10 +60,15 @@ REQUIRED_SKILLS = (
     "poe-bd-research",
     "poe-bd-research-worker",
 )
-# Literal fallback root baked into the checked-in compositions; rewritten at
-# install time when --repo-root differs.
+# Placeholder tokens the checked-in compositions carry instead of one machine's
+# absolute path. `install_preset` must clear every one of them.
+ROOT_TOKEN = "__POE_BD_CREATOR_ROOT__"
+UV_TOKEN = "__POE_BD_UV__"
+TOKEN_PREFIX = "__POE_BD_"
+# Literal fallback written by compositions that predate the token rewrite; the
+# installer still rewrites it so an edited copy keeps working.
 DEFAULT_ROOT_LITERAL = "E:/poe-bd-creator"
-_ROOT_LITERAL_RE = re.compile(re.escape(DEFAULT_ROOT_LITERAL))
+_LEGACY_ROOT_LITERAL_RE = re.compile(re.escape(DEFAULT_ROOT_LITERAL))
 
 
 def dsh_home(environ: dict[str, str]) -> Path:
@@ -52,15 +79,70 @@ def preset_target(dsh_home_dir: Path) -> Path:
     return dsh_home_dir / ".agent-presets" / PRESET_ID
 
 
+def resolve_repo_root(explicit: str | None) -> Path:
+    """The checkout a placed preset must run from: this one unless overridden."""
+    return Path(explicit).resolve() if explicit else ROOT
+
+
+def resolve_uv(explicit: str | None = None, environ: dict[str, str] | None = None) -> str | None:
+    """Resolve the uv executable to bake into a placed composition.
+
+    PATH wins over the checkout's own copy, because the root README requires uv
+    as a prerequisite and a fresh clone has no `.tools/` (it is git-ignored).
+    Returns None when no uv exists at all.
+    """
+    env = dict(os.environ) if environ is None else environ
+    if explicit:
+        return explicit
+    if env.get("POE_BD_UV"):
+        return env["POE_BD_UV"]
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (ROOT / ".tools" / "uv" / "uv.exe", ROOT / ".tools" / "uv" / "uv"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _js_path(value: str) -> str:
+    """Render a path for a single-quoted JS literal in the cordis YAML."""
+    return value.replace("\\", "/")
+
+
+def unresolved_tokens(text: str) -> list[str]:
+    return sorted({token for token in re.findall(rf"{TOKEN_PREFIX}\w+", text)})
+
+
+def render_composition(text: str, *, repo_root: Path, uv_literal: str) -> str:
+    """Fill the composition's tokens, then any legacy literal checkout path."""
+    text = text.replace(ROOT_TOKEN, _js_path(str(repo_root)))
+    text = text.replace(UV_TOKEN, _js_path(uv_literal))
+    return _LEGACY_ROOT_LITERAL_RE.sub(_js_path(str(repo_root)), text)
+
+
 def source_problems(source: Path) -> list[str]:
     problems: list[str] = []
-    for rel in ("agent.cordis.yml", "preset.yml"):
+    for rel in (COMPOSITION_FILE, METADATA_FILE):
         if not (source / rel).is_file():
             problems.append(f"missing {rel}")
     for skill in REQUIRED_SKILLS:
         if not (source / "skills" / skill / "SKILL.md").is_file():
             problems.append(f"missing skills/{skill}/SKILL.md")
     return problems
+
+
+def template_problems(source: Path) -> list[str]:
+    """The checked-in template must carry placeholders, not one machine's path."""
+    composition = source / COMPOSITION_FILE
+    if not composition.is_file():
+        return []
+    if TOKEN_PREFIX not in _read(composition):
+        return [
+            f"{composition} carries none of the {TOKEN_PREFIX}* placeholder tokens; "
+            "a placed preset would depend on one machine's absolute path"
+        ]
+    return []
 
 
 def _read(path: Path) -> str:
@@ -72,13 +154,16 @@ def install_preset(
     source: Path,
     target: Path,
     repo_root: str | None,
+    uv_command: str | None = None,
+    force: bool = False,
     dry_run: bool = False,
 ) -> dict[str, object]:
-    problems = source_problems(source)
+    problems = source_problems(source) + template_problems(source)
     if problems:
         return {"status": "error", "errorCode": "incomplete_source", "problems": problems}
+    resolved_root = resolve_repo_root(repo_root)
     target_exists = target.exists()
-    if target_exists and not (target / "agent.cordis.yml").is_file():
+    if target_exists and not (target / COMPOSITION_FILE).is_file():
         return {
             "status": "conflict",
             "errorCode": "target_occupied_by_foreign_dir",
@@ -95,27 +180,71 @@ def install_preset(
             "staging": str(staging),
         }
     if backup_path.exists():
+        # The kept backup is the previous version's recovery point. `--force`
+        # rotates it instead of deleting it, so re-installing (the documented
+        # update path) stays one command; an orphan backup next to a missing
+        # target is still a conflict, because it may be the only good copy.
+        if not force or not target_exists:
+            return {
+                "status": "conflict",
+                "errorCode": ("backup_already_exists" if target_exists else "orphan_backup_exists"),
+                "target": str(target),
+                "backup": str(backup_path),
+            }
+        rotated_backup = backup_path.with_name(
+            f"{backup_path.name}.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        )
+        if not dry_run:
+            shutil.move(str(backup_path), str(rotated_backup))
+    else:
+        rotated_backup = None
+    # uv is resolved after the conflict checks so a pre-existing backup or a
+    # staging residue is reported as itself, not masked by a missing tool.
+    resolved_uv = resolve_uv(uv_command)
+    if resolved_uv is None:
         return {
-            "status": "conflict",
-            "errorCode": ("backup_already_exists" if target_exists else "orphan_backup_exists"),
-            "target": str(target),
-            "backup": str(backup_path),
+            "status": "error",
+            "errorCode": "uv_not_found",
+            "detail": (
+                "uv is required to run the poe-bd MCP servers. Install it from "
+                "https://docs.astral.sh/uv/ (or pass --uv-command)."
+            ),
         }
+    emitted_patch = staging / EMITTED_PATCH_NAME
+    patch_command = f"dsh web --patch {target / EMITTED_PATCH_NAME}"
     if dry_run:
         return {
             "status": "would_install",
             "target": str(target),
             "backup": str(backup) if backup else None,
-            "patchCommand": f"dsh web --patch {PATCH_FILE}",
+            "rotatedBackup": str(rotated_backup) if rotated_backup else None,
+            "repoRoot": str(resolved_root),
+            "uvCommand": resolved_uv,
+            "patchCommand": patch_command,
         }
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copytree(source, staging, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        if repo_root is not None and repo_root != DEFAULT_ROOT_LITERAL:
-            composition = staging / "agent.cordis.yml"
-            rewritten = _ROOT_LITERAL_RE.sub(repo_root.replace("\\", "/"), _read(composition))
-            composition.write_text(rewritten, encoding="utf-8", newline="\n")
+        composition = staging / COMPOSITION_FILE
+        composition.write_text(
+            render_composition(
+                _read(composition), repo_root=resolved_root, uv_literal=resolved_uv
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        if PATCH_FILE.is_file():
+            emitted_patch.write_text(
+                render_composition(
+                    _read(PATCH_FILE), repo_root=resolved_root, uv_literal=resolved_uv
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+        leftovers = unresolved_tokens(_read(composition))
         staged_problems = source_problems(staging)
+        if leftovers:
+            raise RuntimeError(f"unresolved placeholder tokens in {composition}: {leftovers}")
         if staged_problems:
             raise RuntimeError("staged preset is incomplete: " + ", ".join(staged_problems))
         if target_exists:
@@ -136,6 +265,7 @@ def install_preset(
             "errorCode": "install_failed",
             "target": str(target),
             "backup": str(backup) if backup else None,
+            "rotatedBackup": str(rotated_backup) if rotated_backup else None,
             "errorKind": type(exc).__name__,
             "detail": str(exc),
         }
@@ -143,15 +273,21 @@ def install_preset(
         "status": "installed",
         "target": str(target),
         "backup": str(backup) if backup else None,
-        "patchCommand": f"dsh web --patch {PATCH_FILE}",
-        "hint": "新建会话时在预设列表选择 poe-bd；或先执行 patchCommand 注册 MCP 工具",
+        "rotatedBackup": str(rotated_backup) if rotated_backup else None,
+        "repoRoot": str(resolved_root),
+        "uvCommand": resolved_uv,
+        "patchCommand": patch_command,
+        "hint": (
+            "新建 DSH 会话时在预设列表选择 poe-bd；不要同时应用上面的 patch，"
+            "否则同一 server 会拉起两套实例"
+        ),
     }
 
 
 def uninstall_preset(*, target: Path, dry_run: bool = False) -> dict[str, object]:
     if not target.exists():
         return {"status": "not_installed", "target": str(target)}
-    if not (target / "agent.cordis.yml").is_file() or not (target / "preset.yml").is_file():
+    if not (target / COMPOSITION_FILE).is_file() or not (target / METADATA_FILE).is_file():
         return {
             "status": "conflict",
             "errorCode": "not_our_preset_dir",
@@ -164,15 +300,17 @@ def uninstall_preset(*, target: Path, dry_run: bool = False) -> dict[str, object
 
 
 def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
+    uv_literal = resolve_uv()
     checks: dict[str, bool] = {
-        "sourceComplete": not source_problems(source),
-        "installed": (target / "agent.cordis.yml").is_file(),
+        "sourceComplete": not (source_problems(source) + template_problems(source)),
+        "installed": (target / COMPOSITION_FILE).is_file(),
         "skillsInstalled": all(
             (target / "skills" / skill / "SKILL.md").is_file() for skill in REQUIRED_SKILLS
         ),
         "patchExists": PATCH_FILE.is_file(),
     }
     if checks["installed"]:
+        composition = target / COMPOSITION_FILE
         try:
             checks["frontmatter"] = all(
                 _read(target / "skills" / skill / "SKILL.md").startswith("---")
@@ -180,6 +318,12 @@ def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
             )
         except OSError:
             checks["frontmatter"] = False
+        try:
+            checks["tokensResolved"] = not unresolved_tokens(_read(composition))
+        except OSError:
+            checks["tokensResolved"] = False
+        if checks["patchExists"]:
+            checks["emittedPatch"] = (target / EMITTED_PATCH_NAME).is_file()
     # Swap residue detection: `poe-bd.next` is never legitimate after a
     # finished install, and a missing target with a leftover `poe-bd.bak`
     # means a crashed swap that must be restored manually before reinstalling.
@@ -198,6 +342,7 @@ def doctor_preset(*, source: Path, target: Path) -> dict[str, object]:
         "status": "healthy" if all(gated.values()) else "unhealthy",
         "target": str(target),
         "checks": checks,
+        "uvCommand": uv_literal or "uv (not found: install uv or set POE_BD_UV)",
     }
 
 
@@ -206,20 +351,28 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("action", choices=("install", "uninstall", "doctor"))
     parser.add_argument("--dsh-home", type=Path, help="override DSH_HOME (default env or ~/.dsh)")
     parser.add_argument("--source", type=Path, default=SOURCE_PRESET)
-    parser.add_argument("--repo-root", help="repo root to bake into the installed copy")
+    parser.add_argument("--repo-root", help="checkout a placed preset must run from")
+    parser.add_argument("--uv-command", help="uv executable to bake into a placed preset")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="reinstall over an existing preset by rotating its kept .bak to a timestamped name",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    home = args.dsh_home or dsh_home(dict(__import__("os").environ))
+    home = args.dsh_home or dsh_home(dict(os.environ))
     target = preset_target(home)
     if args.action == "install":
         result = install_preset(
             source=args.source,
             target=target,
             repo_root=args.repo_root,
+            uv_command=args.uv_command,
+            force=args.force,
             dry_run=args.dry_run,
         )
     elif args.action == "uninstall":

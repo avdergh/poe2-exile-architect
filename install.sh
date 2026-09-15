@@ -8,10 +8,15 @@ REPO_DIR="${POE_BD_CREATOR_DIR:-$HOME/.poe-bd-creator/repo}"
 PLUGIN_LINK="$HOME/.poe-bd-creator-plugin"
 DRY_RUN=0
 FROM_CHECKOUT=0
+FORCE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGED_MCP_BEGIN="# BEGIN poe-bd-creator managed MCP server"
 MANAGED_MCP_END="# END poe-bd-creator managed MCP server"
 PORTABLE_SKILLS="poe-bd-research poe-bd-research-worker poe-bd-create poe-bd-learn"
+# DeepSeek Harness installs as a user-authored agent preset, not as a skills
+# directory: ${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd/.
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+DSH_PRESET_TARGET="$DSH_HOME_DIR/.agent-presets/poe-bd"
 
 platforms_table() {
   cat <<EOF
@@ -23,6 +28,7 @@ gemini|$HOME/.agents/skills|per-skill
 opencode|$HOME/.config/opencode/skills|per-skill
 openclaw|$HOME/.openclaw/skills|folder
 hermes|$HOME/.hermes/skills|folder
+dsh|$DSH_PRESET_TARGET|dsh-preset
 EOF
 }
 
@@ -46,6 +52,7 @@ Exile Architect installer
 Usage:
   install.sh [<platform>]            Install for <platform> (or prompt if omitted)
   install.sh --dry-run <platform>    Show actions without changing files
+  install.sh --force <platform>      Reinstall over an existing install (rotates a kept backup)
   install.sh --from-checkout <platform>  Install this checkout without clone/pull
   install.sh --update                Pull latest changes
   install.sh --register-mcp-only [host]  Register this checkout's MCP server
@@ -59,6 +66,13 @@ $(platform_ids | sed 's/^/  - /')
 Environment:
   POE_BD_CREATOR_REPO_URL  Override clone URL
   POE_BD_CREATOR_DIR       Override clone destination
+  DSH_HOME                 DeepSeek Harness home (default: $HOME/.dsh)
+
+Notes:
+  The `dsh` platform installs the poe-bd agent preset under
+  ${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd and, next to it, a filled-in copy
+  of the layer-1 MCP patch. Select EITHER the preset OR that patch in DSH, never
+  both.
 USAGE
 }
 
@@ -225,6 +239,10 @@ remove_link() {
 
 link_skills() {
   local target="$1" style="$2" id="$3" root
+  # DeepSeek Harness consumes a copied agent preset, not a skills directory:
+  # install_dsh_preset installs the whole preset (composition + skills) and
+  # fills in the checkout/uv placeholders on the way in.
+  [[ "$style" == "dsh-preset" ]] && return 0
   validate_research_skill_pair || exit 1
   root="$(skills_root)"
   [[ "$DRY_RUN" == "1" ]] || mkdir -p "$target"
@@ -251,6 +269,7 @@ link_skills() {
 
 unlink_skills() {
   local target="$1" style="$2"
+  [[ "$style" == "dsh-preset" ]] && return 0
   [[ -d "$target" ]] || return 0
   case "$style" in
     per-skill)
@@ -434,6 +453,26 @@ unregister_codex_mcp_server() {
   say "Removed installer-managed Codex MCP servers from $config_path"
 }
 
+install_dsh_preset() {
+  local action="$1" uv_path script project_root
+  uv_path="$(resolve_uv_command)"
+  script="$REPO_DIR/scripts/install_dsh_preset.py"
+  [[ -f "$script" ]] || script="$SCRIPT_DIR/scripts/install_dsh_preset.py"
+  if [[ ! -f "$script" ]]; then
+    say "scripts/install_dsh_preset.py not found in this checkout."
+    exit 1
+  fi
+  project_root="$REPO_DIR"
+  [[ -f "$project_root/pyproject.toml" ]] || project_root="$SCRIPT_DIR"
+  local args=(run --project "$project_root" python "$script" "$action")
+  if [[ "$action" == "install" ]]; then
+    args+=(--repo-root "$REPO_DIR" --uv-command "$uv_path")
+    [[ "$FORCE" == "1" ]] && args+=(--force)
+  fi
+  [[ "$DRY_RUN" == "1" ]] && args+=(--dry-run)
+  "$uv_path" "${args[@]}"
+}
+
 is_portable_mcp_host() {
   [[ "$1" == "claude" || "$1" == "cursor" || "$1" == "opencode" ]]
 }
@@ -457,6 +496,8 @@ register_mcp_server() {
   local id="$1"
   if [[ "$id" == "codex" ]]; then
     register_codex_mcp_server
+  elif [[ "$id" == "dsh" ]]; then
+    install_dsh_preset install
   elif is_portable_mcp_host "$id"; then
     configure_portable_host install "$id"
   else
@@ -468,6 +509,8 @@ unregister_mcp_server() {
   local id="$1"
   if [[ "$id" == "codex" ]]; then
     unregister_codex_mcp_server
+  elif [[ "$id" == "dsh" ]]; then
+    install_dsh_preset uninstall
   elif is_portable_mcp_host "$id"; then
     configure_portable_host uninstall "$id"
   fi
@@ -479,16 +522,22 @@ cmd_install() {
   target="$(printf '%s\n' "$row" | cut -d'|' -f2)"
   style="$(printf '%s\n' "$row" | cut -d'|' -f3)"
   [[ "$FROM_CHECKOUT" == "1" ]] || clone_or_update
-  if [[ "$id" == "codex" ]] || is_portable_mcp_host "$id"; then
+  if [[ "$id" == "codex" || "$id" == "dsh" ]] || is_portable_mcp_host "$id"; then
     [[ "$DRY_RUN" == "1" ]] || resolve_uv_command >/dev/null
   fi
   say "Linking skills for $id ($style -> $target)"
   link_skills "$target" "$style" "$id"
-  say "Linking universal plugin root"
-  link_plugin_root
+  if [[ "$id" != "dsh" ]]; then
+    say "Linking universal plugin root"
+    link_plugin_root
+  fi
   install_build_converter_provider
   register_mcp_server "$id"
-  if [[ "$id" == "codex" ]]; then
+  if [[ "$id" == "dsh" ]]; then
+    say "Installed the Exile Architect poe-bd preset for DeepSeek Harness at $target."
+    say "Open a new DSH session and pick the poe-bd preset."
+    say "Host-wide registration instead (never both): dsh web --patch $target/poe-bd.mcp.cordis.yml"
+  elif [[ "$id" == "codex" ]]; then
     say "Installed Exile Architect for $id. Restart the host to discover all four workflows."
   else
     say "Installed Exile Architect for $id. Restart the host to discover /poe-bd-research, /poe-bd-create and /poe-bd-learn."
@@ -525,6 +574,11 @@ main() {
       shift
       cmd_install "${1:-$(prompt_platform)}"
       ;;
+    --force)
+      FORCE=1
+      shift
+      cmd_install "${1:-$(prompt_platform)}"
+      ;;
     --from-checkout)
       FROM_CHECKOUT=1
       REPO_DIR="$SCRIPT_DIR"
@@ -545,10 +599,12 @@ main() {
       [[ -n "${1:-}" ]] || { say "--doctor requires a host"; exit 1; }
       if [[ "$1" == "codex" ]]; then
         say "Codex doctor remains available through a new Codex task and engine_health."
+      elif [[ "$1" == "dsh" ]]; then
+        install_dsh_preset doctor
       elif is_portable_mcp_host "$1"; then
         configure_portable_host doctor "$1"
       else
-        say "Doctor supports: codex, claude, cursor, opencode"
+        say "Doctor supports: codex, dsh, claude, cursor, opencode"
         exit 1
       fi
       ;;

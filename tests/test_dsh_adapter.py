@@ -16,7 +16,9 @@ def _write_source_preset(root: Path, *, marker: str = "new") -> Path:
     source = root / "source-preset"
     source.mkdir(parents=True)
     (source / "agent.cordis.yml").write_text(
-        f"cwd: {installer.DEFAULT_ROOT_LITERAL}\nmarker: {marker}\n",
+        f"cwd: !!js \"process.env.POE_BD_CREATOR_ROOT ?? '{installer.ROOT_TOKEN}'\"\n"
+        f"uv: !!js \"process.env.POE_BD_UV ?? '{installer.UV_TOKEN}'\"\n"
+        f"marker: {marker}\n",
         encoding="utf-8",
     )
     (source / "preset.yml").write_text(f"name: {marker}\n", encoding="utf-8")
@@ -52,6 +54,10 @@ def test_adapt_skills_regenerates_the_checked_in_tree(tmp_path):
         assert (out / rel).read_text(encoding="utf-8") == (checked_in / rel).read_text(
             encoding="utf-8"
         )
+    create = (out / "poe-bd-create" / "SKILL.md").read_text(encoding="utf-8")
+    assert "`mcp__poe_knowledge__*`" in create
+    assert "`mcp__poe_build__*`" in create
+    assert "`poe-knowledge-mcp`" not in create
     controller = (out / "poe-bd-research" / "SKILL.md").read_text(encoding="utf-8")
     worker = (out / "poe-bd-research-worker" / "SKILL.md").read_text(encoding="utf-8")
     assert not (out / "poe-bd-research-loop").exists()
@@ -69,6 +75,79 @@ def test_adapt_skills_regenerates_the_checked_in_tree(tmp_path):
     assert "`weaponSetScope` 才是技能组级字段" in worker
     assert "`global` / `weapon_set_1` /\n  `weapon_set_2`" in worker
     assert "不得根据任一 gem 的 global-effect 开关推断武器切换" in worker
+
+
+def test_generated_learning_loop_body_uses_dsh_subagents():
+    """The generated loop driver carries DSH semantics.
+
+    Codex thread primitives may survive only inside the adapter note.
+    """
+    text = (
+        ROOT
+        / "dsh"
+        / "agent-presets"
+        / "poe-bd"
+        / "skills"
+        / "poe-bd-learning-loop"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    body = "\n".join(line for line in text.splitlines() if not line.startswith(">"))
+    for primitive in ("create_thread", "send_message_to_thread", "## 可见任务初始化"):
+        assert primitive not in body
+    for required in ("`subagent`", "`send_message`", "claim_learning_phase"):
+        assert required in body
+    assert "task_id` 与 `thread_id" in body
+
+
+def test_every_source_skill_is_adapted_or_explicitly_excluded():
+    assert adapt.skill_coverage_problems(adapt.SOURCE_SKILLS) == []
+    adapted = set(adapt.EXTRA_NOTES)
+    excluded = set(adapt.SKILL_EXCLUSIONS)
+    assert adapted.isdisjoint(excluded)
+    present = {path.name for path in adapt.SOURCE_SKILLS.iterdir() if path.is_dir()}
+    assert adapted | excluded == present
+    # The three workflows the project presents to users ship with their worker.
+    assert {
+        "poe-bd-research",
+        "poe-bd-research-worker",
+        "poe-bd-create",
+        "poe-bd-learn",
+    } <= adapted
+
+
+def test_skill_coverage_reports_an_unadapted_source_skill(tmp_path):
+    source = tmp_path / "skills"
+    (source / "poe-bd-newmode").mkdir(parents=True)
+    (source / "poe-bd-newmode" / "SKILL.md").write_text(
+        "---\nname: poe-bd-newmode\n---\n", encoding="utf-8"
+    )
+
+    problems = adapt.skill_coverage_problems(source)
+
+    assert problems
+    assert any("poe-bd-newmode" in problem for problem in problems)
+
+
+def test_polish_rules_still_match_their_source_sentences():
+    assert adapt.polish_problems(adapt.SOURCE_SKILLS, adapt.load_tool_names()) == []
+
+
+def test_polish_gate_reports_a_rule_that_stopped_matching(monkeypatch):
+    monkeypatch.setitem(adapt.POLISH, "poe-bd-create", [("sentence that was reworded", "x")])
+
+    problems = adapt.polish_problems(adapt.SOURCE_SKILLS, adapt.load_tool_names())
+
+    assert problems
+    assert any("POLISH rule 1" in problem for problem in problems)
+
+
+def test_polish_gate_fails_the_check_and_write_paths(monkeypatch, tmp_path):
+    monkeypatch.setitem(adapt.POLISH, "poe-bd-create", [("sentence that was reworded", "x")])
+
+    assert adapt.main(["--check"]) == 1
+    out = tmp_path / "skills"
+    assert adapt.main(["--out", str(out)]) == 1
+    assert not out.exists()
 
 
 def test_adapt_check_reports_stale_generated_files(tmp_path):
@@ -195,6 +274,58 @@ def test_install_rejects_orphan_backup(tmp_path):
     assert (backup / "old.txt").read_text(encoding="utf-8") == "orphan"
 
 
+def test_force_reinstall_rotates_the_kept_backup(tmp_path):
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+
+    def place(marker: str) -> str:
+        source = _write_source_preset(tmp_path / f"src-{marker}", marker=marker)
+        return str(
+            installer.install_preset(
+                source=source, target=target, repo_root=None, uv_command="uv"
+            )["status"]
+        )
+
+    assert place("v1") == "installed"
+    # Second install has no kept backup yet, so it just creates one.
+    assert place("v2") == "installed"
+    assert "marker: v1" in (
+        target.with_name("poe-bd.bak") / installer.COMPOSITION_FILE
+    ).read_text(encoding="utf-8")
+
+    source = _write_source_preset(tmp_path / "src-v3", marker="v3")
+    conflict = installer.install_preset(
+        source=source, target=target, repo_root=None, uv_command="uv"
+    )
+    assert conflict["errorCode"] == "backup_already_exists"
+
+    forced = installer.install_preset(
+        source=source, target=target, repo_root=None, uv_command="uv", force=True
+    )
+
+    assert forced["status"] == "installed"
+    rotated = Path(str(forced["rotatedBackup"]))
+    assert rotated.is_dir()
+    assert rotated.name.startswith("poe-bd.bak.")
+    assert "marker: v1" in (rotated / installer.COMPOSITION_FILE).read_text(encoding="utf-8")
+    current_backup = target.with_name("poe-bd.bak")
+    assert "marker: v2" in (current_backup / installer.COMPOSITION_FILE).read_text(encoding="utf-8")
+    assert "marker: v3" in (target / installer.COMPOSITION_FILE).read_text(encoding="utf-8")
+
+
+def test_force_never_swallows_an_orphan_backup(tmp_path):
+    source = _write_source_preset(tmp_path)
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+    _write_installed_preset(target.with_name("poe-bd.bak"), marker="orphan")
+
+    result = installer.install_preset(
+        source=source, target=target, repo_root=None, uv_command="uv", force=True
+    )
+
+    assert result["status"] == "conflict"
+    assert result["errorCode"] == "orphan_backup_exists"
+    assert not target.exists()
+
+
 def test_dsh_compositions_register_all_domain_servers():
     patch = (ROOT / "dsh" / "poe-bd.mcp.cordis.yml").read_text(encoding="utf-8")
     agent = (ROOT / "dsh" / "agent-presets" / "poe-bd" / "agent.cordis.yml").read_text(
@@ -211,8 +342,105 @@ def test_dsh_compositions_register_all_domain_servers():
             assert module in text
     for text in (patch, agent):
         assert text.count("process.env.POE_BD_UV") == 4
-        assert text.count("process.platform === 'win32'") >= 4
-        assert text.count(": 'uv')") == 4
+        assert text.count("process.env.POE_BD_UV ?? '__POE_BD_UV__'") == 4
+        assert text.count("process.env.POE_BD_CREATOR_ROOT") == 8
+        assert text.count(installer.ROOT_TOKEN) == 8
+        # No machine-specific checkout path or bundled-uv platform branch.
+        assert installer.DEFAULT_ROOT_LITERAL not in text
+        assert "process.platform === 'win32' ? (process.env.POE_BD_CREATOR_ROOT" not in text
+    # The patch file carries only the four MCP rows, so it needs no platform branch.
+    assert "process.platform" not in patch
+
+
+def test_real_preset_template_installs_without_placeholder_tokens(tmp_path):
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+
+    result = installer.install_preset(
+        source=installer.SOURCE_PRESET,
+        target=target,
+        repo_root=None,
+        uv_command="uv",
+    )
+
+    assert result["status"] == "installed"
+    composition = (target / installer.COMPOSITION_FILE).read_text(encoding="utf-8")
+    assert installer.unresolved_tokens(composition) == []
+    assert installer._js_path(str(installer.ROOT)) in composition
+    patch = (target / installer.EMITTED_PATCH_NAME).read_text(encoding="utf-8")
+    assert installer.unresolved_tokens(patch) == []
+    assert "- insert:" in patch and "serverName: poe_build" in patch
+    doctor = installer.doctor_preset(source=installer.SOURCE_PRESET, target=target)
+    assert doctor["status"] == "healthy"
+    assert doctor["checks"]["tokensResolved"] is True
+    assert doctor["checks"]["emittedPatch"] is True
+
+
+def test_install_rejects_a_template_without_placeholder_tokens(tmp_path):
+    source = _write_source_preset(tmp_path)
+    (source / installer.COMPOSITION_FILE).write_text("cwd: /some/machine/path\n", encoding="utf-8")
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+
+    result = installer.install_preset(
+        source=source, target=target, repo_root=None, uv_command="uv"
+    )
+
+    assert result["status"] == "error"
+    assert result["errorCode"] == "incomplete_source"
+    assert not target.exists()
+
+
+def test_install_reports_conflict_before_missing_uv(tmp_path, monkeypatch):
+    source = _write_source_preset(tmp_path)
+    target = tmp_path / "home" / ".agent-presets" / "poe-bd"
+    _write_installed_preset(target)
+    backup = target.with_name("poe-bd.bak")
+    _write_installed_preset(backup, marker="backup")
+    monkeypatch.setattr(installer, "resolve_uv", lambda *args, **kwargs: None)
+
+    result = installer.install_preset(
+        source=source, target=target, repo_root=None, uv_command=None
+    )
+
+    assert result["status"] == "conflict"
+    assert result["errorCode"] == "backup_already_exists"
+
+
+def test_dsh_bundle_manifest_and_patch_are_installable():
+    """`dsh plugin add` needs a dsh.bundle manifest plus a patch that inserts
+    exactly the four domain servers, and the patch must stay machine-independent."""
+    import json
+
+    bundle = ROOT / "dsh" / "bundle"
+    manifest = json.loads((bundle / "package.json").read_text(encoding="utf-8"))
+    patch_name = manifest["dsh"]["bundle"]["patch"]
+
+    assert patch_name == "./cordis.patch.yml"
+    patch_path = bundle / patch_name.lstrip("./")
+    assert patch_path.is_file()
+    # The community plugin index discovers repositories by this topic keyword.
+    assert "dsh-plugin" in manifest["keywords"]
+    assert manifest["license"] == "MIT"
+
+    patch = patch_path.read_text(encoding="utf-8")
+    assert patch.count("- insert:") == 1
+    for server, domain in {
+        "poe_knowledge": "knowledge",
+        "poe_build": "build",
+        "poe_research": "research",
+        "poe_learning": "learning",
+    }.items():
+        assert f"serverName: {server}" in patch
+        assert f"server.mcp.{domain}_server" in patch
+    assert patch.count("name: '@deepseek-ai/dsh-mcp-client'") == 4
+    # A published bundle must not carry one machine's path or an unsubstituted
+    # template token; it reads both facts from the environment instead.
+    assert installer.DEFAULT_ROOT_LITERAL not in patch
+    assert installer.TOKEN_PREFIX not in patch
+    assert "process.env.POE_BD_CREATOR_ROOT" in patch
+    assert "process.env.POE_BD_UV" in patch
+    # The preset keeps its own MCP rows, so the two registration paths are
+    # mutually exclusive and both documents must say so.
+    assert "二选一" in (bundle / "README.md").read_text(encoding="utf-8")
 
 
 def test_doctor_reports_staging_residue(tmp_path):

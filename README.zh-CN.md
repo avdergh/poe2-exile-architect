@@ -25,7 +25,7 @@ Exile Architect 为 Codex、Claude Code、Cursor 和 OpenCode 接入游戏资料
 ### 1. 准备环境
 
 - 安装 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。uv 可以自动安装所需的 Python 版本。
-- 准备一个已经配置好模型的宿主：**Codex、Claude Code、Cursor 或 OpenCode**。Research 还需要宿主允许子代理访问 MCP 工具。
+- 准备一个已经配置好模型的宿主：**Codex、Claude Code、Cursor、OpenCode 或 DeepSeek Harness**。Research 还需要宿主允许子代理访问 MCP 工具。
 - 安装运行 PoB 计算引擎所需的 **LuaJIT 2.1**：
 
 | 系统 | LuaJIT 安装方式 |
@@ -54,7 +54,7 @@ git -C pob/PathOfBuilding-PoE2 checkout ce566eac45ea8a86477f513c7ee65a1ebe60014e
 
 ### 3. 应用补丁并接入 Agent
 
-选择对应系统的命令。以下以 Codex 为例；使用其他宿主时，将 `codex` 替换为 `claude`、`cursor` 或 `opencode`。
+选择对应系统的命令。以下以 Codex 为例；使用其他宿主时，将 `codex` 替换为 `claude`、`cursor` 或 `opencode`。DeepSeek Harness 通过独立的 preset 安装，见本步骤末尾。
 
 **Windows PowerShell**
 
@@ -75,6 +75,22 @@ bash install.sh --from-checkout codex
 
 补丁只需在新下载的 PoB 源码上应用一次。安装器会注册四个本地 MCP 服务并安装工作流 skills。Windows 是主要开发平台；macOS 尚未完成实机认证。
 
+**DeepSeek Harness**
+
+DeepSeek Harness 原生带 MCP client，所以 Exile Architect 以 Agent preset 而不是宿主配置的形式安装。请先完成上面第 1、2 步：四个 MCP 服务启动的是同一个 headless PoB 引擎，需要固定版 PoB 源码、补丁和 LuaJIT。
+
+```powershell
+.\install.ps1 -FromCheckout dsh
+```
+
+```sh
+bash install.sh --from-checkout dsh
+```
+
+安装器会把 `poe-bd` preset 放到 `${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd`，其中已经写入你的项目路径，并在旁边生成一份填好路径的 layer-1 MCP patch。启动 DSH 后新建会话并选择 **poe-bd**，然后让它调用 `engine_health`。`.\install.ps1 -Doctor dsh`（或 `bash install.sh --doctor dsh`）可检查已放置的 preset。
+
+注册方式二选一：用 preset，或用 `dsh web --patch <preset 目录>/poe-bd.mcp.cordis.yml` 把服务注册到所有会话。两者同时使用会让同一个 server 拉起两套实例（两个 PoB 引擎），并让工具对所有会话可见。DeepSeek Harness 的真实宿主验收尚未完成，细节与已知边界见 [DSH 安装说明](dsh/README.md)。
+
 ### 4. 检查是否安装成功
 
 重启 Agent 宿主，打开一个新会话，发送：
@@ -84,7 +100,7 @@ bash install.sh --from-checkout codex
 然后确认可以使用 poe-bd-research、poe-bd-create 和 poe-bd-learn。
 ```
 
-没有找到工具时，检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。计算引擎无法启动时，检查上面的 LuaJIT 安装路径与固定 PoB 源码。
+没有找到工具时，检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。DeepSeek Harness 中只有在使用 `poe-bd` preset 的会话里才会出现这些工具。计算引擎无法启动时，检查上面的 LuaJIT 安装路径与固定 PoB 源码。
 
 ## 使用方式
 
@@ -156,7 +172,7 @@ Create 当前交付目标等级的构筑，不提供完整升级路线。Learnin
 
 **怎样更新？**
 
-在项目目录运行 `git pull --ff-only` 和 `uv sync`，重新运行对应宿主的安装命令并重启宿主。如果固定 PoB 版本发生变化，还需按 [pob/PINNED.md](pob/PINNED.md) 更新 headless 运行时。
+在项目目录运行 `git pull --ff-only` 和 `uv sync`，重新运行对应宿主的安装命令并重启宿主。如果固定 PoB 版本发生变化，还需按 [pob/PINNED.md](pob/PINNED.md) 更新 headless 运行时。重新安装 DeepSeek Harness preset 时会把上一版保留为 `poe-bd.bak` 恢复点；再下一次安装会因此报冲突，需要加 `-Force` / `--force`，它会把该恢复点改名为带时间戳的目录而不是删除。
 
 ## 反馈与贡献
 

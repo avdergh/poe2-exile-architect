@@ -12,7 +12,13 @@ under `dsh/agent-presets/poe-bd/skills/` with:
 - a DSH adaptation note inserted after the frontmatter.
 
 The tool -> server mapping is parsed from the four `server/mcp/*_server.py`
-`_TOOLS` tuples, so it cannot drift from the real registrations.
+`_TOOLS` tuples, so it cannot drift from the real registrations. Two gates fail
+the run instead of degrading silently:
+
+- every source skill must be adapted (`EXTRA_NOTES`) or be a recorded exclusion
+  (`SKILL_EXCLUSIONS`);
+- every literal `POLISH` rule must still match its source sentence, because a
+  reworded source skill otherwise leaves un-adapted host text in the output.
 
 Run from the repo root:
 
@@ -50,7 +56,10 @@ GENERIC_NOTE = """\
 > 斜杠命令。工具清单以当前会话实际注册为准，不要猜测未注册的工具名。
 """
 
-# Per-skill extra notes appended after the generic note.
+# Per-skill extra notes appended after the generic note. Research (with its
+# explicit worker), create and learning are the three workflows the project
+# presents to users; the comparative-learning loop driver ships alongside them
+# but is documented as experimental.
 EXTRA_NOTES = {
     "poe-bd-learn": """\
 > Learning 首要规则是输出语言跟随用户。H5 保留完整讲解，组件名称附精确图标与类别说明；不写 Research 或 Phase 7 Memory。
@@ -81,6 +90,16 @@ EXTRA_NOTES = {
 > 加载 `poe-bd-create` skill。任务初始化/恢复语义（不创建重复任务、不重放
 > 已消费阶段）保持不变。
 """,
+}
+
+# Source skills this adapter deliberately never generates, with the reason.
+# Everything else in the source tree must appear in EXTRA_NOTES or here, so a
+# newly added host skill cannot be dropped from the preset silently.
+SKILL_EXCLUSIONS = {
+    "poe-bd-research-loop": (
+        "Codex Desktop loop driver (resolves its own SKILL.md path and drives visible "
+        "threads); DSH uses the poe-bd-research controller with an explicit worker"
+    ),
 }
 
 # Legacy prefixed form -> DSH prefixed form (server-name segment only).
@@ -132,18 +151,20 @@ def boundary_re(name: str) -> re.Pattern[str]:
 
 # Per-skill literal polish applied after the mechanical rewrite. Kept in the
 # generator so re-runs stay identical.
+#
+# These rules carry the host mapping the mechanical pass cannot express: Codex
+# Desktop task primitives, and sentences that read as a host config key rather
+# than a DSH tool namespace. `polish_problems` fails the run when a rule stops
+# matching its source sentence, because a silently skipped rule leaves the
+# un-adapted host text in the generated tree.
 POLISH = {
     "poe-bd-create": [
         (
-            "机制/Research 查询走 `poe-knowledge-mcp`，所有 PoB/计算/Judge 工具走\n`poe-build-mcp`。",
-            "机制/Research 查询走 `mcp__poe_knowledge__*`，所有 PoB/计算/Judge 工具走\n`mcp__poe_build__*`。",
+            "普通Create的知识工具在 `poe-knowledge-mcp`，PoB/计算/Judge在 `poe-build-mcp`；",
+            "普通Create的知识工具在 `mcp__poe_knowledge__*`，PoB/计算/Judge在 `mcp__poe_build__*`；",
         ),
     ],
     "poe-bd-research": [
-        (
-            "当前宿主由安装器管理的 `poe-knowledge-mcp`（或任一 `poe-*-mcp`）条目中的",
-            "当前宿主 MCP 注册中 `poe-knowledge-mcp`（或任一 `poe-*-mcp`）行的",
-        ),
         (
             "必须 fork 包含用户本次研究请求/授权的最近上下文；不得使用 `fork_turns=none`。Subagent 继承父任务\n"
             "  权限模式，但用户授权上下文仍需可见，不能只由 Controller 转述。",
@@ -161,15 +182,61 @@ POLISH = {
             "- 只有 Worker 结算、发生 safe error、需要补位/验收恢复，或用户主动询问状态时才查询 status；\n"
             "  无变化时不发送心跳或重复枚举相同 Worker/lease。",
         ),
+    ],
+    "poe-bd-learning-loop": [
         (
-            "不得使用 `fork_turns=none`",
-            "不得使用不含父任务信息的空上下文派发",
+            "这是 Desktop 可见的 BD 对照学习控制器。",
+            "这是由 DSH 子代理驱动的 BD 对照学习控制器。",
+        ),
+        (
+            "## 可见任务初始化",
+            "## 子代理初始化",
+        ),
+        (
+            "一个案例使用两个任务：",
+            "一个案例使用两个 DSH 子代理（`subagent` 的 `description` 写下列名称）：",
+        ),
+        (
+            "使用 Desktop `create_thread` 时先发送短初始化提示，让新任务只输出\n"
+            "`POE_LEARNING_READY: yes`，不接触来源、不执行分析。取得真实 threadId/hostId 后：\n"
+            "\n"
+            "1. 调用 `mcp__poe_learning__claim_learning_phase` 绑定真实 taskId/threadId；\n"
+            "2. 再用 `send_message_to_thread` 发送包含 claimId 的阶段提示；\n"
+            "3. 通过 `wait_threads` 等待该阶段结束。\n"
+            "\n"
+            "这样避免在任务 ID 尚未知时提前执行。Reference 与 Create 的 taskId 和 threadId 必须不同；Compare、\n"
+            "Learn、rereview 必须复用 Reference 任务。创建后设置上述标题并导航到新任务，让用户可见。",
+            "用 `subagent` 后台派发只回答 `POE_LEARNING_READY: yes`、不接触来源也不执行分析的初始化子代理，\n"
+            "拿到持久 agent id 后：\n"
+            "\n"
+            "1. 调用 `mcp__poe_learning__claim_learning_phase`，把该 agent id 同时作为 `task_id` 与 `thread_id`；\n"
+            "2. 再用 `send_message` 发送包含 claimId 的阶段提示；\n"
+            "3. 等该子代理的后台结算通知，不调用 `wait_threads`。\n"
+            "\n"
+            "这样避免在子代理 id 尚未知时提前执行。Reference 与 Create 必须是两个不同 agent id；Compare、\n"
+            "Learn、rereview 必须用 `send_message` 回到同一个 Reference 子代理并传入同一对 id。不要为同一案例\n"
+            "重复派发子代理，也不要用空上下文派发取代携带 claimId 的阶段提示。",
+        ),
+        (
+            "- 对单任务使用 `wait_threads`，携带最新 cursor，`timeoutMs=300000`。超时且状态无变化时直接继续\n"
+            "  等待，不发送“仍在运行” commentary，不频繁读取任务全文。",
+            "- 依赖 DSH `subagent` 的后台结算通知等待阶段结束；不调用 `wait_threads`，也不轮询子代理输出。\n"
+            "  不发送“仍在运行” commentary，不频繁读取子代理全文。",
+        ),
+        (
+            "只有用户检查可见任务后才调用",
+            "只有用户查看子代理结果后才调用",
+        ),
+        (
+            "分流、correction、耗时和累计趋势。用户可直接打开可见任务查看过程。",
+            "分流、correction、耗时和累计趋势。用户可在子代理列表查看该案例的 Reference/Create 子代理及其终态。",
         ),
     ],
 }
 
 
-def rewrite_text(text: str, mapping: dict[str, list[str]], name: str) -> str:
+def mechanical_rewrite(text: str, mapping: dict[str, list[str]]) -> str:
+    """Apply the mechanical steps: tool prefixes, legacy prefixes, row ids."""
     prefixed = tool_to_prefixed(mapping)
     # 1. Bare names -> DSH prefixed names. Legacy `poe_*_mcp__name` forms are
     #    untouched here: the segment before the tool name is a word char, so the
@@ -180,12 +247,82 @@ def rewrite_text(text: str, mapping: dict[str, list[str]], name: str) -> str:
     text = _LEGACY_PREFIX_RE.sub(r"mcp__poe_\1__", text)
     # 3. Bare legacy server-name references -> DSH composition row ids.
     text = text.replace(_LEGACY_WILDCARD, "poe-*-mcp")
-    text = _LEGACY_SERVER_RE.sub(r"poe-\1-mcp", text)
+    return _LEGACY_SERVER_RE.sub(r"poe-\1-mcp", text)
+
+
+def rewrite_text(
+    text: str,
+    mapping: dict[str, list[str]],
+    name: str,
+    *,
+    applied: list[int] | None = None,
+) -> str:
+    """Run the mechanical rewrite, then this skill's literal host polish.
+
+    `applied` (when given) records the 1-based index of every POLISH rule that
+    matched, which is what `polish_problems` turns into a fail-closed gate.
+    """
+    text = mechanical_rewrite(text, mapping)
     # 4. Targeted polish for sentences that need DSH phrasing, not row ids.
-    for old, new in POLISH.get(name, []):
+    for index, (old, new) in enumerate(POLISH.get(name, []), 1):
         if old in text:
             text = text.replace(old, new)
+            if applied is not None:
+                applied.append(index)
     return text
+
+
+def polish_problems(source: Path, mapping: dict[str, list[str]]) -> list[str]:
+    """Report POLISH rules that no longer match any source sentence.
+
+    A rule that stops matching is a silent host-adapter regression: the source
+    skill was reworded and the generated tree keeps the un-adapted (Codex-only)
+    wording. `--check` cannot see it any other way, because the leftover text is
+    still a valid tool-name shape.
+    """
+    problems: list[str] = []
+    for name, pairs in POLISH.items():
+        skill_dir = source / name
+        if not skill_dir.is_dir():
+            problems.append(f"{skill_dir}: POLISH target skill is missing")
+            continue
+        applied: list[int] = []
+        for path in sorted(skill_dir.rglob("*")):
+            if path.is_file():
+                rewrite_text(path.read_text(encoding="utf-8"), mapping, name, applied=applied)
+        fired = set(applied)
+        for index, (old, _new) in enumerate(pairs, 1):
+            if index not in fired:
+                head = old.splitlines()[0][:60]
+                problems.append(
+                    f"{skill_dir}: POLISH rule {index} no longer matches its source "
+                    f"sentence ({head!r})"
+                )
+    return problems
+
+
+def skill_coverage_problems(source: Path) -> list[str]:
+    """Report source skills this adapter neither generates nor excludes.
+
+    `expected_skill_files` derives from `EXTRA_NOTES`, so without this check a
+    new host skill would be dropped from the DSH preset without a word.
+    """
+    present = {path.name for path in source.iterdir() if path.is_dir()}
+    adapted = set(EXTRA_NOTES)
+    excluded = set(SKILL_EXCLUSIONS)
+    problems = [
+        f"{source / name}: source skill has no DSH adaptation "
+        f"(add it to EXTRA_NOTES or SKILL_EXCLUSIONS)"
+        for name in sorted(present - adapted - excluded)
+    ]
+    problems += [
+        f"{source / name}: excluded skill no longer exists upstream"
+        for name in sorted(excluded - present)
+    ]
+    problems += [
+        f"{source / name}: skill is both adapted and excluded" for name in sorted(adapted & excluded)
+    ]
+    return problems
 
 
 def insert_note(text: str, note: str) -> str:
@@ -296,6 +433,31 @@ def expected_skill_files(source: Path) -> set[str]:
     return expected
 
 
+def prune_stale(out: Path, expected: set[str], *, known_skills: set[str]) -> list[str]:
+    """Delete generated files inside known skill dirs that are no longer expected.
+
+    Scoped to the skill names the adapter owns, so a regeneration drops a removed
+    skill or reference file without touching anything else in `--out`.
+    """
+    removed: list[str] = []
+    for skill in sorted(known_skills):
+        skill_dir = out / skill
+        if not skill_dir.is_dir():
+            continue
+        keep = {rel for rel in expected if rel.startswith(f"{skill}/")}
+        for path in sorted(skill_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            rel = path.relative_to(out).as_posix()
+            if path.is_file() and rel not in keep:
+                path.unlink()
+                removed.append(rel)
+            elif path.is_dir() and not any(child.is_file() for child in path.rglob("*")):
+                path.rmdir()
+        if not any(skill_dir.rglob("*")):
+            skill_dir.rmdir()
+            removed.append(f"{skill}/")
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE_SKILLS, help="source skills dir")
@@ -311,14 +473,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     mapping = load_tool_names()
+    # Structural gates run first: a source skill without an adaptation, or a
+    # polish rule that no longer matches, must fail before anything is written.
+    structural = skill_coverage_problems(args.source) + polish_problems(args.source, mapping)
     expected_files = expected_skill_files(args.source)
     if args.check:
-        problems = check_clean(args.out, mapping, expected_files=expected_files)
+        problems = structural + check_clean(args.out, mapping, expected_files=expected_files)
         if problems:
             print("\n".join(problems))
             return 1
         print(f"OK: {args.out} is clean")
         return 0
+
+    if structural:
+        print("\n".join(structural))
+        return 1
 
     if args.delete_out and args.out.exists():
         shutil.rmtree(args.out)
@@ -334,7 +503,16 @@ def main(argv: list[str] | None = None) -> int:
         for hit in found:
             print(f"  {hit}")
 
-    problems = check_clean(args.out, mapping, expected_files=expected_files)
+    pruned = prune_stale(
+        args.out,
+        expected_files,
+        known_skills=set(EXTRA_NOTES) | set(SKILL_EXCLUSIONS),
+    )
+    for rel in pruned:
+        print(f"  pruned stale generated path: {rel}")
+        summary.append(f"pruned {rel}")
+
+    problems = structural + check_clean(args.out, mapping, expected_files=expected_files)
     if problems:
         print("\n".join(problems))
         return 1

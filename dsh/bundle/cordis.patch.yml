@@ -1,0 +1,72 @@
+# Exile Architect (poe-bd-creator) — DSH bundle patch.
+#
+# This layer registers the four MCP servers of a poe-bd-creator SOURCE CHECKOUT
+# as `mcp__poe_knowledge__*`, `mcp__poe_build__*`, `mcp__poe_research__*` and
+# `mcp__poe_learning__*`. The servers are Python modules inside that checkout,
+# not part of this package, so the layer reads two facts from the environment:
+#
+#   POE_BD_CREATOR_ROOT  absolute path of the poe-bd-creator checkout (required)
+#   POE_BD_UV            uv executable, only when uv is not on PATH (optional)
+#
+# A missing POE_BD_CREATOR_ROOT does NOT stop the profile: the row's child fails
+# to spawn with the literal directory name `POE_BD_CREATOR_ROOT-not-set`, the MCP
+# client logs that failure, and the session simply has no poe-bd tools.
+#
+# Install with `dsh plugin --profile <name> add <package|path>`, which makes this
+# file a layer of that profile and activates it on the next start. The workflow
+# skills and the poe-bd agent preset come from
+# `scripts/install_dsh_preset.py` (or `install.ps1 -FromCheckout dsh`) — this
+# layer is only the tool registration.
+#
+# Use EITHER this layer OR the preset's own MCP rows, never both: two instances
+# per server means two PoB engines, and this layer registers in every session of
+# the profile rather than only in sessions using the preset.
+
+- insert:
+    - id: poe-knowledge-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_knowledge
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? 'uv'"
+        args: [run, python, -m, server.mcp.knowledge_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'POE_BD_CREATOR_ROOT-not-set'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? ''"
+          PYTHONUTF8: '1'
+
+    - id: poe-build-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_build
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? 'uv'"
+        args: [run, python, -m, server.mcp.build_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'POE_BD_CREATOR_ROOT-not-set'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? ''"
+          PYTHONUTF8: '1'
+
+    - id: poe-research-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_research
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? 'uv'"
+        args: [run, python, -m, server.mcp.research_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'POE_BD_CREATOR_ROOT-not-set'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? ''"
+          PYTHONUTF8: '1'
+
+    - id: poe-learning-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: poe_learning
+        transport: stdio
+        command: !!js "process.env.POE_BD_UV ?? 'uv'"
+        args: [run, python, -m, server.mcp.learning_server]
+        cwd: !!js "process.env.POE_BD_CREATOR_ROOT ?? 'POE_BD_CREATOR_ROOT-not-set'"
+        env:
+          PYTHONPATH: !!js "process.env.POE_BD_CREATOR_ROOT ?? ''"
+          PYTHONUTF8: '1'

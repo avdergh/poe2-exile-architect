@@ -1,0 +1,31 @@
+{
+  "name": "poe2-exile-architect-dsh",
+  "version": "0.5.0",
+  "description": "Exile Architect (poe-bd-creator) for DeepSeek Harness: registers the four local MCP servers of a poe-bd-creator source checkout",
+  "license": "MIT",
+  "author": {
+    "name": "avdergh"
+  },
+  "homepage": "https://github.com/avdergh/poe2-exile-architect",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avdergh/poe2-exile-architect.git",
+    "directory": "dsh/bundle"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "path-of-exile-2",
+    "mcp",
+    "build-research"
+  ],
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

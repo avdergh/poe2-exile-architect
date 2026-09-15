@@ -45,6 +45,12 @@ Agent 主导。
 仓库不应再增长项目内 autonomous LLM/provider loop。不要新增项目自带的 OpenAI/Claude
 API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志。
 
+对外呈现与 README 主推 Research / Create / Learning 三个工作流（Research 附带只由
+Controller 派发的 `poe-bd-research-worker`），它们是当前最完善的三条链路。这不是能力白名单：
+其他能力（Phase 7 对照学习 loop、`poe-bd-learning-loop` / `poe-bd-research-loop` skill、
+内部 CLI 与 `poe_learning` 工具域）照常随安装提供，只是定位为实验性、不进 README 功能主推，
+也不作为对外卖点。不得为了突出这三个而移除、禁用或隐藏其他能力。
+
 ## 不可协商规则
 
 - 不要从零编写新的数值 BD 引擎。数值声明必须使用现有 Headless PathOfBuilding-PoE2
@@ -571,12 +577,20 @@ Memory；数值观察使用独立 PoB，回执仅 educational_only。详细合�
 - WindowsApps 内 `codex.exe` 若被 ACL 拒绝，复制同一桌面端签名程序到任务临时目录，核对 SHA-256 与 Authenticode 后安装；确认无 PoB 子进程再停精确旧插件服务，完成后删除临时副本。
 - `scripts/adapt_skills_for_dsh.py`：把插件 skills 改写为 DSH 工具前缀与 DSH 说明头，生成
   `dsh/agent-presets/poe-bd/skills/`；幂等运行，`--check` 同时校验缺失/陈旧文件、裸工具名、
-  旧前缀和重复前缀。
+  旧前缀和重复前缀，并剪除已不存在的生成文件。另有两条失败关闭门禁：源 skill 必须已适配或在
+  `SKILL_EXCLUSIONS` 中登记；每条逐 skill 宿主改写（`POLISH`）的字面必须仍匹配源 skill，
+  避免源 skill 改写后静默留下未适配文本（含 loop 驱动的子代理改写）。
 - `scripts/install_dsh_preset.py`：以 staging + 可恢复 backup 安装、卸载或诊断 DSH `poe-bd`
-  会话 preset 到 `${DSH_HOME}/.agent-presets/poe-bd/`；不触碰宿主组合与随发行版 preset。
+  会话 preset 到 `${DSH_HOME}/.agent-presets/poe-bd/`；放置时把组合里的
+  `__POE_BD_CREATOR_ROOT__` / `__POE_BD_UV__` 占位符替换为真实项目路径与 uv，并在 preset 目录内
+  额外出具一份填好路径的 layer-1 patch；`install --force` 把已保留的 `.bak` 改名为带时间戳的目录
+  以便重装，孤儿 backup 仍是冲突。不触碰宿主组合与随发行版 preset。
 - `dsh/`：DeepSeek Harness 适配层——`poe-bd.mcp.cordis.yml`（四个域 MCP server 的
-  `dsh-mcp-client` 注册 patch）、`agent-presets/poe-bd/`（preset 模板：组合 + 改写 skills）和
-  `README.md`（中文说明）。
+  `dsh-mcp-client` 注册 patch，与 preset 二选一）、`agent-presets/poe-bd/`（preset 模板：组合 +
+  改写 skills）、`bundle/`（声明 `dsh.bundle.patch` 的 DSH 包，`dsh plugin --profile <name> add`
+  把四个 MCP 行注册为 profile 的一层；只注册工具、不带 preset，与 preset 二选一）、
+  `README.md`（中文说明：前置条件、一键安装、bundle 安装、验证与已知边界）。
+  `install.ps1 -FromCheckout dsh` / `install.sh --from-checkout dsh` 是一键安装入口。
 - `data/mature_build_learning/seed_cases.json`：只保存 sanitized seed mature cases。
 - `data/reference_builds.json`：只保存校准摘要，不是模板。
 

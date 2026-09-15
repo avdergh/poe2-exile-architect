@@ -25,7 +25,7 @@ The current installation uses a source checkout. Keep this folder after installa
 ### 1. Install the prerequisites
 
 - [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv can install the required Python version for you.
-- An agent host: **Codex**, **Claude Code**, **Cursor**, or **OpenCode**, with model access already configured. Research requires a host that gives subagents access to MCP tools.
+- An agent host: **Codex**, **Claude Code**, **Cursor**, **OpenCode**, or **DeepSeek Harness**, with model access already configured. Research requires a host that gives subagents access to MCP tools.
 - **LuaJIT 2.1**, used to run the PoB calculation engine:
 
 | System | LuaJIT installation |
@@ -54,7 +54,7 @@ Use this pinned PoB revision with the patches below. Installing the PoB desktop 
 
 ### 3. Apply the patches and connect your agent
 
-Choose your system. The examples install for Codex; replace `codex` with `claude`, `cursor`, or `opencode` for your host.
+Choose your system. The examples install for Codex; replace `codex` with `claude`, `cursor`, or `opencode` for your host. DeepSeek Harness installs through its own preset — see the end of this step.
 
 **Windows PowerShell**
 
@@ -75,6 +75,22 @@ bash install.sh --from-checkout codex
 
 Apply the patches once to a fresh PoB checkout. The installer registers the four local MCP servers and installs the workflow skills. Windows is the primary development platform; macOS has not completed real-machine certification.
 
+**DeepSeek Harness**
+
+DeepSeek Harness has a native MCP client, so Exile Architect installs as an agent preset instead of a host config. Finish steps 1 and 2 first: the four MCP servers start the same headless PoB engine, so they need the pinned PoB checkout, its patches, and LuaJIT.
+
+```powershell
+.\install.ps1 -FromCheckout dsh
+```
+
+```sh
+bash install.sh --from-checkout dsh
+```
+
+This places the `poe-bd` preset in `${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd` with your checkout path already filled in, and writes a ready-to-use copy of the layer-1 MCP patch beside it. Start DSH, pick **poe-bd** in a new session, then ask it to call `engine_health`. `.\install.ps1 -Doctor dsh` (or `bash install.sh --doctor dsh`) checks the placed preset.
+
+Pick one registration path: either the preset, or `dsh web --patch <preset dir>/poe-bd.mcp.cordis.yml` to register the servers for every session. Applying both starts a second MCP client per server — two PoB engines — and exposes the tools to every session. DeepSeek Harness host acceptance is not complete yet; [DSH setup (Chinese)](dsh/README.md) covers the details and the known limits.
+
 ### 4. Verify the installation
 
 Restart your agent host, open a new conversation, and send:
@@ -84,7 +100,7 @@ Check that the Exile Architect tools are available. Call engine_health,
 then confirm that poe-bd-research, poe-bd-create, and poe-bd-learn are available.
 ```
 
-If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration. If the engine cannot start, check LuaJIT and the pinned PoB checkout above.
+If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration. In DeepSeek Harness the tools appear only in a session that uses the `poe-bd` preset. If the engine cannot start, check LuaJIT and the pinned PoB checkout above.
 
 ## Use it
 
@@ -156,7 +172,7 @@ It is a separate experimental workflow that compares reference builds with indep
 
 **How do I update?**
 
-Run `git pull --ff-only` and `uv sync` in the project folder, rerun the installer for your host, and restart it. If the pinned PoB revision changes, also update the headless runtime following [pob/PINNED.md](pob/PINNED.md).
+Run `git pull --ff-only` and `uv sync` in the project folder, rerun the installer for your host, and restart it. If the pinned PoB revision changes, also update the headless runtime following [pob/PINNED.md](pob/PINNED.md). Reinstalling the DeepSeek Harness preset keeps the previous version as a `poe-bd.bak` recovery point; the install after that reports a conflict until you pass `-Force` / `--force`, which rotates that recovery point to a timestamped name instead of deleting it.
 
 ## Contributing
 

@@ -21,6 +21,7 @@ param(
     [switch]$RegisterMcpOnly,
     [string]$McpHost = 'codex',
     [switch]$FromCheckout,
+    [switch]$Force,
     [string]$Doctor,
     [string]$Uninstall,
     [switch]$DryRun,
@@ -38,6 +39,10 @@ $ManagedMcpBegin = '# BEGIN poe-bd-creator managed MCP server'
 $ManagedMcpEnd = '# END poe-bd-creator managed MCP server'
 $PortableSkills = @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-learn')
 $PortableMcpHosts = @('claude', 'cursor', 'opencode')
+# DeepSeek Harness installs as a user-authored agent preset, not as a skills
+# directory: `${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd/`.
+$DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }
+$DshPresetTarget = Join-Path $DshHome '.agent-presets\poe-bd'
 
 $Platforms = [ordered]@{
     codex    = @{ Target = (Join-Path $HOME '.codex\skills');   Style = 'per-skill' }
@@ -48,6 +53,7 @@ $Platforms = [ordered]@{
     opencode = @{ Target = (Join-Path $HOME '.config\opencode\skills'); Style = 'per-skill' }
     openclaw = @{ Target = (Join-Path $HOME '.openclaw\skills'); Style = 'folder' }
     hermes   = @{ Target = (Join-Path $HOME '.hermes\skills');  Style = 'folder' }
+    dsh      = @{ Target = $DshPresetTarget; Style = 'dsh-preset' }
 }
 
 function Show-Usage {
@@ -57,6 +63,7 @@ Exile Architect installer (Windows)
 Usage:
   install.ps1 [<platform>]          Install for <platform> (or prompt if omitted)
   install.ps1 -DryRun <platform>    Show actions without changing files
+  install.ps1 -Force <platform>     Reinstall over an existing install (rotates a kept backup)
   install.ps1 -FromCheckout <platform>  Install this checkout without clone/pull
   install.ps1 -Update               Pull latest changes
   install.ps1 -RegisterMcpOnly [-McpHost <host>]  Register this checkout's MCP server
@@ -70,6 +77,13 @@ $($Platforms.Keys -join ', ')
 Environment:
   POE_BD_CREATOR_REPO_URL  Override clone URL
   POE_BD_CREATOR_DIR       Override clone destination
+  DSH_HOME                 DeepSeek Harness home (default: $HOME/.dsh)
+
+Notes:
+  The `dsh` platform installs the poe-bd agent preset under
+  ${DSH_HOME:-$HOME/.dsh}/.agent-presets/poe-bd and, next to it, a filled-in copy
+  of the layer-1 MCP patch. Select EITHER the preset OR that patch in DSH, never
+  both.
 "@
 }
 
@@ -230,6 +244,10 @@ function New-SafeJunction([string]$LinkPath, [string]$TargetPath) {
 }
 
 function Link-Skills([string]$Target, [string]$Style, [string]$Id) {
+    # DeepSeek Harness consumes a copied agent preset, not a skills directory:
+    # `Invoke-DshPreset` installs the whole preset (composition + skills) and
+    # fills in the checkout/uv placeholders on the way in.
+    if ($Style -eq 'dsh-preset') { return }
     $root = Get-SkillsRoot
     Assert-ResearchSkillPair (Get-SkillListRoot)
     if (-not $DryRun -and -not (Test-Path $Target)) { New-Item -ItemType Directory -Path $Target | Out-Null }
@@ -252,6 +270,7 @@ function Link-Skills([string]$Target, [string]$Style, [string]$Id) {
 }
 
 function Unlink-Skills([string]$Target, [string]$Style) {
+    if ($Style -eq 'dsh-preset') { return }
     if (-not (Test-Path $Target)) { return }
     switch ($Style) {
         'per-skill' {
@@ -398,29 +417,66 @@ function Invoke-PortableHostConfig([string]$Action, [string]$HostId) {
     }
 }
 
+function Invoke-DshPreset([string]$Action) {
+    $uv = Resolve-UvCommand
+    $script = Join-Path $RepoDir 'scripts\install_dsh_preset.py'
+    if (-not (Test-Path $script)) {
+        $script = Join-Path $ScriptRepoDir 'scripts\install_dsh_preset.py'
+    }
+    if (-not (Test-Path $script)) {
+        Write-Error 'scripts/install_dsh_preset.py not found in this checkout.'
+    }
+    $projectRoot = if (Test-Path (Join-Path $RepoDir 'pyproject.toml')) {
+        $RepoDir
+    } else {
+        $ScriptRepoDir
+    }
+    $uvArgs = @('run', '--project', $projectRoot, 'python', $script, $Action)
+    if ($Action -eq 'install') {
+        $uvArgs += @('--repo-root', (Normalize-PathText $RepoDir), '--uv-command', $uv)
+        if ($Force) { $uvArgs += '--force' }
+    }
+    if ($DryRun) { $uvArgs += '--dry-run' }
+    & $uv @uvArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to $Action the DeepSeek Harness poe-bd preset. Existing files were left unchanged."
+    }
+}
+
 function Register-McpServer([string]$Id) {
     if ($Id -eq 'codex') { Register-Codex-McpServer; return }
+    if ($Id -eq 'dsh') { Invoke-DshPreset 'install'; return }
     if ($PortableMcpHosts -contains $Id) { Invoke-PortableHostConfig 'install' $Id; return }
     Write-Warning "$Id skill links were installed, but automatic MCP registration is not available for this host."
 }
 
 function Unregister-McpServer([string]$Id) {
     if ($Id -eq 'codex') { Unregister-Codex-McpServer; return }
+    if ($Id -eq 'dsh') { Invoke-DshPreset 'uninstall'; return }
     if ($PortableMcpHosts -contains $Id) { Invoke-PortableHostConfig 'uninstall' $Id }
 }
 
 function Cmd-Install([string]$Id) {
     $cfg = Resolve-Platform $Id
     if (-not $FromCheckout) { Clone-Or-Update }
-    if (($Id -eq 'codex' -or $PortableMcpHosts -contains $Id) -and -not $DryRun) {
+    if (($Id -eq 'codex' -or $Id -eq 'dsh' -or $PortableMcpHosts -contains $Id) -and -not $DryRun) {
         $null = Resolve-UvCommand
     }
     Write-Host "Linking skills for $Id ($($cfg.Style) -> $($cfg.Target))"
     Link-Skills $cfg.Target $cfg.Style $Id
-    Write-Host 'Linking universal plugin root'
-    Link-Plugin-Root
+    if ($Id -ne 'dsh') {
+        Write-Host 'Linking universal plugin root'
+        Link-Plugin-Root
+    }
     Install-BuildConverterProvider
     Register-McpServer $Id
+    if ($Id -eq 'dsh') {
+        $patch = Join-Path $cfg.Target 'poe-bd.mcp.cordis.yml'
+        Write-Host "Installed the Exile Architect poe-bd preset for DeepSeek Harness at $($cfg.Target)."
+        Write-Host 'Open a new DSH session and pick the poe-bd preset.'
+        Write-Host "Host-wide registration instead (never both): dsh web --patch $patch"
+        return
+    }
     $installedSkills = if ($Id -eq 'codex') {
         '/poe-bd-research (+ explicit worker), /poe-bd-create, /poe-bd-learn, /poe-bd-research-loop, and /poe-bd-learning-loop'
     } else {
@@ -458,8 +514,12 @@ if ($Doctor) {
         Write-Warning 'Codex doctor remains available through a new Codex task and engine_health.'
         return
     }
+    if ($Doctor -eq 'dsh') {
+        Invoke-DshPreset 'doctor'
+        return
+    }
     if (-not ($PortableMcpHosts -contains $Doctor)) {
-        Write-Error "Doctor supports: codex, $($PortableMcpHosts -join ', ')"
+        Write-Error "Doctor supports: codex, dsh, $($PortableMcpHosts -join ', ')"
     }
     Invoke-PortableHostConfig 'doctor' $Doctor
     return

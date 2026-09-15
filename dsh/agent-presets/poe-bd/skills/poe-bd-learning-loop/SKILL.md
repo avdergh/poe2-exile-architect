@@ -30,7 +30,7 @@ description: Use when the user asks to start, run, resume, pause, retry, inspect
 
 ## 作用
 
-这是 Desktop 可见的 BD 对照学习控制器。每个案例先由 Reference/Comparator 任务安全分析原 BD，
+这是由 DSH 子代理驱动的 BD 对照学习控制器。每个案例先由 Reference/Comparator 任务安全分析原 BD，
 再由完全独立的 Create 任务只按相同 Family 和相同等级盲测生成，随后回到 Comparator 做逐维比较
 和经验分流。程序只保存 typed state、隔离来源和安全报告，不创建隐藏模型循环。
 
@@ -78,22 +78,23 @@ description: Use when the user asks to start, run, resume, pause, retry, inspect
 4. 每次 mutation 都传新 `operationId` 与最新 `expectedRevision`。revision conflict 时重新读
    `mcp__poe_learning__get_learning_campaign_status`，不得覆盖新状态。
 
-## 可见任务初始化
+## 子代理初始化
 
-一个案例使用两个任务：
+一个案例使用两个 DSH 子代理（`subagent` 的 `description` 写下列名称）：
 
 - `PoE Learning Reference · #<ordinal> · <caseId>`：Profile、Compare、Learn 和条件复审；
 - `PoE Learning Create · #<ordinal> · <caseId>`：只运行一次盲测 Create。
 
-使用 Desktop `create_thread` 时先发送短初始化提示，让新任务只输出
-`POE_LEARNING_READY: yes`，不接触来源、不执行分析。取得真实 threadId/hostId 后：
+用 `subagent` 后台派发只回答 `POE_LEARNING_READY: yes`、不接触来源也不执行分析的初始化子代理，
+拿到持久 agent id 后：
 
-1. 调用 `mcp__poe_learning__claim_learning_phase` 绑定真实 taskId/threadId；
-2. 再用 `send_message_to_thread` 发送包含 claimId 的阶段提示；
-3. 通过 `wait_threads` 等待该阶段结束。
+1. 调用 `mcp__poe_learning__claim_learning_phase`，把该 agent id 同时作为 `task_id` 与 `thread_id`；
+2. 再用 `send_message` 发送包含 claimId 的阶段提示；
+3. 等该子代理的后台结算通知，不调用 `wait_threads`。
 
-这样避免在任务 ID 尚未知时提前执行。Reference 与 Create 的 taskId 和 threadId 必须不同；Compare、
-Learn、rereview 必须复用 Reference 任务。创建后设置上述标题并导航到新任务，让用户可见。
+这样避免在子代理 id 尚未知时提前执行。Reference 与 Create 必须是两个不同 agent id；Compare、
+Learn、rereview 必须用 `send_message` 回到同一个 Reference 子代理并传入同一对 id。不要为同一案例
+重复派发子代理，也不要用空上下文派发取代携带 claimId 的阶段提示。
 
 ## Profile
 
@@ -181,13 +182,13 @@ Create 提交成功后，回到 Reference 任务 claim `compare`：
 
 ## 等待、状态和恢复
 
-- 对单任务使用 `wait_threads`，携带最新 cursor，`timeoutMs=300000`。超时且状态无变化时直接继续
-  等待，不发送“仍在运行” commentary，不频繁读取任务全文。
+- 依赖 DSH `subagent` 的后台结算通知等待阶段结束；不调用 `wait_threads`，也不轮询子代理输出。
+  不发送“仍在运行” commentary，不频繁读取子代理全文。
 - 只在终态读取最后一轮；用 MCP campaign 状态而不是 child 自述作为 checkpoint 事实源。
 - `pause` 调用 `mcp__poe_learning__pause_learning_campaign`。运行 claim 会安全回到 pending；不能声称控制器能远程终止
   已经在运行的模型 turn。
 - `resume` 先查状态，再调用 `mcp__poe_learning__resume_learning_campaign`；有 backlog 时传人工决定。
-- phase 失败时先记录 `mcp__poe_learning__fail_learning_phase`。只有用户检查可见任务后才调用
+- phase 失败时先记录 `mcp__poe_learning__fail_learning_phase`。只有用户查看子代理结果后才调用
   `mcp__poe_learning__retry_learning_phase`；已消费的 Create 结果永远不能重试。
 - 恢复时复用已经绑定的任务。不得创建重复 Reference/Create，也不得手工编辑 campaign JSON。
 
@@ -215,4 +216,4 @@ quarantine、盲测 generation run 和内部 final artifact，只保留 Research
 
 不要转述原始来源、完整构筑镜像、child 长篇正文或 Memory JSON。报告：campaign/case、两个可见
 任务、阶段终态、Family/等级匹配、Comparator 总结果、关键 gap 分类、Research/Memory/code/backlog
-分流、correction、耗时和累计趋势。用户可直接打开可见任务查看过程。
+分流、correction、耗时和累计趋势。用户可在子代理列表查看该案例的 Reference/Create 子代理及其终态。
