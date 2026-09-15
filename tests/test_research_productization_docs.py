@@ -150,7 +150,6 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    spec = (REPO_ROOT / "docs" / "PROJECT_SPEC.md").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
     guide = " ".join(guide.split())
     controller = (
@@ -159,14 +158,11 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     worker_root = REPO_ROOT / "poe-bd-creator-plugin" / "skills" / "poe-bd-research-worker"
     worker = (worker_root / "SKILL.md").read_text(encoding="utf-8")
     worker_metadata = (worker_root / "agents" / "openai.yaml").read_text(encoding="utf-8")
-    phase4 = (REPO_ROOT / "docs" / "phases" / "04_research_memory.md").read_text(encoding="utf-8")
 
     assert "/poe-bd-research" in readme
     assert "poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md" in readme
     assert "/poe-bd-research" in guide
     assert "$poe-bd-research" in guide
-    assert "/poe-bd-research" in phase4
-    assert "$poe-bd-research" in phase4
     assert "poe-bd-research-worker" in controller
     assert "allow_implicit_invocation: false" in worker_metadata
     assert "default_prompt" not in worker_metadata
@@ -195,29 +191,19 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "Controller" in guide and "scheduling" in guide
     assert "poe-bd-research-worker" in controller
     assert "never claims cases or reads case evidence" in guide
-    assert "最多 5 个普通 Research subagent" in phase4
-    assert "poe-bd-research-worker" in phase4
     assert "Never delegate a research case to a subagent" not in guide
-    assert "研究运行态禁止使用 subagent" not in phase4
     assert "开发阶段有意不保留 `README.md`" not in agents
     assert "开发阶段有意不保留 `README.md`" not in claude
-    assert "Public README 政策" in spec
-    assert "安装/自动化 README" in spec
     assert "run_phase45_researcher_batch.py --limit" not in guide
-    assert "run_phase45_researcher_batch.py --limit" not in phase4
     assert "prompt slot" not in guide.lower()
-    assert "prompt slot" not in phase4.lower()
     assert "poe-bd-research" in guide
-    assert "poe-bd-research" in phase4
     assert "before any network crawl" in guide
-    assert "显式意图优先于预检菜单" in phase4
     assert "Do not ask Codex Desktop users to paste PowerShell/Python commands into the chat box" in guide
-    assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
     assert "poe-bd-research-worker" in guide
     assert "opaque `runRef`" in guide
-    # Preserve the explicit five-build workflow example without fixing its prose language.
-    assert any("poe-bd-research" in line and "5" in line for line in readme.splitlines())
-    assert "预检 5 个样本（推荐）" not in phase4
+    assert "my-build.txt" in readme
+    assert "poe.ninja" not in readme
+    assert "docs/" not in readme
     assert "No-Argument Behavior" in controller
     assert "--resume --run-ref REF" in controller
     assert "普通新任务始终创建独立 run" in controller
@@ -238,7 +224,6 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "get_research_review_contract" in worker
     assert "从原 run quarantine" in controller and "完全相同的 PoB" in controller
     assert "created+updated >= 1" in controller
-    assert "unresolvedUniqueComponentCount" in phase4
     for internal_contract in (
         "scripts/research_mature_builds.py",
         "worker-brief",
@@ -248,7 +233,6 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
         "runDir",
     ):
         assert internal_contract not in readme
-    assert "不得修改仓库源码" in phase4
     assert "## 开发验证" not in readme
 
 
@@ -305,20 +289,6 @@ def test_research_controller_and_worker_skills_have_separate_roles():
     assert "--resume" not in worker
     assert "cleanup_completed_task_runtime" not in worker
     assert "allow_implicit_invocation: false" in metadata
-
-
-def test_research_subagent_orchestration_doc_stays_compact_and_role_focused():
-    document = (REPO_ROOT / "docs" / "RESEARCH_SUBAGENT_ORCHESTRATION.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert len(document) < 3000
-    assert "Controller 只负责 typed queue/resume" in document
-    assert "Worker Skill 设为 explicit-only" in document
-    assert "worker_capacity_reached" in document
-    assert "进程级全局 RLock" in document
-    assert "只反馈不修改" in document
-    assert "固定派发" not in document
 
 
 def test_document_language_policy_exempts_runtime_prompts():

@@ -2,167 +2,170 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-用于研究、创建和理解 **Path of Exile 2 构筑（BD）** 的工具与 Agent skills。Research 从已有 BD 中提取可复用知识，存入本地知识库；Create 结合知识与 Headless Path of Building 设计构筑；Learn 把一个已有 BD 解释成 HTML 学习文档。
+**让 AI Agent 帮你研究、创建和理解 Path of Exile 2 构筑（BD）。**
 
-Codex、Claude Code 等 Agent 宿主负责分析和设计决策。本仓库提供本地 MCP 工具、游戏资料查询、持久记忆和 PoB 检查，不内置模型，也不训练模型。
+Exile Architect 为 Codex、Claude Code、Cursor 和 OpenCode 接入游戏资料、可复用的构筑知识库与 Headless Path of Building。Agent 负责分析和设计，PoB 负责数值计算与构筑检查。
 
-**本项目与 Grinding Gear Games 无关联，亦未获得其背书。**
+[安装](#安装) · [使用方式](#使用方式) · [案例](#真实产物案例) · [常见问题](#常见问题)
 
-## 能做什么
+## 三种工作流
 
-| 工作流 | 输入 | 产出 |
+| 我想做什么 | 使用哪个功能 | 会得到什么 |
 | --- | --- | --- |
-| **Research** · `poe-bd-research` | poe.ninja 或本地 PoB 中的已有 BD，以及来源版本信息 | 关于机制、组件配合、成立条件和失败场景的结构化观察；通过验收的知识存入本地，供后续查询 |
-| **Create** · `poe-bd-create` | 目标等级、职业、技能或构筑目标 | Agent 设计的构筑、PoB 检查和本地 PoB 文件；按用户要求可额外生成 poe.ninja 分享链接 |
-| **Learn** · `poe-bd-learn` | 一个已有 BD | 单文件 HTML 学习文档，包含讲解、机制图、比较表和组件说明；不写入知识库 |
+| 从已有 BD 中积累可复用的知识 | **Research · 研究** · `poe-bd-research` | 保存机制、组件配合、成立条件与失败场景，供后续构筑设计检索 |
+| 按职业、技能和目标等级设计一个 BD | **Create · 创建** · `poe-bd-create` | 技能、装备与天赋方案，PoB 检查，本地构筑文件与玩法说明 |
+| 看懂一个已有 BD，知道怎样使用它 | **Learning · 学习** · `poe-bd-learn` | 带组件图标、战斗循环图、详细讲解、目录与搜索的 HTML 学习指南 |
 
-Create 直接生成**用户请求等级的单阶段 BD**，通常用于终局，当前不提供完整开荒成长路线。有匹配的 Research 知识时，以其指导设计；没有命中时，使用游戏资料、机制与其他允许的证据，并说明知识缺口。
-
-`poe-bd-learning-loop` 是另一个实验性对照流程：研究参考 BD，独立生成同技能流派、同等级的 BD，再比较并保存经过审核的经验。它与 Learn 学习文档不同，也不证明生成能力已经随案例积累而提升。
-
-## 效果展示
-
-以下片段是**输出结构示意**，不是某个玩家的 BD、真实研究完成记录或性能测试结果。
-
-### Research → 本地知识
-
-```text
-观察：一套输出组合依赖持续维持某个触发条件。
-成立条件：记录该条件如何启动、维持，以及中断后如何恢复。
-失败场景：检查没有小怪的 Boss 战中能否继续运转。
-证据：保留来源版本、组件身份和验证状态。
-复用：后续设计同技能流派时，检索这条观察。
-```
-
-Research 保存解释及其证据边界。临时第三方构筑原料与长期知识分开管理。
-
-### Create → 构筑文件与说明
-
-```text
-目标：用户要求的职业、技能与等级
-设计：技能组、装备职责、天赋选择与战斗配置
-检查：PoB 观察、确定性合法性检查、模型缺口
-交付：本地 PoB XML / 导入码，以及摘要和待验证事项
-```
-
-相关机制超出模型覆盖时，产物可能保持为**待验证候选**。PoB 结果不等于游戏内表现保证。
-
-### Learn → HTML 阅读页
-
-可下载演示使用项目实际阅读器渲染原创文本，**不含第三方 BD 或游戏美术**，不代表已完成一次 BD 分析。实际学习文档在资源可用时附带精确组件图标。
-
-```mermaid
-flowchart LR
-    A[HTML 学习文档] --> B[战斗循环图]
-    A --> C[职责比较表]
-    A --> D[条件与未知]
-    A --> E[搜索与概念说明]
-```
-
-[下载中文 HTML 演示](docs/examples/learning-guide-demo.zh-CN.html)，在本地打开即可体验章节搜索和概念点击说明。[English demo](docs/examples/learning-guide-demo.en.html)。
+**Research 积累知识，Create 利用知识设计构筑，Learning 帮玩家读懂构筑而不写入知识库。** 三种功能可以独立使用。
 
 ## 安装
 
-### 前置条件
+当前通过源码安装。安装后请保留项目文件夹，Agent 会从这里启动工具。
 
-- 支持 MCP 和 skills 的 Agent 宿主。Research 还要求子代理能访问 Research MCP 工具。
-- Git、Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
-- 数值计算需要可用的 **Headless PathOfBuilding-PoE2 + LuaJIT** 运行时。源码 checkout 需按 [pob/PINNED.md](pob/PINNED.md) 准备固定版本的上游源码与本地补丁；安装器不负责配置此运行时。
-- 可选的官方 Build Planner `.build` 转换需要 Node.js 20+。安装器会尝试准备转换 provider；导出此格式须有可用 provider。
+### 1. 准备环境
 
-模型访问由 Agent 宿主提供。在线采集和实时资料查询需要联网。本地存储不表示分析过程绕过宿主的模型服务或数据政策。
+- 安装 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。uv 可以自动安装所需的 Python 版本。
+- 准备一个已经配置好模型的宿主：**Codex、Claude Code、Cursor 或 OpenCode**。Research 还需要宿主允许子代理访问 MCP 工具。
+- 安装运行 PoB 计算引擎所需的 **LuaJIT 2.1**：
 
-### 从源码安装
+| 系统 | LuaJIT 安装方式 |
+| --- | --- |
+| Windows | 安装 [MSYS2](https://www.msys2.org/)，打开它的 **UCRT64** 终端，运行 `pacman -S mingw-w64-ucrt-x86_64-luajit`。程序会自动识别标准位置 `C:\msys64\ucrt64\bin\luajit.exe`。 |
+| macOS | 已安装 Homebrew 时，运行 [`brew install luajit`](https://formulae.brew.sh/formula/luajit)。 |
+| Ubuntu / Debian | 依次运行 `sudo apt-get update` 和 `sudo apt-get install luajit`。 |
 
-```bash
+LuaJIT 安装在其他位置时，在 Agent 宿主使用的环境中把 `POB_LUAJIT` 设为可执行文件的绝对路径。Node.js 20+ 是可选依赖，用于导出 Build Planner `.build` 文件。
+
+### 2. 下载项目和 PoB
+
+Windows 使用 PowerShell，macOS / Linux 使用终端，依次运行：
+
+```sh
 git clone https://github.com/avdergh/poe2-exile-architect.git
 cd poe2-exile-architect
-uv sync
+uv sync --python 3.12
+
+git clone --filter=blob:none --no-checkout https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git pob/PathOfBuilding-PoE2
+git -C pob/PathOfBuilding-PoE2 config core.autocrlf false
+git -C pob/PathOfBuilding-PoE2 checkout ce566eac45ea8a86477f513c7ee65a1ebe60014e
 ```
 
-准备好上述 PoB 运行时后，选择宿主。以下以 Codex 为例，也可以把 `codex` 替换为 `claude`、`cursor` 或 `opencode`。
+请使用这个固定 PoB 版本，并应用下一步的补丁。仅安装 PoB 桌面软件不能替代这里的 headless 运行时。
+
+### 3. 应用补丁并接入 Agent
+
+选择对应系统的命令。以下以 Codex 为例；使用其他宿主时，将 `codex` 替换为 `claude`、`cursor` 或 `opencode`。
 
 **Windows PowerShell**
 
 ```powershell
+Get-ChildItem .\pob\patches\*.patch | Sort-Object Name | ForEach-Object {
+    git -C pob/PathOfBuilding-PoE2 apply --ignore-whitespace $_.FullName
+    if ($LASTEXITCODE -ne 0) { throw "PoB patch failed: $($_.Name)" }
+}
 .\install.ps1 -FromCheckout codex
-.\install.ps1 -FromCheckout -Doctor codex
 ```
 
 **macOS / Linux**
 
-```bash
+```sh
+(cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 bash install.sh --from-checkout codex
-bash install.sh --doctor codex
 ```
 
-安装后重启宿主，要求 Agent 加载 skill，并调用 `engine_health` 检查计算运行时。doctor 在支持的宿主上检查配置绑定；Codex 的该入口会提示通过新任务与 `engine_health` 验证。这些检查均不等于端到端 BD 生成验收。
+补丁只需在新下载的 PoB 源码上应用一次。安装器会注册四个本地 MCP 服务并安装工作流 skills。Windows 是主要开发平台；macOS 尚未完成实机认证。
 
-安装器会链接 skills，并注册四个本地 MCP server：`poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。详细配置、更新/卸载选项与排错见[安装指南](docs/MULTI_AGENT_INSTALL.md)。
+### 4. 检查是否安装成功
 
-### 宿主支持情况
+重启 Agent 宿主，打开一个新会话，发送：
 
-| 宿主 | 当前接入情况 |
-| --- | --- |
-| Codex | 安装器及 MCP 配置；Research Controller/Worker、Create、Learn、对照 Learning Loop。Loop 需要 Desktop 任务编排能力。 |
-| Claude Code / Cursor / OpenCode | 安装器及 MCP 配置；Research Controller/Worker、Create、Learn。Research 依赖宿主对子代理工具访问的支持。 |
-| DeepSeek Harness | 独立 patch + preset 适配及改写 skills；真实宿主验收仍待完成。见 [DSH 安装说明](dsh/README.md)。 |
-| VS Code Copilot / Gemini / OpenClaw / Hermes | 仅链接 skills，需手动接入 MCP 并验证。 |
-| Pi | 暂无维护中的适配。 |
+```text
+检查 Exile Architect 工具是否可用，调用 engine_health，
+然后确认可以使用 poe-bd-research、poe-bd-create 和 poe-bd-learn。
+```
 
-macOS 提供安装路径，但尚未完成实机认证。支持配置不等于每个工作流都已在每个平台验证。另一个 `poe-bd-research-loop` 依赖外部 orchestrator，当前 Codex 插件打包时会排除它。
+没有找到工具时，检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。计算引擎无法启动时，检查上面的 LuaJIT 安装路径与固定 PoB 源码。
 
 ## 使用方式
 
-安装后直接向 Agent 描述需求即可。不同宿主的斜杠命令发现方式不同。
+把下面的请求**发送到 Agent 对话中**，需要已有 BD 时附上文件。这些是使用示例，不是终端命令；也可以通过宿主的 skill 菜单选择对应功能。
 
-**创建 BD**
+### Research：把已有 BD 研究成知识
 
-```text
-使用 poe-bd-create，以 Spark 为核心创建一个 90 级 Sorceress BD。
-只导出本地 PoB 文件，解释战斗循环和未验证机制。
-```
-
-需要在线分享时，明确追加“同时生成 poe.ninja 分享链接”。Build Planner `.build` 导出取决于转换器是否可用。输出语言跟随用户请求，除非用户明确指定另一种语言；未核实译名的游戏专名保留原名。
-
-**研究自己的 BD**
+从 PoB 导出构筑的导入码，保存为文本文件。请同时提供这个 BD 的实际游戏版本，便于正确记录知识适用范围。
 
 ```text
-使用 poe-bd-research，分析我附带的 PoB 导出，把可复用知识存入本地。
-这个 BD 的来源游戏版本是［该构筑的实际补丁号］。
+使用 /poe-bd-research 研究附件 my-build.txt。
+这个 BD 的游戏版本是［该构筑的实际补丁号］。
+分析核心机制、必需的组件配合和失效条件，
+把可复用的研究结论保存到本地知识库。
 ```
 
-附上文件并替换版本占位。项目也实现了自动采集，例如“使用 poe-bd-research，分析 5 个当前联盟的成熟 BD”；须在具备来源使用权限时使用，见[数据使用与许可](#数据使用与许可)。预检只验证采集链路，不产生知识。
+Research 会分析构筑、核对证据，再保存通过验收的知识。后续 Create 可以检索这些知识；你会收到研究成果与待验证问题的摘要。
 
-**理解已有 BD**
+### Create：设计一个 BD
 
 ```text
-使用 poe-bd-learn，面向新手解释我附带的 BD。
-讲清战斗循环、技能和装备职责、防御方式以及失效条件。
-交付中文 HTML 学习文档。
+使用 /poe-bd-create，以 Spark 为核心创建一个 90 级 Sorceress BD。
+目标是终局刷图和 Boss。讲清技能组合、装备、天赋与战斗循环，
+并导出本地 PoB 文件。
 ```
 
-## 本地数据与限制
+Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结果，不需要先提供参考构筑。有匹配的 Research 知识时会用于指导设计；知识不足或机制未建模的部分会在结果中说明。
 
-- Research Memory 与对照 Learning Memory 持久保存在操作系统用户数据目录，可用 `POE2_MCP_DATA` 改位置。Learn 可以读取知识，但不新增 Research 或对照学习记录。
-- 第三方原始输入进入临时隔离区，按清理和保留期限规则管理。本地用户数据与导出的 BD 不应提交 Git。
-- 当前 checkout 随附 Research/Learning 种子与游戏语料库；这些是独立的发布材料，许可复核尚未完成，详见下节。
-- PoB 对不同机制、版本的覆盖不同。报告区分实测值、假设、粗估与未知。Judge 默认只反馈确定性失败，严格反馈可选。
-- 结果取决于来源质量、模型覆盖和 Agent 决策。项目不保证最优 BD、必过 Boss 或装备价格可负担。
+### Learning：学会理解和使用一个 BD
 
-## 数据使用与许可
+```text
+使用 /poe-bd-learn，面向新手讲解附件 my-build.txt。
+先讲战斗循环，再解释技能、装备、天赋、资源恢复与防御层。
+生成一份中文 HTML 学习指南。
+```
 
-成熟 BD 研究大量使用 **poe.ninja**。其[服务条款](https://poe.ninja/terms)限制复制、公开展示与再分发；公开可访问不等于取得再分发许可。内部 copy-safety 检查能减少复制内容暴露，但不授予使用权。**当前随附数据尚未完成不受限公开再分发的授权审查。** 已跟踪数据清单和后续事项见[发布前数据权利风险评估](docs/DATA_RIGHTS_REVIEW.md)。
+用浏览器打开生成的 HTML 文件即可阅读。指南包含组件讲解、机制图与搜索，可以从头学习，也可以直接查某个部位。Learning 不写入 Research 知识，也不生成新的 BD。
 
-请使用自己有权处理的来源。第三方游戏数据、美术、构筑材料及衍生数据集不会自动获得本仓库的 [MIT 代码许可](LICENSE)；相关使用还应遵守 GGG 的[第三方政策](https://www.pathofexile.com/developer/docs)与[服务条款](https://www.pathofexile.com/legal/terms-of-use-and-privacy-policy)。
+输出语言默认跟随你的请求，也可以明确指定其他语言。
 
-本项目基于 [MaxWilk/poe2-build-mcp](https://github.com/MaxWilk/poe2-build-mcp) 和 [PathOfBuildingCommunity/PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2) 开发。再分发其代码时须保留原许可声明，以及[转换 provider 的上游声明](providers/poe2-build-converter/UPSTREAM_LICENSE.txt)。
+## 真实产物案例
 
-## 开发与文档
+- [Twister 学习指南节选](examples/learning-twister.zh-CN.md)：来自一份已有的 100 级 Gemling Legionnaire 中文指南，原指南共 14 章，展示如何把操作与构筑选择连起来讲解。
+- [最新 Create 记录](examples/create-latest.zh-CN.md)：采用本地最新一次生成记录，保留其实际完成情况与验证状态。
 
-- [架构（中文）](docs/ARCHITECTURE.CN.md) / [Architecture](docs/ARCHITECTURE.md)
-- [项目总纲](docs/PROJECT_SPEC.md)、[数据合同](docs/SCHEMAS.md)、[阶段文档](docs/phases/)（中文维护）
-- [Create skill](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md)、[Research skill](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md)、[Learn skill](poe-bd-creator-plugin/skills/poe-bd-learn/SKILL.md)
-- [贡献者指南](AGENTS.md)与[验证分层](scripts/verify.ps1)
+这些案例来自实际产物。Learning 展示的是节选；Create 已保存的结果不代表游戏内实战表现。
 
-提交贡献时不要附带用户导出或第三方原料。修改计算或数据行为时，应附相关测试及版本、模型证据。
+## 常见问题
+
+**需要额外配置模型 API Key 吗？**
+
+使用 Agent 宿主已经配置好的模型即可，Exile Architect 不另行运行模型服务。
+
+**构筑和研究知识保存在哪里？**
+
+默认保存在操作系统的本地用户数据目录 `poe2-build-mcp` 下，可通过 `POE2_MCP_DATA` 指定其他位置。Agent 会返回生成文件的路径。
+
+**能生成从开荒到终局的完整升级路线吗？**
+
+Create 当前交付目标等级的构筑，不提供完整升级路线。Learning 负责讲解你提供的已有构筑。
+
+**“待验证候选”是什么意思？**
+
+部分机制或资源条件还需要验证。报告会区分 PoB 观察、粗估与未知项；通过检查不等于已经证实实战表现。
+
+**`poe-bd-learning-loop` 也是学习指南吗？**
+
+它是另一个实验性流程，用于比较参考构筑与独立生成的构筑，并记录经过审核的经验。想让 Agent 带你读懂一个 BD，请用 `poe-bd-learn`。
+
+**怎样更新？**
+
+在项目目录运行 `git pull --ff-only` 和 `uv sync`，重新运行对应宿主的安装命令并重启宿主。如果固定 PoB 版本发生变化，还需按 [pob/PINNED.md](pob/PINNED.md) 更新 headless 运行时。
+
+## 反馈与贡献
+
+[提交 Issue](https://github.com/avdergh/poe2-exile-architect/issues) 时，请提供宿主、操作系统、游戏版本、复现步骤和错误信息，不要附带凭据或私有构筑导出。提交代码改动时，请附上相关验证结果。
+
+工作流说明：[Research](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md) · [Create](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md) · [Learning](poe-bd-creator-plugin/skills/poe-bd-learn/SKILL.md)。
+
+## 许可与致谢
+
+代码采用 [MIT 许可](LICENSE)。本项目基于 [poe2-build-mcp](https://github.com/MaxWilk/poe2-build-mcp) 和 [PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2)，[转换 provider](providers/poe2-build-converter/UPSTREAM_LICENSE.txt) 保留其上游许可声明。第三方游戏数据和美术的权利归各自权利人所有。
+
+本项目与 Grinding Gear Games 无关联，亦未获得其背书。

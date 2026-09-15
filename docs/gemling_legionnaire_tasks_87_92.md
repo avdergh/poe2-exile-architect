@@ -1,6 +1,0 @@
-- Gemling+Legionnaire | 87 | 5 | 完成
-- Gemling+Legionnaire | 88 | 5 | 完成
-- Gemling+Legionnaire | 89 | 5 | 完成
-- Gemling+Legionnaire | 90 | 5 | 完成
-- Gemling+Legionnaire | 91 | 5 | 完成
-- Gemling+Legionnaire | 92 | 5 | 完成

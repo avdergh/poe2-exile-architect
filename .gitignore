@@ -23,6 +23,7 @@ data/mature_build_learning/research_memory.sqlite
 *.sqlite-shm
 
 # Local mature-build research runs and phase reports
+/docs/
 /tmp/
 /.tmp/
 /.tmp-pytest-*/

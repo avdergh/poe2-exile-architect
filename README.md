@@ -2,167 +2,170 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Tools and agent skills for researching, creating, and understanding **Path of Exile 2 builds**. Research extracts reusable knowledge into a local database; Create uses that knowledge and Headless Path of Building to develop a build; Learn explains an existing build in an HTML guide.
+**Research, create, and understand Path of Exile 2 builds with your AI agent.**
 
-Your agent host, such as Codex or Claude Code, performs the analysis and makes design decisions. This repository supplies local MCP tools, game data queries, persistent memory, and PoB checks. It does not include its own model or train one.
+Exile Architect connects Codex, Claude Code, Cursor, and OpenCode to game data, a reusable build knowledge base, and Headless Path of Building. Your agent makes the design decisions; PoB supplies the calculations and build checks.
 
-**This product isn't affiliated with or endorsed by Grinding Gear Games in any way.**
+[Install](#install) · [Use it](#use-it) · [Examples](#real-output-examples) · [FAQ](#common-questions)
 
-## What you can do
+## Three workflows
 
-| Workflow | Input | Result |
+| I want to… | Use | What I get |
 | --- | --- | --- |
-| **Research** · `poe-bd-research` | Existing builds from poe.ninja or local PoB files, with source version information | Structured observations about mechanics, synergies, conditions, and failure cases; accepted knowledge is stored locally for later retrieval |
-| **Create** · `poe-bd-create` | Target level, class, skill, or build goal | An agent-designed build, PoB checks, and local PoB files; optional poe.ninja sharing when requested |
-| **Learn** · `poe-bd-learn` | One existing build | A self-contained HTML guide with explanations, mechanism diagrams, comparison tables, and component details; no knowledge-base writes |
+| Extract useful knowledge from an existing build | **Research** · `poe-bd-research` | Saved explanations of mechanics, component synergies, requirements, and failure cases that future builds can draw on |
+| Design a build for a class, skill, and target level | **Create** · `poe-bd-create` | Skill, equipment, and passive choices; PoB checks; local build files and a playstyle explanation |
+| Understand how an existing build works | **Learning** · `poe-bd-learn` | An HTML learning guide with component icons, combat-loop diagrams, explanations, navigation, and search |
 
-Create produces a **single build at the requested level**, usually for endgame. It does not currently deliver a complete leveling progression. Matching Research knowledge guides the design; when none is available, the agent uses game data, mechanics, and other permitted evidence and reports the knowledge gap.
+**Research builds the knowledge base. Create uses it to design builds. Learning teaches you a build without adding it to the knowledge base.** You can use each workflow on its own.
 
-`poe-bd-learning-loop` is a separate, experimental comparative workflow: analyze a reference, independently create a build in the same skill family at the same level, compare them, and retain reviewed lessons. It is not the Learn guide and does not establish that generated builds improve over time.
+## Install
 
-## Output examples
+The current installation uses a source checkout. Keep this folder after installation: the agent runs its tools from here.
 
-The excerpts below illustrate **output structure**, not a real player's build, a completed research run, or a performance benchmark.
+### 1. Install the prerequisites
 
-### Research → local knowledge
+- [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv can install the required Python version for you.
+- An agent host: **Codex**, **Claude Code**, **Cursor**, or **OpenCode**, with model access already configured. Research requires a host that gives subagents access to MCP tools.
+- **LuaJIT 2.1**, used to run the PoB calculation engine:
 
-```text
-Observation: a damage setup depends on maintaining a triggering condition.
-Conditions: record how the condition starts, persists, and recovers after interruption.
-Failure case: check whether the setup still works against a boss without adds.
-Evidence: keep source version, component identities, and verification status.
-Reuse: retrieve this observation when designing the same skill family.
-```
+| System | LuaJIT installation |
+| --- | --- |
+| Windows | Install [MSYS2](https://www.msys2.org/), open its **UCRT64** terminal, and run `pacman -S mingw-w64-ucrt-x86_64-luajit`. The standard `C:\msys64\ucrt64\bin\luajit.exe` location is detected automatically. |
+| macOS | With Homebrew installed, run [`brew install luajit`](https://formulae.brew.sh/formula/luajit). |
+| Ubuntu / Debian | Run `sudo apt-get update` followed by `sudo apt-get install luajit`. |
 
-Research retains explanations and their evidence boundaries. Temporary third-party build material is kept separate from durable knowledge.
+For a nonstandard LuaJIT location, set `POB_LUAJIT` to the executable's absolute path in the environment used by your agent host. Node.js 20+ is optional, for Build Planner `.build` export.
 
-### Create → build files and an explanation
+### 2. Download the project and PoB
 
-```text
-Target: requested class, skill, and level
-Design: skill groups, equipment roles, passive choices, and combat setup
-Checks: PoB observations, deterministic legality checks, and model gaps
-Delivery: local PoB XML/import code, with a summary and remaining caveats
-```
+Run these commands in PowerShell on Windows, or a terminal on macOS / Linux:
 
-An output can remain a **candidate requiring verification** when the model cannot cover a relevant mechanic. A PoB result is not an in-game performance guarantee.
-
-### Learn → an HTML reader
-
-The downloadable demo uses the actual reader renderer with original demonstration text. It contains **no third-party build or game artwork** and is not a completed BD analysis. Real guides add exact component icons when available.
-
-```mermaid
-flowchart LR
-    A[HTML learning guide] --> B[Combat loop diagram]
-    A --> C[Role comparison table]
-    A --> D[Conditions and unknowns]
-    A --> E[Search and concept explanations]
-```
-
-[Download the English HTML demo](docs/examples/learning-guide-demo.en.html) and open it locally to try chapter search and clickable concept explanations. [中文演示](docs/examples/learning-guide-demo.zh-CN.html).
-
-## Installation
-
-### Requirements
-
-- An agent host with MCP and skill support. Research also requires subagents that can access the Research MCP tools.
-- Git, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
-- A working **Headless PathOfBuilding-PoE2 + LuaJIT** runtime for calculations. Source checkouts require the pinned upstream checkout and local patches described in [pob/PINNED.md](pob/PINNED.md); the installer does not provision this runtime.
-- Node.js 20+ for optional official Build Planner `.build` conversion. The installer attempts provider preparation; this export requires a working provider.
-
-Model access is provided by your agent host. Network access is needed for online collection and live references. Local storage does not mean that analysis bypasses your host's model service or its data policy.
-
-### Install from a checkout
-
-```bash
+```sh
 git clone https://github.com/avdergh/poe2-exile-architect.git
 cd poe2-exile-architect
-uv sync
+uv sync --python 3.12
+
+git clone --filter=blob:none --no-checkout https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git pob/PathOfBuilding-PoE2
+git -C pob/PathOfBuilding-PoE2 config core.autocrlf false
+git -C pob/PathOfBuilding-PoE2 checkout ce566eac45ea8a86477f513c7ee65a1ebe60014e
 ```
 
-Prepare the PoB runtime above, then select your host. These examples use Codex; replace `codex` with `claude`, `cursor`, or `opencode` as needed.
+Use this pinned PoB revision with the patches below. Installing the PoB desktop application alone does not supply this headless runtime.
+
+### 3. Apply the patches and connect your agent
+
+Choose your system. The examples install for Codex; replace `codex` with `claude`, `cursor`, or `opencode` for your host.
 
 **Windows PowerShell**
 
 ```powershell
+Get-ChildItem .\pob\patches\*.patch | Sort-Object Name | ForEach-Object {
+    git -C pob/PathOfBuilding-PoE2 apply --ignore-whitespace $_.FullName
+    if ($LASTEXITCODE -ne 0) { throw "PoB patch failed: $($_.Name)" }
+}
 .\install.ps1 -FromCheckout codex
-.\install.ps1 -FromCheckout -Doctor codex
 ```
 
 **macOS / Linux**
 
-```bash
+```sh
+(cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
 bash install.sh --from-checkout codex
-bash install.sh --doctor codex
 ```
 
-Restart the host after installation. Ask it to load a skill and call `engine_health` to check the calculation runtime. For supported hosts, doctor checks configuration bindings; Codex directs you to verify through a new task and `engine_health`. Neither replaces an end-to-end generation check.
+Apply the patches once to a fresh PoB checkout. The installer registers the four local MCP servers and installs the workflow skills. Windows is the primary development platform; macOS has not completed real-machine certification.
 
-The installer links skills and registers four local MCP servers: `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp`. Details, update/uninstall options, and troubleshooting are in the [installation guide (Chinese)](docs/MULTI_AGENT_INSTALL.md).
+### 4. Verify the installation
 
-### Host support
-
-| Host | Current integration |
-| --- | --- |
-| Codex | Installer and MCP configuration; Research Controller/Worker, Create, Learn, and comparative Learning Loop. Desktop task orchestration is needed for the loop. |
-| Claude Code / Cursor / OpenCode | Installer and MCP configuration; Research Controller/Worker, Create, and Learn. Research requires the host's subagent tool access. |
-| DeepSeek Harness | Separate patch + preset with adapted skills; live host acceptance is still pending. See [DSH setup (Chinese)](dsh/README.md). |
-| VS Code Copilot / Gemini / OpenClaw / Hermes | Skill linking only; manual MCP integration and validation required. |
-| Pi | No maintained integration. |
-
-macOS installation is provided but has not completed real-machine certification. Configuration support does not imply every workflow has been verified on every platform. The separate `poe-bd-research-loop` needs an external orchestrator and is excluded from the packaged Codex plugin.
-
-## Usage
-
-After installation, ask your agent directly. Slash-command availability varies by host.
-
-**Create a build**
+Restart your agent host, open a new conversation, and send:
 
 ```text
-Use poe-bd-create to create a level 90 Sorceress build around Spark.
-Export local PoB files only. Explain the combat loop and any unverified mechanics.
+Check that the Exile Architect tools are available. Call engine_health,
+then confirm that poe-bd-research, poe-bd-create, and poe-bd-learn are available.
 ```
 
-For optional online sharing, explicitly ask for a poe.ninja share link as well. Build Planner `.build` export depends on converter availability. Outputs follow your request's language unless you specify another; unverified translations of game names retain the original names.
+If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration. If the engine cannot start, check LuaJIT and the pinned PoB checkout above.
 
-**Research your own build**
+## Use it
+
+Send these requests **in your agent conversation**, with the relevant file attached. These are example prompts, not terminal commands. You can also select the named skill through your host's skill menu.
+
+### Research — save reusable build knowledge
+
+Export a build from PoB as an import code and save it in a text file. Supply the build's actual game patch so the research can be versioned correctly.
 
 ```text
-Use poe-bd-research to analyze the attached PoB export and store reusable knowledge locally.
-Its source game patch is [the actual patch of this build].
+Use /poe-bd-research to study the attached my-build.txt.
+Its game patch is [the build's actual patch].
+Explain its core mechanics, required synergies, and failure conditions,
+and save the reusable findings to the local knowledge base.
 ```
 
-Supply the file and replace the patch placeholder. Automatic collection is also implemented: for example, “Use poe-bd-research to analyze 5 current-league builds.” Use it with the necessary source permissions; see [data use](#data-use-and-licensing). A dry run checks collection without producing knowledge.
+Research analyzes the build, checks the evidence, and stores accepted findings. Later Create requests can retrieve them. You receive a summary of what was learned and what still needs verification.
 
-**Understand an existing build**
+### Create — design a build
 
 ```text
-Use poe-bd-learn to explain the attached build for a new player.
-Cover the combat loop, skill and equipment roles, defenses, and failure conditions.
-Deliver an English HTML learning guide.
+Use /poe-bd-create to make a level 90 Sorceress build centered on Spark.
+Focus on endgame mapping and bosses. Explain the skill setup, equipment,
+passives, and combat loop, and export the local PoB files.
 ```
 
-## Local data and limitations
+Create designs **one build at the requested level**, checks it with PoB, and explains the result. You do not need to provide an existing build. Matching Research knowledge guides the design; missing knowledge or unmodelled mechanics are called out in the result.
 
-- Research memory and comparative learning memory persist in the OS user-data directory. `POE2_MCP_DATA` overrides the location. Learn reads knowledge but does not add Research or comparative learning records.
-- Raw third-party inputs use temporary quarantine storage and follow cleanup/retention rules. Local user data and exported builds should not be committed to Git.
-- The checkout currently includes Research/Learning seeds and a game corpus. These are separate release materials with unresolved licensing review; see below.
-- PoB coverage varies by mechanic and version. Reports distinguish measured values, assumptions, rough estimates, and unknowns. Default Judge feedback focuses on deterministic failures; strict feedback is optional.
-- Results depend on source quality, model coverage, and the agent's decisions. The project does not promise optimal builds, guaranteed boss kills, or affordable equipment.
+### Learning — understand a build
 
-## Data use and licensing
+```text
+Use /poe-bd-learn to explain the attached my-build.txt to a new player.
+Start with the combat loop, then explain the skills, equipment, passives,
+resource recovery, and defensive layers. Deliver an English HTML guide.
+```
 
-Much of the mature-build research uses **poe.ninja**. Its [Terms of Service](https://poe.ninja/terms) restrict copying, public display, and redistribution; public accessibility is not a redistribution license. Internal copy-safety checks reduce copied-content exposure but do not grant permission. **The bundled data has not been cleared for unrestricted public redistribution.** See the [pre-publication risk assessment (Chinese)](docs/DATA_RIGHTS_REVIEW.md) for the tracked data inventory and follow-up.
+Open the generated HTML file in a browser. The guide includes component explanations, diagrams, and search, so you can read from start to finish or look up a specific part. Learning does not write Research knowledge or create a new build.
 
-Use sources you are entitled to process. Third-party game data, artwork, build material, and derived datasets do not automatically inherit the [MIT code license](LICENSE). GGG's [third-party policy](https://www.pathofexile.com/developer/docs) and [terms](https://www.pathofexile.com/legal/terms-of-use-and-privacy-policy) also apply where relevant.
+Outputs follow the language of your request unless you specify another language.
 
-This project builds on [MaxWilk/poe2-build-mcp](https://github.com/MaxWilk/poe2-build-mcp) and [PathOfBuildingCommunity/PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2). Preserve their license notices and the [converter provider's notice](providers/poe2-build-converter/UPSTREAM_LICENSE.txt) when redistributing their code.
+## Real output examples
 
-## Development and documentation
+- [Twister learning guide excerpt](examples/learning-twister.en.md): a translated excerpt from an existing 14-chapter Chinese guide for a level 100 Gemling Legionnaire. It shows how the guide connects combat actions to build choices.
+- [Latest Create record](examples/create-latest.en.md): the most recent local generation record, with its actual completion and verification status.
 
-- [Architecture](docs/ARCHITECTURE.md) / [架构（中文）](docs/ARCHITECTURE.CN.md)
-- [Project specification](docs/PROJECT_SPEC.md), [data contracts](docs/SCHEMAS.md), and [phase documentation](docs/phases/) — Chinese
-- [Create skill](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md), [Research skill](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md), and [Learn skill](poe-bd-creator-plugin/skills/poe-bd-learn/SKILL.md)
-- [Contributor instructions](AGENTS.md) and [verification profiles](scripts/verify.ps1)
+These examples come from existing outputs. The Learning excerpt is not the full guide, and a saved Create result is not an in-game performance benchmark.
 
-Keep user exports and third-party raw inputs out of contributions. Include relevant tests and version/model evidence when changing calculation or data behavior.
+## Common questions
+
+**Do I need my own model API key?**
+
+Use the model access already configured in your agent host. Exile Architect does not run a separate model service.
+
+**Where are my builds and research stored?**
+
+In the operating system's local user-data directory under `poe2-build-mcp`. Set `POE2_MCP_DATA` to use another location. Your agent returns the paths to generated files.
+
+**Can it make a complete leveling guide?**
+
+Create currently delivers a build at a target level, not a full campaign-to-endgame progression. Learning explains the build you supply.
+
+**What does “candidate” mean?**
+
+Some mechanics or resource conditions still need verification. Reports separate PoB observations, estimates, and unknowns; passing a check does not establish in-game performance.
+
+**Is `poe-bd-learning-loop` the Learning guide?**
+
+It is a separate experimental workflow that compares reference builds with independently generated builds and records reviewed lessons. For a player-facing guide, use `poe-bd-learn`.
+
+**How do I update?**
+
+Run `git pull --ff-only` and `uv sync` in the project folder, rerun the installer for your host, and restart it. If the pinned PoB revision changes, also update the headless runtime following [pob/PINNED.md](pob/PINNED.md).
+
+## Contributing
+
+[Open an issue](https://github.com/avdergh/poe2-exile-architect/issues) with your host, operating system, game patch, steps to reproduce, and the error message. Keep credentials and private build exports out of reports. Pull requests should include relevant verification.
+
+Workflow instructions: [Research](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md) · [Create](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md) · [Learning](poe-bd-creator-plugin/skills/poe-bd-learn/SKILL.md).
+
+## License and credits
+
+Code is licensed under [MIT](LICENSE). Built on [poe2-build-mcp](https://github.com/MaxWilk/poe2-build-mcp) and [PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2); the [converter provider](providers/poe2-build-converter/UPSTREAM_LICENSE.txt) retains its upstream notice. Third-party game data and artwork retain their respective rights.
+
+This product is not affiliated with or endorsed by Grinding Gear Games.

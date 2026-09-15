@@ -7,20 +7,11 @@ import json
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_phase7_docs_define_comparative_learning_boundary():
-    phase = (ROOT / "docs" / "phases" / "07_critic_loop.md").read_text(encoding="utf-8")
-    spec = (ROOT / "docs" / "PROJECT_SPEC.md").read_text(encoding="utf-8")
-    schemas = (ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
+def test_phase7_runtime_guide_defines_comparative_learning_boundary():
     guide = (ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
 
-    for text in (phase, spec, schemas, guide):
-        assert "FamilyTarget" in text
-        assert "Learning Memory" in text
-    assert "每个案例只调用一次" in phase
-    assert "advisoryOnly" in phase
-    assert "10 个" in phase
-    assert "不运行额外 Holdout" in phase
-    assert "corrected_lesson_requires_new_evidence" in schemas
+    assert "FamilyTarget" in guide
+    assert "Learning Memory" in guide
     assert "$poe-bd-learning-loop" in guide
 
 

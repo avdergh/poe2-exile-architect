@@ -52,34 +52,10 @@ def test_create_submission_reference_covers_current_failure_enums():
 
 
 def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
-    phase5 = (REPO_ROOT / "docs" / "phases" / "05_generation.md").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "server" / "ASSISTANT_GUIDE.md").read_text(encoding="utf-8")
     guide = " ".join(guide.split())
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "/poe-bd-create" in phase5
-    assert "P5.1 第一阶段原型" in phase5
-    assert "HumanReviewPacket" in phase5
-    assert "complete_generation_review" in phase5
-    assert "start_generation_run" in phase5
-    assert "不因为 Agent 自己生成了具体" in phase5
-    assert "生命周期工具只保证阶段路线" in phase5
-    assert "testedSkillGroups" in phase5
-    assert "真实活动构筑" in phase5
-    assert "可信凭据" in phase5
-    assert "独立 Judge" in phase5
-    assert "evaluate_generation_candidate" in phase5
-    assert "strict_mode=false" in phase5
-    assert "apply_build_mutation_batch" in phase5
-    assert "required_gear" in phase5
-    assert "rolledBack=true" in phase5
-    assert "inspect_generation_checkpoint" in phase5
-    assert "保存 artifact" in phase5
-    assert "review marker" in phase5
-    assert "diagnostic_only" in phase5
-    assert "validate_generation_output" in phase5
-    assert "LifecycleEvidenceCoverage" in phase5
-    assert "设计判断和工具验证结论" in phase5
     assert "## Canonical build (create → optimize → validate → cost → present)" not in guide
     assert "`points=0` fills the budget" not in guide
     assert "optimize_passives(points<=0)" not in guide
@@ -87,14 +63,6 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert "run the **lifecycle workflow first**" not in guide
     assert "start with `suggest_build_lifecycle`" not in guide
     assert "Route user-triggered Create through `/poe-bd-create`" in guide
-    assert not (REPO_ROOT / "docs" / "phases" / "05_create_judge_optimization.md").exists()
-    assert "ResearchMemoryUse" in (REPO_ROOT / "docs" / "SCHEMAS.md").read_text(encoding="utf-8")
-    assert "familyRecordCoverage" in phase5
-    assert "familyRecordIndex" in phase5
-    assert "familyPremiseCatalog" in phase5
-    assert "premiseDecisions" in phase5
-    assert 'detail_level="record"' in phase5
-    assert "no_matching_memory" in phase5
     assert "/poe-bd-create" in guide
     assert "Agent-led prototype" in guide
     assert "complete_generation_review" in guide
@@ -138,8 +106,6 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
     assert guide.index("| Prepare design |") < guide.index("| Validate implementation |")
     assert guide.index("| Preserve final candidate |") < guide.index("| Verify saved artifact |")
     assert guide.index("| Verify saved artifact |") < guide.index("| Validate and consume final submission |")
-    assert "价格只在方案锁定后披露，不参与采用" in phase5
-    assert "清图/Boss/生存/造价/上限" not in phase5
     assert "/poe-bd-create" in readme
     assert "poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md" in readme
     for internal_contract in (
@@ -151,9 +117,7 @@ def test_phase5_guides_and_manifests_advertise_create_current_p5_boundary():
         assert internal_contract not in readme
     assert "## 脚本入口" not in readme
     assert "## 插件发布数据" not in readme
-    assert "docs/PROJECT_SPEC.md" in readme
-    assert "docs/SCHEMAS.md" in readme
-    assert "docs/phases/" in readme
+    assert "docs/" not in readme
 
     for manifest in (
         ".codex-plugin/plugin.json",

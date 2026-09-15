@@ -5,6 +5,8 @@
 
 ## 文档语言策略
 
+- `docs/` 仅在本地维护，加入 Git ignore，不提交或打包到公开仓库。README 不引用该目录；
+  公开源码的测试与安装不得依赖本地 `docs/`，公开使用案例放在 `examples/`。
 - 根 README 按用户要求维护双语：`README.md` 为英文，`README.zh-CN.md` 为简体中文，顶部互链，
   功能、安装、示例和限制同步更新。`docs/ARCHITECTURE.md` 和 `docs/ARCHITECTURE.CN.md` 继续维护双语。
 - `server/ASSISTANT_GUIDE.md` 和 `server/MCP_*_BOOTSTRAP.md` 是直接注入不同 LLM client 的英文
