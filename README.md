@@ -127,10 +127,10 @@ Outputs follow the language of your request unless you specify another language.
 
 ## Real output examples
 
-- [Complete Twister learning guide](examples/learning-twister.en.md): the original 14-chapter Chinese guide for a level 100 Gemling Legionnaire, with an English introduction. Read the full text or download the HTML reader with icons, search, and component explanations.
-- [Level 95 Twister build](examples/create-latest.en.md): the latest local export from 2026-09-12, with the complete PoB import code and an online share link to inspect its actual skills, equipment, and passives.
+- [Twister learning guide](examples/learning-twister.en.md): a 14-chapter Chinese guide to a level 100 Gemling Legionnaire, with an English introduction. Learn the combat loop, skill interactions, equipment, and passive choices. Read it online or download the HTML reader with icons, search, and interactive explanations.
+- [Level 95 Twister build](examples/create-latest.en.md): a complete build you can import into PoB, with its import code and an online share link to explore the skill setup, equipment, and passive choices.
 
-These examples come from actual outputs. The Create build is an existing generated candidate and has not been revalidated for the current patch.
+Build examples are provided for reference and hands-on use. See each example for its validation status.
 
 ## Common questions
 
