@@ -129,7 +129,7 @@ def test_worker_graph_examples_call_registered_mcp_entrypoint():
         arguments = {argument.arg: argument.value for argument in call.keywords}
         assert "payload" in arguments
         operations.add(ast.literal_eval(arguments["tool_name"]))
-    assert operations == {"search_graph_components", "resolve_graph_component"}
+    assert operations == {"search_graph_components", "resolve_graph_component", "explain_graph_evidence"}
     assert operations.isdisjoint(registered)
 
 

@@ -31,6 +31,7 @@ _AUDIT_LOCK = threading.RLock()
 _SUPPORT_AUDITS: WeakKeyDictionary[Any, dict[tuple[str, int], dict[str, Any]]] = WeakKeyDictionary()
 _AUDIT_LIMIT_PER_ENGINE = 96
 _SUPPORT_AUDIT_VERSION = "support_audit_v5"
+_RECOVERY_REQUIRED_ATTRIBUTE = "_poe2_mutation_batch_recovery_required"
 
 
 def _availability_context(engine: Any) -> dict[str, Any]:
@@ -1330,7 +1331,7 @@ def _optimize_supports_locked(
                 )
                 if not isinstance(local_probe, dict) or local_probe.get("ok") is not True:
                     if isinstance(local_probe, dict) and local_probe.get("recoveryRequired"):
-                        raise RuntimeError("support_probe_recovery_required")
+                        raise _SupportRecoveryRequired(local_probe)
                     return (
                         {},
                         "failed",
@@ -1708,7 +1709,11 @@ def _optimize_supports_locked(
             for gem in last_measured_group.get("gems") or []
             if not gem.get("isSupport")
         ]
-    finally:
+    except BaseException:
+        # The public guard owns error-path cleanup using its entry snapshot. Do
+        # not let a second failure here replace the search failure (or a stop).
+        raise
+    else:
         engine.load_build_xml(snapshot)
     restored_state_hash = build_state_hash(engine.get_xml())
     if restored_state_hash != state_hash:
@@ -1940,6 +1945,101 @@ def _optimize_supports_locked(
     return out
 
 
+def _safe_failure_token(value: Any, fallback: str) -> str:
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    return value if isinstance(value, str) and 0 < len(value) <= 128 and all(
+        char in allowed for char in value
+    ) else fallback
+
+
+def _support_result_failure(result: dict[str, Any], stage: str = "search") -> dict[str, Any]:
+    supplied = result.get("firstFailure")
+    source = supplied if isinstance(supplied, dict) else result
+    return {
+        "stage": _safe_failure_token(source.get("stage"), stage),
+        "errorCode": _safe_failure_token(source.get("errorCode"), "support_optimizer_failed"),
+        "errorType": _safe_failure_token(source.get("errorType"), "tool_result"),
+    }
+
+
+class _SupportRecoveryRequired(RuntimeError):
+    """Carry a probe's explicit stop without retaining its raw diagnostic text."""
+
+    def __init__(self, result: dict[str, Any]):
+        super().__init__("support_probe_recovery_required")
+        self.first_failure = _support_result_failure(result, "support_probe")
+
+
+def _support_exception_failure(exc: BaseException, stage: str) -> dict[str, Any]:
+    if isinstance(exc, _SupportRecoveryRequired):
+        return dict(exc.first_failure)
+    return {"stage": stage, "errorCode": "support_optimizer_exception",
+            "errorType": type(exc).__name__}
+
+
+def _support_failure_chain(exc: Exception) -> tuple[list[dict[str, Any]], bool, bool]:
+    """Follow explicit causes only; handled implicit contexts are not root failures."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(chain) < 8:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__
+    truncated = current is not None
+    ordered = chain if truncated else list(reversed(chain))
+    return (
+        [_support_exception_failure(item, "search") for item in ordered],
+        truncated,
+        any(isinstance(item, _SupportRecoveryRequired) for item in chain),
+    )
+
+
+def _restore_support_snapshot(
+    engine: PobEngine, snapshot: str, expected_state_hash: str, *, force_restore: bool = False,
+) -> dict[str, Any]:
+    """Inspect, restore if needed, and independently confirm the exact entry hash."""
+    recovery: dict[str, Any] = {
+        "status": "failed", "restoreAttempted": False, "snapshotVerified": False,
+        "expectedStateHash": expected_state_hash, "actualStateHash": None,
+        "initialStateReadFailure": None, "errors": [],
+    }
+    try:
+        recovery["actualStateHash"] = build_state_hash(engine.get_xml())
+    except Exception as exc:
+        recovery["initialStateReadFailure"] = _support_exception_failure(exc, "state_inspection")
+    if recovery["actualStateHash"] == expected_state_hash and not force_restore:
+        recovery.update(status="verified", snapshotVerified=True)
+        return recovery
+
+    recovery["restoreAttempted"] = True
+    try:
+        restored = engine.load_build_xml(snapshot, name="support-optimizer-outer-restore")
+        if isinstance(restored, dict) and (
+            restored.get("ok") is False or restored.get("recoveryRequired") is True
+        ):
+            recovery["errors"].append(_support_result_failure(restored, "snapshot_restore"))
+    except Exception as exc:
+        recovery["errors"].append(_support_exception_failure(exc, "snapshot_restore"))
+    # Even a restore command that threw may have changed state. Always try an
+    # independent read, but a matching hash cannot erase that command failure.
+    recovery["actualStateHash"] = None
+    try:
+        actual = build_state_hash(engine.get_xml())
+        recovery["actualStateHash"] = actual
+        recovery["snapshotVerified"] = actual == expected_state_hash
+        if actual != expected_state_hash:
+            recovery["errors"].append({
+                "stage": "restoration_verification", "errorCode": "support_optimizer_state_hash_mismatch",
+                "errorType": "state_mismatch",
+            })
+    except Exception as exc:
+        recovery["errors"].append(_support_exception_failure(exc, "restoration_verification"))
+    if recovery["snapshotVerified"] and not recovery["errors"]:
+        recovery["status"] = "verified"
+    return recovery
+
+
 def optimize_supports(
     engine: PobEngine,
     metric: str = "TotalDPS",
@@ -1981,39 +2081,98 @@ def optimize_supports(
             }
 
     with engine.transaction_lock():
-        snapshot = engine.get_xml()
-        expected_state_hash = build_state_hash(snapshot)
+        if bool(getattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, False)):
+            return {"ok": False, "errorCode": "build_state_recovery_required",
+                    "recoveryRequired": True}
+        try:
+            snapshot = engine.get_xml()
+            expected_state_hash = build_state_hash(snapshot)
+        except Exception as exc:
+            setattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, True)
+            return {"ok": False, "errorCode": "support_optimizer_snapshot_unavailable",
+                    "firstFailure": _support_exception_failure(exc, "input_snapshot"),
+                    "recoveryRequired": True, "rolledBack": False}
+        result: dict[str, Any] = {}
+        failure_chain: list[dict[str, Any]] = []
+        chain_truncated = False
+        inherited_recovery_required = False
         try:
             try:
                 _register_availability_reviews(engine, availability_reviews or [])
             except ValueError as exc:
-                return {"ok": False, "errorCode": "invalid_support_availability_review",
+                result = {"ok": False, "errorCode": "invalid_support_availability_review",
                         "reason": "availability_review_schema_invalid" if isinstance(exc, ValidationError) else str(exc),
                         "fieldErrors": [{"path": list(error["loc"]), "code": error["type"]}
                                         for error in exc.errors(include_input=False)] if isinstance(exc, ValidationError) else [],
                         "stateHash": expected_state_hash,
                         "recoveryAction": "correct_exact_identity_patch_and_source_reviews_then_retry"}
-            result = _optimize_supports_locked(
-                engine,
-                metric=metric,
-                goals=goals,
-                max_supports=max_supports,
-                candidates=candidates,
-                screen=screen,
-                group_index=group_index,
-                expected_fingerprint=expected_fingerprint,
-                max_mana_cost=max_mana_cost,
-                spirit_limit=spirit_limit,
-            )
+            else:
+                search_result = _optimize_supports_locked(
+                    engine,
+                    metric=metric,
+                    goals=goals,
+                    max_supports=max_supports,
+                    candidates=candidates,
+                    screen=screen,
+                    group_index=group_index,
+                    expected_fingerprint=expected_fingerprint,
+                    max_mana_cost=max_mana_cost,
+                    spirit_limit=spirit_limit,
+                )
+                if not isinstance(search_result, dict):
+                    raise TypeError("invalid_support_optimizer_result")
+                result = search_result
+        except Exception as exc:
+            failure_chain, chain_truncated, inherited_recovery_required = _support_failure_chain(exc)
         finally:
-            if build_state_hash(engine.get_xml()) != expected_state_hash:
-                engine.load_build_xml(snapshot, name="support-optimizer-outer-restore")
-        actual_state_hash = build_state_hash(engine.get_xml())
-        if actual_state_hash != expected_state_hash:
-            return {
-                "ok": False,
-                "errorCode": "support_optimizer_state_restore_failed",
-                "expectedStateHash": expected_state_hash,
-                "actualStateHash": actual_state_hash,
-            }
-        return result
+            inherited_recovery_required |= (
+                result.get("recoveryRequired") is True
+                or bool(getattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, False))
+            )
+            try:
+                recovery = _restore_support_snapshot(
+                    engine, snapshot, expected_state_hash, force_restore=inherited_recovery_required,
+                )
+            except BaseException:
+                # An interrupted cleanup cannot confirm the state; preserve the interruption.
+                setattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, True)
+                raise
+            inherited_recovery_required |= bool(
+                getattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, False)
+            )
+            if inherited_recovery_required or recovery["status"] != "verified":
+                setattr(engine, _RECOVERY_REQUIRED_ATTRIBUTE, True)
+        verified = recovery["status"] == "verified"
+        inspection_failure = recovery["initialStateReadFailure"]
+        if not failure_chain and verified and not inspection_failure and not inherited_recovery_required:
+            return result
+
+        first_failure = (
+            failure_chain[0] if failure_chain else
+            _support_result_failure(result) if result.get("ok") is False or inherited_recovery_required else
+            inspection_failure or recovery["errors"][0]
+        )
+        if not verified:
+            error_code = "support_optimizer_state_restore_failed"
+        elif failure_chain:
+            error_code = first_failure["errorCode"]
+        elif result.get("ok") is False or inherited_recovery_required:
+            error_code = _support_result_failure(result)["errorCode"]
+        else:
+            error_code = "support_optimizer_state_inspection_failed"
+        out = {
+            **result, "ok": False, "errorCode": error_code,
+            "firstFailure": first_failure, "failureChain": failure_chain,
+            "failureChainTruncated": chain_truncated,
+            "recovery": recovery,
+            "expectedStateHash": expected_state_hash, "actualStateHash": recovery["actualStateHash"],
+            "recoveryRequired": inherited_recovery_required or not verified,
+            "rolledBack": recovery["restoreAttempted"] and verified and not inherited_recovery_required,
+        }
+        # Exception-path diagnostics use codes/types only. An engine's free-form
+        # error text can contain the imported item or XML that caused the failure.
+        out.pop("error", None)
+        out.pop("message", None)
+        if out["recoveryRequired"]:
+            out.pop("stateHash", None)
+        return out

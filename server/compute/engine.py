@@ -359,6 +359,21 @@ class PobEngine:
             r["stats"] = {}
         return r
 
+    def inspect_reservation_ledger(self) -> dict[str, Any]:
+        """Read native per-effect reservations without changing XML or skill selection."""
+        from .state import build_state_hash
+
+        with self._lock:
+            before = self.get_xml()
+            result = self.call("inspect_reservation_ledger")
+            if self.get_xml() != before:
+                raise PobEngineError("reservation ledger inspection changed build state")
+            if not isinstance(result, dict):
+                raise PobEngineError("invalid reservation ledger response")
+            result["readOnlyVerified"] = True
+            result["buildStateHash"] = build_state_hash(before)
+            return result
+
     def set_config(
         self,
         options: dict[str, Any] | None = None,

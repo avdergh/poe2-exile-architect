@@ -737,7 +737,7 @@ def read_packet_section(
     ):
         items = [item for item in items if not _is_pure_routing_passive(item)]
     source_count = len(items)
-    if normalized_section in {"config", "config-sets"}:
+    if normalized_section in {"config", "config-sets", "pob-readback"}:
         items = _fragment_configuration_items(items)
     envelope: dict[str, Any] = {
         **(response_metadata or {}),
@@ -762,7 +762,7 @@ def read_packet_section(
         envelope["advisories"] = _cross_axis_advisories(packet)
     return _bounded_response(
         items, start=start, limit=page_size, envelope=envelope,
-        allow_item_truncation=normalized_section not in {"config", "config-sets"},
+        allow_item_truncation=normalized_section not in {"config", "config-sets", "pob-readback"},
     )
 
 
@@ -810,7 +810,7 @@ def _response_chars(value: dict[str, Any]) -> int:
 
 
 def _fragment_configuration_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Losslessly page oversized config identities or inputs without limiting set count."""
+    """Losslessly page oversized structured evidence without limiting source item count."""
     result: list[dict[str, Any]] = []
     for index, item in enumerate(items):
         if _response_chars(item) <= 4_000:
@@ -950,12 +950,47 @@ def _unwrap_packet(packet: dict[str, Any]) -> dict[str, Any]:
     return nested if isinstance(nested, dict) else packet
 
 
+def _pob_readback_items(readback: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Expose the native ledger as complete, individually attributable rows for paging."""
+    if not isinstance(readback, dict) or not readback:
+        return []
+    ledger = readback.get("reservationLedger")
+    if not isinstance(ledger, dict) or not (ledger.get("groups") or ledger.get("effects")):
+        return [dict(readback)]
+    groups = ledger.get("groups") or []
+    effects = ledger.get("effects") or []
+    summary = {
+        **readback,
+        "kind": "pob_readback_summary",
+        "reservationLedger": {
+            **{k: v for k, v in ledger.items() if k not in {"groups", "effects"}},
+            "groupCount": len(groups), "effectCount": len(effects),
+            "detailView": "following_reservation_ledger_entries",
+        },
+    }
+    binding = {
+        "snapshotRef": readback.get("snapshotRef"),
+        "sourceHashRef": readback.get("sourceHashRef"),
+        "buildStateHash": ledger.get("buildStateHash"),
+        "ledgerSchemaVersion": ledger.get("schemaVersion"),
+        "identityScope": ledger.get("identityScope"),
+        "valueScope": ledger.get("valueScope"),
+        "sourceGroupMappingStatus": ledger.get("sourceGroupMappingStatus"),
+    }
+    return [summary, *(
+        {**binding, "kind": kind, "entry": entry}
+        for kind, entries in (
+            ("reservation_ledger_group", groups), ("reservation_ledger_effect", effects),
+        ) for entry in entries
+    )]
+
+
 def _packet_sections(packet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     raw_context = packet.get("rawContext")
     raw_context = raw_context if isinstance(raw_context, dict) else {}
     xml = str(raw_context.get("rawXml") or "")
     readback = validated_pob_readback(packet)
-    readback_items = [dict(readback)] if isinstance(readback, dict) and readback else []
+    readback_items = _pob_readback_items(readback)
     if not xml:
         return {
             **{name: [] for name in RESEARCH_SECTIONS},
@@ -1478,6 +1513,43 @@ def source_snapshot_hash(xml: str) -> str:
     return "sha256:" + hashlib.sha256(xml.encode("utf-8")).hexdigest()
 
 
+def current_readback_contract(readback: Any) -> bool:
+    """Check new numeric/ledger authority without upgrading an older persisted receipt."""
+    from .research_readback import METRIC_SET_VERSION, READBACK_SCHEMA_VERSION
+
+    if not isinstance(readback, dict):
+        return False
+    if (readback.get("schemaVersion") != READBACK_SCHEMA_VERSION
+            or readback.get("metricSetVersion") != METRIC_SET_VERSION):
+        return False
+    if readback.get("status") != "available":
+        return True  # An explicit unavailable result grants no numeric authority.
+    ledger = readback.get("reservationLedger")
+    binding = readback.get("stateBinding")
+    return (
+        isinstance(ledger, dict)
+        and isinstance(binding, dict)
+        and ledger.get("schemaVersion") == "pob_reservation_ledger_v1"
+        and ledger.get("status") == "available"
+        and ledger.get("readOnlyVerified") is True
+        and bool(binding.get("observedBuildStateHash"))
+        and binding.get("semanticBuildStateHash") == binding["observedBuildStateHash"]
+        and ledger.get("buildStateHash") == binding["observedBuildStateHash"]
+        and "activeWeaponSet" in ledger
+        and ledger["activeWeaponSet"] == binding.get("activeWeaponSet")
+        and isinstance(ledger.get("groups"), list)
+        and all(isinstance(row, dict) for row in ledger["groups"])
+        and isinstance(ledger.get("effects"), list)
+        and all(isinstance(row, dict) for row in ledger["effects"])
+        and isinstance(ledger.get("totals"), dict)
+        and all(isinstance(ledger["totals"].get(pool), dict) for pool in ("Life", "Mana", "Spirit"))
+        and bool(readback.get("snapshotRef"))
+        and ledger.get("snapshotRef") == readback["snapshotRef"]
+        and bool(readback.get("sourceHashRef"))
+        and ledger.get("sourceHashRef") == readback["sourceHashRef"]
+    )
+
+
 def validated_pob_readback(packet: dict[str, Any]) -> dict[str, Any] | None:
     """Keep old or mismatched numeric receipts from being treated as active-config evidence."""
     normalized = _unwrap_packet(packet)
@@ -1527,6 +1599,13 @@ def validated_pob_readback(packet: dict[str, Any]) -> dict[str, Any] | None:
         return {
             "status": "unavailable",
             "errorCode": "config_readback_binding_missing_or_mismatched",
+            "noRawMatureBuildMaterial": True,
+        }
+    if not current_readback_contract(readback):
+        return {
+            "status": "unavailable",
+            "errorCode": "research_readback_contract_stale_or_unbound",
+            "nextAction": "Recompute from the same verified source on a new claim; do not relabel old receipts.",
             "noRawMatureBuildMaterial": True,
         }
     return dict(readback)

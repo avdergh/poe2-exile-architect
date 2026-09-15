@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 10
+local HEADLESS_RUNTIME_CONTRACT = 11
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -1570,6 +1570,133 @@ end
 
 function methods.list_skill_groups()
 	return skillGroupState()
+end
+
+-- Research-only native reservation projection. Never selects a skill, runs a frame,
+-- merges groups, or re-evaluates reservation formulas. Runtime identities refer to
+-- the post-import snapshot, not to an inferred original-source container.
+do
+	local function numberOrNull(value)
+		if type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge then
+			return value
+		end
+		return json.null
+	end
+	local function valueOrNull(value)
+		return value ~= nil and value or json.null
+	end
+	function methods.inspect_reservation_ledger()
+		local env = build.calcsTab and build.calcsTab.mainEnv
+		local actor = env and env.player
+		if not actor or not actor.output or not actor.activeSkillList then
+			return { schemaVersion = "pob_reservation_ledger_v1", status = "unavailable", reason = "native_actor_unavailable" }
+		end
+		local pools = { "Life", "Mana", "Spirit" }
+		local result = {
+			schemaVersion = "pob_reservation_ledger_v1", status = "available",
+			identityScope = "post_import_runtime", valueScope = "native_calculated_reservation",
+			activeWeaponSet = build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1,
+			actorWeaponSet = numberOrNull(env.weaponSet),
+			groups = {}, effects = {}, totals = {},
+			sourceGroupMappingStatus = "not_observed",
+			limitations = {
+				"Absent numeric fields are unknown, not zero.",
+				"Native per-effect ReservedBase may include its rounded percent amount; do not sum it with ReservedPercent or reconstruct actor totals.",
+				"Actor totals include global reservations and native rounding; effect rows are not an additive replacement.",
+				"Modifier values are native skillModList totals before formula clamps and rounding; the ledger does not reapply those formulas.",
+				"Runtime groups are not merged by name or effect ID; original-source merge history is not observed.",
+				"No per-use or per-second costs, combat uptime, or real-character legality are certified.",
+			},
+		}
+		for _, pool in ipairs(pools) do
+			result.totals[pool] = {
+				maximum = numberOrNull(actor.output[pool]),
+				reservedCapped = numberOrNull(actor.output[pool .. "Reserved"]),
+				unreserved = numberOrNull(actor.output[pool .. "Unreserved"]),
+				nativeReservedFlatTotal = numberOrNull(actor["reserved_" .. pool .. "Base"]),
+				nativeReservedPercentTotal = numberOrNull(actor["reserved_" .. pool .. "Percent"]),
+			}
+		end
+		local groupIndices, gemIndices = {}, {}
+		local actorSets = { [actor] = env.weaponSet }
+		for weaponSet, otherEnv in pairs(env.weaponSetEnvs or {}) do
+			if otherEnv.player then actorSets[otherEnv.player] = weaponSet end
+		end
+		for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+			groupIndices[group] = index
+			local indices = {}
+			for gemIndex, gem in ipairs(group.gemList or {}) do indices[gem] = gemIndex end
+			gemIndices[group] = indices
+			result.groups[#result.groups + 1] = {
+				groupIndex = index,
+				skillSetId = valueOrNull(build.skillsTab.activeSkillSetId),
+				enabled = group.enabled ~= false,
+				set1Enabled = group.set1 ~= false, set2Enabled = group.set2 ~= false,
+				usingWeaponSet = numberOrNull(group.usingSkillSet),
+				sourceKind = group.sourceItem and "item" or group.sourceNode and "tree" or group.source and "other" or "ordinary",
+				ownerSlot = group.slot and build.itemsTab.slots[group.slot] and group.slot or json.null,
+				sourceItemId = numberOrNull(group.sourceItem and group.sourceItem.id),
+				sourceNodeId = numberOrNull(group.sourceNode and group.sourceNode.id),
+			}
+		end
+		for ordinal, skill in ipairs(actor.activeSkillList) do
+			local effect = skill.activeEffect or {}
+			local ge = effect.grantedEffect or {}
+			local instance = effect.srcInstance
+			local group = skill.socketGroup
+			local groupIndex = group and groupIndices[group]
+			local gemIndex = group and gemIndices[group] and gemIndices[group][instance]
+			local sourceEffect = instance and ((instance.gemData and instance.gemData.grantedEffect) or instance.grantedEffect)
+			local data = skill.skillData or {}
+			local level = effect.grantedEffectLevel or {}
+			local modList, cfg = skill.skillModList, skill.skillCfg
+			local actorMatches = skill.actor == actor
+			local reservesAll = data.reservesInAllWeaponSets and true or false
+			local types = skill.skillTypes or {}
+			local eligibleType = ((types[SkillType.HasReservation] or data.SupportedByAutoexertion)
+				and not types[SkillType.ReservationBecomesCost])
+				or (types[SkillType.SummonsTotem] and actor.modDB:Flag(nil, "AncestralBond"))
+			local row = {
+				effectOrdinal = ordinal, effectId = valueOrNull(ge.id),
+				groupIndex = numberOrNull(groupIndex), gemIndex = numberOrNull(gemIndex),
+				identityStatus = groupIndex and gemIndex and "bound" or "unmapped",
+				sourceEffectId = valueOrNull(sourceEffect and sourceEffect.id),
+				gemId = valueOrNull(instance and (instance.gemId or instance.gemData and instance.gemData.id)),
+				gameGemId = valueOrNull(instance and instance.gemData and instance.gemData.gameId),
+				actorMatches = actorMatches, actorWeaponSet = numberOrNull(actorSets[skill.actor]),
+				reservesInAllWeaponSets = reservesAll,
+				participatesInCurrentReservation = (actorMatches or reservesAll) and eligibleType and true or false,
+				noReservation = instance and instance.noReservation and true or false,
+				noSpiritReservation = instance and instance.noSpiritReservation and true or false,
+				fromItem = instance and instance.fromItem and true or false,
+				fromTree = instance and instance.fromTree and true or false,
+				pools = {},
+				reservationMultiplier = numberOrNull(modList and modList:More(cfg, "ReservationMultiplier")),
+				extraSpirit = numberOrNull(modList and modList:Sum("BASE", cfg, "ExtraSpirit")),
+				lifeReservePercentPerSpirit = numberOrNull(modList and modList:Sum("BASE", cfg, "LifeReservePercentPerSpirit")),
+				bloodMagicReserved = modList and modList:Flag(cfg, "BloodMagicReserved") and true or false,
+			}
+			for _, pool in ipairs(pools) do
+				local lower = pool:lower()
+				row.pools[pool] = {
+					nativeReservedBase = numberOrNull(data[pool .. "ReservedBase"]),
+					nativeReservedPercent = numberOrNull(data[pool .. "ReservedPercent"]),
+					grantedLevelFlat = numberOrNull(level[lower .. "ReservationFlat"]),
+					grantedLevelPercent = numberOrNull(level[lower .. "ReservationPercent"]),
+					skillDataFlat = numberOrNull(data[lower .. "ReservationFlat"]),
+					skillDataPercent = numberOrNull(data[lower .. "ReservationPercent"]),
+					forcedFlat = numberOrNull(data[pool .. "ReservationFlatForced"]),
+					forcedPercent = numberOrNull(data[pool .. "ReservationPercentForced"]),
+					efficiencyInc = numberOrNull(modList and modList:Sum("INC", cfg, pool .. "ReservationEfficiency", "ReservationEfficiency")),
+					efficiencyMore = numberOrNull(modList and modList:More(cfg, pool .. "ReservationEfficiency", "ReservationEfficiency")),
+					reservedInc = numberOrNull(modList and modList:Sum("INC", cfg, pool .. "Reserved", "Reserved")),
+					reservedMore = numberOrNull(modList and modList:More(cfg, pool .. "Reserved", "Reserved")),
+				}
+			end
+			result.effects[#result.effects + 1] = row
+		end
+		return result
+	end
 end
 
 local RATE_DEPENDENT_SUPPORT_OBJECTIVES = {

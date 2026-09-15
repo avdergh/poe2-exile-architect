@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.5.0+codex.20260914180841",
+  "version": "0.5.0+codex.20260915171449",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -33,7 +33,7 @@
       "/poe-bd-create \u6211\u60f3\u8981\u4e00\u4e2a\u9002\u5408\u7ec8\u5c40\u653b\u575a\u7684 Deadeye \u5f13\u7cfb BD",
       "/poe-bd-create \u7ed9\u6211\u4e00\u4e2a 80 \u7ea7\u7684\u9ad8\u4e0a\u9650\u6b66\u50e7\u7ec8\u5c40 BD",
       "/poe-bd-research --limit 20",
-      "/poe-bd-learn 带我理解这个 BD，生成完整 H5 学习页，讲清技能、装备、天赋和符文的类别与配合，不入库",
+      "/poe-bd-learn \u5e26\u6211\u7406\u89e3\u8fd9\u4e2a BD\uff0c\u751f\u6210\u5b8c\u6574 H5 \u5b66\u4e60\u9875\uff0c\u8bb2\u6e05\u6280\u80fd\u3001\u88c5\u5907\u3001\u5929\u8d4b\u548c\u7b26\u6587\u7684\u7c7b\u522b\u4e0e\u914d\u5408\uff0c\u4e0d\u5165\u5e93",
       "/poe-bd-learning-loop \u4f7f\u7528 10 \u4e2a\u540c Family \u540c\u7b49\u7ea7\u6848\u4f8b\u505a\u5bf9\u7167\u5b66\u4e60"
     ],
     "brandColor": "#2563EB"

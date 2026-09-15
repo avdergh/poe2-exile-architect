@@ -1025,6 +1025,16 @@ def render_review_contract(
             "must supply optional record-root sourceClaimRevision with knowledgeKey, recordId and "
             "projectionHash from the exact current source claim; it never authorizes another source."
         ),
+        "recordContentLimits": {
+            "zh-CN": {"unit": "characters", "maximum": 400},
+            "en": {"unit": "words", "maximum": 250},
+            "exceptionField": "lengthExceptionReason",
+            "rule": "仅不可拆分的同一机制链可说明例外理由；元数据与证据引用不计入正文。",
+            "splitRule": (
+                "不同问题分别成条；同来源同主题的真实并存条件分支用稳定sourceClaimKey。"
+                "单纯为缩短正文拆条，不得制造重复知识身份或随机换key。"
+            ),
+        },
         "typedPayloadSchema": {
             "knowledgeShape": {
                 "mechanic_chain": "state_causal_chain",
@@ -4647,6 +4657,10 @@ def _resume_packet_is_current(temp_root: Path, packet_safe_hash: str, now: datet
             packet = json.loads(packet_path.read_text(encoding="utf-8"))
             expires = datetime.fromisoformat(str(packet.get("expiresAt") or ""))
             if expires.tzinfo is not None and expires > now and _packet_integrity_matches(packet, packet_safe_hash):
+                readback = packet.get("pobReadback")
+                if (isinstance(readback, dict) and readback.get("status") == "available"
+                        and not research_packet.current_readback_contract(readback)):
+                    return False
                 return True
         except (OSError, ValueError, TypeError, AttributeError):
             continue
@@ -5370,11 +5384,37 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
     deferred_reason_counts = dict(safe_report.get("deferredReasonCounts") or {})
     schema_issue_count = int(deferred_reason_counts.get("invalid_schema") or 0)
     validation_issues: list[dict[str, Any]] = []
+    blocking_reasons: list[dict[str, Any]] = []
     for deferred in safe_report.get("deferredCandidates") or []:
         validation_issues.extend(list(deferred.get("validationIssues") or []))
-    for key in ("patternWrite", "deepRecordWrite"):
+    for key in ("patternWrite", "deepRecordWrite", "semanticEdgeWrite"):
         write_result = safe_report.get(key) or {}
-        if write_result.get("errorCode") == "invalid_schema":
+        public_location = {
+            "patternWrite": "patternValidation",
+            "deepRecordWrite": "deepRecordValidation",
+            "semanticEdgeWrite": "semanticEdgeValidation",
+        }[key]
+        error_code = write_result.get("errorCode")
+        if error_code:
+            facts = write_result.get("facts") or {}
+            repair = write_result.get("suggestedRepair") or (
+                "核对冲突条目的知识主题与本来源条件分支；合并重复结论或按真实条件使用稳定sourceClaimKey。"
+                if error_code == "duplicate_knowledge_identity_in_payload"
+                else "根据该位置的完整诊断修正后重新校验。"
+            )
+            blocking_reasons.append({
+                "errorCode": error_code,
+                "loc": [public_location],
+                "candidateIndexes": facts.get("candidateIndexes") or [],
+                "suggestedRepair": repair,
+            })
+            if error_code != "invalid_schema" or not facts.get("validationIssues"):
+                validation_issues.append({
+                    "loc": [public_location], "type": error_code, "msg": str(error_code),
+                    "candidateIndexes": facts.get("candidateIndexes") or [],
+                    "suggestedRepair": repair,
+                })
+        if error_code == "invalid_schema":
             schema_issue_count += 1
             validation_issues.extend(
                 list((write_result.get("facts") or {}).get("validationIssues") or [])
@@ -5391,6 +5431,7 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
     ready = (
         safe_report.get("status") == "accepted"
         and schema_issue_count == 0
+        and not blocking_reasons
         and not blocking_copy_safety
     )
     deferred_candidate_count = int(safe_report.get("deferredCandidateCount") or 0)
@@ -5438,6 +5479,8 @@ def _validation_only_result(report: dict[str, Any], *, sample_id: str) -> dict[s
         "acceptanceMode": acceptance_mode,
         "schemaIssueCount": schema_issue_count,
         "validationIssues": validation_issues,
+        "blockingReasons": blocking_reasons,
+        "blockingReasonCount": len(blocking_reasons),
         "copySafetyDiagnostics": copy_safety_diagnostics,
         "copySafetyBlockingIssueCount": len(blocking_copy_safety),
         "deferredCandidateCount": deferred_candidate_count,

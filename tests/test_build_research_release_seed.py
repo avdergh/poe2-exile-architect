@@ -195,6 +195,21 @@ def test_build_release_seed_is_copy_safe_and_does_not_mutate_source(tmp_path):
     _insert_family_and_record(source, scope="local_user", suffix="private")
     _insert_edge(source, scope="global_seed")
 
+    # Packaging is not a new source observation or revalidation of old knowledge.
+    provenance_fields = (
+        "record_id,created_at,last_seen_at,last_validated_at,game_patch,projection_hash"
+    )
+    with closing(sqlite3.connect(source)) as con:
+        con.execute(
+            "UPDATE deep_research_records SET last_seen_at=? WHERE knowledge_scope='global_seed'",
+            ("2026-08-01T00:00:00+00:00",),
+        )
+        con.commit()
+        original_provenance = con.execute(
+            f"SELECT {provenance_fields} FROM deep_research_records "
+            "WHERE knowledge_scope='global_seed'"
+        ).fetchall()
+
     report = release_seed.build_release_seed(
         source=source,
         output=output,
@@ -210,6 +225,9 @@ def test_build_release_seed_is_copy_safe_and_does_not_mutate_source(tmp_path):
     with closing(sqlite3.connect(source)) as con:
         assert con.execute("SELECT count(*) FROM deep_research_records").fetchone()[0] == 2
     with closing(sqlite3.connect(output)) as con:
+        assert con.execute(
+            f"SELECT {provenance_fields} FROM deep_research_records"
+        ).fetchall() == original_provenance
         assert con.execute(
             "SELECT knowledge_scope FROM deep_research_records ORDER BY knowledge_scope"
         ).fetchall() == [("global_seed",)]

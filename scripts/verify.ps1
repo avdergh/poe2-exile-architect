@@ -185,6 +185,7 @@ try {
             Invoke-Uv "compute golden suite" @(
                 "pytest",
                 "tests/test_compute.py",
+                "tests/test_reservation_ledger.py",
                 "-q",
                 "-p",
                 "no:cacheprovider",

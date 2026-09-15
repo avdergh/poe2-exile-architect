@@ -57,6 +57,7 @@ from .knowledge import graph_seed
 from .knowledge import mechanics
 from .knowledge import refbuilds
 from .knowledge import research_memory
+from .knowledge import research_receipt_view
 from .knowledge import research_execution
 from .knowledge import research_merge
 from .knowledge import research_models
@@ -2598,7 +2599,13 @@ def find_skills(
 
 @mcp.tool()
 def get_gem(name_or_id: str) -> dict[str, Any] | None:
-    """Return full data for a single gem by name or id (tags, granted skills, supports, types)."""
+    """Return gem identity and exact pinned effectDetails (descriptions, constraints, stat sets).
+
+    Multiple granted effects remain separate. descriptionOrigin=stat_text_projection means text
+    derived from that exact effect's literal stats and templates, not an upstream description.
+    Missing grant/buff values remain unknown; static details never certify actual application,
+    resource coverage or character numbers. Check descriptionSource and per-effect diagnostics.
+    """
     return corpus.get_gem(name_or_id)
 
 
@@ -3618,7 +3625,16 @@ def graph_tool_query(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     `tool_name` must be one of the Phase 3 typed graph query families, and `payload` must match
     that family's schema. Raw Cypher, Gremlin, SQL, or other backend query strings are rejected by
     the shared GraphQueryService and returned as structured public errors.
+
+    Discover operations with tool_name=list_graph_tools, payload={}; request one input schema
+    with payload={"query_family": "explain_graph_evidence"}. This catalog needs no graph snapshot.
+    Search components, resolve the selected identity, then read passive effects with
+    tool_name=explain_graph_evidence, payload={"node_key": "<resolved stable key>"}; statTexts
+    carry static provenance, not proof of PoB allocation or application. Internal Python helper
+    names are not automatically public operations; use the catalog instead of guessing names.
     """
+    if tool_name == "list_graph_tools":
+        return graph_tools.describe_graph_tools(payload)
     try:
         return _graph_query_service().run_tool(tool_name, payload)
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as exc:
@@ -4023,8 +4039,23 @@ def construct_research_execution_contract(
 
 
 @mcp.tool()
-def get_research_write_receipt(receipt_ref: str) -> dict[str, Any]:
-    """Read one durable, copy-safe Research write receipt; never authorizes Create."""
+def get_research_write_receipt(
+    receipt_ref: str,
+    detail: Literal["summary", "records", "diagnostics"] = "summary",
+    cursor: int = 0,
+    limit: int = 20,
+    section: str | None = None,
+) -> dict[str, Any]:
+    """Read a paginated, copy-safe Research receipt; never authorizes Create.
+
+    Summary returns counts and exact record IDs/hashes, without duplicated record bodies.
+    Use detail=records for full written mappings and saved canonical summaries, not full bodies;
+    follow pagination.nextCursor to the end. Read current bodies through query_research_memory
+    with the actual record_ids, detail_level=record and response_profile=full; verify their binding.
+    For support audits, gap details and comparison hints, choose a diagnosticSections entry and
+    pass detail=diagnostics plus its exact section name. Current eligibility is live and applies
+    only to returned records; the original acceptance is not rewritten by this view.
+    """
 
     receipt = _research_memory_service().get_research_write_receipt(receipt_ref)
     if receipt is None:
@@ -4034,7 +4065,9 @@ def get_research_write_receipt(receipt_ref: str) -> dict[str, Any]:
             "createAuthorizing": False,
             "noRawMatureBuildMaterial": True,
         }
-    return receipt
+    return research_receipt_view.project_receipt(
+        receipt, detail=detail, cursor=cursor, limit=limit, section=section,
+    )
 
 
 @mcp.tool()
@@ -4581,6 +4614,9 @@ def lookup_mechanic(
     Content is attributed (PoE2 Wiki, CC BY-NC-SA 3.0 — cite it). Time-sensitive; the engine
     remains the source of truth for any number. Returns {available: false} if the wiki is
     unreachable. Single, user-triggered, read-only — it never sends your build anywhere.
+    HTTP 429 adds errorCode=rate_limited plus retryAfterSeconds/retryAt. Retry-After is honored;
+    a missing/invalid header yields an explicitly labelled 60-second suggestion. The tool never
+    waits or retries automatically, and the suggested time does not guarantee success.
     """
     return live_wiki.lookup_mechanic(topic, cursor=cursor, limit=limit)
 

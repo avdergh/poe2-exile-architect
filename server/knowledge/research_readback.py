@@ -16,8 +16,8 @@ from server.knowledge.research_packet import (
 )
 
 
-READBACK_SCHEMA_VERSION = "research_pob_readback_v4"
-METRIC_SET_VERSION = 2
+READBACK_SCHEMA_VERSION = "research_pob_readback_v5"
+METRIC_SET_VERSION = 3
 STAT_KEYS = (
     "Life",
     "LifeUnreserved",
@@ -107,6 +107,11 @@ def build_safe_readback(
             stats = stats_result.get("stats") if isinstance(stats_result, dict) else {}
             stats = stats if isinstance(stats, dict) else {}
             build = engine.get_build()
+            reservation_ledger = engine.inspect_reservation_ledger()
+            if reservation_ledger.get("schemaVersion") != "pob_reservation_ledger_v1":
+                return _unavailable("reservation_ledger_contract_mismatch", version_context=version_context)
+            if reservation_ledger.get("status") != "available":
+                return _unavailable("reservation_ledger_unavailable", version_context=version_context)
             observed_xml = engine.get_xml()
             observed_root = parse_pob_xml(observed_xml)
             observed_config = config_set_identity(observed_root)
@@ -132,6 +137,9 @@ def build_safe_readback(
                     "pob_active_custom_modifiers_mismatch", version_context=version_context
                 )
             state_hash = build_state_hash(observed_xml)
+            if (reservation_ledger.get("buildStateHash") != state_hash
+                    or reservation_ledger.get("readOnlyVerified") is not True):
+                return _unavailable("reservation_ledger_state_mismatch", version_context=version_context)
     except Exception as exc:
         return _unavailable(
             "pob_readback_failed",
@@ -167,6 +175,7 @@ def build_safe_readback(
         "sourceHashRef": source_hash_ref,
         "stateBinding": {
             "semanticBuildStateHash": state_hash,
+            "observedBuildStateHash": state_hash,
             "weaponSetState": "active",
             "activeWeaponSet": active_weapon_set,
             "configScope": "source_active_config_set",
@@ -193,6 +202,11 @@ def build_safe_readback(
             "spiritOverBy": spirit_over_by,
             "ledgerStatus": ledger_status,
             "ledgerScope": "model_snapshot_arithmetic",
+        },
+        "reservationLedger": {
+            **reservation_ledger,
+            "snapshotRef": f"pob-readback:{state_hash[:20]}",
+            "sourceHashRef": source_hash_ref,
         },
         "passivePoints": {
             **{key: _build_point_count(build, key) for key in PASSIVE_POINT_KEYS},

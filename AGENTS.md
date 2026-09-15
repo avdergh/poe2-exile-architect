@@ -5,11 +5,12 @@
 
 ## 文档语言策略
 
-- `docs/ARCHITECTURE.md` 和 `docs/ARCHITECTURE.CN.md` 是当前唯一维护双语的文档。
+- 根 README 按用户要求维护双语：`README.md` 为英文，`README.zh-CN.md` 为简体中文，顶部互链，
+  功能、安装、示例和限制同步更新。`docs/ARCHITECTURE.md` 和 `docs/ARCHITECTURE.CN.md` 继续维护双语。
 - `server/ASSISTANT_GUIDE.md` 和 `server/MCP_*_BOOTSTRAP.md` 是直接注入不同 LLM client 的英文
   runtime prompt，属于语言策略的明确例外，不要求翻译或维护 `.CN.md` 副本。
 - `docs/PROJECT_SPEC.md`、`docs/SCHEMAS.md`、`docs/phases/*.md`、`AGENTS.md`、
-  `CLAUDE.md` 以及除此之外的其他仓库说明文档只维护中文。
+  `CLAUDE.md` 以及除此之外的其他仓库说明文档只维护中文；README 展示产物可提供对应语言版本。
 - 不要新增 `.CN.md` 副本，除非用户明确重新改变语言策略。
 
 ## 项目方向
@@ -368,7 +369,7 @@ Memory；数值观察使用独立 PoB，回执仅 educational_only。详细合�
   `get_research_review_contract` 为准；CLI `workerPrompt` 只保留仓库开发兼容。
 - `scripts/verify.ps1`：验证 profile。
 
-根 `README.md` 现在只承担安装、skill 自动化入口和安全边界说明。它不能夸大尚未完成的
+根 `README.md` / `README.zh-CN.md` 承担功能介绍、安装、使用示例、效果展示与边界说明。它们不能夸大尚未完成的
 生成、导出、对照学习效果或 reward-memory 能力；详细阶段细节仍维护在 `docs/phases/`。
 
 ## 命令

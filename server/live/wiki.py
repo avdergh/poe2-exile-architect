@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import json
 import html
+import math
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 API = "https://www.poe2wiki.net/api.php"
@@ -26,6 +30,38 @@ LICENSE = "CC BY-NC-SA 3.0"
 SOURCE = "PoE2 Wiki (poe2wiki.net)"
 UA = {"User-Agent": "poe2-exile-architect/0.1 (+https://github.com/avdergh/poe2-exile-architect)"}
 MAX_CHARS = 2500  # targeted slice, not a page dump
+DEFAULT_RETRY_AFTER_SECONDS = 60
+
+
+def _rate_limit_result(topic: str, error: urllib.error.HTTPError) -> dict[str, Any]:
+    """Report one server refusal; this function never sleeps or retries a request."""
+    now = datetime.now(timezone.utc)
+    raw = str(error.headers.get("Retry-After", "") if error.headers else "").strip()
+    delay = DEFAULT_RETRY_AFTER_SECONDS
+    source = "default_suggestion"
+    try:
+        if re.fullmatch(r"[0-9]+", raw):
+            delay = int(raw)
+        else:
+            retry_at = parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = max(0, math.ceil((retry_at - now).total_seconds()))
+        # Treat an out-of-range server date/delay as an unusable header.
+        now + timedelta(seconds=delay)
+        source = "retry_after_header"
+    except (TypeError, ValueError, OverflowError):
+        delay = DEFAULT_RETRY_AFTER_SECONDS
+    return {
+        "available": False,
+        "errorCode": "rate_limited",
+        "error": "Wiki request rate limited (HTTP 429).",
+        "topic": topic,
+        "retryAfterSeconds": delay,
+        "retryAt": (now + timedelta(seconds=delay)).isoformat().replace("+00:00", "Z"),
+        "retryAfterSource": source,
+        "note": "Suggested next attempt time only; the server may still limit a later request.",
+    }
 
 
 def _api(params: dict, timeout: float = 12.0) -> dict:
@@ -170,5 +206,9 @@ def lookup_mechanic(
             "the page supports the requested claim. The Research Agent must read it and record "
             "supports/contradicts/silent with independent corroboration.",
         }
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return _rate_limit_result(topic, e)
+        return {"available": False, "error": f"wiki unreachable: {e}", "topic": topic}
     except Exception as e:  # noqa: BLE001 - network/timeout: degrade gracefully
         return {"available": False, "error": f"wiki unreachable: {e}", "topic": topic}

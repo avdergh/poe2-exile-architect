@@ -3,6 +3,17 @@ name: poe-bd-research-loop
 description: Orchestrate a PoE2 build-research plan as user-visible Codex Desktop sidebar tasks. Use when the user provides a Markdown class/level/count plan, asks to run or resume the research/review/fix/conditional-rereview loop, checks its phase, pauses it at a phase boundary, or retries a blocked visible task.
 ---
 
+# 最高优先级 输出语言必须与用户一致
+
+**这是本 Skill 的首要交付规则，优先于下文默认示例、模板、参考资料与宿主适配说明的语言。**
+最终面向用户的表述跟随用户本次请求的自然语言；只有用户明确指定另一种输出语言时才覆盖。
+标题、摘要、正文、表格、图表标签、注意事项、交付文件中的说明与会话结论都使用同一目标语言。
+中英混合请求以表达需求的主要语言为准，不因 PoB、网页或组件名是英文而切换整份产物语言；
+只有确实无法判断时才澄清。目标语言的官方专名未经核实时保留原名，周围解释仍使用目标语言。
+工具名、schema 字段/枚举、stable key、回执、路径与代码不翻译；这条规则不改写既有知识记录，
+也不改变 typed 合同。交付前检查实际正文语言，不能只修改 language 元数据。
+委派、续聊或自动流程必须传递原始用户请求及其目标语言，接收任务的 Agent 沿用该选择。
+
 # PoE BD Research Loop
 
 把当前 Codex Desktop 任务作为控制任务；每个研究项创建一个用户可在侧边栏直接打开的新任务。

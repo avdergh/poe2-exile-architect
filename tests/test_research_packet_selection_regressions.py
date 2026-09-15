@@ -140,6 +140,13 @@ def test_normalized_structures_keep_readback_bound_and_reject_stale_snapshot(mon
         def get_stats(self, _keys): return {"stats": {"Mana": 100}}
         def get_build(self): return {}
         def get_xml(self): return self.xml.replace('activeSkillSet="01"', 'activeSkillSet="1"').replace('activeSpec="01"', 'activeSpec="1"')
+        def inspect_reservation_ledger(self):
+            from server.compute.state import build_state_hash
+            return {"schemaVersion": "pob_reservation_ledger_v1", "status": "available",
+                    "effects": [], "groups": [],
+                    "totals": {pool: {} for pool in ("Life", "Mana", "Spirit")},
+                    "activeWeaponSet": self.get_build().get("activeWeaponSet"), "readOnlyVerified": True,
+                    "buildStateHash": build_state_hash(self.get_xml())}
 
     monkeypatch.setattr(research_readback, "PobEngine", Engine)
     packet["pobReadback"] = research_readback.build_safe_readback(packet["rawContext"]["rawXml"], source_hash_ref="source-hash:synthetic", version_context={})

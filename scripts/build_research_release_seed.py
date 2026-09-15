@@ -207,9 +207,13 @@ def _prune_to_creator_safe_seed(path: Path, *, release_version: str) -> None:
             )
             """
         )
-        for row in con.execute("SELECT record_id FROM deep_research_records").fetchall():
+        # Pruning may change derived support counts, but building a release is not
+        # another observation of the source. Preserve the record's original recency.
+        for row in con.execute(
+            "SELECT record_id,last_seen_at FROM deep_research_records"
+        ).fetchall():
             research_claim_writes.refresh_record_evidence(
-                con, str(row["record_id"]), datetime.now(timezone.utc).isoformat()
+                con, str(row["record_id"]), row["last_seen_at"]
             )
         con.execute(
             """

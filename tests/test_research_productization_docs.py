@@ -215,7 +215,8 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "不是要求用户在 Codex 输入框里执行 shell 命令" in phase4
     assert "poe-bd-research-worker" in guide
     assert "opaque `runRef`" in guide
-    assert "分析 5 个成熟 BD 样本" in readme
+    # Preserve the explicit five-build workflow example without fixing its prose language.
+    assert any("poe-bd-research" in line and "5" in line for line in readme.splitlines())
     assert "预检 5 个样本（推荐）" not in phase4
     assert "No-Argument Behavior" in controller
     assert "--resume --run-ref REF" in controller

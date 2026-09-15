@@ -2952,7 +2952,7 @@ class ResearchMemoryService:
                 return None
             writes = _loads(row["record_writes_json"], [])
             current: list[dict[str, Any]] = []
-            for item in writes:
+            for write_index, item in enumerate(writes):
                 if not isinstance(item, dict):
                     continue
                 original_id = str(item.get("recordId") or "")
@@ -2991,7 +2991,10 @@ class ResearchMemoryService:
                         binding_reasons.append("source_claim_unbound")
                     elif (
                         source_head is None
-                        or claim["binding_issue"] is not None
+                        or (
+                            claim["binding_issue"] is not None
+                            and claim["binding_issue"] not in research_claims.DIAGNOSTIC_BINDING_ISSUES
+                        )
                         or not claim["accepted_projection_hash"]
                         or claim["accepted_projection_hash"] != source_head["projection_hash"]
                         or research_runtime.projection_hash(source_head) != source_head["projection_hash"]
@@ -3004,6 +3007,13 @@ class ResearchMemoryService:
                     ):
                         binding_status = "invalid"
                         binding_reasons.append("source_claim_binding_mismatch")
+                        if claim["binding_issue"]:
+                            binding_reasons.append(str(claim["binding_issue"]))
+                    elif claim["binding_issue"] in research_claims.DIAGNOSTIC_BINDING_ISSUES:
+                        # Exact record binding can be intact while its source is not eligible.
+                        # Preserve exclusion without misreporting a damaged source/hash binding.
+                        binding_status = "diagnostic_only"
+                        binding_reasons.append(str(claim["binding_issue"]))
                     else:
                         binding_status = (
                             "current"
@@ -3021,6 +3031,7 @@ class ResearchMemoryService:
                     current.append(
                         {
                             "writtenRecordId": original_id,
+                            "writtenMappingIndex": write_index,
                             "currentRecordId": (
                                 str(source_head["record_id"]) if source_head is not None else None
                             ),
@@ -3028,6 +3039,7 @@ class ResearchMemoryService:
                             "sourceCaseRef": str(source_ref) or None,
                             "sourceClaimKey": str(item.get("sourceClaimKey") or "default"),
                             "claimBindingStatus": binding_status,
+                            "bindingIssue": str(claim["binding_issue"]) if claim and claim["binding_issue"] else None,
                             "currentStatus": str(source_head["status"]) if source_head is not None else None,
                             "currentEligibility": lane_eligible and not binding_reasons,
                             "currentExclusionReasons": [*binding_reasons, *lane_reasons],

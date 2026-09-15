@@ -1077,12 +1077,17 @@ Grants Skill: Level 20 Herald of Ash""",
         original_hash = listed["stateHash"]
         self.assertEqual(listed["mainGroupIndex"], self._item_group(listed=listed)["index"])
         with mock.patch.object(self.engine, "get_build", side_effect=RuntimeError("probe failure")):
-            with self.assertRaisesRegex(RuntimeError, "probe failure"):
-                supportopt.optimize_supports(
-                    self.engine,
-                    group_index=self._item_group("Herald of Ice", listed)["index"],
-                    expected_fingerprint=self._item_group("Herald of Ice", listed)["fingerprint"],
-                )
+            failure = supportopt.optimize_supports(
+                self.engine,
+                group_index=self._item_group("Herald of Ice", listed)["index"],
+                expected_fingerprint=self._item_group("Herald of Ice", listed)["fingerprint"],
+            )
+        self.assertFalse(failure["ok"])
+        self.assertEqual(failure["firstFailure"]["errorType"], "RuntimeError")
+        self.assertEqual(failure["firstFailure"]["errorCode"], "support_optimizer_exception")
+        self.assertTrue(failure["rolledBack"])
+        self.assertFalse(failure["recoveryRequired"])
+        self.assertEqual(failure["recovery"]["status"], "verified")
         restored = skillgroups.list_skill_groups(self.engine)
         self.assertEqual(restored["stateHash"], original_hash)
         self.assertEqual(restored["mainGroupIndex"], listed["mainGroupIndex"])

@@ -52,6 +52,15 @@ class _ConfigEngine:
     def get_xml(self):
         return self.xml
 
+    def inspect_reservation_ledger(self):
+        from server.compute.state import build_state_hash
+
+        return {"schemaVersion": "pob_reservation_ledger_v1", "status": "available",
+                "effects": [], "groups": [],
+                "totals": {pool: {} for pool in ("Life", "Mana", "Spirit")},
+                "activeWeaponSet": self.get_build().get("activeWeaponSet"), "readOnlyVerified": True,
+                "buildStateHash": build_state_hash(self.get_xml())}
+
 
 def test_config_rows_keep_scenario_identity_types_and_placeholders():
     packet = {"rawContext": {"rawXml": _two_sets()}}

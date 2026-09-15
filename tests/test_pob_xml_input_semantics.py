@@ -98,6 +98,12 @@ class _ReadbackEngine:
     def get_xml(self): return self.xml
     def get_stats(self, _keys): return {"stats": {"Mana": 100}}
     def get_build(self): return {}
+    def inspect_reservation_ledger(self):
+        return {"schemaVersion": "pob_reservation_ledger_v1", "status": "available",
+                "effects": [], "groups": [],
+                "totals": {pool: {} for pool in ("Life", "Mana", "Spirit")},
+                "activeWeaponSet": self.get_build().get("activeWeaponSet"), "readOnlyVerified": True,
+                "buildStateHash": build_state_hash(self.get_xml())}
 
 
 @pytest.mark.parametrize("value,affected", [("one\ntwo", True), ("one\r\ntwo", True),

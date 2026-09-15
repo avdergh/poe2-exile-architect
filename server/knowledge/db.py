@@ -7,14 +7,10 @@ queries straight from the bundled database, no PoB process required.
 from __future__ import annotations
 
 import json
-import hashlib
 import re
 import sqlite3
-import xml.etree.ElementTree as ET
-from collections import Counter
 from contextlib import closing
 from collections.abc import Iterable
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -364,107 +360,49 @@ def get_gem(name_or_id: str) -> dict | None:
         "availability": gem_availability.inspect_ids([row["id"]]),
         **_gem_crafting_meta(row["raw"]),
     }
+    from .pob_gem_details import get_details
+
+    result["effectDetails"] = get_details(result["id"], result["grants"])
     if result["gem_type"] == "support" and not result["description"]:
-        description, source = _pob_support_description(result["id"], result["grants"])
+        description, source = _pob_support_description(
+            result["id"], result["grants"], details=result["effectDetails"]
+        )
         result["description"] = description
         result["descriptionSource"] = source
     return result
 
 
-def _quoted_lua_field(body: str, field: str, indent: str) -> str | None:
-    """Read only a generated, JSON-compatible quoted literal, never execute Lua."""
-    matches = re.findall(
-        rf'^{indent}{re.escape(field)}\s*=([^\n]*)$', body, re.M
-    )
-    if len(matches) != 1 or not matches[0].strip().endswith(","):
-        return None
-    try:
-        value = json.loads(matches[0].strip()[:-1])
-        return value if isinstance(value, str) else None
-    except ValueError:
-        return None
-
-
-@lru_cache(maxsize=2)
-def _pob_description_index(file_keys: tuple[tuple[str, int, int, int, int], ...]) -> tuple[dict, dict, str]:
-    """Cache immutable source-file views, invalidated on runtime/file replacement."""
-    from .physical_graph import _pob_skill_blocks
-
-    gems: dict[str, list[tuple[str, str]]] = {}
-    effects: dict[str, list[tuple[str, str]]] = {}
-    version = "unknown"
-    for filename, _size, _mtime, _ctime, _inode in file_keys:
-        path = Path(filename)
-        raw = path.read_bytes()
-        text = raw.decode("utf-8")
-        source_ref = "pob-static:sha256:" + hashlib.sha256(raw).hexdigest()
-        if path.name == "manifest.xml":
-            node = ET.fromstring(text).find("Version")
-            version = str(node.get("number") or "unknown") if node is not None else "unknown"
-        elif path.name == "Gems.lua":
-            blocks = list(re.finditer(
-                r'^\t\["([^"\r\n]+)"\] = \{\r?\n(.*?)(?=^\t\["|^\})', text, re.M | re.S,
-            ))
-            key_counts = Counter(match[1] for match in blocks)
-            for match in blocks:
-                body = match[2]
-                game_id = _quoted_lua_field(body, "gameId", "\t\t")
-                alias_declarations = re.findall(r'^\t\tgameId\s*=[^\n]*$', body, re.M)
-                observed_aliases = {_quoted_lua_field(line, "gameId", "\t\t")
-                                    for line in alias_declarations}
-                effect_id = _quoted_lua_field(body, "grantedEffectId", "\t\t") or ""
-                # A newer runtime may grant extra effects absent from an older corpus row.
-                # Preserve invalid declarations, including every recognized alias of a
-                # repeated primary ID, so a valid sibling cannot hide the ambiguity.
-                if key_counts[match[1]] != 1 or (alias_declarations and not game_id) or re.search(
-                    r'^\t\tadditionalGrantedEffectId\d+\s*=', body, re.M,
-                ):
-                    effect_id = ""
-                for gem_id in {match[1], *observed_aliases}:
-                    if gem_id:
-                        gems.setdefault(gem_id, []).append((effect_id, source_ref))
-        else:
-            for effect_id, block in _pob_skill_blocks(text):
-                body = block or ""
-                support_flags = re.findall(r'^\tsupport\s*=([^\n]*)$', body, re.M)
-                description = _quoted_lua_field(body, "description", "\t") or ""
-                if len(support_flags) != 1 or support_flags[0].strip() != "true,":
-                    description = ""
-                effects.setdefault(effect_id, []).append((description, source_ref))
-    return gems, effects, version
-
-
-def _pob_support_description(gem_id: str, grants: list[str]) -> tuple[str, dict]:
+def _pob_support_description(
+    gem_id: str, grants: list[str], *, details: dict | None = None,
+) -> tuple[str, dict]:
     """Supplement a missing corpus description through exact gem/effect identity only."""
     unknown = {"status": "unavailable", "source": "pinned_pob_static"}
     if len(grants) != 1:
         return "", {**unknown, "reason": "ambiguous_or_missing_granted_effect"}
-    pair = paths.pob_runtime_pair()
-    data = pair.src_dir / "Data"
-    files = [data / "Gems.lua", *sorted((data / "Skills").glob("*.lua"))]
-    manifest = pair.src_dir.parent / "manifest.xml"
-    if manifest.is_file():
-        files.append(manifest)
-    try:
-        file_keys = tuple(
-            (str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
-            for path in files for stat in [path.stat()]
-        )
-        gems, effects, version = _pob_description_index(file_keys)
-    except (OSError, ValueError, ET.ParseError):
-        return "", {**unknown, "reason": "static_source_unavailable"}
-    bindings = gems.get(gem_id, [])
-    descriptions = effects.get(grants[0], [])
-    if len(bindings) != 1 or not bindings[0][0] or bindings[0][0] != grants[0]:
-        return "", {**unknown, "reason": "gem_effect_binding_missing_or_ambiguous"}
-    if len(descriptions) != 1 or not descriptions[0][0].strip():
-        return "", {**unknown, "reason": "effect_description_missing_or_ambiguous"}
-    return descriptions[0][0], {
+    from .pob_gem_details import get_details
+
+    details = details if details is not None else get_details(gem_id, grants)
+    reason = details.get("reason")
+    if reason:
+        legacy_reason = ("static_source_unavailable" if reason.startswith("static_source_")
+                         else "gem_effect_binding_missing_or_ambiguous")
+        return "", {**unknown, "reason": legacy_reason, "detailReason": reason}
+    effects = details.get("effects", [])
+    effect = effects[0] if len(effects) == 1 else {}
+    description = effect.get("description", "")
+    if (effect.get("isSupport") is not True or effect.get("supportStatus") != "available"
+            or not isinstance(description, str) or not description.strip()):
+        return "", {**unknown, "reason": "effect_description_missing_or_ambiguous",
+            "detailReason": effect.get("reason") or effect.get("descriptionStatus") or "effect_missing"}
+    return description, {
         "status": "available", "source": "pinned_pob_static", "gemId": gem_id,
-        "effectId": grants[0], "sourceRef": descriptions[0][1],
-        "gemSourceRef": bindings[0][1], "pobVersion": version,
-        "runtimeSource": pair.source,
-        "note": "Static description only; does not certify applicability, availability or numerical benefit.",
+        "effectId": grants[0], "sourceRef": effect["sourceRef"],
+        "gemSourceRef": details["gemSourceRef"], "pobVersion": details["pobVersion"],
+        "runtimeSource": details["runtimeSource"],
+        "descriptionOrigin": effect.get("descriptionOrigin"),
+        "textSourceRefs": sorted({s["textSourceRef"] for st in effect.get("statSets", [])
+                                  for s in st["stats"] if s.get("textSourceRef")}),
+        "note": "Static description/stat text only; does not certify applicability, availability or numerical benefit.",
     }
 
 

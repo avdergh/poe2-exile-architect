@@ -15,8 +15,9 @@ Claude Code 应使用 [AGENTS.md](AGENTS.md) 作为标准项目指南。
 - 长期方向保存在 `AGENTS.md`、`docs/PROJECT_SPEC.md`、`docs/ARCHITECTURE.md` /
   `docs/ARCHITECTURE.CN.md` 和 `docs/SCHEMAS.md`。
 - 阶段执行细节保存在 `docs/phases/`。
-- 除 `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.CN.md` 外，当前文档只维护中文版本。
-- 根 `README.md` 只用于安装、skill 自动化入口和安全边界说明；不要把未完成的生成能力写成已完成产品。
+- 根 `README.md`（英文）/ `README.zh-CN.md`（简中）与两份 ARCHITECTURE 文档维护双语；runtime prompt
+  保留英文，其余说明文档只维护中文，README 展示产物可提供对应语言版本。具体以 AGENTS.md 为准。
+- 两份根 README 用于功能、安装、使用、效果展示和边界说明；不要把未完成的能力写成已完成产品。
 
 常用命令：
 

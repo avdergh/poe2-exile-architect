@@ -204,7 +204,11 @@ def test_receipt_does_not_borrow_sibling_claim_but_retains_legitimate_lane(tmp_p
     assert current["currentEligibility"] is False
     assert current["claimBindingStatus"] == {
         "retracted": "missing", "unbound": "unbound",
+        "issue": "diagnostic_only",
     }.get(binding_change, "invalid")
+    if binding_change == "issue":
+        assert current["bindingIssue"] == "legacy_record_schema"
+        assert "source_claim_binding_mismatch" not in current["currentExclusionReasons"]
     assert current["recordLaneEligibility"] is True
     assert current["recordLaneRecordId"] == old_id
     lane = _lane(service, old["buildFamilyKeys"][0], SOURCE_A)["deepResearchRecords"]
@@ -223,3 +227,27 @@ def test_receipt_follows_an_actual_same_topic_revision(tmp_path):
     current = service.get_research_write_receipt(receipt["writeReceiptRef"])["currentProjection"][0]
     assert current["currentEligibility"] is True
     assert current["claimBindingStatus"] == "revised"
+
+
+def test_unknown_source_binding_is_diagnostic_but_bad_hash_still_fails(tmp_path):
+    service, payload, _first = seeded(tmp_path)
+    unknown = _variant(payload, source_state_scope="unknown")
+    accepted = service.accept_research_unit(
+        **{**_unit_kwargs(), "deep_payload": unknown}, acceptance_diagnostics=_clean()
+    )
+    assert accepted["status"] == "accepted", accepted
+    ref = accepted["writeReceiptRef"]
+    current = service.get_research_write_receipt(ref)["currentProjection"][0]
+    assert current["claimBindingStatus"] == "diagnostic_only"
+    assert current["bindingIssue"] == "source_state_unknown"
+    assert current["currentEligibility"] is False
+    assert "source_state_unknown" in current["currentExclusionReasons"]
+    assert "source_claim_binding_mismatch" not in current["currentExclusionReasons"]
+    with mature_learning.connect(service.db_path) as con:
+        con.execute("UPDATE deep_research_record_evidence SET accepted_projection_hash=? WHERE record_id=?",
+                    ("0" * 64, current["writtenRecordId"]))
+        con.commit()
+    invalid = service.get_research_write_receipt(ref)["currentProjection"][0]
+    assert invalid["claimBindingStatus"] == "invalid"
+    assert "source_claim_binding_mismatch" in invalid["currentExclusionReasons"]
+    assert invalid["currentEligibility"] is False

@@ -21,7 +21,9 @@ reference-set placement so the choice is transparent, not a black box.
 from __future__ import annotations
 
 import concurrent.futures as cf
-from typing import Any
+import re
+import threading
+from typing import Any, NoReturn
 
 from .defense_state import has_chaos_inoculation
 
@@ -58,6 +60,148 @@ _UNIQUE_SLOTS = {
     "amulet": "Amulet",
     "ring": "Ring 1",
 }
+
+
+class _OptimizationStopped(Exception):
+    """Internal raw-free failure transport; never carry a candidate or XML snapshot."""
+
+    def __init__(self, failure: dict[str, Any]):
+        super().__init__(failure["errorCode"])
+        self.failure = failure
+
+
+class _ParallelOptimizationCancelled(Exception):
+    """A sibling failed; stop at a phase boundary without replacing its first failure."""
+
+
+def _safe_failure_code(value: Any, fallback: str) -> str:
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", value)
+        else fallback
+    )
+
+
+def _safe_failure_info(value: dict[str, Any], fallback: str) -> dict[str, Any]:
+    safe: dict[str, Any] = {"errorCode": _safe_failure_code(value.get("errorCode"), fallback)}
+    if isinstance(value.get("stage"), str):
+        safe["stage"] = _safe_failure_code(value["stage"], "unknown")
+    for key in ("errorType", "errorKind", "exceptionType"):
+        text = value.get(key)
+        if isinstance(text, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", text):
+            safe[key] = text
+    for key in ("rolledBack", "recoveryRequired", "recoverable"):
+        if type(value.get(key)) is bool:
+            safe[key] = value[key]
+    return safe
+
+
+def _safe_recovery_info(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    safe: dict[str, Any] = {}
+    if isinstance(value.get("status"), str) and value["status"] in {"verified", "failed"}:
+        safe["status"] = value["status"]
+    for key in ("restoreAttempted", "snapshotVerified"):
+        if type(value.get(key)) is bool:
+            safe[key] = value[key]
+    for key in ("expectedStateHash", "actualStateHash"):
+        text = value.get(key)
+        if text is None or (isinstance(text, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", text)):
+            safe[key] = text
+    initial = value.get("initialStateReadFailure")
+    if initial is None or isinstance(initial, dict):
+        safe["initialStateReadFailure"] = (
+            _safe_failure_info(initial, "state_read_failed") if initial else None
+        )
+    if isinstance(value.get("errors"), list):
+        safe["errors"] = [
+            _safe_failure_info(item, "restoration_failed")
+            for item in value["errors"]
+            if isinstance(item, dict)
+        ]
+    return safe
+
+
+def _stop_optimization(
+    result: dict[str, Any],
+    *,
+    stage: str,
+    default_code: str,
+) -> NoReturn:
+    code = _safe_failure_code(result.get("errorCode"), default_code)
+    original = result.get("firstFailure")
+    original = original if isinstance(original, dict) else result
+    first = _safe_failure_info(original, code)
+    rolled_back = result.get("rolledBack") if type(result.get("rolledBack")) is bool else None
+    recovery = result.get("recoveryRequired")
+    if rolled_back is False:
+        recovery = True
+    elif type(recovery) is not bool:
+        recovery = False if rolled_back is True else None
+    failure = {
+        "ok": False,
+        "errorCode": code,
+        "failedStage": stage,
+        "stopped": True,
+        "safeToContinue": False,
+        "firstFailure": first,
+        "rolledBack": rolled_back,
+        "recoveryRequired": recovery,
+        "error": "Legacy build optimization stopped after a failed step.",
+        "stateStatus": "restored" if rolled_back is True and recovery is False else "unconfirmed",
+        "nextAction": "Inspect or explicitly recover the active build before continuing.",
+    }
+    recovery_info = _safe_recovery_info(result.get("recovery"))
+    if recovery_info is not None:
+        failure["recovery"] = recovery_info
+    if isinstance(result.get("failureChain"), list):
+        failure["failureChain"] = [
+            _safe_failure_info(item, "optimizer_step_failed")
+            for item in result["failureChain"]
+            if isinstance(item, dict)
+        ]
+    if type(result.get("failureChainTruncated")) is bool:
+        failure["failureChainTruncated"] = result["failureChainTruncated"]
+    raise _OptimizationStopped(failure)
+
+
+def _check_terminal_result(engine: PobEngine, result: Any, *, stage: str) -> None:
+    """Only deterministic recovery/fatal markers stop an otherwise optional refinement."""
+    if not isinstance(result, dict):
+        _stop_optimization({}, stage=stage, default_code="invalid_optimizer_step_result")
+    if (
+        result.get("recoveryRequired") is True
+        or result.get("rolledBack") is False
+        or result.get("errorCode")
+        in {
+            "item_search_snapshot_failed",
+            "item_search_restore_failed",
+            "build_state_recovery_required",
+        }
+        or (
+            result.get("ok") is False
+            and result.get("recoverable") is False
+            and bool(result.get("errorCode"))
+            and result.get("errorCode") != "no_gain"
+        )
+        or getattr(engine, "_poe2_mutation_batch_recovery_required", False)
+    ):
+        failure = dict(result)
+        if getattr(engine, "_poe2_mutation_batch_recovery_required", False):
+            failure["recoveryRequired"] = True
+        _stop_optimization(failure, stage=stage, default_code="build_state_recovery_required")
+
+
+def _check_phase_boundary(engine: PobEngine, stop_event: threading.Event | None) -> None:
+    if stop_event is not None and stop_event.is_set():
+        raise _ParallelOptimizationCancelled()
+    if getattr(engine, "_poe2_mutation_batch_recovery_required", False):
+        _stop_optimization(
+            {"recoveryRequired": True},
+            stage="phase_boundary",
+            default_code="build_state_recovery_required",
+        )
 
 
 def _num(x: Any) -> bool:
@@ -169,8 +313,8 @@ def _result(engine: PobEngine, metric: str, min_ehp: float | None) -> dict[str, 
     st = engine.get_stats(["TotalDPS", "FullDPS"]).get("stats") or {}
     d = engine.get_defenses() or {}
     build = engine.get_build()
-    res_capped, resistance_target_met, elemental_target, chaos_target = (
-        _resistance_target_status(build, d)
+    res_capped, resistance_target_met, elemental_target, chaos_target = _resistance_target_status(
+        build, d
     )
     ehp = d.get("totalEHP")
     ehp_ok = (ehp or 0) >= min_ehp if min_ehp else True
@@ -193,41 +337,89 @@ def _result(engine: PobEngine, metric: str, min_ehp: float | None) -> dict[str, 
     }
 
 
-def _equip_plan(engine: PobEngine, plan: list[dict[str, Any]]) -> None:
+def _equip_plan(
+    engine: PobEngine,
+    plan: list[dict[str, Any]],
+    *,
+    _stop_event: threading.Event | None = None,
+) -> None:
     for p in plan:
+        _check_phase_boundary(engine, _stop_event)
         item, slot = p.get("item"), p.get("slot")
         if item and slot:
-            engine.add_item(item, slot=slot)
+            _check_terminal_result(engine, engine.add_item(item, slot=slot), stage="equip_plan")
 
 
-def _craft_weapon(engine: PobEngine, metric: str) -> None:
+def _craft_weapon(
+    engine: PobEngine,
+    metric: str,
+    *,
+    _stop_event: threading.Event | None = None,
+) -> None:
     """Polish the main-hand to pure metric (the single biggest lever) — plan_gear leaves weapons
     blended; this maxes them. No-op if the slot has no base."""
-    r = itemopt.optimize_item(engine, "Weapon 1", metric=metric, thorough=True)
+    _check_phase_boundary(engine, _stop_event)
+    try:
+        r = itemopt.optimize_item(engine, "Weapon 1", metric=metric, thorough=True)
+    except Exception as exc:
+        _stop_optimization(
+            {"errorKind": type(exc).__name__, "recoveryRequired": True},
+            stage="craft_weapon",
+            default_code="weapon_optimization_failed",
+        )
+    _check_terminal_result(engine, r, stage="craft_weapon")
+    _check_phase_boundary(engine, _stop_event)
     if r.get("ok") and r.get("item"):
-        engine.add_item(r["item"], slot="Weapon 1")
+        try:
+            equipped = engine.add_item(r["item"], slot="Weapon 1")
+        except Exception as exc:
+            _stop_optimization(
+                {"errorKind": type(exc).__name__, "recoveryRequired": True},
+                stage="equip_weapon",
+                default_code="weapon_equip_failed",
+            )
+        _check_terminal_result(engine, equipped, stage="equip_weapon")
+        if equipped.get("ok") is not True:
+            _stop_optimization(equipped, stage="equip_weapon", default_code="weapon_equip_failed")
 
 
-def _fill_jewels(engine: PobEngine, metric: str, base: str) -> int:
+def _fill_jewels(
+    engine: PobEngine,
+    metric: str,
+    base: str,
+    *,
+    _stop_event: threading.Event | None = None,
+) -> int:
     """Socket every ALLOCATED jewel socket with its best metric-raising rare jewel. Re-optimizes
     filled sockets too, so a later pass improves them on the now-stronger build. Returns count."""
     socks = engine.list_jewel_sockets().get("sockets") or []
     filled = 0
     for s in socks:
+        _check_phase_boundary(engine, _stop_event)
         if not s.get("allocated"):
             continue
         sid = s.get("socket")
         if not _num(sid):
             continue
         j = itemopt.optimize_jewel(engine, metric=metric, base=base)
+        _check_terminal_result(engine, j, stage="fill_jewels")
+        _check_phase_boundary(engine, _stop_event)
         if j.get("ok") and j.get("item"):
-            engine.equip_jewel(j["item"], socket=int(sid))
+            equipped = engine.equip_jewel(j["item"], socket=int(sid))
+            _check_terminal_result(engine, equipped, stage="equip_jewel")
             filled += 1
     return filled
 
 
-def _apply_supports(engine: PobEngine, metric: str) -> None:
+def _apply_supports(
+    engine: PobEngine,
+    metric: str,
+    *,
+    _stop_event: threading.Event | None = None,
+) -> None:
     r = supportopt.optimize_supports(engine, metric=metric)
+    _check_terminal_result(engine, r, stage="apply_supports")
+    _check_phase_boundary(engine, _stop_event)
     if not r.get("ok"):
         return
     skill = r.get("skill")
@@ -255,7 +447,13 @@ def _unique_item_text(full: dict[str, Any]) -> str:
     return f"Rarity: Unique\n{name}\n{base}\n--------\n" + "\n".join(mods)
 
 
-def _unique_pass(engine: PobEngine, metric: str, min_ehp: float | None) -> list[dict[str, Any]]:
+def _unique_pass(
+    engine: PobEngine,
+    metric: str,
+    min_ehp: float | None,
+    *,
+    _stop_event: threading.Event | None = None,
+) -> list[dict[str, Any]]:
     """v2 — try the build-relevant uniques per gear slot: equip each, keep it only if it raises the
     metric without breaking the defensive constraints. Best-effort and bounded; a unique that ENABLES
     a mechanic (rather than just adding stats) won't always show its value here — those are flagged
@@ -274,6 +472,7 @@ def _unique_pass(engine: PobEngine, metric: str, min_ehp: float | None) -> list[
     base = _result(engine, metric, min_ehp)
     cur = base["score"]
     for u in cands:
+        _check_phase_boundary(engine, _stop_event)
         itype = str(u.get("item_type") or "").lower()
         slot = next((s for key, s in _UNIQUE_SLOTS.items() if key in itype), None)
         if not slot:
@@ -312,12 +511,14 @@ def commit_and_max(
     try_uniques: bool,
     damage_types: list[str],
     combat: dict[str, Any],
+    _stop_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Build the version that maximally commits `lever` (None = balanced) across tree+gear+jewels+
     supports, evaluated as the whole build. Starts fresh from `snapshot`; returns the metrics + the
     build XML + what it committed. The over-commitment lives in REQUIRING the lever's tree clusters
     (which greedy alone won't take) + filling jewel sockets — once those make the lever valuable, the
     metric-greedy gear/jewels/supports pile onto it naturally, breaking the per-slot chicken-egg."""
+    _check_phase_boundary(engine, _stop_event)
     engine.load_build_xml(snapshot)
 
     require: list[str | int] = []
@@ -333,21 +534,30 @@ def commit_and_max(
     tree = engine.optimize_passives(
         metric=metric, points=0, reset=True, require=require or None, goals=tree_goals
     )
+    _check_phase_boundary(engine, _stop_event)
     engine.set_config(options=combat)
 
     jewel_base = _JEWEL_BASE.get(_attr_bias(engine), "Diamond")
     jewels = 0
     for _ in range(max(1, passes)):
+        _check_phase_boundary(engine, _stop_event)
         plan = itemopt.plan_gear(engine, dps_weight=0.85, min_ehp=min_ehp)
-        _equip_plan(engine, plan.get("plan") or [])
-        _craft_weapon(engine, metric)
-        jewels = _fill_jewels(engine, metric, jewel_base)
-        _apply_supports(engine, metric)
+        _check_terminal_result(engine, plan, stage="plan_gear")
+        _check_phase_boundary(engine, _stop_event)
+        _equip_plan(engine, plan.get("plan") or [], _stop_event=_stop_event)
+        _check_phase_boundary(engine, _stop_event)
+        _craft_weapon(engine, metric, _stop_event=_stop_event)
+        _check_phase_boundary(engine, _stop_event)
+        jewels = _fill_jewels(engine, metric, jewel_base, _stop_event=_stop_event)
+        _check_phase_boundary(engine, _stop_event)
+        _apply_supports(engine, metric, _stop_event=_stop_event)
 
+    _check_phase_boundary(engine, _stop_event)
     uniques: list[dict[str, Any]] = []
     if try_uniques:
-        uniques = _unique_pass(engine, metric, min_ehp)
+        uniques = _unique_pass(engine, metric, min_ehp, _stop_event=_stop_event)
 
+    _check_phase_boundary(engine, _stop_event)
     res = _result(engine, metric, min_ehp)
     res["lever"] = lever or "balanced"
     res["treeRequired"] = require
@@ -405,8 +615,26 @@ def _run_levers(
     engines = [engine, *extras]
     chunks: list[list[str | None]] = [levers[i::n] for i in range(n)]
 
+    stop_event = threading.Event()
+    failure_lock = threading.Lock()
+    first_failure: list[_OptimizationStopped] = []
+
     def work(eng: PobEngine, chunk: list[str | None]) -> list[dict[str, Any]]:
-        return [commit_and_max(eng, snapshot, lev, **kw) for lev in chunk]
+        results = []
+        for lev in chunk:
+            if stop_event.is_set():
+                break
+            try:
+                results.append(commit_and_max(eng, snapshot, lev, _stop_event=stop_event, **kw))
+            except _OptimizationStopped as exc:
+                with failure_lock:
+                    if not first_failure:
+                        first_failure.append(exc)
+                    stop_event.set()
+                break
+            except _ParallelOptimizationCancelled:
+                break
+        return results
 
     try:
         with cf.ThreadPoolExecutor(max_workers=n) as ex:
@@ -414,10 +642,22 @@ def _run_levers(
             out: list[dict[str, Any]] = []
             for f in futs:
                 out += f.result()
+        if first_failure:
+            raise first_failure[0]
         return out
     finally:
         for e in extras:
-            e.close()
+            try:
+                e.close()
+            except Exception as exc:
+                if not first_failure:
+                    raise
+                first_failure[0].failure.setdefault("cleanupFailures", []).append(
+                    {
+                        "stage": "close_parallel_engine",
+                        "errorType": type(exc).__name__,
+                    }
+                )
 
 
 _CRAFT_OFFENSE = ("Weapon 1", "Amulet", "Gloves", "Ring 1", "Ring 2")
@@ -504,6 +744,43 @@ def optimize_build(
     class/skill/weapon configs too and keeps the best — the LLM proposes archetypes, the optimizer
     picks. `parallel` spreads the lever search across engine subprocesses. See the module docstring.
     """
+    try:
+        return _optimize_build(
+            engine,
+            metric=metric,
+            min_ehp=min_ehp,
+            levers=levers,
+            tier=tier,
+            passes=passes,
+            max_jewel_sockets=max_jewel_sockets,
+            try_uniques=try_uniques,
+            crafting=crafting,
+            combat=combat,
+            archetypes=archetypes,
+            parallel=parallel,
+            max_workers=max_workers,
+        )
+    except _OptimizationStopped as exc:
+        return exc.failure
+
+
+def _optimize_build(
+    engine: PobEngine,
+    *,
+    metric: str,
+    min_ehp: float | None,
+    levers: list[str] | None,
+    tier: str,
+    passes: int,
+    max_jewel_sockets: int,
+    try_uniques: bool,
+    crafting: bool,
+    combat: dict[str, Any] | None,
+    archetypes: list[dict[str, Any]] | None,
+    parallel: bool,
+    max_workers: int,
+) -> dict[str, Any]:
+    _check_phase_boundary(engine, None)
     b = engine.get_build()
     skill = str(b.get("mainSkill") or "")
     if not skill:

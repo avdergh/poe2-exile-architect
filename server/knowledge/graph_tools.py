@@ -218,6 +218,39 @@ CONTEXT_POLICIES: dict[str, str] = {
 }
 
 
+class GraphToolCatalogInput(StrictModel):
+    query_family: str | None = None
+
+
+def describe_graph_tools(payload: dict[str, Any]) -> dict[str, Any]:
+    """Discover existing typed operations without loading a snapshot or graph data."""
+    try:
+        request = GraphToolCatalogInput.model_validate(payload)
+    except ValidationError:
+        return {"status": "error", "errorCode": "invalid_payload", "noRawQuery": True}
+    if request.query_family is not None:
+        model = INPUT_MODELS.get(request.query_family)
+        if model is None:
+            return {"status": "error", "errorCode": "unsupported_tool", "noRawQuery": True}
+        return {
+            "status": "ok", "queryFamily": request.query_family,
+            "inputSchema": model.model_json_schema(),
+            "contextPolicy": CONTEXT_POLICIES[request.query_family], "noRawQuery": True,
+        }
+    return {
+        "status": "ok", "toolName": "list_graph_tools", "noRawQuery": True,
+        "tools": [
+            {"queryFamily": name,
+             "requiredFields": [field for field, info in model.model_fields.items() if info.is_required()],
+             "contextPolicy": CONTEXT_POLICIES[name]}
+            for name, model in INPUT_MODELS.items()
+        ],
+        "detailRequest": {"tool_name": "list_graph_tools", "payload": {"query_family": "explain_graph_evidence"}},
+        "staticEffectRead": {"tool_name": "explain_graph_evidence", "payload": {"node_key": "<resolved stable key>"}},
+        "note": "statTexts are static source evidence; they do not prove PoB allocation/application.",
+    }
+
+
 def _normalize_resolve_component_key_alias(
     query_family: str, payload: dict[str, Any]
 ) -> dict[str, Any]:

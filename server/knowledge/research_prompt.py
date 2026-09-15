@@ -225,6 +225,10 @@ def build_researcher_prompt_package(
         "for player-used skills) discovers; resolve_graph_component with the chosen name "
         "confirms. Lexical or future semantic similarity may discover candidates, but it "
         "never authorizes an endpoint.\n"
+        "Discover public graph operations through graph_tool_query(tool_name='list_graph_tools', "
+        "payload={}); request one exact schema with payload={'query_family': '<returned name>'}. "
+        "After resolving a passive, use explain_graph_evidence with node_key to read statTexts "
+        "and sourceRefs. This proves static effects, never actual PoB application.\n"
         "Before constructing ANY semantic edge, you MUST first call graph_tool_query with "
         'tool_name="resolve_graph_component" for every source and target entity: every skill, '
         "support, unique item, passive, notable, ascendancy, or other graph component you "

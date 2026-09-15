@@ -93,6 +93,9 @@ skill 使用 symlink/junction 指向同一 checkout，因此更新仓库后不�
 
 ## 知识库分发边界
 
+发布许可复核见[数据权利风险评估](DATA_RIGHTS_REVIEW.md)。下述是当前技术分发设计，
+copy-safety 与 `publishable` 不代表来源授权；未经确认的数据不得仅凭程序验收认定为可公开。
+
 公开发布采用 local-first 混合方案：
 
 - `global_seed` 与维护者当前 `local_user`：经过 copy-safety、版本和状态审计后，共同构建为带

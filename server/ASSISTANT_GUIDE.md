@@ -181,7 +181,32 @@ process cap is five, including reserved Judge/optimizer capacity.
 | Numeric comparison/calibration | `compare_to/benchmark_build/list_reference_builds`; reference library is calibration-only |
 | Live context after design lock | `get_prices/list_price_leagues/get_meta_archetype_trends` |
 
+Graph operation discovery uses `graph_tool_query("list_graph_tools", {})`; pass
+`{"query_family":"explain_graph_evidence"}` for its exact schema. Resolve a passive identity, then
+read `explain_graph_evidence` with `node_key` for source-bound `statTexts`. Static text does not
+prove allocation or application. `get_gem.effectDetails` keeps each exact granted effect separate;
+stat-template projections and missing values are labelled, never inferred from a buff name.
+Wiki `rate_limited` responses include a suggested retry time, without automatic waiting or retry.
+Research write receipts default to paginated summary IDs/hashes; `detail="records"` reads full
+mappings and saved summaries, not full bodies. Read current bodies via query_research_memory with
+the actual record_ids, detail_level=record and response_profile=full, verifying source/projection.
+Use `detail="diagnostics"` plus a returned section name for audits/comparison hints. Follow
+`pagination.nextCursor`; only the returned page has current eligibility diagnostics.
+Research readback v5 includes a native per-effect reservation ledger. Read its summary and all
+group/effect pages, preserving null values, current/alternate actors and item-granted exemptions.
+ReservedBase may already include the percent amount; use native totals rather than summing rows.
+Runtime group indices do not identify original-source groups or certify per-use/per-second costs.
+
 Whole-build `optimize_build` and global passive-tree replanning remain disabled for normal Create.
+Optimizer failures keep the original code/stage/type in `firstFailure`; recovery errors are separate.
+Support search attempts entry-snapshot restoration even when current-state inspection fails. Only
+verified restoration can confirm rollback; an inherited `recoveryRequired=true` remains blocking.
+Support search checks the shared recovery flag under its transaction lock before any PoB read.
+Unavailable entry snapshots, unconfirmed restoration or interrupted cleanup set that same flag;
+later searches return `build_state_recovery_required` until the existing verified recovery flow
+clears it. Support search never clears an inherited stop merely because XML matches.
+Legacy build optimization returns `stopped=true/safeToContinue=false` after a fatal step. A null
+recovery status means unconfirmed state: inspect or explicitly recover it before further work.
 A hard-only Judge pass does not replace the Agent-led quality pass. For next-jewel review at 90+,
 protect core/support nodes with `protected_node_ids` and compare the selected jewel across every
 currently reachable empty socket. Do not stop on a fixed round or jewel count. The protected

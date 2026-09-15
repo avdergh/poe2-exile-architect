@@ -221,12 +221,14 @@ def adapt_skill(
         rewritten = rewrite_text(text, mapping, name)
         if rel.name == "SKILL.md":
             note = GENERIC_NOTE + EXTRA_NOTES.get(name, "")
-            if name == "poe-bd-learn":
+            if "# 最高优先级 输出语言必须与用户一致" in rewritten:
                 # The user's highest-priority language rule must precede host-adapter guidance.
-                anchor = "## Learning 的职责"
-                if anchor not in rewritten:
-                    raise SystemExit("Learning language-priority section is missing")
-                rewritten = rewritten.replace(anchor, note + "\n" + anchor, 1)
+                priority_start = rewritten.index("# 最高优先级 输出语言必须与用户一致")
+                next_section = re.search(r"^#{1,2} ", rewritten[priority_start + 1 :], re.M)
+                if next_section is None:
+                    raise SystemExit("section after language-priority rule is missing")
+                pos = priority_start + 1 + next_section.start()
+                rewritten = rewritten[:pos] + note + "\n" + rewritten[pos:]
             else:
                 rewritten = insert_note(rewritten, note)
         out_file.parent.mkdir(parents=True, exist_ok=True)

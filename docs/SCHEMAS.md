@@ -344,6 +344,19 @@ Phase 5 当前采用 Agent 主导的轻量原型合同。这里的“合同”�
   非活动物品来源组在每次完整snapshot重载后先设为计算主组，再选择精确active effect；不能在
   PoB尚未生成该来源的活动效果列表时同时要求有效序号。激活后仍核对来源、effectId和实际辅助，
   最终恢复原state hash。这仅选择计算焦点，不证明副武器切换、充能或增益覆盖已经验证。
+- 优化失败的恢复诊断：`optimize_supports` 在入口快照读取失败时停止；搜索异常后即使当前状态
+  读取失败，也尝试载入入口快照。`firstFailure` 保留首次安全错误码、阶段和异常类型，
+  `failureChain` 只沿显式异常原因有界追溯；恢复命令与核验错误独立列入 `recovery.errors`。
+  只有恢复命令无错误且最终状态 hash 精确匹配，才能确认回滚；可信 `recoveryRequired=true`
+  不因后续 hash 相同而清除。普通成功和安全无增益响应保持原合同，不改变辅助选择规则。
+  辅助优化在事务锁内、任何 PoB 读取前检查共享恢复标记；已标记时返回
+  `build_state_recovery_required`。入口快照不可读、恢复未确认或清理中断时设置同一标记，
+  让后续辅助与其他已有守卫的搜索拒绝使用该状态。搜索中已有的恢复要求保持单向阻断，
+  不因本次快照相同而清除；正常确认恢复不会新增阻断，解除标记沿用既有可信恢复流程。
+  legacy `optimize_build` 遇到武器等阶段的恢复失败或确定性致命结果，返回
+  `ok=false/stopped=true/safeToContinue=false`，不继续珠宝、后续候选或胜出构筑恢复。
+  并行工作在阶段边界停止；恢复情况缺证据时为 null，`stateStatus=unconfirmed`，不得据此继续。
+  该错误处理不诊断内存增长原因，也不解除普通 Create 对全局优化器的禁用。
 - PoB runtime contract 10 识别原生 `Default Attack`：`sourceKind=default_attack` 和宝石
   `levelAuthority=default_attack` 必须绑定当前 MAIN 计算产生的 slot/effect/level 授予，XML标签不能授权。
   默认攻击的 `activeSkills[].effectiveLevel` 与原始宝石 `level` 分开读回；前者含装备增级，后者负责等级合法性。
@@ -1122,11 +1135,23 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   candidate→scope/key/recordId、write action、evidence 与 before/after projection hash。pattern、deep、
   edge、receipt 和一次 `memory_revision` 在同一 `BEGIN IMMEDIATE` 事务提交；queue/ledger 在提交后
   幂等收尾。`get_research_write_receipt` 只供审计，不生成 Create DQ。
+  公开响应 `research_write_receipt_view_v1` 默认 `detail=summary`：保留验收计数和分页的实际ID/指纹，
+  不重复展开映射；`detail=records` 返回同页完整映射与已保存的canonical摘要，完整正文仍按实际
+  recordId从`query_research_memory(detail_level=record,response_profile=full)`读回并核绑定，不能将
+  当前正文冒充历史写入正文。`detail=diagnostics` 加目录中的精确
+  `section` 返回支持审计、缺口或比较提示。`cursor/limit` 只限制单页，必须跟随
+  `pagination.nextCursor` 至结束。持久原回执和内部验收仍完整；`currentProjection` 是本页实时资格，
+  不能用总条数推断未返回记录的当前状态。
+  分页单位是写入映射条目；以 `writtenMappingIndex` 对齐同页资格，不能只按recordId筛选，避免共享
+  同一record的不同sourceClaim串用资格。缺映射位置时显式 `projectionMappingComplete=false`。
 - 同名不同`knowledgeKey`默认并存；跨主题修订必须给record-root `sourceClaimRevision`
   （proposal为`source_claim_revision`）的knowledgeKey/recordId/projectionHash，来自本来源当前深读。
   该请求不进入知识正文/投影；整批写入前核对旧精确claim、状态与版本，拒绝陈旧绑定及批内互相撤回。
   原claim资格与record lane资格分别返回`claimBindingStatus/currentEligibility`和
   `recordLaneEligibility`；不能借兄弟claim证明已撤销的原声明，也不禁用合法lane知识。
+  回执的 `bindingIssue` 保留原始原因。精确绑定一致、但来源状态未知或legacy schema时返回
+  `claimBindingStatus=diagnostic_only`，并以原原因继续排除；版本、投影或来源实际不匹配仍为
+  `invalid/source_claim_binding_mismatch`。该响应修正不迁移记录、不提升任何原声明权限。
 - URL在入队冻结为已解析XML并以冻结材料的完整hash建身份；之后claim/resume不得重新抓取该URL。
   quarantine和packet读取重验hash/sample/ref及XML一致性，读取packet也重算声明的safeHash。
   旧URL-only材料不重标、不补造hash，明确保留不可恢复诊断。查询/恢复使用不可创建的已有库连接，
@@ -1135,6 +1160,31 @@ Phase 4 research memory 保存外部 Researcher Agent 提交的 clean、typed pr
   `researchCompletion=complete/needs_followup/unknown`、`completionScope=case/supplement`，保存
   deferred/未解析/coverage计数、typed原因及安全定位，不保存被拒绝正文。缺失计数保留unknown；
   `completionDiagnosticsIncomplete` 阻止缺失信息被缓存默认零升级为clean。补录成功不自动关闭父案。
+- review合同的 `recordContentLimits` 明确中文400字、英文250词、不可分机制链例外与同主题拆分规则。
+  校验顶层 `blockingReasons` 汇总 pattern/deep/semantic writer 的确定性拒绝、候选索引、完整诊断位置
+  和修复提示；`validationIssues` 保留原 schema 字段路径。重复知识身份和方向冲突仍然阻断。
+- Research数值读回使用 `research_pob_readback_v5` / `metricSetVersion=3`，新增
+  `reservationLedger=pob_reservation_ledger_v1`。账本直接读取原生每effect的Life/Mana/Spirit保留、
+  来源、武器组、actor、免保留与生命替代标记；数值缺失保留null，不重演公式、不按名字合并。
+  每行的 `nativeReservedBase` 可能已含百分比换算，不能再叠加 `nativeReservedPercent`；百分比取整、
+  全局保留与原生总账独立保存，不能用逐行相加替代。倍率字段只是原生modifier累计值，未重演clamp。
+  group/gem/effect编号属于导入后runtime；`sourceGroupMappingStatus=not_observed` 不授权反推原始组。
+  首版只读保留账，不把选中技能的每次/每秒施法成本复制给所有effect。
+  Python在锁内核读取前后XML完全一致；账本buildStateHash与外层observed/semantic hash、
+  activeWeaponSet、snapshotRef/sourceHashRef交叉绑定。actorWeaponSet单独保留，不强行等同装备武器组。
+  `pob-readback`公开分区先给总览，再逐group/effect返回绑定行；超长项走无损evidence_fragment，
+  跟随nextCursor读取完整明细。旧available包不获得v5权限，恢复排队包时重建、领取时从原冻结源重算；
+  活跃lease和accepting恢复仍受原保护，旧accepted回执不批量重标。
+  原生桥接与Python共同使用runtime contract 11；旧contract 10即使app版本较新也不能覆盖bundle，
+  必须选择包含新命令的完整运行时配对。该升级不重标上游PoB版本或历史来源。
+- `get_gem.effectDetails` 使用 `pob_gem_effect_details_v1`，按精确gem和每个granted effect读取
+  pinned静态 `description/supportConstraints/statSets` 并绑定文件哈希。`stat_text_projection`
+  表示本effect明确数值与模板的投影，不是上游原始简述；无法解析的转换保留模板和诊断，缺失值保持
+  `null/not_explicit`。未明确绑定子effect的同名buff不推定持续时间、恢复量或叠层。
+  `mechanismCompleteness=not_certified` 不授权角色数值、实际兼容性或实战覆盖。
+- Wiki 429保留 `available=false`，增加 `errorCode=rate_limited`、`retryAfterSeconds`、UTC `retryAt`
+  和 `retryAfterSource`。合法 `Retry-After` 支持秒数或HTTP日期；缺失/无效时只建议60秒后再试并标明
+  `default_suggestion`。本合同不增加共享调度、缓存、请求复用、自动等待或自动重试，也不保证届时成功。
 - 辅助组合拒绝诊断保留全部`unsupportedPairs`端点、类型条件和来源证据；自然语言预览单独限长，
   不把全部配对拼成一条过长caveat而遮住原始拒绝原因。预览限长不删除结构明细、不放宽copy-safety，
   也不能将被拒记录或来源缺口变为通过。

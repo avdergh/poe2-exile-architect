@@ -204,8 +204,10 @@ def test_installers_register_poe2_mcp_server_for_supported_hosts():
     assert '"run", "python", "-m", "server.mcp.knowledge_server"' in sh
     assert "--register-mcp-only" in sh
     assert 'REPO_DIR="$SCRIPT_DIR"' in sh
-    assert "Codex、Claude Code、Cursor 和 OpenCode" in readme
-    assert "两者都不存在时会明确停止" in readme
+    # Host names and the required runtime remain checkable across README languages.
+    for host in ("Codex", "Claude Code", "Cursor", "OpenCode"):
+        assert host in readme
+    assert "uv" in readme
     assert "poe_knowledge_mcp" in readme
     assert "poe_build_mcp" in readme
 

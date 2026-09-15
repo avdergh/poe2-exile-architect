@@ -54,6 +54,19 @@ class _FakeEngine:
     def get_xml(self):
         return '<PathOfBuilding><Build level="98"/></PathOfBuilding>'
 
+    def inspect_reservation_ledger(self):
+        from server.compute.state import build_state_hash
+
+        return {
+            "schemaVersion": "pob_reservation_ledger_v1",
+            "status": "available",
+            "effects": [], "groups": [],
+            "totals": {pool: {} for pool in ("Life", "Mana", "Spirit")},
+            "activeWeaponSet": self.get_build().get("activeWeaponSet"),
+            "readOnlyVerified": True,
+            "buildStateHash": build_state_hash(self.get_xml()),
+        }
+
 
 @pytest.mark.parametrize("model, status", [("0.5.4", "source_patch_model_mismatch"),
     ("0.5.5", "certified_local_runtime"), ("", "model_version_unknown")])
@@ -118,7 +131,9 @@ def test_safe_readback_recomputes_bounded_active_snapshot(monkeypatch):
     assert "rawxml" not in serialized and "<pathofbuilding" not in serialized
     assert result["stateBinding"]["weaponSetState"] == "active"
     assert result["stateBinding"]["activeWeaponSet"] == 2
-    assert result["schemaVersion"] == "research_pob_readback_v4"
+    assert result["schemaVersion"] == "research_pob_readback_v5"
+    assert result["metricSetVersion"] == 3
+    assert result["reservationLedger"]["buildStateHash"] == result["stateBinding"]["observedBuildStateHash"]
     assert "supportOwnerEvidence" not in result
 
 
@@ -214,3 +229,22 @@ def test_safe_readback_failure_is_raw_free(monkeypatch):
     assert result["status"] == "unavailable"
     assert result["errorKind"] == "RuntimeError"
     assert "private source material" not in str(result)
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("schemaVersion", "legacy", "reservation_ledger_contract_mismatch"),
+    ("status", "unavailable", "reservation_ledger_unavailable"),
+    ("buildStateHash", "old-state", "reservation_ledger_state_mismatch"),
+    ("readOnlyVerified", False, "reservation_ledger_state_mismatch"),
+])
+def test_readback_rejects_old_or_unbound_ledger(monkeypatch, field, value, error):
+    class BadLedger(_FakeEngine):
+        def inspect_reservation_ledger(self):
+            return {**super().inspect_reservation_ledger(), field: value}
+
+    monkeypatch.setattr(research_readback, "PobEngine", BadLedger)
+    result = research_readback.build_safe_readback(
+        "<PathOfBuilding/>", source_hash_ref="source-hash:test", version_context={},
+    )
+    assert result["status"] == "unavailable"
+    assert result["errorCode"] == error

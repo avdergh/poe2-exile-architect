@@ -13,6 +13,9 @@
    原料保留时可加`re_research_scope="full_case"`完整复核选定案例；必须明确sample IDs并重新读取/审核
    全部要求证据，不能复制旧验收结论。默认仍为supplement，完整复核不要求制造知识改动。
 3. 读取`mcp__poe_knowledge__get_research_write_receipt`及其选中记录详情，核对新证据是否真正回答原问题与适用场景；
+   回执默认summary只含分页ID/指纹；按`pagination.nextCursor`读全，`detail="records"`读取完整映射与
+   当时保存的摘要；正文按实际recordId用`mcp__poe_knowledge__query_research_memory`的record模式读回并核来源与当前投影。
+   `detail="diagnostics"`配合返回的`diagnosticSections.section`分页取审计明细，不能把未返回项当不存在。
    通过`mcp__poe_research__submit_research_gap_review`提交稳定`request_id`和当前`expected_revision`，逐gap给出
    `resolved/not_applicable/successor_evidence/reopen`、简短理由及对应新receipt/record IDs。
    修订冲突先重新读取状态；同请求重放复用相同内容，不换ID掩盖失败。

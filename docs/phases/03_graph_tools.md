@@ -15,6 +15,11 @@ topology、通用 MCP `graph_tool_query`、Phase 3 deterministic benchmark 脚�
 已完成人工 review 并验收通过。Phase 3 当前可作为 Phase 4 Researcher memory 和 Phase 5
 planner 的 typed physical graph access 前置能力。
 
+操作发现使用 `graph_tool_query(tool_name="list_graph_tools", payload={})`，不依赖图快照；
+再以 `payload={"query_family":"<目录名称>"}` 读取同源完整输入 schema。组件经搜索和解析确认后，
+天赋效果使用 `explain_graph_evidence` 的 `node_key` 查询 `statTexts` 与静态来源。
+该正文证明静态定义，不证明已分配或已被 PoB 应用；内部 Python 函数名不自动成为公开操作。
+
 ## 目标
 
 通过 typed、validated tools 把图知识暴露给外部 agent，而不是让 agent 写 raw graph query

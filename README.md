@@ -1,182 +1,168 @@
 # Exile Architect
 
-Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生成工具基座。它不尝试在项目内部重新训练或内置一个模型循环，而是让 Codex、Claude Code 等成熟 agent 负责研究与推理；仓库负责确定性工具、MCP 合同、图谱、记忆、安全边界和验收。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 能做什么
+Tools and agent skills for researching, creating, and understanding **Path of Exile 2 builds**. Research extracts reusable knowledge into a local database; Create uses that knowledge and Headless Path of Building to develop a build; Learn explains an existing build in an HTML guide.
 
-- 用成熟 Agent 研究 poe.ninja 或本地 PoB 来源，并沉淀经过安全过滤的结构化知识。
-- 由 Agent 主导设计 PoE2 BD，使用本地资料、图、Headless PoB 和 Judge 做验证。
-- 使用 `poe-bd-learn` 按 Research 粒度分析已有 BD，交付有机制图、比较表和上手引导的完整 H5 学习页，
-  技能、装备、天赋和符文附正确图标，点开名称可查看类别与说明；语言优先跟随用户，不写知识库。
-  未核实官方译名则保留英文名。详见[Learning 模式](docs/phases/08_study.md)。
-- 支持用户请求的目标等级单阶段终局 BD（典型 80+），不提供全链路开荒成长流程；最终能力和限制以当前 Skill、Phase 文档为准。
-- Codex Desktop 额外提供 Research/Learning 可见任务循环；其他宿主当前安装 Research Controller、
-  显式 Worker、Create 与面向玩家的 Learn。
+Your agent host, such as Codex or Claude Code, performs the analysis and makes design decisions. This repository supplies local MCP tools, game data queries, persistent memory, and PoB checks. It does not include its own model or train one.
 
-## 安装
+**This product isn't affiliated with or endorsed by Grinding Gear Games in any way.**
 
-本地 MCP 运行需要 [uv](https://docs.astral.sh/uv/)；安装器会注册四个按域拆分的 MCP server
-（`poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp`、`poe_learning_mcp`），
-并优先使用仓库内
-`.tools/uv`，其次使用 `PATH` 中的 `uv`。两者都不存在时会明确停止，不会写入一个无法启动的
-MCP 配置。拆分让单阶段 Create 只发现 knowledge + build 两个 server，避免无关工具和重复
-指令注入挤占上下文。
-Research Skill 通过 `poe_research_mcp` 的 opaque `runRef` 和 typed queue/lease/review/accept 工具
-运行；不会搜索当前项目、直接编辑 queue/SQLite，或把当前工作目录误当成本仓库。Research Memory
-schema 5 按 scope/sourceCase 隔离，Create 使用 bounded 单 cursor receipt 链采用一条一致案例 lane。
+## What you can do
 
-官方 `.build` 转换和 MCPB manifest 校验需要 Node.js。项目优先使用
-`POE_BD_NODE_EXECUTABLE` 显式配置或系统 `PATH`，也会自动发现 Codex Desktop 随附的 Node
-运行时；不要求用户额外安装全局 `npx`。转换 provider 仍要求 Node 20 或更高版本。
+| Workflow | Input | Result |
+| --- | --- | --- |
+| **Research** · `poe-bd-research` | Existing builds from poe.ninja or local PoB files, with source version information | Structured observations about mechanics, synergies, conditions, and failure cases; accepted knowledge is stored locally for later retrieval |
+| **Create** · `poe-bd-create` | Target level, class, skill, or build goal | An agent-designed build, PoB checks, and local PoB files; optional poe.ninja sharing when requested |
+| **Learn** · `poe-bd-learn` | One existing build | A self-contained HTML guide with explanations, mechanism diagrams, comparison tables, and component details; no knowledge-base writes |
 
-### OpenCode 快速体验
+Create produces a **single build at the requested level**, usually for endgame. It does not currently deliver a complete leveling progression. Matching Research knowledge guides the design; when none is available, the agent uses game data, mechanics, and other permitted evidence and reports the knowledge gap.
 
-已有 checkout 时，Windows PowerShell：
+`poe-bd-learning-loop` is a separate, experimental comparative workflow: analyze a reference, independently create a build in the same skill family at the same level, compare them, and retain reviewed lessons. It is not the Learn guide and does not establish that generated builds improve over time.
 
-```powershell
-.\install.ps1 -FromCheckout opencode
-.\install.ps1 -FromCheckout -Doctor opencode
-```
+## Output examples
 
-macOS / Linux：
+The excerpts below illustrate **output structure**, not a real player's build, a completed research run, or a performance benchmark.
 
-```bash
-./install.sh --from-checkout opencode
-./install.sh --doctor opencode
-```
-
-安装后重启 OpenCode，再运行 `opencode mcp list`；列表中应出现 `poe_knowledge_mcp` 和
-`poe_build_mcp`（另有两个 Research/Learning 域 server）。然后直接要求
-Agent“使用 `poe-bd-create` skill 创建一个 PoE2 BD”或“使用 `poe-bd-research` skill 做成熟 BD
-研究”。有些宿主会把 skill 暴露为斜杠命令，有些通过内置 skill tool 加载，因此不把
-`/poe-bd-create` 是否出现在命令面板作为唯一验收标准。
-
-OpenCode 安装器只链接 `poe-bd-research`、其显式专用 `poe-bd-research-worker` 和
-`poe-bd-create`、`poe-bd-learn`，并安全合并
-`~/.config/opencode/opencode.json` 的 `mcp` 下四个 server 条目。它不会迁移依赖 Codex Desktop 任务
-编排能力的 `poe-bd-learning-loop`。
-
-### 从开源仓库安装
-
-Windows PowerShell：
-
-```powershell
-.\install.ps1 codex
-.\install.ps1 opencode
-.\install.ps1 claude
-.\install.ps1 cursor
-```
-
-macOS / Linux：
-
-```bash
-./install.sh codex
-./install.sh opencode
-./install.sh claude
-./install.sh cursor
-```
-
-如果尚未 clone，可以先把安装脚本下载到临时文件、检查内容，再运行。安装器会把仓库放到
-`~/.poe-bd-creator/repo`；也可以用 `POE_BD_CREATOR_DIR` 改位置。不要把远程脚本直接 pipe 给
-shell。
-
-常用选项：
-
-```powershell
-.\install.ps1 -DryRun codex
-.\install.ps1 -FromCheckout opencode
-.\install.ps1 -RegisterMcpOnly -McpHost opencode
-.\install.ps1 -Doctor opencode
-.\install.ps1 -Update
-.\install.ps1 -Uninstall opencode
-```
-
-```bash
-./install.sh --dry-run codex
-./install.sh --from-checkout opencode
-./install.sh --register-mcp-only opencode
-./install.sh --doctor opencode
-./install.sh --update
-./install.sh --uninstall opencode
-```
-
-Codex 安装 Research、Create、Learn、对照学习工作流与显式 Research Worker；Claude Code、Cursor 和 OpenCode
-安装可移植的 Research Controller/Worker、Create 与 Learn。安装器不会覆盖已有真实目录或同名非托管 MCP 配置；JSON 客户端首次修改前会保留
-`.poe-bd-creator.bak`，并用本地指纹回执确保卸载只删除自己写入且未被用户修改的条目。
-
-安装器会为 Codex、Claude Code、Cursor 和 OpenCode 注册本项目四个按域拆分的 MCP server
-（`poe_knowledge_mcp` / `poe_build_mcp` / `poe_research_mcp` / `poe_learning_mcp`）。Codex 修改
-`~/.codex/config.toml` 中带托管标记的块；其他三个宿主只合并各自 JSON 中的命名条目。
-已有本地 checkout 和 skills、只缺 MCP 工具时，可使用 `-RegisterMcpOnly` / `--register-mcp-only`；
-该模式不会 pull、clone 或重新链接 skill。注册后需要重启宿主或新建任务以重新发现工具。完整
-客户端路径、配置形状和故障排查见 [多 Agent 安装指南](docs/MULTI_AGENT_INSTALL.md)。
-
-### DeepSeek Harness
-
-DSH 原生内置 MCP client 桥，适配方式与 OpenCode 同构（注册四个域 MCP server）：
-"快速体验"先执行第一层 patch 注册工具，再安装 `poe-bd` 会话 preset 获得人设、各工作流
-skill 与 MCP 工具集：
-
-```powershell
-dsh web --patch dsh\poe-bd.mcp.cordis.yml          # 第一层：注册 mcp__poe_*__* 工具
-python scripts\install_dsh_preset.py install        # 第二层：安装 poe-bd preset
-python scripts\install_dsh_preset.py doctor         # 诊断
-```
-
-安装后新建 DSH 会话并在预设列表选择 **poe-bd**。换机器时设置
-`POE_BD_CREATOR_ROOT` 或在组合文件里替换路径字面量。四个用户工作流 skill 与显式 Research Worker 由
-`scripts/adapt_skills_for_dsh.py` 从插件源生成（工具名带 `mcp__poe_<server>__`
-前缀）。当前交付已完成静态配置、生成/安装回滚测试和 YAML 解析；真实 DSH 会话启动仍待
-装有 DSH 的环境验收。完整说明见 [dsh/README.md](dsh/README.md)。
-
-## 快速使用
-
-安装并重启宿主后，可以直接对 Agent 说：
+### Research → local knowledge
 
 ```text
-使用 poe-bd-create skill，给我设计一个适合新手的 PoE2 BD。
-使用 poe-bd-research skill，分析 5 个成熟 BD 样本。
+Observation: a damage setup depends on maintaining a triggering condition.
+Conditions: record how the condition starts, persists, and recovers after interruption.
+Failure case: check whether the setup still works against a boss without adds.
+Evidence: keep source version, component identities, and verification status.
+Reuse: retrieve this observation when designing the same skill family.
 ```
 
-“预检”（`--dry-run`）只验证采集链路、不产生知识，仅在明确只想确认链路时使用；想真正分析 N
-个案例时直接说“用 poe-bd-research 分析 N 个成熟 BD”，会按 `--limit N` 真实入队并逐案研究。
+Research retains explanations and their evidence boundaries. Temporary third-party build material is kept separate from durable knowledge.
 
-支持斜杠命令的宿主也可以使用 `/poe-bd-create` 和 `/poe-bd-research`。不同宿主的 Skill 发现方式
-可能不同，不以命令面板是否显示斜杠命令作为唯一安装验收标准。
+### Create → build files and an explanation
 
-## 安全边界
+```text
+Target: requested class, skill, and level
+Design: skill groups, equipment roles, passive choices, and combat setup
+Checks: PoB observations, deterministic legality checks, and model gaps
+Delivery: local PoB XML/import code, with a summary and remaining caveats
+```
 
-- 不把第三方 PoB code、raw XML、完整角色镜像、账号/角色信息或长篇攻略原文写入 Git、聊天或长期记忆。
-- 只有通过来源、resolver、typed schema 和 copy-safety 检查的净化知识才能进入公开种子或持久记忆。
-- 没有 static source 不能创建 physical node。
-- 没有已解析 graph node 不能写 semantic edge。
-- 单个样本只能形成 `case_observation`，不能宣称“通常”“常见”。
-- 项目不内置 autonomous LLM/provider loop；研究、设计、比较与修正始终由外部 Agent 主导。
+An output can remain a **candidate requiring verification** when the model cannot cover a relevant mechanic. A PoB result is not an in-game performance guarantee.
 
-## 文档
+### Learn → an HTML reader
 
-- [多 Agent 安装与验证](docs/MULTI_AGENT_INSTALL.md)
-- [DeepSeek Harness 适配](dsh/README.md)
-- [项目总纲](docs/PROJECT_SPEC.md)
-- [架构说明（中文）](docs/ARCHITECTURE.CN.md) / [Architecture](docs/ARCHITECTURE.md)
-- [核心数据合同](docs/SCHEMAS.md)
-- [阶段计划与验收](docs/phases/)
-- [Create Skill 合同](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md)
-- [Research Skill 合同](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md)
-- [Agent 开发指南](AGENTS.md)
-- [LLM runtime 指南（英文）](server/ASSISTANT_GUIDE.md)
+The downloadable demo uses the actual reader renderer with original demonstration text. It contains **no third-party build or game artwork** and is not a completed BD analysis. Real guides add exact component icons when available.
 
-## 平台能力
+```mermaid
+flowchart LR
+    A[HTML learning guide] --> B[Combat loop diagram]
+    A --> C[Role comparison table]
+    A --> D[Conditions and unknowns]
+    A --> E[Search and concept explanations]
+```
 
-| 平台 | 安装器 | 可用 skill | MCP 自动配置 | 当前结论 |
-| --- | --- | --- | --- | --- |
-| Codex | 支持 | 四个 | 支持 | 完整支持 |
-| Claude Code | 支持 | Research、Create | 支持 | 可测试 |
-| Cursor | 支持 | Research、Create | 支持 | 可测试 |
-| OpenCode | 支持 | Research、Create | 支持 | 当前优先测试目标 |
-| DeepSeek Harness | 静态适配（patch + preset） | 四个（改写版） | 静态配置完成 | 待 DSH 实机验收 |
-| VS Code Copilot / Gemini / OpenClaw / Hermes | 仅 skill 链接 | Research、Create | 不支持 | 需手工接 MCP，暂不宣称完整可用 |
-| Pi | 未接入 | 未接入 | Pi 需要扩展层 | 暂不支持 |
+[Download the English HTML demo](docs/examples/learning-guide-demo.en.html) and open it locally to try chapter search and clickable concept explanations. [中文演示](docs/examples/learning-guide-demo.zh-CN.html).
 
-多平台共享同一套 skill、MCP server、用户数据目录和安全合同；宿主适配层只负责 skill 发现与 MCP
-配置。两个 Desktop loop 仍保持 Codex 专属，不通过复制 prompt 的方式伪装成跨平台能力。
+## Installation
+
+### Requirements
+
+- An agent host with MCP and skill support. Research also requires subagents that can access the Research MCP tools.
+- Git, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
+- A working **Headless PathOfBuilding-PoE2 + LuaJIT** runtime for calculations. Source checkouts require the pinned upstream checkout and local patches described in [pob/PINNED.md](pob/PINNED.md); the installer does not provision this runtime.
+- Node.js 20+ for optional official Build Planner `.build` conversion. The installer attempts provider preparation; this export requires a working provider.
+
+Model access is provided by your agent host. Network access is needed for online collection and live references. Local storage does not mean that analysis bypasses your host's model service or its data policy.
+
+### Install from a checkout
+
+```bash
+git clone https://github.com/avdergh/poe2-exile-architect.git
+cd poe2-exile-architect
+uv sync
+```
+
+Prepare the PoB runtime above, then select your host. These examples use Codex; replace `codex` with `claude`, `cursor`, or `opencode` as needed.
+
+**Windows PowerShell**
+
+```powershell
+.\install.ps1 -FromCheckout codex
+.\install.ps1 -FromCheckout -Doctor codex
+```
+
+**macOS / Linux**
+
+```bash
+bash install.sh --from-checkout codex
+bash install.sh --doctor codex
+```
+
+Restart the host after installation. Ask it to load a skill and call `engine_health` to check the calculation runtime. For supported hosts, doctor checks configuration bindings; Codex directs you to verify through a new task and `engine_health`. Neither replaces an end-to-end generation check.
+
+The installer links skills and registers four local MCP servers: `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp`. Details, update/uninstall options, and troubleshooting are in the [installation guide (Chinese)](docs/MULTI_AGENT_INSTALL.md).
+
+### Host support
+
+| Host | Current integration |
+| --- | --- |
+| Codex | Installer and MCP configuration; Research Controller/Worker, Create, Learn, and comparative Learning Loop. Desktop task orchestration is needed for the loop. |
+| Claude Code / Cursor / OpenCode | Installer and MCP configuration; Research Controller/Worker, Create, and Learn. Research requires the host's subagent tool access. |
+| DeepSeek Harness | Separate patch + preset with adapted skills; live host acceptance is still pending. See [DSH setup (Chinese)](dsh/README.md). |
+| VS Code Copilot / Gemini / OpenClaw / Hermes | Skill linking only; manual MCP integration and validation required. |
+| Pi | No maintained integration. |
+
+macOS installation is provided but has not completed real-machine certification. Configuration support does not imply every workflow has been verified on every platform. The separate `poe-bd-research-loop` needs an external orchestrator and is excluded from the packaged Codex plugin.
+
+## Usage
+
+After installation, ask your agent directly. Slash-command availability varies by host.
+
+**Create a build**
+
+```text
+Use poe-bd-create to create a level 90 Sorceress build around Spark.
+Export local PoB files only. Explain the combat loop and any unverified mechanics.
+```
+
+For optional online sharing, explicitly ask for a poe.ninja share link as well. Build Planner `.build` export depends on converter availability. Outputs follow your request's language unless you specify another; unverified translations of game names retain the original names.
+
+**Research your own build**
+
+```text
+Use poe-bd-research to analyze the attached PoB export and store reusable knowledge locally.
+Its source game patch is [the actual patch of this build].
+```
+
+Supply the file and replace the patch placeholder. Automatic collection is also implemented: for example, “Use poe-bd-research to analyze 5 current-league builds.” Use it with the necessary source permissions; see [data use](#data-use-and-licensing). A dry run checks collection without producing knowledge.
+
+**Understand an existing build**
+
+```text
+Use poe-bd-learn to explain the attached build for a new player.
+Cover the combat loop, skill and equipment roles, defenses, and failure conditions.
+Deliver an English HTML learning guide.
+```
+
+## Local data and limitations
+
+- Research memory and comparative learning memory persist in the OS user-data directory. `POE2_MCP_DATA` overrides the location. Learn reads knowledge but does not add Research or comparative learning records.
+- Raw third-party inputs use temporary quarantine storage and follow cleanup/retention rules. Local user data and exported builds should not be committed to Git.
+- The checkout currently includes Research/Learning seeds and a game corpus. These are separate release materials with unresolved licensing review; see below.
+- PoB coverage varies by mechanic and version. Reports distinguish measured values, assumptions, rough estimates, and unknowns. Default Judge feedback focuses on deterministic failures; strict feedback is optional.
+- Results depend on source quality, model coverage, and the agent's decisions. The project does not promise optimal builds, guaranteed boss kills, or affordable equipment.
+
+## Data use and licensing
+
+Much of the mature-build research uses **poe.ninja**. Its [Terms of Service](https://poe.ninja/terms) restrict copying, public display, and redistribution; public accessibility is not a redistribution license. Internal copy-safety checks reduce copied-content exposure but do not grant permission. **The bundled data has not been cleared for unrestricted public redistribution.** See the [pre-publication risk assessment (Chinese)](docs/DATA_RIGHTS_REVIEW.md) for the tracked data inventory and follow-up.
+
+Use sources you are entitled to process. Third-party game data, artwork, build material, and derived datasets do not automatically inherit the [MIT code license](LICENSE). GGG's [third-party policy](https://www.pathofexile.com/developer/docs) and [terms](https://www.pathofexile.com/legal/terms-of-use-and-privacy-policy) also apply where relevant.
+
+This project builds on [MaxWilk/poe2-build-mcp](https://github.com/MaxWilk/poe2-build-mcp) and [PathOfBuildingCommunity/PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2). Preserve their license notices and the [converter provider's notice](providers/poe2-build-converter/UPSTREAM_LICENSE.txt) when redistributing their code.
+
+## Development and documentation
+
+- [Architecture](docs/ARCHITECTURE.md) / [架构（中文）](docs/ARCHITECTURE.CN.md)
+- [Project specification](docs/PROJECT_SPEC.md), [data contracts](docs/SCHEMAS.md), and [phase documentation](docs/phases/) — Chinese
+- [Create skill](poe-bd-creator-plugin/skills/poe-bd-create/SKILL.md), [Research skill](poe-bd-creator-plugin/skills/poe-bd-research/SKILL.md), and [Learn skill](poe-bd-creator-plugin/skills/poe-bd-learn/SKILL.md)
+- [Contributor instructions](AGENTS.md) and [verification profiles](scripts/verify.ps1)
+
+Keep user exports and third-party raw inputs out of contributions. Include relevant tests and version/model evidence when changing calculation or data behavior.
