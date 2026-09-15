@@ -43,7 +43,7 @@
       Rules that always apply:
 
       - Load the matching skill before poe-bd work: `poe-bd-create`,
-        `poe-bd-research`, `poe-bd-learning-loop`.
+        `poe-bd-research`, `poe-bd-learn`, `poe-bd-learning-loop`.
         `poe-bd-research-worker` is internal and may be loaded only by an explicit
         Research Controller subagent assignment.
       - Never invent build numbers: DPS / EHP / resistances / Spirit must come

@@ -1,10 +1,11 @@
 # Exile Architect — Research server
 
+Study: user's language, exact component icons, full H5; no KB writes.
+
 Patch reviews preserve source versions and require fingerprints and independent review.
 
-Mature-build queue/lease/review acceptance plus clean fragment/edge/record/pattern validation.
-Installed-product runtime is private user data addressed by opaque `runRef`; Agents never edit its
-queue, review, quarantine or database files directly.
+Queue/lease/review acceptance and typed knowledge validation. Private user-data runtime uses opaque
+`runRef`; Agents never edit queue, review, quarantine or database files directly.
 
 ## Hard boundaries
 

@@ -777,10 +777,14 @@ def mature_learning_path() -> Path:
     return paths.mature_learning_path()
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | None = None, *, read_only: bool = False) -> sqlite3.Connection:
     path = db_path or mature_learning_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path)
+    if read_only:
+        con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        con.execute("PRAGMA query_only = ON")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     from .patch_reviews import register_sql

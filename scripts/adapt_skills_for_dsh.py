@@ -52,6 +52,10 @@ GENERIC_NOTE = """\
 
 # Per-skill extra notes appended after the generic note.
 EXTRA_NOTES = {
+    "poe-bd-learn": """\
+> Learning 首要规则是输出语言跟随用户。H5 保留完整讲解，组件名称附精确图标与类别说明；不写 Research 或 Phase 7 Memory。
+> `study` 工具按职责分布在 research、knowledge 与 build 三个域；不调用入库工具，不要求 Codex 浏览器。
+""",
     "poe-bd-create": """\
 > Create 只连接 knowledge + build 两个 server：知识/图/机制/Research 查询走
 > `mcp__poe_knowledge__*`，所有 PoB/计算/Judge 工具走 `mcp__poe_build__*`。
@@ -217,7 +221,14 @@ def adapt_skill(
         rewritten = rewrite_text(text, mapping, name)
         if rel.name == "SKILL.md":
             note = GENERIC_NOTE + EXTRA_NOTES.get(name, "")
-            rewritten = insert_note(rewritten, note)
+            if name == "poe-bd-learn":
+                # The user's highest-priority language rule must precede host-adapter guidance.
+                anchor = "## Learning 的职责"
+                if anchor not in rewritten:
+                    raise SystemExit("Learning language-priority section is missing")
+                rewritten = rewritten.replace(anchor, note + "\n" + anchor, 1)
+            else:
+                rewritten = insert_note(rewritten, note)
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_text(rewritten, encoding="utf-8", newline="\n")
         hits = {tool for tool in tool_to_prefixed(mapping) if tool in original}

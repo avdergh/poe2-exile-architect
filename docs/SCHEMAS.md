@@ -4,6 +4,31 @@
 
 本文档在产品层定义核心 artifact contracts。精确字段校验应放在代码和测试里。
 
+## Study 单 BD 教学合同
+
+`study_run_v3` 使用独立 user-data 运行态、固定期限、来源与组件清单指纹以及分页覆盖。userLanguage
+在开始时显式传入，outputLanguage 默认沿用，用户明确要求其他语言才覆盖；旧无语言上下文需新 run。
+`study_explanation_v5` 在 `server/study/models.py` 定义十个内部主题、输出/循环机制链、逐装备/宝石说明、
+逐技能组审读、天赋功能分组和关键节点，以及 Agent 深度审读声明。宝石说明实际对象和等级品质，
+引用来自本 run/source；supported 另需逐 subject 的 supports 审读。结构校验不充当语义评分。
+名称使用组件 token，经官方术语或英文回退解析。
+
+`guide` 在 `server/study/guide.py` 定义独立教学内容：自由组织的学习章节、段落、小标题、比较表、
+机制流程图与随文提示；逐章绑定 component/group/mechanism/topic 覆盖，保留完整分析深度。内部
+主题不等于可见小标题，内部诊断不得直接倾倒进正文。teachingReview 是 Agent 编辑声明。
+`guide.reader` 必须提供同语言的页面界面和类别标签；componentNotes 用于按需说明，concepts 区分
+属性/状态/场上效果。iconComponentRefs 绑定额外装备、天赋或镶嵌物。来源稀有名只关联已证实底材，
+同名小点仅在精确共用图标时归组，memberIdentities 保留，不能成为新 physical node。
+`complete_study_explanation` 发布完整自包含 HTML 与 Markdown 正文，返回文件指纹和简短会话导读；
+不回传内部分析正文。`study_document_v2` 绑定 analysis/guide、渲染器、图标及文件 hash，重试验
+文件完整性；源清理后文档保留。语言必须与 run 锁定值一致，navigationTitle 和 languageConsistent
+必需；技能名称可保留英文，不改变正文语言。每处技能/辅助名经统一 tokenizer 加图，source component
+及 iconSkillRefs 绑定身份；term token 明确同名机制语义。图片字节、路径与静态身份进入文档 hash，
+缺图返回 needs_icons、不交付错误占位图。iconCoverage 的范围是已解析视觉身份，不能冒充全文每处
+名称都已正确解释的语义证明。HTML 用内嵌 SVG 图像定义复用图片，离线不请求外部资源。旧合同不通过补标记升级。
+`study_measurement_v1` 绑定实际输出、状态、模型能力与语义 hash；仅完整可比结果含 delta，
+回执用途恒为 educational_only，不写知识库、不授权 Create、不消耗 Judge。参见 Phase 8 文档。
+
 ## 跨补丁知识适用性
 
 正常 Research 只研究最新版本 BD；旧知识继续作为召回与补丁复核对象。

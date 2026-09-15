@@ -10,6 +10,20 @@ English and Chinese; the project spec, schemas, and phase plans are Chinese-only
 
 ## High-Level Shape
 
+Player-facing Learning uses `poe-bd-learn` and the independent `server/study/` modules. Intake,
+coverage, explanation validation and document delivery live in Research; read-only corpus/graph/Research
+queries in Knowledge; disposable PoB observations in Build. Study never writes Research knowledge
+or Phase 7 Learning Memory. Internal analysis, Agent-authored teaching content and H5/Markdown
+rendering are separate layers. The guide follows a learning sequence, with mechanism diagrams,
+comparisons and practical contextual explanations of material limitations. Highest priority is to
+match the user's request language across the whole guide; only an explicit output-language request
+overrides it. Every skill/support mention receives an exact identity-bound icon through a shared
+inline renderer. Equipment, passives and augments also receive identity-bound art and category
+explanations. Rare names link to their bases, while properties and mechanics open concept definitions.
+The self-contained H5 reader supports continuous responsive reading, navigation and search, with
+no separate abbreviated companion or passive-tree view.
+Terminology uses reviewed official names or unchanged English.
+
 ```text
 External Agents
   Researcher / Architect / Reference-Comparator

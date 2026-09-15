@@ -6,6 +6,15 @@ inject their small domain-specific `MCP_*_BOOTSTRAP.md` files, not this full gui
 
 ## Route the request
 
+- Route requests to understand an existing BD without storing knowledge through `/poe-bd-learn`.
+  Study keeps Research-depth analysis and separately authors a complete H5 reader with a short chat introduction.
+  Teach causal loops, every item/gem, skill groups and key passives with diagrams and contextual notes;
+  do not dump internal audits. Highest priority: match the user's language throughout, unless the user
+  explicitly requests another language. English game names do not select English prose. Attach exact
+  icons to skills, equipment, passive nodes and augments; explain categories and unfamiliar concepts.
+  Use reviewed official names with English fallback. No passive-tree view or separate abbreviated companion.
+  Study evidence is educational only. Do not run Research acceptance or Phase 7 memory writers.
+
 - Route user-triggered Create through `/poe-bd-create`. Load that installed skill before starting
   a run. It directly generates the requested target-level endgame build; there is no blocking
   leveling-progression question. At interactive start, ask only for local versus local-plus-share

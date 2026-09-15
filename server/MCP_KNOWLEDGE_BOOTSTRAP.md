@@ -27,4 +27,7 @@ research. No PoB engine here.
    implementation/verification/exit plan; the contract never auto-assembles a build.
 7. `query_public_learning_memory` returns only the copy-safe release/local lesson projection.
 
-Full workflow lives in the poe-bd-create / poe-bd-research skills.
+Study uses `query_study_knowledge`: read-only corpus/graph/Research access, no seed installation,
+migration or durable dedupe receipt. Its evidence is educational only, never Create authorization.
+
+Full workflow lives in the poe-bd-create / poe-bd-research / poe-bd-learn skills.

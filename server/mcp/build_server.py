@@ -12,6 +12,8 @@ from pathlib import Path
 
 from ..main import (  # noqa: F401  (re-registered below)
     _SessionIsolatedFastMCP,
+    observe_study_scenario,
+    evaluate_study_counterfactual,
     add_skill_group,
     alloc_passive,
     analyze_build_lifecycle,
@@ -104,6 +106,8 @@ except OSError:
 mcp = _SessionIsolatedFastMCP("poe-build-mcp", instructions=_INSTRUCTIONS)
 
 _TOOLS = (
+    observe_study_scenario,
+    evaluate_study_counterfactual,
     add_skill_group,
     alloc_passive,
     analyze_build_lifecycle,

@@ -87,6 +87,8 @@ from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
 from .runtime import tool_telemetry
 from .runtime import task_cleanup
+from .study import service as study_service
+from .study.storage import StudyError
 
 # Keep MCP bootstrap instructions intentionally small.  The complete runtime guide remains the
 # human-maintained source of truth, while skills load only the workflow references they need.
@@ -138,6 +140,104 @@ class _SessionIsolatedFastMCP(FastMCP):
 
 
 mcp = _SessionIsolatedFastMCP("poe2-build-mcp", instructions=_INSTRUCTIONS)
+
+
+def _study_call(operation, **arguments) -> dict[str, Any]:
+    try:
+        return operation(**arguments)
+    except StudyError as exc:
+        return {"status": "error", "errorCode": str(exc), "knowledgeWritten": False}
+    except Exception:
+        return {"status": "error", "errorCode": "study_operation_failed", "knowledgeWritten": False}
+
+
+@mcp.tool()
+def start_study_run(user_language: str, source_file: str | None = None, source_url: str | None = None,
+                    source_patch: str = "unknown", output_language: str | None = None) -> dict[str, Any]:
+    """Lock the user's language and freeze one source. Override output_language only when the user explicitly requests it."""
+    return _study_call(study_service.start, user_language=user_language, output_language=output_language,
+                      source_file=source_file, source_url=source_url, source_patch=source_patch)
+
+
+@mcp.tool()
+def inspect_study_case(run_ref: str) -> dict[str, Any]:
+    """Inspect Study reading coverage, expiry and learning outputs."""
+    return _study_call(study_service.inspect, run_ref=run_ref)
+
+
+@mcp.tool()
+def read_study_case(run_ref: str, section: str, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+    """Read a source-bound page of BD evidence. Follow nextCursor until each section is complete."""
+    return _study_call(study_service.read, run_ref=run_ref, section=section, cursor=cursor, limit=limit)
+
+
+@mcp.tool()
+def search_study_case(run_ref: str, query: str, section: str | None = None) -> dict[str, Any]:
+    """Locate source evidence. Search does not fulfill source reading coverage."""
+    return _study_call(study_service.search, run_ref=run_ref, query=query, section=section)
+
+
+@mcp.tool()
+def get_study_contract(run_ref: str) -> dict[str, Any]:
+    """Get the locked-language H5 teaching schema, exact component tokens and required reading coverage."""
+    return _study_call(study_service.contract, run_ref=run_ref)
+
+
+@mcp.tool()
+def query_study_knowledge(run_ref: str, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Study-only typed corpus/graph/Research query. No seed install or durable query receipt."""
+    return _study_call(study_service.query_knowledge, run_ref=run_ref, kind=kind, payload=payload)
+
+
+@mcp.tool()
+def review_study_evidence(run_ref: str, subject_refs: list[str], source_ref: str,
+                          conclusion: dict[str, str], relevance: dict[str, str], finding: str) -> dict[str, Any]:
+    """Record an external Agent's source reading as agent_reviewed, never an internal Research receipt."""
+    return _study_call(study_service.review_evidence, run_ref=run_ref, subject_refs=subject_refs,
+                       source_ref=source_ref, conclusion=conclusion, relevance=relevance, finding=finding)
+
+
+@mcp.tool()
+def review_study_terminology(run_ref: str, component_ref: str, chinese_name: str, source_url: str,
+                             bilingual_excerpt: str, review_basis: dict[str, str],
+                             same_entity_reviewed: bool, official_publisher_reviewed: bool) -> dict[str, Any]:
+    """Bind a reviewed official bilingual name quote to one Study component. Never write a global term table."""
+    return _study_call(study_service.review_terminology, run_ref=run_ref, component_ref=component_ref,
+                       chinese_name=chinese_name, source_url=source_url, bilingual_excerpt=bilingual_excerpt,
+                       review_basis=review_basis, same_entity_reviewed=same_entity_reviewed,
+                       official_publisher_reviewed=official_publisher_reviewed)
+
+
+@mcp.tool()
+def observe_study_scenario(run_ref: str, group_index: int, skill_name: str) -> dict[str, Any]:
+    """Observe the source's active scenario and exact output in an isolated PoB; no Judge attempt."""
+    return _study_call(study_service.observe, run_ref=run_ref, group_index=group_index, skill_name=skill_name)
+
+
+@mcp.tool()
+def evaluate_study_counterfactual(run_ref: str, component_ref: str,
+                                  group_index: int, skill_name: str) -> dict[str, Any]:
+    """Measure removal of one source item/passive in isolated PoB. Model gaps never become zero gain."""
+    return _study_call(study_service.observe, run_ref=run_ref, component_ref=component_ref,
+                       group_index=group_index, skill_name=skill_name)
+
+
+@mcp.tool()
+def validate_study_lesson(run_ref: str, lesson: dict[str, Any]) -> dict[str, Any]:
+    """Validate output and resource loops, every skill group and gem, equipment roles and passive priorities."""
+    return _study_call(study_service.validate_lesson, run_ref=run_ref, lesson=lesson)
+
+
+@mcp.tool()
+def complete_study_explanation(run_ref: str, lesson: dict[str, Any]) -> dict[str, Any]:
+    """Validate analysis and teaching coverage, publish the complete H5 reader, and return a short chat introduction."""
+    return _study_call(study_service.complete, run_ref=run_ref, lesson=lesson)
+
+
+@mcp.tool()
+def cleanup_study_run(run_ref: str, abandon: bool = False) -> dict[str, Any]:
+    """Remove Study raw source after delivery, expiry or explicit abandonment. Keep educational outputs."""
+    return _study_call(study_service.cleanup, run_ref=run_ref, abandon=abandon)
 
 
 def get_engine() -> PobEngine:

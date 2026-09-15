@@ -51,6 +51,7 @@ from ..main import (  # noqa: F401  (re-registered below)
     suggest_build_lifecycle,
     update_corpus,
     _SessionIsolatedFastMCP,
+    query_study_knowledge,
 )
 
 _GUIDE = Path(__file__).parent.parent / "MCP_KNOWLEDGE_BOOTSTRAP.md"
@@ -65,6 +66,7 @@ except OSError:
 mcp = _SessionIsolatedFastMCP("poe-knowledge-mcp", instructions=_INSTRUCTIONS)
 
 _TOOLS = (
+    query_study_knowledge,
     analyze_lifecycle_cohort,
     apply_updates,
     audit_lifecycle_route,

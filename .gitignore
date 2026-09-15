@@ -41,6 +41,8 @@ data/mature_build_learning/research_memory.sqlite
 /.npm-cache/
 /final-build-artifacts/
 /pob-exports/
+/output/study/
+/output/pdf/
 /.tmp_agent_output_*
 /tmp/*agent-output*.json
 

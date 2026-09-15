@@ -8,6 +8,16 @@ from pathlib import Path
 
 from ..main import (  # noqa: F401  (re-registered below)
     _SessionIsolatedFastMCP,
+    start_study_run,
+    inspect_study_case,
+    read_study_case,
+    search_study_case,
+    get_study_contract,
+    review_study_evidence,
+    review_study_terminology,
+    validate_study_lesson,
+    complete_study_explanation,
+    cleanup_study_run,
     accept_research_review,
     apply_research_record_merge,
     append_evidence_to_fragment,
@@ -51,6 +61,16 @@ except OSError:
 mcp = _SessionIsolatedFastMCP("poe-research-mcp", instructions=_INSTRUCTIONS)
 
 _TOOLS = (
+    start_study_run,
+    inspect_study_case,
+    read_study_case,
+    search_study_case,
+    get_study_contract,
+    review_study_evidence,
+    review_study_terminology,
+    validate_study_lesson,
+    complete_study_explanation,
+    cleanup_study_run,
     accept_research_review,
     apply_research_record_merge,
     append_evidence_to_fragment,

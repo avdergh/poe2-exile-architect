@@ -1,0 +1,3951 @@
+{
+  "schemaVersion": "study_unique_icons_v1",
+  "sourceUrl": "https://raw.githubusercontent.com/repoe-fork/poe2/bdfed992aed0d4c91b9ffb5ef1c3f1acd7af2537/data/uniques.json",
+  "sourceSha256": "5c303e991763d4f89c7e41306561c1eb02bb55d79ebe0c26f43520906f9c059b",
+  "sourceCommit": "bdfed992aed0d4c91b9ffb5ef1c3f1acd7af2537",
+  "exportedVersion": "4.5.5.2",
+  "entries": [
+    {
+      "identity": "unique:Astramentis",
+      "name": "Astramentis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/Astramentis.dds",
+      "visualIdentityId": "FourUniqueAmulet15",
+      "itemClass": "Amulet",
+      "sourceId": "Astramentis"
+    },
+    {
+      "identity": "unique:Beacon of Azis",
+      "name": "Beacon of Azis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/BeaconOfAzis.dds",
+      "visualIdentityId": "FourUniqueAmulet17",
+      "itemClass": "Amulet",
+      "sourceId": "Beacon of Azis"
+    },
+    {
+      "identity": "unique:Carnage Heart",
+      "name": "Carnage Heart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/CarnageHeart.dds",
+      "visualIdentityId": "FourUniqueAmulet6",
+      "itemClass": "Amulet",
+      "sourceId": "Carnage Heart"
+    },
+    {
+      "identity": "unique:Choir of the Storm",
+      "name": "Choir of the Storm",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/ChoirOfTheStorm.dds",
+      "visualIdentityId": "FourUniqueBreach4b",
+      "itemClass": "Amulet",
+      "sourceId": "Choir of the Storm"
+    },
+    {
+      "identity": "unique:Defiance of Destiny",
+      "name": "Defiance of Destiny",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/DefianceOfDestiny.dds",
+      "visualIdentityId": "FourUniqueAmulet8",
+      "itemClass": "Amulet",
+      "sourceId": "Defiance of Destiny"
+    },
+    {
+      "identity": "unique:Eventide Petals",
+      "name": "Eventide Petals",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/Nattblom.dds",
+      "visualIdentityId": "FourUniqueAmulet22",
+      "itemClass": "Amulet",
+      "sourceId": "Eventide Petals"
+    },
+    {
+      "identity": "unique:Eye of Chayula",
+      "name": "Eye of Chayula",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/EyeOfChayula.dds",
+      "visualIdentityId": "FourUniqueAmulet19_",
+      "itemClass": "Amulet",
+      "sourceId": "Eye of Chayula"
+    },
+    {
+      "identity": "unique:Fireflower",
+      "name": "Fireflower",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/Fireflower.dds",
+      "visualIdentityId": "FourUniqueAmulet18",
+      "itemClass": "Amulet",
+      "sourceId": "Fireflower"
+    },
+    {
+      "identity": "unique:Fixation of Yix",
+      "name": "Fixation of Yix",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/FixationOfYix.dds",
+      "visualIdentityId": "FourUniqueAmulet16",
+      "itemClass": "Amulet",
+      "sourceId": "Fixation of Yix"
+    },
+    {
+      "identity": "unique:Hinekora's Sight",
+      "name": "Hinekora's Sight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/HinekorasSight.dds",
+      "visualIdentityId": "FourUniqueAmulet21",
+      "itemClass": "Amulet",
+      "sourceId": "Hinekora's Sight"
+    },
+    {
+      "identity": "unique:Idol of Uldurn",
+      "name": "Idol of Uldurn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/IdolOfUldurn.dds",
+      "visualIdentityId": "FourUniqueAmulet2",
+      "itemClass": "Amulet",
+      "sourceId": "Idol of Uldurn"
+    },
+    {
+      "identity": "unique:Igniferis",
+      "name": "Igniferis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/Igniferis.dds",
+      "visualIdentityId": "FourUniqueAmulet1",
+      "itemClass": "Amulet",
+      "sourceId": "Igniferis"
+    },
+    {
+      "identity": "unique:Immaculate Adherence",
+      "name": "Immaculate Adherence",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/ChainsOfAdherence.dds",
+      "visualIdentityId": "FourUniqueAmulet23",
+      "itemClass": "Amulet",
+      "sourceId": "Immaculate Adherence"
+    },
+    {
+      "identity": "unique:Ligurium Talisman",
+      "name": "Ligurium Talisman",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/LiguriumTalisman.dds",
+      "visualIdentityId": "FourUniqueAmulet10_",
+      "itemClass": "Amulet",
+      "sourceId": "Ligurium Talisman"
+    },
+    {
+      "identity": "unique:Revered Resin",
+      "name": "Revered Resin",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/ReveredResin.dds",
+      "visualIdentityId": "FourUniqueAmulet5",
+      "itemClass": "Amulet",
+      "sourceId": "Revered Resin"
+    },
+    {
+      "identity": "unique:Rondel of Fragility",
+      "name": "Rondel of Fragility",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/RondelOfFragility.dds",
+      "visualIdentityId": "FourUniqueAmulet12",
+      "itemClass": "Amulet",
+      "sourceId": "Rondel of Fragility"
+    },
+    {
+      "identity": "unique:Serpent's Egg",
+      "name": "Serpent's Egg",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/TheSerpentsEgg.dds",
+      "visualIdentityId": "FourUniqueAmulet20",
+      "itemClass": "Amulet",
+      "sourceId": "Serpent's Egg"
+    },
+    {
+      "identity": "unique:Stone of Lazhwar",
+      "name": "Stone of Lazhwar",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/StoneOfLazhwar.dds",
+      "visualIdentityId": "FourUniqueAmulet9",
+      "itemClass": "Amulet",
+      "sourceId": "Stone of Lazhwar"
+    },
+    {
+      "identity": "unique:Strugglescream",
+      "name": "Strugglescream",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/DeliriumAmulet.dds",
+      "visualIdentityId": "FourUniqueDelirium5",
+      "itemClass": "Amulet",
+      "sourceId": "Strugglescream"
+    },
+    {
+      "identity": "unique:Surefooted Sigil",
+      "name": "Surefooted Sigil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/SurefootedSigil.dds",
+      "visualIdentityId": "FourUniqueAmulet7",
+      "itemClass": "Amulet",
+      "sourceId": "Surefooted Sigil"
+    },
+    {
+      "identity": "unique:The Anvil",
+      "name": "The Anvil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/TheAnvil.dds",
+      "visualIdentityId": "FourUniqueAmulet13",
+      "itemClass": "Amulet",
+      "sourceId": "The Anvil"
+    },
+    {
+      "identity": "unique:The Everlasting Gaze",
+      "name": "The Everlasting Gaze",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/TheEverlastingGaze.dds",
+      "visualIdentityId": "FourUniqueAmulet3",
+      "itemClass": "Amulet",
+      "sourceId": "The Everlasting Gaze"
+    },
+    {
+      "identity": "unique:The Pandemonius",
+      "name": "The Pandemonius",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/ThePandemonius.dds",
+      "visualIdentityId": "FourUniqueBreach4c",
+      "itemClass": "Amulet",
+      "sourceId": "The Pandemonius"
+    },
+    {
+      "identity": "unique:Ungil's Harmony",
+      "name": "Ungil's Harmony",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/UngilsHarmony.dds",
+      "visualIdentityId": "FourUniqueAmulet4",
+      "itemClass": "Amulet",
+      "sourceId": "Ungil's Harmony"
+    },
+    {
+      "identity": "unique:Xoph's Blood",
+      "name": "Xoph's Blood",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/XophsBlood.dds",
+      "visualIdentityId": "FourUniqueBreach4a",
+      "itemClass": "Amulet",
+      "sourceId": "Xoph's Blood"
+    },
+    {
+      "identity": "unique:Yoke of Suffering",
+      "name": "Yoke of Suffering",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Amulets/Uniques/YokeOfSuffering.dds",
+      "visualIdentityId": "FourUniqueAmulet14",
+      "itemClass": "Amulet",
+      "sourceId": "Yoke of Suffering"
+    },
+    {
+      "identity": "unique:Bijouborne",
+      "name": "Bijouborne",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Twinclasp.dds",
+      "visualIdentityId": "FourUniqueBelt15",
+      "itemClass": "Belt",
+      "sourceId": "Bijouborne"
+    },
+    {
+      "identity": "unique:Birthright Buckle",
+      "name": "Birthright Buckle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/BirthrightBuckle.dds",
+      "visualIdentityId": "FourUniqueBelt5",
+      "itemClass": "Belt",
+      "sourceId": "Birthright Buckle"
+    },
+    {
+      "identity": "unique:Byrnabas",
+      "name": "Byrnabas",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Byrnabas.dds",
+      "visualIdentityId": "FourUniqueBelt6",
+      "itemClass": "Belt",
+      "sourceId": "Brynabas"
+    },
+    {
+      "identity": "unique:Cat O' Nine Tails",
+      "name": "Cat O' Nine Tails",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/CatONineTails.dds",
+      "visualIdentityId": "FourUniqueBelt19_",
+      "itemClass": "Belt",
+      "sourceId": "Cat O' Nine Tails"
+    },
+    {
+      "identity": "unique:Coward's Legacy",
+      "name": "Coward's Legacy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/CowardsLegacy.dds",
+      "visualIdentityId": "FourUniqueBelt13",
+      "itemClass": "Belt",
+      "sourceId": "Coward's Legacy"
+    },
+    {
+      "identity": "unique:Darkness Enthroned",
+      "name": "Darkness Enthroned",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/DarknessEnthroned.dds",
+      "visualIdentityId": "FourUniqueBelt23",
+      "itemClass": "Belt",
+      "sourceId": "Darkness Enthroned"
+    },
+    {
+      "identity": "unique:Goregirdle",
+      "name": "Goregirdle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Goregirdle.dds",
+      "visualIdentityId": "FourUniqueBelt10",
+      "itemClass": "Belt",
+      "sourceId": "Goregirdle"
+    },
+    {
+      "identity": "unique:Headhunter",
+      "name": "Headhunter",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Headhunter.dds",
+      "visualIdentityId": "FourUniqueBelt18__",
+      "itemClass": "Belt",
+      "sourceId": "Headhunter"
+    },
+    {
+      "identity": "unique:Infernoclasp",
+      "name": "Infernoclasp",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Infernoclasp.dds",
+      "visualIdentityId": "FourUniqueBelt9",
+      "itemClass": "Belt",
+      "sourceId": "Infernoclasp"
+    },
+    {
+      "identity": "unique:Ingenuity",
+      "name": "Ingenuity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Widowmaker.dds",
+      "visualIdentityId": "FourUniqueRitual3",
+      "itemClass": "Belt",
+      "sourceId": "Ingenuity"
+    },
+    {
+      "identity": "unique:Keelhaul",
+      "name": "Keelhaul",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Keelhaul.dds",
+      "visualIdentityId": "FourUniqueBelt3",
+      "itemClass": "Belt",
+      "sourceId": "Keelhaul"
+    },
+    {
+      "identity": "unique:Mageblood",
+      "name": "Mageblood",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Mageblood.dds",
+      "visualIdentityId": "FourUniqueBelt24",
+      "itemClass": "Belt",
+      "sourceId": "Mageblood"
+    },
+    {
+      "identity": "unique:Meginord's Girdle",
+      "name": "Meginord's Girdle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/MeginordsGirdle.dds",
+      "visualIdentityId": "FourUniqueBelt1",
+      "itemClass": "Belt",
+      "sourceId": "Meginord's Girdle"
+    },
+    {
+      "identity": "unique:Midnight Braid",
+      "name": "Midnight Braid",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/MidnightBraid.dds",
+      "visualIdentityId": "FourUniqueBelt2",
+      "itemClass": "Belt",
+      "sourceId": "Midnight Braid"
+    },
+    {
+      "identity": "unique:Ryslatha's Coil",
+      "name": "Ryslatha's Coil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/RyslathasCoil.dds",
+      "visualIdentityId": "FourUniqueBelt12",
+      "itemClass": "Belt",
+      "sourceId": "Ryslatha's Coil"
+    },
+    {
+      "identity": "unique:Shavronne's Satchel",
+      "name": "Shavronne's Satchel",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/ShavronnesSatchel.dds",
+      "visualIdentityId": "FourUniqueBelt21_",
+      "itemClass": "Belt",
+      "sourceId": "Shavronne's Satchel"
+    },
+    {
+      "identity": "unique:Soul Tether",
+      "name": "Soul Tether",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/SoulTether.dds",
+      "visualIdentityId": "FourUniqueBelt8_",
+      "itemClass": "Belt",
+      "sourceId": "Soul Tether"
+    },
+    {
+      "identity": "unique:The Gnashing Sash",
+      "name": "The Gnashing Sash",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/GnashingSash.dds",
+      "visualIdentityId": "FourUniqueCorruption1",
+      "itemClass": "Belt",
+      "sourceId": "The Gnashing Sash"
+    },
+    {
+      "identity": "unique:Umbilicus Immortalis",
+      "name": "Umbilicus Immortalis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/UmbilicusImmortalis.dds",
+      "visualIdentityId": "FourUniqueBelt4",
+      "itemClass": "Belt",
+      "sourceId": "Umbilicus Immortalis"
+    },
+    {
+      "identity": "unique:Waistgate",
+      "name": "Waistgate",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/Waistgate.dds",
+      "visualIdentityId": "FourUniqueBelt17_",
+      "itemClass": "Belt",
+      "sourceId": "Waistgate"
+    },
+    {
+      "identity": "unique:Zerphi's Genesis",
+      "name": "Zerphi's Genesis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Belts/Uniques/ZerphisGenesis.dds",
+      "visualIdentityId": "FourUniqueUltimatum2",
+      "itemClass": "Belt",
+      "sourceId": "Zerphi's Genesis"
+    },
+    {
+      "identity": "unique:Apron of Emiran",
+      "name": "Apron of Emiran",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/ApronOfEmiran.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt1",
+      "itemClass": "Body Armour",
+      "sourceId": "Apron of Emiran"
+    },
+    {
+      "identity": "unique:Ashrend",
+      "name": "Ashrend",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Ashrend.dds",
+      "visualIdentityId": "FourUniqueBodyDex3",
+      "itemClass": "Body Armour",
+      "sourceId": "Ashrend"
+    },
+    {
+      "identity": "unique:Atziri's Splendour",
+      "name": "Atziri's Splendour",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/AtzirisSplendour.dds",
+      "visualIdentityId": "FourUniqueBodyStrDexInt2",
+      "itemClass": "Body Armour",
+      "sourceId": "Atziri's Splendour"
+    },
+    {
+      "identity": "unique:Belly of the Beast",
+      "name": "Belly of the Beast",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/BellyOfTheBeast.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex5",
+      "itemClass": "Body Armour",
+      "sourceId": "Belly of the Beast"
+    },
+    {
+      "identity": "unique:Bitterbloom",
+      "name": "Bitterbloom",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/DarkwoodPerianth.dds",
+      "visualIdentityId": "FourUniqueBodyInt2",
+      "itemClass": "Body Armour",
+      "sourceId": "Bitterbloom"
+    },
+    {
+      "identity": "unique:Blackbraid",
+      "name": "Blackbraid",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Blackbraid.dds",
+      "visualIdentityId": "FourUniqueBodyStr2",
+      "itemClass": "Body Armour",
+      "sourceId": "Blackbraid"
+    },
+    {
+      "identity": "unique:Bramblejack",
+      "name": "Bramblejack",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Bramblejack.dds",
+      "visualIdentityId": "FourUniqueBodyStr1",
+      "itemClass": "Body Armour",
+      "sourceId": "Bramblejack"
+    },
+    {
+      "identity": "unique:Briskwrap",
+      "name": "Briskwrap",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Briskwrap.dds",
+      "visualIdentityId": "FourUniqueBodyDex5",
+      "itemClass": "Body Armour",
+      "sourceId": "Briskwrap"
+    },
+    {
+      "identity": "unique:Bristleboar",
+      "name": "Bristleboar",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Bristleboar.dds",
+      "visualIdentityId": "FourUniqueBodyDex1___",
+      "itemClass": "Body Armour",
+      "sourceId": "Bristleboar"
+    },
+    {
+      "identity": "unique:Cloak of Defiance",
+      "name": "Cloak of Defiance",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/CloakOfDefiance.dds",
+      "visualIdentityId": "FourUniqueBodyInt13",
+      "itemClass": "Body Armour",
+      "sourceId": "Cloak of Defiance"
+    },
+    {
+      "identity": "unique:Cloak of Flame",
+      "name": "Cloak of Flame",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/CloakOfFlame.dds",
+      "visualIdentityId": "FourUniqueBodyInt5",
+      "itemClass": "Body Armour",
+      "sourceId": "Cloak of Flame"
+    },
+    {
+      "identity": "unique:Coat of Red",
+      "name": "Coat of Red",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/CoatOfRed.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex1",
+      "itemClass": "Body Armour",
+      "sourceId": "Coat of Red"
+    },
+    {
+      "identity": "unique:Cospri's Will",
+      "name": "Cospri's Will",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/CosprisWill.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt13",
+      "itemClass": "Body Armour",
+      "sourceId": "Cospri's Will"
+    },
+    {
+      "identity": "unique:Couture of Crimson",
+      "name": "Couture of Crimson",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/CoutureOfCrimson.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt9",
+      "itemClass": "Body Armour",
+      "sourceId": "Couture of Crimson"
+    },
+    {
+      "identity": "unique:Decree of Loyalty",
+      "name": "Decree of Loyalty",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/UnfalteringFaith.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt16",
+      "itemClass": "Body Armour",
+      "sourceId": "Decree of Loyalty"
+    },
+    {
+      "identity": "unique:Doryani's Prototype",
+      "name": "Doryani's Prototype",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/DoryanisPrototype.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex6",
+      "itemClass": "Body Armour",
+      "sourceId": "Doryani's Prototype"
+    },
+    {
+      "identity": "unique:Dustbloom",
+      "name": "Dustbloom",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Dustbloom.dds",
+      "visualIdentityId": "FourUniqueBodyDex6",
+      "itemClass": "Body Armour",
+      "sourceId": "Dustbloom"
+    },
+    {
+      "identity": "unique:Edyrn's Tusks",
+      "name": "Edyrn's Tusks",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/EdyrnsTusks.dds",
+      "visualIdentityId": "FourUniqueBodyStr3",
+      "itemClass": "Body Armour",
+      "sourceId": "Edyrn's Tusks"
+    },
+    {
+      "identity": "unique:Enfolding Dawn",
+      "name": "Enfolding Dawn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/EnfoldingDawn.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt1_",
+      "itemClass": "Body Armour",
+      "sourceId": "Enfolding Dawn"
+    },
+    {
+      "identity": "unique:Forgotten Warden",
+      "name": "Forgotten Warden",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheAncientOrder.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt14",
+      "itemClass": "Body Armour",
+      "sourceId": "Forgotten Warden"
+    },
+    {
+      "identity": "unique:Foxshade",
+      "name": "Foxshade",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Foxform.dds",
+      "visualIdentityId": "FourUniqueBodyDex2",
+      "itemClass": "Body Armour",
+      "sourceId": "Foxshade"
+    },
+    {
+      "identity": "unique:Geofri's Sanctuary",
+      "name": "Geofri's Sanctuary",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/GeofrisSanctuary.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt11",
+      "itemClass": "Body Armour",
+      "sourceId": "Geofri's Sanctuary"
+    },
+    {
+      "identity": "unique:Ghostwrithe",
+      "name": "Ghostwrithe",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Ghostwrithe.dds",
+      "visualIdentityId": "FourUniqueBodyInt1_",
+      "itemClass": "Body Armour",
+      "sourceId": "Ghostwrithe"
+    },
+    {
+      "identity": "unique:Gloamgown",
+      "name": "Gloamgown",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Gloamgown.dds",
+      "visualIdentityId": "FourUniqueBodyInt9_",
+      "itemClass": "Body Armour",
+      "sourceId": "Gloamgown"
+    },
+    {
+      "identity": "unique:Gloomform",
+      "name": "Gloomform",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/GatheringGloom.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt2",
+      "itemClass": "Body Armour",
+      "sourceId": "Gloomform"
+    },
+    {
+      "identity": "unique:Greed's Embrace",
+      "name": "Greed's Embrace",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/GreedsEmbrace.dds",
+      "visualIdentityId": "FourUniqueBodyStr8",
+      "itemClass": "Body Armour",
+      "sourceId": "Greed's Embrace"
+    },
+    {
+      "identity": "unique:Hyrri's Ire",
+      "name": "Hyrri's Ire",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/HyrrisIre.dds",
+      "visualIdentityId": "FourUniqueBodyDex15",
+      "itemClass": "Body Armour",
+      "sourceId": "Hyrri's Ire"
+    },
+    {
+      "identity": "unique:Icetomb",
+      "name": "Icetomb",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Icetomb.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt3",
+      "itemClass": "Body Armour",
+      "sourceId": "Icetomb"
+    },
+    {
+      "identity": "unique:Irongrasp",
+      "name": "Irongrasp",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Irongrasp.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex3_",
+      "itemClass": "Body Armour",
+      "sourceId": "Irongrasp"
+    },
+    {
+      "identity": "unique:Kaom's Heart",
+      "name": "Kaom's Heart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/KaomsHeart.dds",
+      "visualIdentityId": "FourUniqueBodyStr14",
+      "itemClass": "Body Armour",
+      "sourceId": "Kaom's Heart"
+    },
+    {
+      "identity": "unique:Kingsguard",
+      "name": "Kingsguard",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Kingsguard.dds",
+      "visualIdentityId": "FourUniqueBodyStr7",
+      "itemClass": "Body Armour",
+      "sourceId": "Kingsguard"
+    },
+    {
+      "identity": "unique:Lightning Coil",
+      "name": "Lightning Coil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/LightningCoil.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex8",
+      "itemClass": "Body Armour",
+      "sourceId": "Lightning Coil"
+    },
+    {
+      "identity": "unique:Loreweave",
+      "name": "Loreweave",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Loreweave.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt14",
+      "itemClass": "Body Armour",
+      "sourceId": "Loreweave"
+    },
+    {
+      "identity": "unique:Morior Invictus",
+      "name": "Morior Invictus",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/MoriorInvictus_M.dds",
+      "visualIdentityId": "FourUniquePinnacle1",
+      "itemClass": "Body Armour",
+      "sourceId": "Morior Invictus"
+    },
+    {
+      "identity": "unique:Necromantle",
+      "name": "Necromantle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Necromantle.dds",
+      "visualIdentityId": "FourUniqueBodyInt4",
+      "itemClass": "Body Armour",
+      "sourceId": "Necromantle"
+    },
+    {
+      "identity": "unique:Pariah's Embrace",
+      "name": "Pariah's Embrace",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/PariahsEmbrace.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex4_",
+      "itemClass": "Body Armour",
+      "sourceId": "Pariah's Embrace"
+    },
+    {
+      "identity": "unique:Perfidy",
+      "name": "Perfidy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Perfidy.dds",
+      "visualIdentityId": "FourUniqueDelirium2",
+      "itemClass": "Body Armour",
+      "sourceId": "Perfidy"
+    },
+    {
+      "identity": "unique:Pragmatism",
+      "name": "Pragmatism",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Pragmatism.dds",
+      "visualIdentityId": "FourUniqueRitual4",
+      "itemClass": "Body Armour",
+      "sourceId": "Pragmatism"
+    },
+    {
+      "identity": "unique:Prayers for Rain",
+      "name": "Prayers for Rain",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/PrayersForRain.dds",
+      "visualIdentityId": "FourUniqueBodyInt6",
+      "itemClass": "Body Armour",
+      "sourceId": "Prayers for Rain"
+    },
+    {
+      "identity": "unique:Quatl's Molt",
+      "name": "Quatl's Molt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/QuatlsMolt.dds",
+      "visualIdentityId": "FourUniqueBodyDex8",
+      "itemClass": "Body Armour",
+      "sourceId": "Quatl's Molt"
+    },
+    {
+      "identity": "unique:Queen of the Forest",
+      "name": "Queen of the Forest",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/QueenOfTheForest.dds",
+      "visualIdentityId": "FourUniqueBodyDex10",
+      "itemClass": "Body Armour",
+      "sourceId": "Queen of the Forest"
+    },
+    {
+      "identity": "unique:Redflare Conduit",
+      "name": "Redflare Conduit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/RedflareConduit.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt5",
+      "itemClass": "Body Armour",
+      "sourceId": "Redflare Conduit"
+    },
+    {
+      "identity": "unique:Reverie",
+      "name": "Reverie",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/HuskOfDreams.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt4",
+      "itemClass": "Body Armour",
+      "sourceId": "Husk of Dreams"
+    },
+    {
+      "identity": "unique:Sacrosanctum",
+      "name": "Sacrosanctum",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Sacrosanctum.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt12",
+      "itemClass": "Body Armour",
+      "sourceId": "Sacrosanctum"
+    },
+    {
+      "identity": "unique:Sands of Silk",
+      "name": "Sands of Silk",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/SandsOfSilk.dds",
+      "visualIdentityId": "FourUniqueBodyDex4",
+      "itemClass": "Body Armour",
+      "sourceId": "Sands of Silk"
+    },
+    {
+      "identity": "unique:Sierran Inheritance",
+      "name": "Sierran Inheritance",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/MutewindSail.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt3",
+      "itemClass": "Body Armour",
+      "sourceId": "Sierran Inheritance"
+    },
+    {
+      "identity": "unique:Silks of Veneration",
+      "name": "Silks of Veneration",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/SilksOfVeneration.dds",
+      "visualIdentityId": "FourUniqueBodyInt14",
+      "itemClass": "Body Armour",
+      "sourceId": "Silks of Veneration"
+    },
+    {
+      "identity": "unique:Skin of the Loyal",
+      "name": "Skin of the Loyal",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/SkinOfTheLoyal.dds",
+      "visualIdentityId": "FourUniqueBreach1_",
+      "itemClass": "Body Armour",
+      "sourceId": "Skin of the Loyal"
+    },
+    {
+      "identity": "unique:Soul Mantle",
+      "name": "Soul Mantle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/SoulMantle.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt6",
+      "itemClass": "Body Armour",
+      "sourceId": "Soul Mantle"
+    },
+    {
+      "identity": "unique:Tabula Rasa",
+      "name": "Tabula Rasa",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TabulaRasa.dds",
+      "visualIdentityId": "FourUniqueBodyStrDexInt1",
+      "itemClass": "Body Armour",
+      "sourceId": "Tabula Rasa"
+    },
+    {
+      "identity": "unique:Temporalis",
+      "name": "Temporalis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/PilgrimsImage.dds",
+      "visualIdentityId": "FourUniqueSanctum1",
+      "itemClass": "Body Armour",
+      "sourceId": "Temporalis"
+    },
+    {
+      "identity": "unique:Tetzlapokal's Desire",
+      "name": "Tetzlapokal's Desire",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TetzlapokalsDesire.dds",
+      "visualIdentityId": "FourUniqueBodyInt7",
+      "itemClass": "Body Armour",
+      "sourceId": "Tetzlapokal's Desire"
+    },
+    {
+      "identity": "unique:The Auspex",
+      "name": "The Auspex",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/The Auspex.dds",
+      "visualIdentityId": "FourUniqueBodyDex16_",
+      "itemClass": "Body Armour",
+      "sourceId": "The Auspex"
+    },
+    {
+      "identity": "unique:The Barrow Dweller",
+      "name": "The Barrow Dweller",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheBarrowDweller.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex2",
+      "itemClass": "Body Armour",
+      "sourceId": "The Barrow Dweller"
+    },
+    {
+      "identity": "unique:The Black Doubt",
+      "name": "The Black Doubt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheBlackDoubt.dds",
+      "visualIdentityId": "FourUniqueBodyInt3",
+      "itemClass": "Body Armour",
+      "sourceId": "The Black Doubt"
+    },
+    {
+      "identity": "unique:The Brass Dome",
+      "name": "The Brass Dome",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/BrassDome.dds",
+      "visualIdentityId": "FourUniqueBodyStr12",
+      "itemClass": "Body Armour",
+      "sourceId": "The Brass Dome"
+    },
+    {
+      "identity": "unique:The Coming Calamity",
+      "name": "The Coming Calamity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheComingCalamity.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex11",
+      "itemClass": "Body Armour",
+      "sourceId": "The Coming Calamity"
+    },
+    {
+      "identity": "unique:The Covenant",
+      "name": "The Covenant",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheCovenant.dds",
+      "visualIdentityId": "FourUniqueBodyInt8",
+      "itemClass": "Body Armour",
+      "sourceId": "The Covenant"
+    },
+    {
+      "identity": "unique:The Dancing Mirage",
+      "name": "The Dancing Mirage",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheDancingMirage.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt4",
+      "itemClass": "Body Armour",
+      "sourceId": "The Dancing Mirage"
+    },
+    {
+      "identity": "unique:The Fallen Formation",
+      "name": "The Fallen Formation",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/FallenFormation.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex9",
+      "itemClass": "Body Armour",
+      "sourceId": "The Fallen Formation"
+    },
+    {
+      "identity": "unique:The Mutable Star",
+      "name": "The Mutable Star",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/MutableStar.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt7",
+      "itemClass": "Body Armour",
+      "sourceId": "The Mutable Star"
+    },
+    {
+      "identity": "unique:The Rat Cage",
+      "name": "The Rat Cage",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheRatCage.dds",
+      "visualIdentityId": "FourUniqueBodyDex7",
+      "itemClass": "Body Armour",
+      "sourceId": "The Rat Cage"
+    },
+    {
+      "identity": "unique:The Road Warrior",
+      "name": "The Road Warrior",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheRoadWarrior.dds",
+      "visualIdentityId": "FourUniqueBodyStr4",
+      "itemClass": "Body Armour",
+      "sourceId": "The Immortan"
+    },
+    {
+      "identity": "unique:The Sunken Vessel",
+      "name": "The Sunken Vessel",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TheSunkenVessel.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex14",
+      "itemClass": "Body Armour",
+      "sourceId": "The Sunken Vessel"
+    },
+    {
+      "identity": "unique:The Unleashed",
+      "name": "The Unleashed",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Endurfaedyr.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt15",
+      "itemClass": "Body Armour",
+      "sourceId": "The Unleashed"
+    },
+    {
+      "identity": "unique:Titanrot Cataphract",
+      "name": "Titanrot Cataphract",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/TitanrotCataphract.dds",
+      "visualIdentityId": "FourUniqueBodyStr5",
+      "itemClass": "Body Armour",
+      "sourceId": "Titanrot Cataphract"
+    },
+    {
+      "identity": "unique:Vis Mortis",
+      "name": "Vis Mortis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/VisMortis.dds",
+      "visualIdentityId": "FourUniqueBodyInt12",
+      "itemClass": "Body Armour",
+      "sourceId": "Vis Mortis"
+    },
+    {
+      "identity": "unique:Voll's Protector",
+      "name": "Voll's Protector",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/VollsProtector.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt5",
+      "itemClass": "Body Armour",
+      "sourceId": "Voll's Protector"
+    },
+    {
+      "identity": "unique:Wandering Reliquary",
+      "name": "Wandering Reliquary",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/WanderingReliquary.dds",
+      "visualIdentityId": "FourUniqueBodyStr6",
+      "itemClass": "Body Armour",
+      "sourceId": "Wandering Reliquary"
+    },
+    {
+      "identity": "unique:Waveshaper",
+      "name": "Waveshaper",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/Waveshaper.dds",
+      "visualIdentityId": "FourUniqueBodyStrInt8",
+      "itemClass": "Body Armour",
+      "sourceId": "Waveshaper"
+    },
+    {
+      "identity": "unique:Widow's Reign",
+      "name": "Widow's Reign",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/WidowsReign.dds",
+      "visualIdentityId": "FourUniqueBodyStrDex7",
+      "itemClass": "Body Armour",
+      "sourceId": "Widow's Reign"
+    },
+    {
+      "identity": "unique:Yriel's Fostering",
+      "name": "Yriel's Fostering",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/YrielsFostering.dds",
+      "visualIdentityId": "FourUniqueBodyDex11",
+      "itemClass": "Body Armour",
+      "sourceId": "Yriel's Fostering"
+    },
+    {
+      "identity": "unique:Zerphi's Serape",
+      "name": "Zerphi's Serape",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/BodyArmours/Uniques/ZerphisSerape.dds",
+      "visualIdentityId": "FourUniqueBodyDexInt6",
+      "itemClass": "Body Armour",
+      "sourceId": "Zerphi's Serape"
+    },
+    {
+      "identity": "unique:Ab Aeterno",
+      "name": "Ab Aeterno",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/AbAeterno.dds",
+      "visualIdentityId": "FourUniquePinnacle4",
+      "itemClass": "Boots",
+      "sourceId": "Ab Aeterno"
+    },
+    {
+      "identity": "unique:Atziri's Step",
+      "name": "Atziri's Step",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/AtzirisStep.dds",
+      "visualIdentityId": "FourUniqueBootsDex9",
+      "itemClass": "Boots",
+      "sourceId": "Atziri's Step"
+    },
+    {
+      "identity": "unique:Beetlebite",
+      "name": "Beetlebite",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/ChainsOfDeshret.dds",
+      "visualIdentityId": "FourUniqueRitual2",
+      "itemClass": "Boots",
+      "sourceId": "Beetlebite"
+    },
+    {
+      "identity": "unique:Birth of Fury",
+      "name": "Birth of Fury",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/BirthOfFury.dds",
+      "visualIdentityId": "FourUniqueBootsStr5",
+      "itemClass": "Boots",
+      "sourceId": "Birth of Fury"
+    },
+    {
+      "identity": "unique:Bones of Ullr",
+      "name": "Bones of Ullr",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/BonesOfUllr.dds",
+      "visualIdentityId": "FourUniqueBootsInt3_",
+      "itemClass": "Boots",
+      "sourceId": "Bones of Ullr"
+    },
+    {
+      "identity": "unique:Briarpatch",
+      "name": "Briarpatch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Briarpatch.dds",
+      "visualIdentityId": "FourUniqueBootsDex2",
+      "itemClass": "Boots",
+      "sourceId": "Briarpatch"
+    },
+    {
+      "identity": "unique:Bushwhack",
+      "name": "Bushwhack",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Bushwack.dds",
+      "visualIdentityId": "FourUniqueBootsDex5",
+      "itemClass": "Boots",
+      "sourceId": "Bushwhack"
+    },
+    {
+      "identity": "unique:Corpsewade",
+      "name": "Corpsewade",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Corpsewade.dds",
+      "visualIdentityId": "FourUniqueBootsStr2",
+      "itemClass": "Boots",
+      "sourceId": "Corpsewade"
+    },
+    {
+      "identity": "unique:Darkray Vectors",
+      "name": "Darkray Vectors",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/DarkrayVectors.dds",
+      "visualIdentityId": "FourUniqueBootsStrDex2",
+      "itemClass": "Boots",
+      "sourceId": "Darkray Vectors"
+    },
+    {
+      "identity": "unique:Decree of Flight",
+      "name": "Decree of Flight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/BoundlessAuthority.dds",
+      "visualIdentityId": "FourUniqueBootsStrInt9",
+      "itemClass": "Boots",
+      "sourceId": "Decree of Flight"
+    },
+    {
+      "identity": "unique:Gamblesprint",
+      "name": "Gamblesprint",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Gamblesprint.dds",
+      "visualIdentityId": "FourUniqueBootsDex3",
+      "itemClass": "Boots",
+      "sourceId": "Gamblesprint"
+    },
+    {
+      "identity": "unique:Ghostmarch",
+      "name": "Ghostmarch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Ghostmarch.dds",
+      "visualIdentityId": "FourUniqueBootsDexInt2",
+      "itemClass": "Boots",
+      "sourceId": "Ghostmarch"
+    },
+    {
+      "identity": "unique:Legionstride",
+      "name": "Legionstride",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Legionstride.dds",
+      "visualIdentityId": "FourUniqueBootsStr1",
+      "itemClass": "Boots",
+      "sourceId": "Legionstride"
+    },
+    {
+      "identity": "unique:Luminous Pace",
+      "name": "Luminous Pace",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/BatedPace.dds",
+      "visualIdentityId": "FourUniqueBootsInt1",
+      "itemClass": "Boots",
+      "sourceId": "Luminous Pace"
+    },
+    {
+      "identity": "unique:Obern's Bastion",
+      "name": "Obern's Bastion",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/ObernsBastion.dds",
+      "visualIdentityId": "FourUniqueBootsStrDex3",
+      "itemClass": "Boots",
+      "sourceId": "Obern's Bastion"
+    },
+    {
+      "identity": "unique:Powertread",
+      "name": "Powertread",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Powertread.dds",
+      "visualIdentityId": "FourUniqueBootsDexInt3_",
+      "itemClass": "Boots",
+      "sourceId": "Powertread"
+    },
+    {
+      "identity": "unique:Shankgonne",
+      "name": "Shankgonne",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Shankgonne.dds",
+      "visualIdentityId": "FourUniqueBootsStrDex4",
+      "itemClass": "Boots",
+      "sourceId": "Shankgonne"
+    },
+    {
+      "identity": "unique:The Infinite Pursuit",
+      "name": "The Infinite Pursuit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/TheInfinitePursuit.dds",
+      "visualIdentityId": "FourUniqueBootsStr3",
+      "itemClass": "Boots",
+      "sourceId": "The Infinite Pursuit"
+    },
+    {
+      "identity": "unique:The Knight-errant",
+      "name": "The Knight-errant",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/KnightErrant.dds",
+      "visualIdentityId": "FourUniqueBootsStrDex1",
+      "itemClass": "Boots",
+      "sourceId": "The Knight-errant"
+    },
+    {
+      "identity": "unique:Thunderstep",
+      "name": "Thunderstep",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/ThunderousSilence.dds",
+      "visualIdentityId": "FourUniqueBootsDex4",
+      "itemClass": "Boots",
+      "sourceId": "Thunderstep"
+    },
+    {
+      "identity": "unique:Trampletoe",
+      "name": "Trampletoe",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Trampletoe.dds",
+      "visualIdentityId": "FourUniqueBootsStr4_",
+      "itemClass": "Boots",
+      "sourceId": "Trampletoe"
+    },
+    {
+      "identity": "unique:Wake of Destruction",
+      "name": "Wake of Destruction",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/WakeOfDestruction.dds",
+      "visualIdentityId": "FourUniqueBootsStrInt2",
+      "itemClass": "Boots",
+      "sourceId": "Wake of Destruction"
+    },
+    {
+      "identity": "unique:Wanderlust",
+      "name": "Wanderlust",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Wanderlust.dds",
+      "visualIdentityId": "FourUniqueBootsInt2",
+      "itemClass": "Boots",
+      "sourceId": "Wanderlust"
+    },
+    {
+      "identity": "unique:Windscream",
+      "name": "Windscream",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Windscream.dds",
+      "visualIdentityId": "FourUniqueBootsInt5",
+      "itemClass": "Boots",
+      "sourceId": "Windscream"
+    },
+    {
+      "identity": "unique:Wondertrap",
+      "name": "Wondertrap",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Boots/Uniques/Wondertrap.dds",
+      "visualIdentityId": "FourUniqueBootsInt4_",
+      "itemClass": "Boots",
+      "sourceId": "Wondertrap"
+    },
+    {
+      "identity": "unique:Death's Harp",
+      "name": "Death's Harp",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/DeathsHarp.dds",
+      "visualIdentityId": "FourUniqueBow6",
+      "itemClass": "Bow",
+      "sourceId": "Death's Harp"
+    },
+    {
+      "identity": "unique:Doomfletch",
+      "name": "Doomfletch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Doomfletch.dds",
+      "visualIdentityId": "FourUniqueBow5",
+      "itemClass": "Bow",
+      "sourceId": "Doomfletch"
+    },
+    {
+      "identity": "unique:Fairgraves' Curse",
+      "name": "Fairgraves' Curse",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/DealersHand.dds",
+      "visualIdentityId": "FourUniqueBow9",
+      "itemClass": "Bow",
+      "sourceId": "Fairgraves' Curse"
+    },
+    {
+      "identity": "unique:Ironbound",
+      "name": "Ironbound",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Ironbound.dds",
+      "visualIdentityId": "FourUniqueBow3",
+      "itemClass": "Bow",
+      "sourceId": "Ironbound"
+    },
+    {
+      "identity": "unique:Lioneye's Glare",
+      "name": "Lioneye's Glare",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/LioneyesGlare.dds",
+      "visualIdentityId": "FourUniqueBow13_",
+      "itemClass": "Bow",
+      "sourceId": "Lioneye's Glare"
+    },
+    {
+      "identity": "unique:Periphery",
+      "name": "Periphery",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Fluttermoth.dds",
+      "visualIdentityId": "FourUniqueBow14",
+      "itemClass": "Bow",
+      "sourceId": "Periphery"
+    },
+    {
+      "identity": "unique:Quill Rain",
+      "name": "Quill Rain",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/QuillRain.dds",
+      "visualIdentityId": "FourUniqueBow2",
+      "itemClass": "Bow",
+      "sourceId": "Quill Rain"
+    },
+    {
+      "identity": "unique:Slivertongue",
+      "name": "Slivertongue",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Slivertongue.dds",
+      "visualIdentityId": "FourUniqueBow8_",
+      "itemClass": "Bow",
+      "sourceId": "Slivertongue"
+    },
+    {
+      "identity": "unique:Splinterheart",
+      "name": "Splinterheart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Splinterheart.dds",
+      "visualIdentityId": "FourUniqueBow4",
+      "itemClass": "Bow",
+      "sourceId": "Splinterheart"
+    },
+    {
+      "identity": "unique:Voltaxic Rift",
+      "name": "Voltaxic Rift",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/VoltaxicRift.dds",
+      "visualIdentityId": "FourUniqueBow7",
+      "itemClass": "Bow",
+      "sourceId": "Voltaxic Rift"
+    },
+    {
+      "identity": "unique:Widowhail",
+      "name": "Widowhail",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Bows/Uniques/Widowhail.dds",
+      "visualIdentityId": "FourUniqueBow1",
+      "itemClass": "Bow",
+      "sourceId": "Widowhail"
+    },
+    {
+      "identity": "unique:Arakaali's Gift",
+      "name": "Arakaali's Gift",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/AntidoteUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm3",
+      "itemClass": "Charm",
+      "sourceId": "Arakaali's Gift"
+    },
+    {
+      "identity": "unique:Beira's Anguish",
+      "name": "Beira's Anguish",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/DousingUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm4",
+      "itemClass": "Charm",
+      "sourceId": "Beira's Anguish"
+    },
+    {
+      "identity": "unique:Breath of the Mountains",
+      "name": "Breath of the Mountains",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/SapphireUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm9",
+      "itemClass": "Charm",
+      "sourceId": "Breath of the Mountains"
+    },
+    {
+      "identity": "unique:For Utopia",
+      "name": "For Utopia",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/StoneUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm6_",
+      "itemClass": "Charm",
+      "sourceId": "For Utopia"
+    },
+    {
+      "identity": "unique:Forsaken Bangle",
+      "name": "Forsaken Bangle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/ChaosUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm11",
+      "itemClass": "Charm",
+      "sourceId": "Forsaken Bangle"
+    },
+    {
+      "identity": "unique:Nascent Hope",
+      "name": "Nascent Hope",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/ThawingUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm1_",
+      "itemClass": "Charm",
+      "sourceId": "Nascent Hope"
+    },
+    {
+      "identity": "unique:Ngamahu's Chosen",
+      "name": "Ngamahu's Chosen",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/RubyUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm8",
+      "itemClass": "Charm",
+      "sourceId": "Ngamahu's Chosen"
+    },
+    {
+      "identity": "unique:Rite of Passage",
+      "name": "Rite of Passage",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/GoldenUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueSpirit1",
+      "itemClass": "Charm",
+      "sourceId": "Rite of Passage"
+    },
+    {
+      "identity": "unique:Sanguis Heroum",
+      "name": "Sanguis Heroum",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/StaunchingUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm2",
+      "itemClass": "Charm",
+      "sourceId": "Sanguis Heroum"
+    },
+    {
+      "identity": "unique:The Black Cat",
+      "name": "The Black Cat",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/GroundingUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm5",
+      "itemClass": "Charm",
+      "sourceId": "The Black Cat"
+    },
+    {
+      "identity": "unique:The Fall of the Axe",
+      "name": "The Fall of the Axe",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/SilverUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm7_",
+      "itemClass": "Charm",
+      "sourceId": "The Fall of the Axe"
+    },
+    {
+      "identity": "unique:Valako's Roar",
+      "name": "Valako's Roar",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Charms/Uniques/TopazUniqueCharm.dds",
+      "visualIdentityId": "FourUniqueCharm10",
+      "itemClass": "Charm",
+      "sourceId": "Valako's Roar"
+    },
+    {
+      "identity": "unique:Double Vision",
+      "name": "Double Vision",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Crossbows/Uniques/DoubleVision.dds",
+      "visualIdentityId": "FourUniqueCrossbow5_",
+      "itemClass": "Crossbow",
+      "sourceId": "Double Vision"
+    },
+    {
+      "identity": "unique:Mist Whisper",
+      "name": "Mist Whisper",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Crossbows/Uniques/MistWhisper.dds",
+      "visualIdentityId": "FourUniqueCrossbow1",
+      "itemClass": "Crossbow",
+      "sourceId": "Mist Whisper"
+    },
+    {
+      "identity": "unique:Rampart Raptor",
+      "name": "Rampart Raptor",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Crossbows/Uniques/RampartRaptor.dds",
+      "visualIdentityId": "FourUniqueCrossbow2",
+      "itemClass": "Crossbow",
+      "sourceId": "Rampart Raptor"
+    },
+    {
+      "identity": "unique:Redemption",
+      "name": "Redemption",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Crossbows/Uniques/TheRedemption.dds",
+      "visualIdentityId": "FourUniqueCrossbow14",
+      "itemClass": "Crossbow",
+      "sourceId": "Redemption"
+    },
+    {
+      "identity": "unique:The Last Lament",
+      "name": "The Last Lament",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Crossbows/Uniques/TheGrandDesign.dds",
+      "visualIdentityId": "FourUniqueCrossbow13",
+      "itemClass": "Crossbow",
+      "sourceId": "The Last Lament"
+    },
+    {
+      "identity": "unique:Blood of the Warrior",
+      "name": "Blood of the Warrior",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/BloodOfTheKarui.dds",
+      "visualIdentityId": "FourUniqueLifeFlask1_",
+      "itemClass": "Flask",
+      "sourceId": "Blood of the Warrior"
+    },
+    {
+      "identity": "unique:Lavianga's Spirits",
+      "name": "Lavianga's Spirits",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/LaviangasSpirit.dds",
+      "visualIdentityId": "FourUniqueManaFlask1",
+      "itemClass": "Flask",
+      "sourceId": "Lavianga's Spirits"
+    },
+    {
+      "identity": "unique:Melting Maelstrom",
+      "name": "Melting Maelstrom",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/MeltingMaelstrom.dds",
+      "visualIdentityId": "FourUniqueDelirium3",
+      "itemClass": "Flask",
+      "sourceId": "Melting Maelstrom"
+    },
+    {
+      "identity": "unique:Olroth's Resolve",
+      "name": "Olroth's Resolve",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/OlrothsResolve.dds",
+      "visualIdentityId": "FourUniqueExpedition3_",
+      "itemClass": "Flask",
+      "sourceId": "Olroth's Resolve"
+    },
+    {
+      "identity": "unique:Opportunity",
+      "name": "Opportunity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/TranscendantThirst.dds",
+      "visualIdentityId": "FourUniqueLifeFlask2",
+      "itemClass": "Flask",
+      "sourceId": "Opportunity"
+    },
+    {
+      "identity": "unique:Uhtred's Chalice",
+      "name": "Uhtred's Chalice",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Flasks/Uniques/UhtredsLegacy.dds",
+      "visualIdentityId": "FourUniqueManaFlask2",
+      "itemClass": "Flask",
+      "sourceId": "Uhtred's Chalice"
+    },
+    {
+      "identity": "unique:Apep's Supremacy",
+      "name": "Apep's Supremacy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/ApepsSupremacy.dds",
+      "visualIdentityId": "FourUniqueFocus7_",
+      "itemClass": "Focii",
+      "sourceId": "Apep's Supremacy"
+    },
+    {
+      "identity": "unique:Carrion Call",
+      "name": "Carrion Call",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/CarrionCall.dds",
+      "visualIdentityId": "FourUniqueFocus4_",
+      "itemClass": "Focii",
+      "sourceId": "Carrion Call"
+    },
+    {
+      "identity": "unique:Deathrattle",
+      "name": "Deathrattle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/DeathRattle.dds",
+      "visualIdentityId": "FourUniqueFocus1",
+      "itemClass": "Focii",
+      "sourceId": "Deathrattle"
+    },
+    {
+      "identity": "unique:Effigy of Cruelty",
+      "name": "Effigy of Cruelty",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/EffigyOfCruelty.dds",
+      "visualIdentityId": "FourUniqueFocus3",
+      "itemClass": "Focii",
+      "sourceId": "Effigy of Cruelty"
+    },
+    {
+      "identity": "unique:Rathpith Globe",
+      "name": "Rathpith Globe",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/RathpithGlobe.dds",
+      "visualIdentityId": "FourUniqueFocus8",
+      "itemClass": "Focii",
+      "sourceId": "Rathpith Globe"
+    },
+    {
+      "identity": "unique:Serpent's Lesson",
+      "name": "Serpent's Lesson",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/TonesOfFate.dds",
+      "visualIdentityId": "FourUniqueFocus5",
+      "itemClass": "Focii",
+      "sourceId": "Serpent's Lesson"
+    },
+    {
+      "identity": "unique:The Eternal Spark",
+      "name": "The Eternal Spark",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/EternalSpark.dds",
+      "visualIdentityId": "FourUniqueFocus6",
+      "itemClass": "Focii",
+      "sourceId": "The Eternal Spark"
+    },
+    {
+      "identity": "unique:Threaded Light",
+      "name": "Threaded Light",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Foci/Uniques/ThreadedLight.dds",
+      "visualIdentityId": "FourUniqueFocus2",
+      "itemClass": "Focii",
+      "sourceId": "Threaded Light"
+    },
+    {
+      "identity": "unique:Aerisvane's Wings",
+      "name": "Aerisvane's Wings",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/AerisvanesWings.dds",
+      "visualIdentityId": "FourUniqueGlovesStrDex5",
+      "itemClass": "Gloves",
+      "sourceId": "Aerisvane's Wings"
+    },
+    {
+      "identity": "unique:Atziri's Acuity",
+      "name": "Atziri's Acuity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/AtzirisAcuity.dds",
+      "visualIdentityId": "FourUniqueGlovesStr5",
+      "itemClass": "Gloves",
+      "sourceId": "Atziri's Acuity"
+    },
+    {
+      "identity": "unique:Aurseize",
+      "name": "Aurseize",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Aurseize.dds",
+      "visualIdentityId": "FourUniqueGlovesStrDex2",
+      "itemClass": "Gloves",
+      "sourceId": "Aurseize"
+    },
+    {
+      "identity": "unique:Blessed Bonds",
+      "name": "Blessed Bonds",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/BlessedBonds.dds",
+      "visualIdentityId": "FourUniqueSanctum3",
+      "itemClass": "Gloves",
+      "sourceId": "Blessed Bonds"
+    },
+    {
+      "identity": "unique:Blueflame Bracers",
+      "name": "Blueflame Bracers",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/SunConstrictor.dds",
+      "visualIdentityId": "FourUniqueGlovesStrInt3",
+      "itemClass": "Gloves",
+      "sourceId": "Blueflame Bracers"
+    },
+    {
+      "identity": "unique:Candlemaker",
+      "name": "Candlemaker",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Candlemaker.dds",
+      "visualIdentityId": "FourUniqueGlovesInt2",
+      "itemClass": "Gloves",
+      "sourceId": "Candlemaker"
+    },
+    {
+      "identity": "unique:Death Articulated",
+      "name": "Death Articulated",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/DeathArticulated.dds",
+      "visualIdentityId": "FourUniqueCorruption3_",
+      "itemClass": "Gloves",
+      "sourceId": "Death Articulated"
+    },
+    {
+      "identity": "unique:Deathblow",
+      "name": "Deathblow",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Deathblow.dds",
+      "visualIdentityId": "FourUniqueGlovesStrDex3",
+      "itemClass": "Gloves",
+      "sourceId": "Deathblow"
+    },
+    {
+      "identity": "unique:Demon Stitcher",
+      "name": "Demon Stitcher",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/DemonStitcher.dds",
+      "visualIdentityId": "FourUniqueGlovesInt5",
+      "itemClass": "Gloves",
+      "sourceId": "Demon Stitcher"
+    },
+    {
+      "identity": "unique:Doedre's Tenure",
+      "name": "Doedre's Tenure",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/EnraptHands.dds",
+      "visualIdentityId": "FourUniqueGlovesInt3",
+      "itemClass": "Gloves",
+      "sourceId": "Doedre's Tenure"
+    },
+    {
+      "identity": "unique:Dreadfist",
+      "name": "Dreadfist",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Dreadfist.dds",
+      "visualIdentityId": "FourUniqueGlovesStr4",
+      "itemClass": "Gloves",
+      "sourceId": "Dreadfist"
+    },
+    {
+      "identity": "unique:Empire's Grasp",
+      "name": "Empire's Grasp",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/EmpiresGrasp.dds",
+      "visualIdentityId": "FourUniqueGlovesStr7",
+      "itemClass": "Gloves",
+      "sourceId": "Empire's Grasp"
+    },
+    {
+      "identity": "unique:Essentia Sanguis",
+      "name": "Essentia Sanguis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/EssentiaSanguis.dds",
+      "visualIdentityId": "FourUniqueGlovesDexInt5",
+      "itemClass": "Gloves",
+      "sourceId": "Essentia Sanguis"
+    },
+    {
+      "identity": "unique:Facebreaker",
+      "name": "Facebreaker",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Facebreaker.dds",
+      "visualIdentityId": "FourUniqueGlovesStr1",
+      "itemClass": "Gloves",
+      "sourceId": "Facebreaker"
+    },
+    {
+      "identity": "unique:Gravebind",
+      "name": "Gravebind",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Gravebind.dds",
+      "visualIdentityId": "FourUniqueGlovesStrInt1_",
+      "itemClass": "Gloves",
+      "sourceId": "Gravebind"
+    },
+    {
+      "identity": "unique:Grip of Winter",
+      "name": "Grip of Winter",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/GripOfWinter.dds",
+      "visualIdentityId": "FourUniqueGlovesDex2",
+      "itemClass": "Gloves",
+      "sourceId": "Grip of Winter"
+    },
+    {
+      "identity": "unique:Hand of Wisdom and Action",
+      "name": "Hand of Wisdom and Action",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/HandOfWisdomAndAction.dds",
+      "visualIdentityId": "FourUniqueBreach2",
+      "itemClass": "Gloves",
+      "sourceId": "Hand of Wisdom and Action"
+    },
+    {
+      "identity": "unique:Hateforge",
+      "name": "Hateforge",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Hateforge.dds",
+      "visualIdentityId": "FourUniqueUltimatum4",
+      "itemClass": "Gloves",
+      "sourceId": "Hateforge"
+    },
+    {
+      "identity": "unique:Horror's Flight",
+      "name": "Horror's Flight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/ChokingMists.dds",
+      "visualIdentityId": "FourUniqueGlovesDex9",
+      "itemClass": "Gloves",
+      "sourceId": "Horror's Flight"
+    },
+    {
+      "identity": "unique:Idle Hands",
+      "name": "Idle Hands",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/IdleHands.dds",
+      "visualIdentityId": "FourUniqueGlovesDex4",
+      "itemClass": "Gloves",
+      "sourceId": "Idle Hands"
+    },
+    {
+      "identity": "unique:Jarngreipr",
+      "name": "Jarngreipr",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Jarngreipr.dds",
+      "visualIdentityId": "FourUniqueGlovesStrDex1",
+      "itemClass": "Gloves",
+      "sourceId": "Jarngreipr"
+    },
+    {
+      "identity": "unique:Killjoy",
+      "name": "Killjoy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Killjoy.dds",
+      "visualIdentityId": "FourUniqueGlovesDexInt2",
+      "itemClass": "Gloves",
+      "sourceId": "Killjoy"
+    },
+    {
+      "identity": "unique:Kitoko's Current",
+      "name": "Kitoko's Current",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/GaruksCurrent.dds",
+      "visualIdentityId": "FourUniqueGlovesInt4_",
+      "itemClass": "Gloves",
+      "sourceId": "Kitoko's Current"
+    },
+    {
+      "identity": "unique:Leopold's Applause",
+      "name": "Leopold's Applause",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/LeopoldsApplause.dds",
+      "visualIdentityId": "FourUniqueGlovesInt7",
+      "itemClass": "Gloves",
+      "sourceId": "Leopold's Applause"
+    },
+    {
+      "identity": "unique:Lochtonial Caress",
+      "name": "Lochtonial Caress",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/LochtonialCaress.dds",
+      "visualIdentityId": "FourUniqueGlovesStr3",
+      "itemClass": "Gloves",
+      "sourceId": "Lochtonial Caress"
+    },
+    {
+      "identity": "unique:Maligaro's Virtuosity",
+      "name": "Maligaro's Virtuosity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/MaligarosVirtuosity.dds",
+      "visualIdentityId": "FourUniqueGlovesDex6",
+      "itemClass": "Gloves",
+      "sourceId": "Maligaro's Virtuosity"
+    },
+    {
+      "identity": "unique:Nightscale",
+      "name": "Nightscale",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Nightscale.dds",
+      "visualIdentityId": "FourUniqueGlovesInt6",
+      "itemClass": "Gloves",
+      "sourceId": "Nightscale"
+    },
+    {
+      "identity": "unique:Northpaw",
+      "name": "Northpaw",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Northpaw.dds",
+      "visualIdentityId": "FourUniqueGlovesDex1____",
+      "itemClass": "Gloves",
+      "sourceId": "Northpaw"
+    },
+    {
+      "identity": "unique:Painter's Servant",
+      "name": "Painter's Servant",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/PaintersServant.dds",
+      "visualIdentityId": "FourUniqueGlovesInt1",
+      "itemClass": "Gloves",
+      "sourceId": "Painter's Servant"
+    },
+    {
+      "identity": "unique:Plaguefinger",
+      "name": "Plaguefinger",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Plaguefinger.dds",
+      "visualIdentityId": "FourUniqueGlovesDexInt1",
+      "itemClass": "Gloves",
+      "sourceId": "Plaguefinger"
+    },
+    {
+      "identity": "unique:Shackles of the Wretched",
+      "name": "Shackles of the Wretched",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/ShacklesOfTheWretched.dds",
+      "visualIdentityId": "FourUniqueGlovesStrInt2",
+      "itemClass": "Gloves",
+      "sourceId": "Shackles of the Wretched"
+    },
+    {
+      "identity": "unique:Sine Aequo",
+      "name": "Sine Aequo",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/SineAequo.dds",
+      "visualIdentityId": "FourUniquePinnacle3_",
+      "itemClass": "Gloves",
+      "sourceId": "Sine Aequo"
+    },
+    {
+      "identity": "unique:Snakebite",
+      "name": "Snakebite",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Snakebite.dds",
+      "visualIdentityId": "FourUniqueGlovesDex5_",
+      "itemClass": "Gloves",
+      "sourceId": "Snakebite"
+    },
+    {
+      "identity": "unique:The Prisoner's Manacles",
+      "name": "The Prisoner's Manacles",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/PrisonersManacles.dds",
+      "visualIdentityId": "FourUniqueGlovesStrInt4",
+      "itemClass": "Gloves",
+      "sourceId": "The Prisoner's Manacles"
+    },
+    {
+      "identity": "unique:Thunderfist",
+      "name": "Thunderfist",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Thunderfist.dds",
+      "visualIdentityId": "FourUniqueGlovesDexInt6",
+      "itemClass": "Gloves",
+      "sourceId": "Thunderfist"
+    },
+    {
+      "identity": "unique:Treefingers",
+      "name": "Treefingers",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/Treefingers.dds",
+      "visualIdentityId": "FourUniqueGlovesStr2",
+      "itemClass": "Gloves",
+      "sourceId": "Treefingers"
+    },
+    {
+      "identity": "unique:Valako's Vice",
+      "name": "Valako's Vice",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Gloves/Uniques/ValakosVice.dds",
+      "visualIdentityId": "FourUniqueGlovesStrDex4",
+      "itemClass": "Gloves",
+      "sourceId": "Valako's Vice"
+    },
+    {
+      "identity": "unique:Alpha's Howl",
+      "name": "Alpha's Howl",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/AlphasHowl.dds",
+      "visualIdentityId": "FourUniqueHelmetDex11",
+      "itemClass": "Helmet",
+      "sourceId": "Alpha's Howl"
+    },
+    {
+      "identity": "unique:Assailum",
+      "name": "Assailum",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Assailum.dds",
+      "visualIdentityId": "FourUniqueDelirium1",
+      "itemClass": "Helmet",
+      "sourceId": "Assailum"
+    },
+    {
+      "identity": "unique:Atsak's Sight",
+      "name": "Atsak's Sight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/BalefulTemperance.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt4",
+      "itemClass": "Helmet",
+      "sourceId": "Atsak's Sight"
+    },
+    {
+      "identity": "unique:Atziri's Disdain",
+      "name": "Atziri's Disdain",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/AtzirisDisdain.dds",
+      "visualIdentityId": "FourUniqueHelmetInt6",
+      "itemClass": "Helmet",
+      "sourceId": "Atziri's Disdain"
+    },
+    {
+      "identity": "unique:Black Sun Crest",
+      "name": "Black Sun Crest",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/BlackSunCrest.dds",
+      "visualIdentityId": "FourUniqueHelmetStr3",
+      "itemClass": "Helmet",
+      "sourceId": "Black Sun Crest"
+    },
+    {
+      "identity": "unique:Blood Price",
+      "name": "Blood Price",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/BloodPrice.dds",
+      "visualIdentityId": "FourUniqueHelmetStr8",
+      "itemClass": "Helmet",
+      "sourceId": "Blood Price"
+    },
+    {
+      "identity": "unique:Bronzebeard",
+      "name": "Bronzebeard",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Bronzebeard.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt2",
+      "itemClass": "Helmet",
+      "sourceId": "Bronzebeard"
+    },
+    {
+      "identity": "unique:Constricting Command",
+      "name": "Constricting Command",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/ConstrictingCommand.dds",
+      "visualIdentityId": "FourUniqueHelmetDex6",
+      "itemClass": "Helmet",
+      "sourceId": "Constricting Command"
+    },
+    {
+      "identity": "unique:Cornathaum",
+      "name": "Cornathaum",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Cornathaum.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt5_",
+      "itemClass": "Helmet",
+      "sourceId": "Cornathaum"
+    },
+    {
+      "identity": "unique:Corona of the Red Sun",
+      "name": "Corona of the Red Sun",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CoronaOfTheRedSun.dds",
+      "visualIdentityId": "FourUniqueHelmetStr6",
+      "itemClass": "Helmet",
+      "sourceId": "Corona of the Red Sun"
+    },
+    {
+      "identity": "unique:Crown of Eyes",
+      "name": "Crown of Eyes",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CrownOfEyes.dds",
+      "visualIdentityId": "FourUniqueHelmetInt7",
+      "itemClass": "Helmet",
+      "sourceId": "Crown of Eyes"
+    },
+    {
+      "identity": "unique:Crown of Thorns",
+      "name": "Crown of Thorns",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CrownOfThorns.dds",
+      "visualIdentityId": "FourUniqueHelmetInt1",
+      "itemClass": "Helmet",
+      "sourceId": "Crown of Thorns"
+    },
+    {
+      "identity": "unique:Crown of the Pale King",
+      "name": "Crown of the Pale King",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CrownOfThePaleKing.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt3",
+      "itemClass": "Helmet",
+      "sourceId": "Crown of the Pale King"
+    },
+    {
+      "identity": "unique:Crown of the Victor",
+      "name": "Crown of the Victor",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CrownOfTheVictor.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt1",
+      "itemClass": "Helmet",
+      "sourceId": "Crown of the Victor"
+    },
+    {
+      "identity": "unique:Decree of Acuity",
+      "name": "Decree of Acuity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/SightlessConviction.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex9_",
+      "itemClass": "Helmet",
+      "sourceId": "Decree of Acuity"
+    },
+    {
+      "identity": "unique:Deidbell",
+      "name": "Deidbell",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Deidbell.dds",
+      "visualIdentityId": "FourUniqueHelmetStr5",
+      "itemClass": "Helmet",
+      "sourceId": "Deidbell"
+    },
+    {
+      "identity": "unique:Elevore",
+      "name": "Elevore",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Elevore.dds",
+      "visualIdentityId": "FourUniqueHelmetDex5",
+      "itemClass": "Helmet",
+      "sourceId": "Elevore"
+    },
+    {
+      "identity": "unique:Erian's Cobble",
+      "name": "Erian's Cobble",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/GrimrotCoif.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex2",
+      "itemClass": "Helmet",
+      "sourceId": "Erian's Cobble"
+    },
+    {
+      "identity": "unique:Ezomyte Peak",
+      "name": "Ezomyte Peak",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/EzomytePeak.dds",
+      "visualIdentityId": "FourUniqueHelmetStr2",
+      "itemClass": "Helmet",
+      "sourceId": "Ezomyte Peak"
+    },
+    {
+      "identity": "unique:Forbidden Gaze",
+      "name": "Forbidden Gaze",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/ForbiddenGaze.dds",
+      "visualIdentityId": "FourUniqueHelmetInt4",
+      "itemClass": "Helmet",
+      "sourceId": "Forbidden Gaze"
+    },
+    {
+      "identity": "unique:Glimpse of Chaos",
+      "name": "Glimpse of Chaos",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/GlimpseOfChaos.dds",
+      "visualIdentityId": "FourUniqueUltimatum1",
+      "itemClass": "Helmet",
+      "sourceId": "Glimpse of Chaos"
+    },
+    {
+      "identity": "unique:Goldrim",
+      "name": "Goldrim",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Goldrim.dds",
+      "visualIdentityId": "FourUniqueHelmetDex2",
+      "itemClass": "Helmet",
+      "sourceId": "Goldrim"
+    },
+    {
+      "identity": "unique:Greymake",
+      "name": "Greymake",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Greymake.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex1_",
+      "itemClass": "Helmet",
+      "sourceId": "Greymake"
+    },
+    {
+      "identity": "unique:Heatshiver",
+      "name": "Heatshiver",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Heatshiver.dds",
+      "visualIdentityId": "FourUniqueHelmetDex9",
+      "itemClass": "Helmet",
+      "sourceId": "Heatshiver"
+    },
+    {
+      "identity": "unique:Horns of Bynden",
+      "name": "Horns of Bynden",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/HornsOfBrynden.dds",
+      "visualIdentityId": "FourUniqueHelmetStr1a",
+      "itemClass": "Helmet",
+      "sourceId": "Horns of Bynden"
+    },
+    {
+      "identity": "unique:Indigon",
+      "name": "Indigon",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Indigon.dds",
+      "visualIdentityId": "FourUniqueHelmetInt11",
+      "itemClass": "Helmet",
+      "sourceId": "Indigon"
+    },
+    {
+      "identity": "unique:Innsmouth",
+      "name": "Innsmouth",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Innsmouth.dds",
+      "visualIdentityId": "FourUniqueHelmetDex1",
+      "itemClass": "Helmet",
+      "sourceId": "Innsmouth"
+    },
+    {
+      "identity": "unique:Ironride",
+      "name": "Ironride",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Ironride.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex3",
+      "itemClass": "Helmet",
+      "sourceId": "Ironride"
+    },
+    {
+      "identity": "unique:Keeper of the Arc",
+      "name": "Keeper of the Arc",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/KeeperOfTheArc.dds",
+      "visualIdentityId": "FourUniqueExpedition2",
+      "itemClass": "Helmet",
+      "sourceId": "Keeper of the Arc"
+    },
+    {
+      "identity": "unique:Leer Cast",
+      "name": "Leer Cast",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Leercast.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt3",
+      "itemClass": "Helmet",
+      "sourceId": "Leer Cast"
+    },
+    {
+      "identity": "unique:Mask of the Sanguimancer",
+      "name": "Mask of the Sanguimancer",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/PhantomBlood.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt2_",
+      "itemClass": "Helmet",
+      "sourceId": "Mask of the Sanguimancer"
+    },
+    {
+      "identity": "unique:Mask of the Stitched Demon",
+      "name": "Mask of the Stitched Demon",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/MaskOfTheStitchedDemon.dds",
+      "visualIdentityId": "FourUniqueHelmetInt5",
+      "itemClass": "Helmet",
+      "sourceId": "Mask of the Stitched Demon"
+    },
+    {
+      "identity": "unique:Mind of the Council",
+      "name": "Mind of the Council",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/MindOfTheCouncil.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt8",
+      "itemClass": "Helmet",
+      "sourceId": "Mind of the Council"
+    },
+    {
+      "identity": "unique:Myris Uxor",
+      "name": "Myris Uxor",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/MyrisUxor.dds",
+      "visualIdentityId": "FourUniqueHelmetDex10_",
+      "itemClass": "Helmet",
+      "sourceId": "Myris Uxor"
+    },
+    {
+      "identity": "unique:Radiant Grief",
+      "name": "Radiant Grief",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/RadiantGrief.dds",
+      "visualIdentityId": "FourUniqueHelmetDex3",
+      "itemClass": "Helmet",
+      "sourceId": "Radiant Grief"
+    },
+    {
+      "identity": "unique:Sandstorm Visage",
+      "name": "Sandstorm Visage",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/SandstormVisage.dds",
+      "visualIdentityId": "FourUniqueSanctum2",
+      "itemClass": "Helmet",
+      "sourceId": "Sandstorm Visage"
+    },
+    {
+      "identity": "unique:Scold's Bridle",
+      "name": "Scold's Bridle",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/ScoldsBridle.dds",
+      "visualIdentityId": "FourUniqueHelmetInt8",
+      "itemClass": "Helmet",
+      "sourceId": "Scold's Bridle"
+    },
+    {
+      "identity": "unique:Solus Ipse",
+      "name": "Solus Ipse",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/SolusIpse.dds",
+      "visualIdentityId": "FourUniquePinnacle2",
+      "itemClass": "Helmet",
+      "sourceId": "Solus Ipse"
+    },
+    {
+      "identity": "unique:Starkonja's Head",
+      "name": "Starkonja's Head",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/StarkonjasHead.dds",
+      "visualIdentityId": "FourUniqueHelmetDex8",
+      "itemClass": "Helmet",
+      "sourceId": "Starkonja's Head"
+    },
+    {
+      "identity": "unique:The Black Insignia",
+      "name": "The Black Insignia",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheBlackCrest.dds",
+      "visualIdentityId": "FourUniqueHelmetDex7_",
+      "itemClass": "Helmet",
+      "sourceId": "The Black Insignia"
+    },
+    {
+      "identity": "unique:The Bringer of Rain",
+      "name": "The Bringer of Rain",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/BringerOfRain.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex7",
+      "itemClass": "Helmet",
+      "sourceId": "The Bringer of Rain"
+    },
+    {
+      "identity": "unique:The Deepest Tower",
+      "name": "The Deepest Tower",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheDeepestTower.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt6",
+      "itemClass": "Helmet",
+      "sourceId": "The Deepest Tower"
+    },
+    {
+      "identity": "unique:The Devouring Diadem",
+      "name": "The Devouring Diadem",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/DevouringDiadem.dds",
+      "visualIdentityId": "FourUniqueHelmetInt2_",
+      "itemClass": "Helmet",
+      "sourceId": "The Devouring Diadem"
+    },
+    {
+      "identity": "unique:The Hollow Mask",
+      "name": "The Hollow Mask",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/MaskOfTheHollow.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt1",
+      "itemClass": "Helmet",
+      "sourceId": "The Hollow Mask"
+    },
+    {
+      "identity": "unique:The Smiling Knight",
+      "name": "The Smiling Knight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheSmilingKnight.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex4",
+      "itemClass": "Helmet",
+      "sourceId": "The Smiling Knight"
+    },
+    {
+      "identity": "unique:The Three Dragons",
+      "name": "The Three Dragons",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheThreeDragons.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt6",
+      "itemClass": "Helmet",
+      "sourceId": "The Three Dragons"
+    },
+    {
+      "identity": "unique:The Vertex",
+      "name": "The Vertex",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheVertex.dds",
+      "visualIdentityId": "FourUniqueHelmetDexInt5__",
+      "itemClass": "Helmet",
+      "sourceId": "The Vertex"
+    },
+    {
+      "identity": "unique:The Vile Knight",
+      "name": "The Vile Knight",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/TheVileKnight.dds",
+      "visualIdentityId": "FourUniqueHelmetStrDex5",
+      "itemClass": "Helmet",
+      "sourceId": "The Vile Knight"
+    },
+    {
+      "identity": "unique:Thrillsteel",
+      "name": "Thrillsteel",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/Thrillsteel.dds",
+      "visualIdentityId": "FourUniqueHelmetStr4",
+      "itemClass": "Helmet",
+      "sourceId": "Thrillsteel"
+    },
+    {
+      "identity": "unique:Veil of the Night",
+      "name": "Veil of the Night",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/VeilOfTheNight.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt4",
+      "itemClass": "Helmet",
+      "sourceId": "Veil of the Night"
+    },
+    {
+      "identity": "unique:Vestige of Darkness",
+      "name": "Vestige of Darkness",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/CrownOfTheWendigo.dds",
+      "visualIdentityId": "FourUniqueHelmetStrInt9",
+      "itemClass": "Helmet",
+      "sourceId": "Vestige of Darkness"
+    },
+    {
+      "identity": "unique:Visage of Ayah",
+      "name": "Visage of Ayah",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/VisageOfAyah.dds",
+      "visualIdentityId": "FourUniqueHelmetInt3",
+      "itemClass": "Helmet",
+      "sourceId": "Visage of Ayah"
+    },
+    {
+      "identity": "unique:Wings of Caelyn",
+      "name": "Wings of Caelyn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Armours/Helmets/Uniques/WingsOfCaelyn.dds",
+      "visualIdentityId": "FourUniqueHelmetStr1b",
+      "itemClass": "Helmet",
+      "sourceId": "Wings of Caelyn"
+    },
+    {
+      "identity": "unique:Against the Darkness",
+      "name": "Against the Darkness",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/SanctumJewel.dds",
+      "visualIdentityId": "FourUniqueJewel10",
+      "itemClass": "Jewel",
+      "sourceId": "Against the Darkness"
+    },
+    {
+      "identity": "unique:Controlled Metamorphosis",
+      "name": "Controlled Metamorphosis",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/BreachJewel.dds",
+      "visualIdentityId": "FourUniqueJewel7",
+      "itemClass": "Jewel",
+      "sourceId": "Controlled Metamorphosis"
+    },
+    {
+      "identity": "unique:Flesh Crucible",
+      "name": "Flesh Crucible",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/Vivisection.dds",
+      "visualIdentityId": "FourUniqueJewel13",
+      "itemClass": "Jewel",
+      "sourceId": "Flesh Crucible"
+    },
+    {
+      "identity": "unique:From Nothing",
+      "name": "From Nothing",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/RitualJewel.dds",
+      "visualIdentityId": "FourUniqueJewel6",
+      "itemClass": "Jewel",
+      "sourceId": "From Nothing"
+    },
+    {
+      "identity": "unique:Heart of the Well",
+      "name": "Heart of the Well",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/ApostatesHeart.dds",
+      "visualIdentityId": "FourUniqueJewel12_",
+      "itemClass": "Jewel",
+      "sourceId": "Heart of the Well"
+    },
+    {
+      "identity": "unique:Heroic Tragedy",
+      "name": "Heroic Tragedy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/ExpeditionJewel.dds",
+      "visualIdentityId": "FourUniqueJewel5",
+      "itemClass": "Jewel",
+      "sourceId": "Heroic Tragedy"
+    },
+    {
+      "identity": "unique:Megalomaniac",
+      "name": "Megalomaniac",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/DeliriumJewel.dds",
+      "visualIdentityId": "FourUniqueJewel4",
+      "itemClass": "Jewel",
+      "sourceId": "Megalomaniac"
+    },
+    {
+      "identity": "unique:Prism of Belief",
+      "name": "Prism of Belief",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/PrismOfBelief.dds",
+      "visualIdentityId": "FourUniqueJewel8",
+      "itemClass": "Jewel",
+      "sourceId": "Prism of Belief"
+    },
+    {
+      "identity": "unique:Split Personality",
+      "name": "Split Personality",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/SplitPersonality.dds",
+      "visualIdentityId": "FourUniqueJewel14_",
+      "itemClass": "Jewel",
+      "sourceId": "Split Personality"
+    },
+    {
+      "identity": "unique:The Adorned",
+      "name": "The Adorned",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/TrialmasterJewel.dds",
+      "visualIdentityId": "FourUniqueJewel9",
+      "itemClass": "Jewel",
+      "sourceId": "The Adorned"
+    },
+    {
+      "identity": "unique:Undying Hate",
+      "name": "Undying Hate",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/UndyingHatred.dds",
+      "visualIdentityId": "FourUniqueJewel11",
+      "itemClass": "Jewel",
+      "sourceId": "Undying Hate"
+    },
+    {
+      "identity": "unique:Voices",
+      "name": "Voices",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Jewels/Uniques/Voices.dds",
+      "visualIdentityId": "FourUniqueJewel15",
+      "itemClass": "Jewel",
+      "sourceId": "Voices"
+    },
+    {
+      "identity": "unique:Brain Rattler",
+      "name": "Brain Rattler",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Brainrattler.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace4",
+      "itemClass": "Mace",
+      "sourceId": "Brain Rattler"
+    },
+    {
+      "identity": "unique:Brutus' Lead Sprinkler",
+      "name": "Brutus' Lead Sprinkler",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/BrutusLeadSprinkler.dds",
+      "visualIdentityId": "FourUniqueOneHandMace9",
+      "itemClass": "Mace",
+      "sourceId": "Brutus' Lead Sprinkler"
+    },
+    {
+      "identity": "unique:Brynhand's Mark",
+      "name": "Brynhand's Mark",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/BrynhandsMark.dds",
+      "visualIdentityId": "FourUniqueOneHandMace1",
+      "itemClass": "Mace",
+      "sourceId": "Brynhand's Mark"
+    },
+    {
+      "identity": "unique:Chober Chaber",
+      "name": "Chober Chaber",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/ChoberChaber.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace7",
+      "itemClass": "Mace",
+      "sourceId": "Chober Chaber"
+    },
+    {
+      "identity": "unique:Frostbreath",
+      "name": "Frostbreath",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Frostbreath.dds",
+      "visualIdentityId": "FourUniqueOneHandMace3",
+      "itemClass": "Mace",
+      "sourceId": "Frostbreath"
+    },
+    {
+      "identity": "unique:Hoghunt",
+      "name": "Hoghunt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Hoghunt.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace1",
+      "itemClass": "Mace",
+      "sourceId": "Hoghunt"
+    },
+    {
+      "identity": "unique:Hrimnor's Hymn",
+      "name": "Hrimnor's Hymn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/HrimnorsHymn.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace2",
+      "itemClass": "Mace",
+      "sourceId": "Hrimnor's Hymn"
+    },
+    {
+      "identity": "unique:Marohi Erqi",
+      "name": "Marohi Erqi",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/MarohiErqi.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace10",
+      "itemClass": "Mace",
+      "sourceId": "Marohi Erqi"
+    },
+    {
+      "identity": "unique:Mjölner",
+      "name": "Mjölner",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Mjolner.dds",
+      "visualIdentityId": "FourUniqueOneHandMace13",
+      "itemClass": "Mace",
+      "sourceId": "Mjölner"
+    },
+    {
+      "identity": "unique:Nebuloch",
+      "name": "Nebuloch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Nebuloch.dds",
+      "visualIdentityId": "FourUniqueOneHandMace7",
+      "itemClass": "Mace",
+      "sourceId": "Nebuloch"
+    },
+    {
+      "identity": "unique:Olrovasara",
+      "name": "Olrovasara",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Olrovasara.dds",
+      "visualIdentityId": "FourUniqueExpedition4",
+      "itemClass": "Mace",
+      "sourceId": "Olrovasara"
+    },
+    {
+      "identity": "unique:Quecholli",
+      "name": "Quecholli",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Quecholli.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace8",
+      "itemClass": "Mace",
+      "sourceId": "Quecholli"
+    },
+    {
+      "identity": "unique:Sadist's Mercy",
+      "name": "Sadist's Mercy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Murkmaw.dds",
+      "visualIdentityId": "FourUniqueOneHandMace14",
+      "itemClass": "Mace",
+      "sourceId": "Sadist's Mercy"
+    },
+    {
+      "identity": "unique:Sculpted Suffering",
+      "name": "Sculpted Suffering",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/SculptedSuffering.dds",
+      "visualIdentityId": "FourUniqueOneHandMace5__",
+      "itemClass": "Mace",
+      "sourceId": "Sculpted Suffering"
+    },
+    {
+      "identity": "unique:Seeing Stars",
+      "name": "Seeing Stars",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/SeeingStars.dds",
+      "visualIdentityId": "FourUniqueOneHandMace6_",
+      "itemClass": "Mace",
+      "sourceId": "Seeing Stars"
+    },
+    {
+      "identity": "unique:Serle's Grit",
+      "name": "Serle's Grit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/SerlesMasterwork.dds",
+      "visualIdentityId": "FourUniqueOneHandMace15",
+      "itemClass": "Mace",
+      "sourceId": "Serle's Grit"
+    },
+    {
+      "identity": "unique:Shyaba",
+      "name": "Shyaba",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Shyaba.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace6",
+      "itemClass": "Mace",
+      "sourceId": "Shyaba"
+    },
+    {
+      "identity": "unique:The Empty Roar",
+      "name": "The Empty Roar",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/TheEmptyRoar.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace5_",
+      "itemClass": "Mace",
+      "sourceId": "The Empty Roar"
+    },
+    {
+      "identity": "unique:The Hammer of Faith",
+      "name": "The Hammer of Faith",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/HammerOfTheChurch.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace13",
+      "itemClass": "Mace",
+      "sourceId": "The Hammer of Faith"
+    },
+    {
+      "identity": "unique:Tidebreaker",
+      "name": "Tidebreaker",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Tidebreaker.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace9",
+      "itemClass": "Mace",
+      "sourceId": "Tidebreaker"
+    },
+    {
+      "identity": "unique:Trenchtimbre",
+      "name": "Trenchtimbre",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/Trenchtimbre.dds",
+      "visualIdentityId": "FourUniqueOneHandMace4",
+      "itemClass": "Mace",
+      "sourceId": "Trenchtimbre"
+    },
+    {
+      "identity": "unique:Trephina",
+      "name": "Trephina",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/Trephina.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace3",
+      "itemClass": "Mace",
+      "sourceId": "Trephina"
+    },
+    {
+      "identity": "unique:Twisted Empyrean",
+      "name": "Twisted Empyrean",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/TwoHandMaces/Uniques/SpiderVerisiumMaul.dds",
+      "visualIdentityId": "FourUniqueTwoHandMace14_",
+      "itemClass": "Mace",
+      "sourceId": "Twisted Empyrean"
+    },
+    {
+      "identity": "unique:Wylund's Stake",
+      "name": "Wylund's Stake",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandMaces/Uniques/TheStake.dds",
+      "visualIdentityId": "FourUniqueOneHandMace2_",
+      "itemClass": "Mace",
+      "sourceId": "Wylund's Stake"
+    },
+    {
+      "identity": "unique:Collapsing Horizon",
+      "name": "Collapsing Horizon",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/CollapsingHorizon.dds",
+      "visualIdentityId": "FourUniqueDelirium4__",
+      "itemClass": "Warstaff",
+      "sourceId": "Collapsing Horizon"
+    },
+    {
+      "identity": "unique:Duality",
+      "name": "Duality",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/Stjorvar.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff14",
+      "itemClass": "Warstaff",
+      "sourceId": "Duality"
+    },
+    {
+      "identity": "unique:Matsya",
+      "name": "Matsya",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/Matsya.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff5",
+      "itemClass": "Warstaff",
+      "sourceId": "Matsya"
+    },
+    {
+      "identity": "unique:Nazir's Judgement",
+      "name": "Nazir's Judgement",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/NazirsJudgement.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff6__",
+      "itemClass": "Warstaff",
+      "sourceId": "Nazir's Judgement"
+    },
+    {
+      "identity": "unique:Pillar of the Caged God",
+      "name": "Pillar of the Caged God",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/PillarOfTheCagedGod.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff2",
+      "itemClass": "Warstaff",
+      "sourceId": "Pillar of the Caged God"
+    },
+    {
+      "identity": "unique:The Blood Thorn",
+      "name": "The Blood Thorn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/TheBloodThorn.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff1",
+      "itemClass": "Warstaff",
+      "sourceId": "The Blood Thorn"
+    },
+    {
+      "identity": "unique:The Sentry",
+      "name": "The Sentry",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/WarStaves/Uniques/TheSentry.dds",
+      "visualIdentityId": "FourUniqueQuarterstaff3",
+      "itemClass": "Warstaff",
+      "sourceId": "The Sentry"
+    },
+    {
+      "identity": "unique:Asphyxia's Wrath",
+      "name": "Asphyxia's Wrath",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/AsphyxiasWrath.dds",
+      "visualIdentityId": "FourUniqueQuiver1",
+      "itemClass": "Quiver",
+      "sourceId": "Asphyxia's Wrath"
+    },
+    {
+      "identity": "unique:Beyond Reach",
+      "name": "Beyond Reach",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/BreachQuiver.dds",
+      "visualIdentityId": "FourUniqueBreach3",
+      "itemClass": "Quiver",
+      "sourceId": "Beyond Reach"
+    },
+    {
+      "identity": "unique:Blackgleam",
+      "name": "Blackgleam",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/Blackgleam.dds",
+      "visualIdentityId": "FourUniqueQuiver2_",
+      "itemClass": "Quiver",
+      "sourceId": "Blackgleam"
+    },
+    {
+      "identity": "unique:Cadiro's Gambit",
+      "name": "Cadiro's Gambit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/PerandusTurnstile.dds",
+      "visualIdentityId": "FourUniqueQuiver8_",
+      "itemClass": "Quiver",
+      "sourceId": "Cadiro's Gambit"
+    },
+    {
+      "identity": "unique:Drillneck",
+      "name": "Drillneck",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/Drillneck.dds",
+      "visualIdentityId": "FourUniqueQuiver12",
+      "itemClass": "Quiver",
+      "sourceId": "Drillneck"
+    },
+    {
+      "identity": "unique:Murkshaft",
+      "name": "Murkshaft",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/Murkshaft.dds",
+      "visualIdentityId": "FourUniqueQuiver6_",
+      "itemClass": "Quiver",
+      "sourceId": "Murkshaft"
+    },
+    {
+      "identity": "unique:Rearguard",
+      "name": "Rearguard",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/Rearguard.dds",
+      "visualIdentityId": "FourUniqueQuiver5__",
+      "itemClass": "Quiver",
+      "sourceId": "Rearguard"
+    },
+    {
+      "identity": "unique:The Lethal Draw",
+      "name": "The Lethal Draw",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Quivers/Uniques/TheLethalDraw.dds",
+      "visualIdentityId": "FourUniqueQuiver3",
+      "itemClass": "Quiver",
+      "sourceId": "The Lethal Draw"
+    },
+    {
+      "identity": "unique:Andvarius",
+      "name": "Andvarius",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Andvarius.dds",
+      "visualIdentityId": "FourUniqueRing29",
+      "itemClass": "Ring",
+      "sourceId": "Andvarius"
+    },
+    {
+      "identity": "unique:Berek's Grip",
+      "name": "Berek's Grip",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/BereksGrip.dds",
+      "visualIdentityId": "FourUniqueRing26a__",
+      "itemClass": "Ring",
+      "sourceId": "Berek's Grip"
+    },
+    {
+      "identity": "unique:Berek's Pass",
+      "name": "Berek's Pass",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/BereksPass.dds",
+      "visualIdentityId": "FourUniqueRing26b",
+      "itemClass": "Ring",
+      "sourceId": "Berek's Pass"
+    },
+    {
+      "identity": "unique:Berek's Respite",
+      "name": "Berek's Respite",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/BereksRespite.dds",
+      "visualIdentityId": "FourUniqueRing26c",
+      "itemClass": "Ring",
+      "sourceId": "Berek's Respite"
+    },
+    {
+      "identity": "unique:Blackflame",
+      "name": "Blackflame",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Blackflame.dds",
+      "visualIdentityId": "FourUniqueRing17",
+      "itemClass": "Ring",
+      "sourceId": "Blackflame"
+    },
+    {
+      "identity": "unique:Blackheart",
+      "name": "Blackheart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Blackheart.dds",
+      "visualIdentityId": "FourUniqueRing1_",
+      "itemClass": "Ring",
+      "sourceId": "Blackheart"
+    },
+    {
+      "identity": "unique:Blistering Bond",
+      "name": "Blistering Bond",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/BlisteringBond.dds",
+      "visualIdentityId": "FourUniqueRing8",
+      "itemClass": "Ring",
+      "sourceId": "Blistering Bond"
+    },
+    {
+      "identity": "unique:Bursting Decay",
+      "name": "Bursting Decay",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/BurstingDecay.dds",
+      "visualIdentityId": "FourUniqueCorruption2_",
+      "itemClass": "Ring",
+      "sourceId": "Bursting Decay"
+    },
+    {
+      "identity": "unique:Call of the Brotherhood",
+      "name": "Call of the Brotherhood",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/CallOfTheBrotherhood.dds",
+      "visualIdentityId": "FourUniqueRing15",
+      "itemClass": "Ring",
+      "sourceId": "Call of the Brotherhood"
+    },
+    {
+      "identity": "unique:Cracklecreep",
+      "name": "Cracklecreep",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Cracklecreep.dds",
+      "visualIdentityId": "FourUniqueRing7",
+      "itemClass": "Ring",
+      "sourceId": "Cracklecreep"
+    },
+    {
+      "identity": "unique:Death Rush",
+      "name": "Death Rush",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/DeathRush.dds",
+      "visualIdentityId": "FourUniqueRing20",
+      "itemClass": "Ring",
+      "sourceId": "Death Rush"
+    },
+    {
+      "identity": "unique:Doedre's Damning",
+      "name": "Doedre's Damning",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/DoedresDamning.dds",
+      "visualIdentityId": "FourUniqueRing5",
+      "itemClass": "Ring",
+      "sourceId": "Doedre's Damning"
+    },
+    {
+      "identity": "unique:Dream Fragments",
+      "name": "Dream Fragments",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/DreamFragments.dds",
+      "visualIdentityId": "FourUniqueRing11",
+      "itemClass": "Ring",
+      "sourceId": "Dream Fragments"
+    },
+    {
+      "identity": "unique:Eshtera's Path",
+      "name": "Eshtera's Path",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/RimeveilSeal.dds",
+      "visualIdentityId": "FourUniqueSanctum4b",
+      "itemClass": "Ring",
+      "sourceId": "Sekhema's Resolve Cold"
+    },
+    {
+      "identity": "unique:Evergrasping Ring",
+      "name": "Evergrasping Ring",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/EvergraspingRing.dds",
+      "visualIdentityId": "FourUniqueRing22",
+      "itemClass": "Ring",
+      "sourceId": "Evergrasping Ring"
+    },
+    {
+      "identity": "unique:Gifts from Above",
+      "name": "Gifts from Above",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/GiftsFromAbove.dds",
+      "visualIdentityId": "FourUniqueRing25",
+      "itemClass": "Ring",
+      "sourceId": "Gifts from Above"
+    },
+    {
+      "identity": "unique:Glowswarm",
+      "name": "Glowswarm",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Glowswarm.dds",
+      "visualIdentityId": "FourUniqueRing4_",
+      "itemClass": "Ring",
+      "sourceId": "Glowswarm"
+    },
+    {
+      "identity": "unique:Heartbound Loop",
+      "name": "Heartbound Loop",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/HeartboundLoop.dds",
+      "visualIdentityId": "FourUniqueRing23",
+      "itemClass": "Ring",
+      "sourceId": "Heartbound Loop"
+    },
+    {
+      "identity": "unique:Icefang Orbit",
+      "name": "Icefang Orbit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/IcefangOrbit.dds",
+      "visualIdentityId": "FourUniqueRing2a",
+      "itemClass": "Ring",
+      "sourceId": "Icefang Orbit"
+    },
+    {
+      "identity": "unique:Kalandra's Touch",
+      "name": "Kalandra's Touch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/MirrorRing.dds",
+      "visualIdentityId": "FourUniqueRing32_",
+      "itemClass": "Ring",
+      "sourceId": "Kalandra's Touch"
+    },
+    {
+      "identity": "unique:Levinstone",
+      "name": "Levinstone",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/StoneOfOndar.dds",
+      "visualIdentityId": "FourUniqueRing13",
+      "itemClass": "Ring",
+      "sourceId": "Levinstone"
+    },
+    {
+      "identity": "unique:Ming's Heart",
+      "name": "Ming's Heart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/MingsHeart.dds",
+      "visualIdentityId": "FourUniqueRing16",
+      "itemClass": "Ring",
+      "sourceId": "Ming's Heart"
+    },
+    {
+      "identity": "unique:Original Sin",
+      "name": "Original Sin",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/OriginalSin.dds",
+      "visualIdentityId": "FourUniqueRing18",
+      "itemClass": "Ring",
+      "sourceId": "Original Sin"
+    },
+    {
+      "identity": "unique:Perandus Seal",
+      "name": "Perandus Seal",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/PerandusSeal.dds",
+      "visualIdentityId": "FourUniqueRing28",
+      "itemClass": "Ring",
+      "sourceId": "Perandus Seal"
+    },
+    {
+      "identity": "unique:Polcirkeln",
+      "name": "Polcirkeln",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Polcirkeln.dds",
+      "visualIdentityId": "FourUniqueRing10",
+      "itemClass": "Ring",
+      "sourceId": "Polcirkeln"
+    },
+    {
+      "identity": "unique:Prized Pain",
+      "name": "Prized Pain",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/PrizedPain.dds",
+      "visualIdentityId": "FourUniqueRing3",
+      "itemClass": "Ring",
+      "sourceId": "Prized Pain"
+    },
+    {
+      "identity": "unique:Safrin's Resolve",
+      "name": "Safrin's Resolve",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/EmberheartSeal.dds",
+      "visualIdentityId": "FourUniqueSanctum4a",
+      "itemClass": "Ring",
+      "sourceId": "Sekhema's Resolve Fire"
+    },
+    {
+      "identity": "unique:Seed of Cataclysm",
+      "name": "Seed of Cataclysm",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/SeedOfCataclysm.dds",
+      "visualIdentityId": "FourUniqueRing6",
+      "itemClass": "Ring",
+      "sourceId": "Seed of Cataclysm"
+    },
+    {
+      "identity": "unique:Snakepit",
+      "name": "Snakepit",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Snakepit.dds",
+      "visualIdentityId": "FourUniqueRing24",
+      "itemClass": "Ring",
+      "sourceId": "Snakepit"
+    },
+    {
+      "identity": "unique:The Burrower",
+      "name": "The Burrower",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/TheBurrower.dds",
+      "visualIdentityId": "FourUniqueRing14_",
+      "itemClass": "Ring",
+      "sourceId": "The Burrower"
+    },
+    {
+      "identity": "unique:The Taming",
+      "name": "The Taming",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/TheTaming.dds",
+      "visualIdentityId": "FourUniqueRing27",
+      "itemClass": "Ring",
+      "sourceId": "The Taming"
+    },
+    {
+      "identity": "unique:Thief's Torment",
+      "name": "Thief's Torment",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/ThiefsTorment.dds",
+      "visualIdentityId": "FourUniqueRing21",
+      "itemClass": "Ring",
+      "sourceId": "Thief's Torment"
+    },
+    {
+      "identity": "unique:Veilpiercer",
+      "name": "Veilpiercer",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Veilpiercer.dds",
+      "visualIdentityId": "FourUniqueRing34_",
+      "itemClass": "Ring",
+      "sourceId": "Veilpiercer"
+    },
+    {
+      "identity": "unique:Venopuncture",
+      "name": "Venopuncture",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/Venopuncture.dds",
+      "visualIdentityId": "FourUniqueRing2b",
+      "itemClass": "Ring",
+      "sourceId": "Venopuncture"
+    },
+    {
+      "identity": "unique:Ventor's Gamble",
+      "name": "Ventor's Gamble",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/VentorsGamble.dds",
+      "visualIdentityId": "FourUniqueRing30",
+      "itemClass": "Ring",
+      "sourceId": "Ventor's Gamble"
+    },
+    {
+      "identity": "unique:Vigilant View",
+      "name": "Vigilant View",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/VigilantView.dds",
+      "visualIdentityId": "FourUniqueRing19",
+      "itemClass": "Ring",
+      "sourceId": "Vigilant View"
+    },
+    {
+      "identity": "unique:Whisper of the Brotherhood",
+      "name": "Whisper of the Brotherhood",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/WhisperOfTheBrotherhood.dds",
+      "visualIdentityId": "FourUniqueRing12",
+      "itemClass": "Ring",
+      "sourceId": "Whisper of the Brotherhood"
+    },
+    {
+      "identity": "unique:Zaida's Longevity",
+      "name": "Zaida's Longevity",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Rings/Uniques/StormforgedSeal.dds",
+      "visualIdentityId": "FourUniqueSanctum4c",
+      "itemClass": "Ring",
+      "sourceId": "Sekhema's Resolve Lightning"
+    },
+    {
+      "identity": "unique:Font of Power",
+      "name": "Font of Power",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/FontOfPower.dds",
+      "visualIdentityId": "FourUniqueSceptre4",
+      "itemClass": "Sceptre",
+      "sourceId": "Font of Power"
+    },
+    {
+      "identity": "unique:Guiding Palm of the Eye",
+      "name": "Guiding Palm of the Eye",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/GuidingPalmCold.dds",
+      "visualIdentityId": "FourUniqueSceptre6b",
+      "itemClass": "Sceptre",
+      "sourceId": "Guiding Palm of the Eye"
+    },
+    {
+      "identity": "unique:Guiding Palm of the Heart",
+      "name": "Guiding Palm of the Heart",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/GuidingPalmFire.dds",
+      "visualIdentityId": "FourUniqueSceptre6a__",
+      "itemClass": "Sceptre",
+      "sourceId": "Guiding Palm of the Heart"
+    },
+    {
+      "identity": "unique:Guiding Palm of the Mind",
+      "name": "Guiding Palm of the Mind",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/GuidingPalmLightning.dds",
+      "visualIdentityId": "FourUniqueSceptre6c",
+      "itemClass": "Sceptre",
+      "sourceId": "Guiding Palm of the Mind"
+    },
+    {
+      "identity": "unique:Palm of the Dreamer",
+      "name": "Palm of the Dreamer",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/OpenPalmOfTheDreamer.dds",
+      "visualIdentityId": "FourUniqueSceptre6d_",
+      "itemClass": "Sceptre",
+      "sourceId": "Palm of the Dreamer"
+    },
+    {
+      "identity": "unique:Sacred Flame",
+      "name": "Sacred Flame",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/SacredFlame.dds",
+      "visualIdentityId": "FourUniquePinnacle5_",
+      "itemClass": "Sceptre",
+      "sourceId": "Sacred Flame"
+    },
+    {
+      "identity": "unique:Sylvan's Effigy",
+      "name": "Sylvan's Effigy",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/Packleader.dds",
+      "visualIdentityId": "FourUniqueSceptre14",
+      "itemClass": "Sceptre",
+      "sourceId": "Sylvan's Effigy"
+    },
+    {
+      "identity": "unique:The Dark Defiler",
+      "name": "The Dark Defiler",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Scepters/Uniques/DarkDefiler.dds",
+      "visualIdentityId": "FourUniqueSceptre1",
+      "itemClass": "Sceptre",
+      "sourceId": "The Dark Defiler"
+    },
+    {
+      "identity": "unique:Alkem Eira",
+      "name": "Alkem Eira",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/AlkemEira.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt1",
+      "itemClass": "Shield",
+      "sourceId": "Alkem Eira"
+    },
+    {
+      "identity": "unique:Arvil's Wheel",
+      "name": "Arvil's Wheel",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/ArvilsWheel.dds",
+      "visualIdentityId": "FourUniqueShieldStrDex1",
+      "itemClass": "Shield",
+      "sourceId": "Arvil's Wheel"
+    },
+    {
+      "identity": "unique:Bloodbarrier",
+      "name": "Bloodbarrier",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/BloodBarrier.dds",
+      "visualIdentityId": "FourUniqueShieldDex4",
+      "itemClass": "Shield",
+      "sourceId": "Bloodbarrier"
+    },
+    {
+      "identity": "unique:Calgyra's Arc",
+      "name": "Calgyra's Arc",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/CalgyrasArc.dds",
+      "visualIdentityId": "FourUniqueShieldDex11_",
+      "itemClass": "Shield",
+      "sourceId": "Calgyra's Arc"
+    },
+    {
+      "identity": "unique:Chernobog's Pillar",
+      "name": "Chernobog's Pillar",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/ChernobogsPillar.dds",
+      "visualIdentityId": "FourUniqueShieldStr13",
+      "itemClass": "Shield",
+      "sourceId": "Chernobog's Pillar"
+    },
+    {
+      "identity": "unique:Crest of Ardura",
+      "name": "Crest of Ardura",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/CrestOfArdura.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt4",
+      "itemClass": "Shield",
+      "sourceId": "Crest of Ardura"
+    },
+    {
+      "identity": "unique:Dionadair",
+      "name": "Dionadair",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Dionadair.dds",
+      "visualIdentityId": "FourUniqueShieldStr1",
+      "itemClass": "Shield",
+      "sourceId": "Dionadair"
+    },
+    {
+      "identity": "unique:Doomgate",
+      "name": "Doomgate",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Doomgate.dds",
+      "visualIdentityId": "FourUniqueShieldStr3",
+      "itemClass": "Shield",
+      "sourceId": "Doomgate"
+    },
+    {
+      "identity": "unique:Dunkelhalt",
+      "name": "Dunkelhalt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Dunkelhalt.dds",
+      "visualIdentityId": "FourUniqueShieldDex1",
+      "itemClass": "Shield",
+      "sourceId": "Dunkelhalt"
+    },
+    {
+      "identity": "unique:Eyes of the Runefather",
+      "name": "Eyes of the Runefather",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Vindromyr.dds",
+      "visualIdentityId": "FourUniqueShieldStrDex12",
+      "itemClass": "Shield",
+      "sourceId": "Eyes of the Runefather"
+    },
+    {
+      "identity": "unique:Feathered Fortress",
+      "name": "Feathered Fortress",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/FeatheredFortress.dds",
+      "visualIdentityId": "FourUniqueShieldStrDex4",
+      "itemClass": "Shield",
+      "sourceId": "Feathered Fortress"
+    },
+    {
+      "identity": "unique:Kaltenhalt",
+      "name": "Kaltenhalt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Kaltenhalt.dds",
+      "visualIdentityId": "FourUniqueShieldDex5",
+      "itemClass": "Shield",
+      "sourceId": "Kaltenhalt"
+    },
+    {
+      "identity": "unique:Lycosidae",
+      "name": "Lycosidae",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Lycosa.dds",
+      "visualIdentityId": "FourUniqueShieldStr6_",
+      "itemClass": "Shield",
+      "sourceId": "Lycosidae"
+    },
+    {
+      "identity": "unique:Mahuxotl's Machination",
+      "name": "Mahuxotl's Machination",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/MahuxotlsMachination.dds",
+      "visualIdentityId": "FourUniqueUltimatum3",
+      "itemClass": "Shield",
+      "sourceId": "Mahuxotl's Machination"
+    },
+    {
+      "identity": "unique:Merit of Service",
+      "name": "Merit of Service",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/MeritOfService.dds",
+      "visualIdentityId": "FourUniqueShieldStrDex2_",
+      "itemClass": "Shield",
+      "sourceId": "Merit of Service"
+    },
+    {
+      "identity": "unique:Nightfall",
+      "name": "Nightfall",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/TulShield.dds",
+      "visualIdentityId": "FourUniqueShieldStr14",
+      "itemClass": "Shield",
+      "sourceId": "Nightfall"
+    },
+    {
+      "identity": "unique:Nocturne",
+      "name": "Nocturne",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Nocturne.dds",
+      "visualIdentityId": "FourUniqueShieldDex2",
+      "itemClass": "Shield",
+      "sourceId": "Nocturne"
+    },
+    {
+      "identity": "unique:Oaksworn",
+      "name": "Oaksworn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Oaksworn.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt2",
+      "itemClass": "Shield",
+      "sourceId": "Oaksworn"
+    },
+    {
+      "identity": "unique:Prism Guardian",
+      "name": "Prism Guardian",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/PrismGuardian.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt5",
+      "itemClass": "Shield",
+      "sourceId": "Prism Guardian"
+    },
+    {
+      "identity": "unique:Redblade Banner",
+      "name": "Redblade Banner",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/RedbladeBanner.dds",
+      "visualIdentityId": "FourUniqueShieldStr7",
+      "itemClass": "Shield",
+      "sourceId": "Redblade Banner"
+    },
+    {
+      "identity": "unique:Rise of the Phoenix",
+      "name": "Rise of the Phoenix",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Crest06.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt6",
+      "itemClass": "Shield",
+      "sourceId": "Rise of the Phoenix"
+    },
+    {
+      "identity": "unique:Rondel de Ezo",
+      "name": "Rondel de Ezo",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/RondelDeEzo.dds",
+      "visualIdentityId": "FourUniqueShieldDex3",
+      "itemClass": "Shield",
+      "sourceId": "Rondel de Ezo"
+    },
+    {
+      "identity": "unique:Saffell's Frame",
+      "name": "Saffell's Frame",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/SaffelsFrame.dds",
+      "visualIdentityId": "FourUniqueShieldStrInt3",
+      "itemClass": "Shield",
+      "sourceId": "Saffell's Frame"
+    },
+    {
+      "identity": "unique:Silverthorne",
+      "name": "Silverthorne",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Silverthorne.dds",
+      "visualIdentityId": "FourUniqueShieldDex6_",
+      "itemClass": "Shield",
+      "sourceId": "Silverthorne"
+    },
+    {
+      "identity": "unique:Sunsplinter",
+      "name": "Sunsplinter",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Sunsplinter.dds",
+      "visualIdentityId": "FourUniqueShieldDex12",
+      "itemClass": "Shield",
+      "sourceId": "Sunsplinter"
+    },
+    {
+      "identity": "unique:Svalinn",
+      "name": "Svalinn",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Svalinn.dds",
+      "visualIdentityId": "FourUniqueExpedition1",
+      "itemClass": "Shield",
+      "sourceId": "Svalinn"
+    },
+    {
+      "identity": "unique:The Surrender",
+      "name": "The Surrender",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/TheSurrender.dds",
+      "visualIdentityId": "FourUniqueShieldStr8",
+      "itemClass": "Shield",
+      "sourceId": "The Surrender"
+    },
+    {
+      "identity": "unique:The Wailing Wall",
+      "name": "The Wailing Wall",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/TheWailingWall.dds",
+      "visualIdentityId": "FourUniqueShieldStr5_",
+      "itemClass": "Shield",
+      "sourceId": "The Wailing Wall"
+    },
+    {
+      "identity": "unique:Window to Paradise",
+      "name": "Window to Paradise",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/WindowToParadise.dds",
+      "visualIdentityId": "FourUniqueShieldStr4",
+      "itemClass": "Shield",
+      "sourceId": "Window to Paradise"
+    },
+    {
+      "identity": "unique:Wulfsbane",
+      "name": "Wulfsbane",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Shields/Uniques/Wulfsbane.dds",
+      "visualIdentityId": "FourUniqueShieldStr2",
+      "itemClass": "Shield",
+      "sourceId": "Wulfsbane"
+    },
+    {
+      "identity": "unique:Atziri's Contempt",
+      "name": "Atziri's Contempt",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/AtziriStaffBlood.dds",
+      "visualIdentityId": "FourUniqueSpear14_",
+      "itemClass": "Spear",
+      "sourceId": "Atziri's Contempt"
+    },
+    {
+      "identity": "unique:Chainsting",
+      "name": "Chainsting",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/Chainsting.dds",
+      "visualIdentityId": "FourUniqueSpear3",
+      "itemClass": "Spear",
+      "sourceId": "Chainsting"
+    },
+    {
+      "identity": "unique:Daevata's Wind",
+      "name": "Daevata's Wind",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/DaevatasWind.dds",
+      "visualIdentityId": "FourUniqueSpear5",
+      "itemClass": "Spear",
+      "sourceId": "Daevata's Wind"
+    },
+    {
+      "identity": "unique:Saitha's Spear",
+      "name": "Saitha's Spear",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/SaithasSpear.dds",
+      "visualIdentityId": "FourUniqueSpear7",
+      "itemClass": "Spear",
+      "sourceId": "Saitha's Spear"
+    },
+    {
+      "identity": "unique:Skysliver",
+      "name": "Skysliver",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/Skysliver.dds",
+      "visualIdentityId": "FourUniqueSpear4_",
+      "itemClass": "Spear",
+      "sourceId": "Skysliver"
+    },
+    {
+      "identity": "unique:Spire of Ire",
+      "name": "Spire of Ire",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/SpireOfIre.dds",
+      "visualIdentityId": "FourUniqueSpear13",
+      "itemClass": "Spear",
+      "sourceId": "Spire of Ire"
+    },
+    {
+      "identity": "unique:Splinter of Lorrata",
+      "name": "Splinter of Lorrata",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/SplinterOfLorrata.dds",
+      "visualIdentityId": "FourUniqueSpear1",
+      "itemClass": "Spear",
+      "sourceId": "Splinter of Loratta"
+    },
+    {
+      "identity": "unique:Tangletongue",
+      "name": "Tangletongue",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/Tangletongue.dds",
+      "visualIdentityId": "FourUniqueSpear6",
+      "itemClass": "Spear",
+      "sourceId": "Tangletongue"
+    },
+    {
+      "identity": "unique:The Ordained",
+      "name": "The Ordained",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/TheOrdained.dds",
+      "visualIdentityId": "FourUniqueSpear15",
+      "itemClass": "Spear",
+      "sourceId": "The Ordained"
+    },
+    {
+      "identity": "unique:Tyranny's Grip",
+      "name": "Tyranny's Grip",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/OneHandSpears/Uniques/ArmsLength.dds",
+      "visualIdentityId": "FourUniqueSpear2",
+      "itemClass": "Spear",
+      "sourceId": "Tyranny's Grip"
+    },
+    {
+      "identity": "unique:Atziri's Rule",
+      "name": "Atziri's Rule",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/AtziriStaff.dds",
+      "visualIdentityId": "FourUniqueStaff17",
+      "itemClass": "Staff",
+      "sourceId": "Atziri's Rule"
+    },
+    {
+      "identity": "unique:Dusk Vigil",
+      "name": "Dusk Vigil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/DuskVigil.dds",
+      "visualIdentityId": "FourUniqueStaff1",
+      "itemClass": "Staff",
+      "sourceId": "Dusk Vigil"
+    },
+    {
+      "identity": "unique:Earthbound",
+      "name": "Earthbound",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/Earthbound.dds",
+      "visualIdentityId": "FourUniqueStaff3",
+      "itemClass": "Staff",
+      "sourceId": "Earthbound"
+    },
+    {
+      "identity": "unique:Sire of Shards",
+      "name": "Sire of Shards",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/SireOfShards.dds",
+      "visualIdentityId": "FourUniqueStaff6",
+      "itemClass": "Staff",
+      "sourceId": "Sire of Shards"
+    },
+    {
+      "identity": "unique:Taryn's Shiver",
+      "name": "Taryn's Shiver",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/TarynsShiver.dds",
+      "visualIdentityId": "FourUniqueStaff2",
+      "itemClass": "Staff",
+      "sourceId": "Taryn's Shiver"
+    },
+    {
+      "identity": "unique:The Burden of Shadows",
+      "name": "The Burden of Shadows",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/BurdenOfShadows.dds",
+      "visualIdentityId": "FourUniqueRitual1",
+      "itemClass": "Staff",
+      "sourceId": "The Burden of Shadows"
+    },
+    {
+      "identity": "unique:The Raven's Flock",
+      "name": "The Raven's Flock",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/RoostOfTheRavenKing.dds",
+      "visualIdentityId": "FourUniqueStaff18",
+      "itemClass": "Staff",
+      "sourceId": "The Raven's Flock"
+    },
+    {
+      "identity": "unique:The Searing Touch",
+      "name": "The Searing Touch",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/SearingTouch.dds",
+      "visualIdentityId": "FourUniqueStaff5",
+      "itemClass": "Staff",
+      "sourceId": "The Searing Touch"
+    },
+    {
+      "identity": "unique:The Unborn Lich",
+      "name": "The Unborn Lich",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/KulemaksBirth.dds",
+      "visualIdentityId": "FourUniqueStaff13",
+      "itemClass": "Staff",
+      "sourceId": "The Unborn Lich"
+    },
+    {
+      "identity": "unique:The Whispering Ice",
+      "name": "The Whispering Ice",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/TwoHandWeapons/Staves/Uniques/WhisperingIce.dds",
+      "visualIdentityId": "FourUniqueStaff14__",
+      "itemClass": "Staff",
+      "sourceId": "The Whispering Ice"
+    },
+    {
+      "identity": "unique:Amor Mandragora",
+      "name": "Amor Mandragora",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/AmorMandragora.dds",
+      "visualIdentityId": "FourUniqueTalisman1",
+      "itemClass": "Talisman",
+      "sourceId": "Amor Mandragora"
+    },
+    {
+      "identity": "unique:Fury of the King",
+      "name": "Fury of the King",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/VesselOfWrath.dds",
+      "visualIdentityId": "FourUniqueTalisman14",
+      "itemClass": "Talisman",
+      "sourceId": "Fury of the King"
+    },
+    {
+      "identity": "unique:Hysseg's Claw",
+      "name": "Hysseg's Claw",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/HandOfTheClan.dds",
+      "visualIdentityId": "FourUniqueTalisman4",
+      "itemClass": "Talisman",
+      "sourceId": "Hysseg's Claw"
+    },
+    {
+      "identity": "unique:Spiteful Floret",
+      "name": "Spiteful Floret",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/CrimsonChrysalis.dds",
+      "visualIdentityId": "FourUniqueTalisman2_",
+      "itemClass": "Talisman",
+      "sourceId": "Spiteful Floret"
+    },
+    {
+      "identity": "unique:Surge of the Tide",
+      "name": "Surge of the Tide",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/TawhoasDominion.dds",
+      "visualIdentityId": "FourUniqueTalisman10",
+      "itemClass": "Talisman",
+      "sourceId": "Surge of the Tide"
+    },
+    {
+      "identity": "unique:The Flesh Poppet",
+      "name": "The Flesh Poppet",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Offhand/Talismans/Uniques/TheSkinThief.dds",
+      "visualIdentityId": "FourUniqueTalisman8_",
+      "itemClass": "Talisman",
+      "sourceId": "The Flesh Poppet"
+    },
+    {
+      "identity": "unique:Adonia's Ego",
+      "name": "Adonia's Ego",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/CourtlyDiscord.dds",
+      "visualIdentityId": "FourUniqueWand4",
+      "itemClass": "Wand",
+      "sourceId": "Adonia's Ego"
+    },
+    {
+      "identity": "unique:Cursecarver",
+      "name": "Cursecarver",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/Clawmark.dds",
+      "visualIdentityId": "FourUniqueWand7",
+      "itemClass": "Wand",
+      "sourceId": "Cursecarver"
+    },
+    {
+      "identity": "unique:Enezun's Charge",
+      "name": "Enezun's Charge",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/EnezunsCharge.dds",
+      "visualIdentityId": "FourUniqueWand5",
+      "itemClass": "Wand",
+      "sourceId": "Enezun's Charge"
+    },
+    {
+      "identity": "unique:Lifesprig",
+      "name": "Lifesprig",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/Lifesprig.dds",
+      "visualIdentityId": "FourUniqueWand3",
+      "itemClass": "Wand",
+      "sourceId": "Lifesprig"
+    },
+    {
+      "identity": "unique:Liminal Coil",
+      "name": "Liminal Coil",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/CoilOfUndoing.dds",
+      "visualIdentityId": "FourUniqueWand15_",
+      "itemClass": "Wand",
+      "sourceId": "Liminal Coil"
+    },
+    {
+      "identity": "unique:Runeseeker's Call",
+      "name": "Runeseeker's Call",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/RunicDiviner.dds",
+      "visualIdentityId": "FourUniqueWand16_",
+      "itemClass": "Wand",
+      "sourceId": "Runeseeker's Call"
+    },
+    {
+      "identity": "unique:Sanguine Diviner",
+      "name": "Sanguine Diviner",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/SanguineDiviner.dds",
+      "visualIdentityId": "FourUniqueWand2",
+      "itemClass": "Wand",
+      "sourceId": "Sanguine Diviner"
+    },
+    {
+      "identity": "unique:The Wicked Quill",
+      "name": "The Wicked Quill",
+      "kind": "unique",
+      "iconPath": "Art/2DItems/Weapons/OneHandWeapons/Wands/Uniques/TheWickedQuill.dds",
+      "visualIdentityId": "FourUniqueWand1",
+      "itemClass": "Wand",
+      "sourceId": "The Wicked Quill"
+    }
+  ]
+}

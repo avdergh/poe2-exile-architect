@@ -223,26 +223,36 @@ def _query_visible_acceptance_fingerprint(con: sqlite3.Connection) -> str:
 
 
 class ResearchMemoryService:
+    # Pre-validation callers may intentionally allocate without opening a database.
+    read_only: bool = False
+
     def __init__(
         self,
         *,
         db_path: Path | None = None,
         graph_service: graph_tools.GraphQueryService | None = None,
         initialize_store: bool = True,
+        read_only: bool = False,
     ) -> None:
         self.db_path = db_path
         self.graph_service = graph_service
+        self.read_only = read_only
         self.last_build_family_backfill: dict[str, Any] = {"status": "not_run"}
-        if initialize_store:
+        if initialize_store and not read_only:
             mature_learning.initialize_store(db_path)
             # Construction must be side-effect free beyond structural initialization.  Legacy
             # semantic backfill is an explicit maintenance operation; running it here allowed a
             # read-only service creation to change Create-visible memory before acceptance gates.
             self.last_build_family_backfill = {"status": "explicit_maintenance_required"}
 
+    def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            return mature_learning.connect(self.db_path, read_only=True)
+        return mature_learning.connect(self.db_path)
+
     def backfill_deep_research_knowledge(self, *, force: bool = False) -> dict[str, Any]:
         """Assign high-confidence historical records to families and canonical knowledge units."""
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             marker = con.execute(
                 "SELECT value FROM meta WHERE key = 'phase4_build_family_backfill_version'"
@@ -805,6 +815,8 @@ class ResearchMemoryService:
             return research_models.public_error(
                 "invalid_response_profile", ["response_profile must be full or create_compact"]
             )
+        if self.read_only and response_profile != "full":
+            return research_models.public_error("readonly_requires_full_profile", [])
         requested_scope = str(knowledge_scope or "").strip() or None
         if requested_scope and requested_scope not in {"global_seed", "local_user"}:
             return research_models.public_error(
@@ -915,9 +927,11 @@ class ResearchMemoryService:
             else []
         )
         record_ids = sorted({str(item) for item in record_ids or [] if str(item).strip()})
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             snapshot_revision: int | None = None
+            if self.read_only:
+                con.execute("BEGIN")
             if response_profile == "create_compact":
                 # Pin all compact-result reads and the raw DQ to one revision.  Without an
                 # explicit transaction, sqlite3 SELECT calls may observe different commits.
@@ -1080,7 +1094,14 @@ class ResearchMemoryService:
                 for row in record_rows
             ]
             if detail_level == "record":
+                claim_columns = {row["name"] for row in con.execute("PRAGMA table_info(deep_research_record_evidence)")}
                 for result, record_row in zip(deep_records, record_rows):
+                    if self.read_only and not {"source_case_ref", "source_claim_key", "binding_issue", "accepted_projection_hash"} <= claim_columns:
+                        # A read-only consumer may inspect historical content, but cannot migrate
+                        # the release seed or fabricate missing source-claim binding authority.
+                        result["sourceClaims"] = []
+                        result["sourceClaimsStatus"] = "legacy_binding_unavailable"
+                        continue
                     result["sourceClaims"] = [
                         {"sourceCaseRef": claim["source_case_ref"],
                          "sourceClaimKey": claim["source_claim_key"],
@@ -1337,21 +1358,22 @@ class ResearchMemoryService:
                     }
                 )[:16]
             )
-            self._record_dedupe_query(
-                con,
-                dedupe_ref=dedupe_ref,
-                query=query,
-                component_keys=component_keys,
-                request_contract=request_contract,
-                result_contract=result_contract,
-                now=now,
-            )
+            if not self.read_only:
+                self._record_dedupe_query(
+                    con,
+                    dedupe_ref=dedupe_ref,
+                    query=query,
+                    component_keys=component_keys,
+                    request_contract=request_contract,
+                    result_contract=result_contract,
+                    now=now,
+                )
             con.commit()
         finally:
             con.close()
         return {
             "status": "known",
-            "dedupeQueryRef": dedupe_ref,
+            "dedupeQueryRef": None if self.read_only else dedupe_ref,
             "deepRecordEligibilityVersion": DEEP_RECORD_ELIGIBILITY_VERSION,
             "results": results,
             "deepResearchRecords": deep_records,
@@ -1429,7 +1451,7 @@ class ResearchMemoryService:
 
         if not re.fullmatch(r"dq-[A-Fa-f0-9]{16}", str(dedupe_query_ref or "")):
             return None
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             row = con.execute(
                 """
@@ -1513,7 +1535,7 @@ class ResearchMemoryService:
 
         if payload.get("status") == "error":
             return payload
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
             raw_dedupe_ref = str(payload.get("dedupeQueryRef") or "")
@@ -1654,7 +1676,7 @@ class ResearchMemoryService:
                 "invalid_research_query_cursor", ["continuation_cursor is invalid or corrupted"]
             )
         retrieval_ref, page_index = parsed
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
@@ -2073,7 +2095,7 @@ class ResearchMemoryService:
             con = None
             try:
                 if self.db_path and os.path.exists(self.db_path):
-                    con = mature_learning.connect(self.db_path)
+                    con = self._connect()
                 revision_error = research_claim_writes.validate_source_claim_revisions(
                     con, revision_records
                 )
@@ -2086,7 +2108,7 @@ class ResearchMemoryService:
                 return research_models.rejection(revision_error)
         if family_keys and self.db_path and os.path.exists(self.db_path):
             try:
-                con = mature_learning.connect(self.db_path)
+                con = self._connect()
                 try:
                     sibling_hints = _sibling_family_hints(con, family_refs)
                     for index, record in enumerate(output.deep_research_records):
@@ -2135,7 +2157,7 @@ class ResearchMemoryService:
         con: sqlite3.Connection | None = None
         if self.db_path and os.path.exists(self.db_path):
             try:
-                con = mature_learning.connect(self.db_path)
+                con = self._connect()
             except sqlite3.Error:
                 con = None
         try:
@@ -2191,7 +2213,7 @@ class ResearchMemoryService:
         if copy_error is not None:
             return copy_error
         output = research_models.ResearcherOutput.model_validate(payload)
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             for fragment in output.fragments:
                 duplicate = self._duplicate_fragment(con, fragment)
@@ -2223,7 +2245,7 @@ class ResearchMemoryService:
         if copy_error is not None:
             return copy_error
         output = research_models.ResearcherOutput.model_validate(payload)
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             candidate_ids: list[str] = []
             for edge in output.semantic_edges:
@@ -2323,7 +2345,7 @@ class ResearchMemoryService:
                 return endpoint_error
 
         owns_connection = _con is None
-        con = _con or mature_learning.connect(self.db_path)
+        con = _con or self._connect()
         try:
             if not con.in_transaction:
                 con.execute("BEGIN IMMEDIATE")
@@ -2716,7 +2738,7 @@ class ResearchMemoryService:
                 }
 
         receipt_ref = research_runtime.write_receipt_ref(run_ref, sample_id)
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
             if _fault_after_step == "begin":
@@ -2876,7 +2898,7 @@ class ResearchMemoryService:
     def get_research_write_receipt(self, receipt_ref: str) -> dict[str, Any] | None:
         if not re.fullmatch(r"rwr-[0-9a-f]{20}", str(receipt_ref or "")):
             return None
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             row = con.execute(
                 "SELECT * FROM research_record_write_receipts WHERE receipt_ref = ?",
@@ -4166,7 +4188,7 @@ class ResearchMemoryService:
             return copy_error
 
         output = research_models.ResearcherOutput.model_validate(payload)
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             now = _now()
             fragment_ids: list[str] = []
@@ -4240,7 +4262,7 @@ class ResearchMemoryService:
         )
         if copy_error is not None:
             return copy_error
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             row = con.execute(
                 "SELECT * FROM research_fragments WHERE fragment_id = ?",
@@ -4304,7 +4326,7 @@ class ResearchMemoryService:
 
         output = research_models.ResearcherOutput.model_validate(payload)
         owns_connection = _con is None
-        con = _con or mature_learning.connect(self.db_path)
+        con = _con or self._connect()
         try:
             now = _now()
             edge_ids: list[str] = []
@@ -4430,7 +4452,7 @@ class ResearchMemoryService:
             self._record_rejection(payload, observation_link_error)
             return observation_link_error
         owns_connection = _con is None
-        con = _con or mature_learning.connect(self.db_path)
+        con = _con or self._connect()
         try:
             now = _now()
             observation_ids: list[str] = []
@@ -4657,7 +4679,7 @@ class ResearchMemoryService:
                     "nextTool": "inspect_research_patch_review_targets",
                     "reason": "Target-patch decay requires reviewed applicability; historical status is preserved."}
         changed = set(changed_component_keys)
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             now = _now()
             fragment_rows = con.execute(
@@ -4782,14 +4804,14 @@ class ResearchMemoryService:
         }
 
     def inspect_patch_review_targets(self, **kwargs: Any) -> dict[str, Any]:
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             return patch_reviews.inspect_targets(con, **kwargs)
         finally:
             con.close()
 
     def submit_patch_review(self, payload: dict[str, Any]) -> dict[str, Any]:
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
             result = patch_reviews.submit(con, payload)
@@ -4829,7 +4851,7 @@ class ResearchMemoryService:
         )
         if copy_error is not None:
             return copy_error
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             now = _now()
             table, id_column = _revalidation_target_table(target_kind)
@@ -6458,7 +6480,7 @@ class ResearchMemoryService:
     def _dedupe_query_ref_exists(self, dedupe_query_ref: str) -> bool:
         if not re.fullmatch(r"dq-[A-Fa-f0-9]{16}", str(dedupe_query_ref or "")):
             return False
-        con = mature_learning.connect(self.db_path)
+        con = self._connect()
         try:
             row = con.execute(
                 "SELECT 1 FROM research_dedupe_queries WHERE dedupe_query_ref = ? LIMIT 1",
@@ -6958,7 +6980,7 @@ class ResearchMemoryService:
         con: sqlite3.Connection | None = None,
     ) -> None:
         owned = con is None
-        connection = con or mature_learning.connect(self.db_path)
+        connection = con or self._connect()
         try:
             proposal_hash = _stable_hash(_safe_projection(payload))
             visibility, split, scope = _proposal_bucket(payload)

@@ -36,7 +36,7 @@ $ScriptRepoDir = Split-Path -Parent $PSCommandPath
 $RepoDir = if ($FromCheckout) { $ScriptRepoDir } else { $RepoDir }
 $ManagedMcpBegin = '# BEGIN poe-bd-creator managed MCP server'
 $ManagedMcpEnd = '# END poe-bd-creator managed MCP server'
-$PortableSkills = @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create')
+$PortableSkills = @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-learn')
 $PortableMcpHosts = @('claude', 'cursor', 'opencode')
 
 $Platforms = [ordered]@{
@@ -147,7 +147,7 @@ function Get-SkillNamesForUninstall {
     if (Test-Path $root) {
         return @(Get-ChildItem -Path $root -Directory | Select-Object -ExpandProperty Name)
     }
-    return @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-research-loop', 'poe-bd-learning-loop')
+    return @('poe-bd-research', 'poe-bd-research-worker', 'poe-bd-create', 'poe-bd-learn', 'poe-bd-research-loop', 'poe-bd-learning-loop')
 }
 
 function Test-IsReparse([string]$Path) {
@@ -422,9 +422,9 @@ function Cmd-Install([string]$Id) {
     Install-BuildConverterProvider
     Register-McpServer $Id
     $installedSkills = if ($Id -eq 'codex') {
-        '/poe-bd-research (+ explicit worker), /poe-bd-create, /poe-bd-research-loop, and /poe-bd-learning-loop'
+        '/poe-bd-research (+ explicit worker), /poe-bd-create, /poe-bd-learn, /poe-bd-research-loop, and /poe-bd-learning-loop'
     } else {
-        '/poe-bd-research (+ explicit worker) and /poe-bd-create'
+        '/poe-bd-research (+ explicit worker), /poe-bd-create and /poe-bd-learn'
     }
     Write-Host "Installed Exile Architect for $Id. Restart the host to discover $installedSkills."
 }

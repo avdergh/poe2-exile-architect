@@ -1131,6 +1131,11 @@ def _parse_item_text(raw: str) -> dict[str, Any]:
     header_offset = 1 if lines and lines[0].lower().startswith("rarity:") else 0
     name = lines[header_offset] if len(lines) > header_offset else ""
     base = lines[header_offset + 1] if len(lines) > header_offset + 1 else ""
+    # PoB normal items have one header line (the base itself), unlike rare/unique items.
+    # Treating the following property as a base loses its static identity and art.
+    normal_item = rarity.casefold() == "normal"
+    if normal_item:
+        base = name
     metadata_prefixes = (
         "rarity:",
         "item level:",
@@ -1145,9 +1150,14 @@ def _parse_item_text(raw: str) -> dict[str, Any]:
         "corrupted:",
         "mirrored:",
     )
+    # Magic items may have only one display header followed immediately by metadata.
+    # Never expose Unique ID / Item Level as an item base or lose that first property.
+    single_header = normal_item or not base or base.casefold().startswith(metadata_prefixes) or base == "--------"
+    if not normal_item and single_header:
+        base = ""
     modifiers = [
         line
-        for line in lines[header_offset + 2 :]
+        for line in lines[header_offset + (1 if single_header else 2) :]
         if line != "--------" and not line.casefold().startswith(metadata_prefixes)
     ]
     mutated_modifiers = [

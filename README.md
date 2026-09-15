@@ -6,9 +6,12 @@ Exile Architect 是一个 verification-first 的 Path of Exile 2 BD 研究与生
 
 - 用成熟 Agent 研究 poe.ninja 或本地 PoB 来源，并沉淀经过安全过滤的结构化知识。
 - 由 Agent 主导设计 PoE2 BD，使用本地资料、图、Headless PoB 和 Judge 做验证。
+- 使用 `poe-bd-learn` 按 Research 粒度分析已有 BD，交付有机制图、比较表和上手引导的完整 H5 学习页，
+  技能、装备、天赋和符文附正确图标，点开名称可查看类别与说明；语言优先跟随用户，不写知识库。
+  未核实官方译名则保留英文名。详见[Learning 模式](docs/phases/08_study.md)。
 - 支持用户请求的目标等级单阶段终局 BD（典型 80+），不提供全链路开荒成长流程；最终能力和限制以当前 Skill、Phase 文档为准。
 - Codex Desktop 额外提供 Research/Learning 可见任务循环；其他宿主当前安装 Research Controller、
-  显式 Worker 与 Create。
+  显式 Worker、Create 与面向玩家的 Learn。
 
 ## 安装
 
@@ -49,7 +52,7 @@ Agent“使用 `poe-bd-create` skill 创建一个 PoE2 BD”或“使用 `poe-bd
 `/poe-bd-create` 是否出现在命令面板作为唯一验收标准。
 
 OpenCode 安装器只链接 `poe-bd-research`、其显式专用 `poe-bd-research-worker` 和
-`poe-bd-create`，并安全合并
+`poe-bd-create`、`poe-bd-learn`，并安全合并
 `~/.config/opencode/opencode.json` 的 `mcp` 下四个 server 条目。它不会迁移依赖 Codex Desktop 任务
 编排能力的 `poe-bd-learning-loop`。
 
@@ -97,8 +100,8 @@ shell。
 ./install.sh --uninstall opencode
 ```
 
-Codex 当前安装三个用户工作流 skill 与一个显式 Research Worker；Claude Code、Cursor 和 OpenCode
-安装可移植的 Research Controller/Worker 与 Create。安装器不会覆盖已有真实目录或同名非托管 MCP 配置；JSON 客户端首次修改前会保留
+Codex 安装 Research、Create、Learn、对照学习工作流与显式 Research Worker；Claude Code、Cursor 和 OpenCode
+安装可移植的 Research Controller/Worker、Create 与 Learn。安装器不会覆盖已有真实目录或同名非托管 MCP 配置；JSON 客户端首次修改前会保留
 `.poe-bd-creator.bak`，并用本地指纹回执确保卸载只删除自己写入且未被用户修改的条目。
 
 安装器会为 Codex、Claude Code、Cursor 和 OpenCode 注册本项目四个按域拆分的 MCP server
@@ -111,7 +114,7 @@ Codex 当前安装三个用户工作流 skill 与一个显式 Research Worker；
 ### DeepSeek Harness
 
 DSH 原生内置 MCP client 桥，适配方式与 OpenCode 同构（注册四个域 MCP server）：
-"快速体验"先执行第一层 patch 注册工具，再安装 `poe-bd` 会话 preset 获得人设、四个
+"快速体验"先执行第一层 patch 注册工具，再安装 `poe-bd` 会话 preset 获得人设、各工作流
 skill 与 MCP 工具集：
 
 ```powershell

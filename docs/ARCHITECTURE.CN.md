@@ -9,6 +9,15 @@ Last updated: 2026-07-27
 
 ## 高层形态
 
+面向玩家的 Learning 使用 `poe-bd-learn` 和独立的 `server/study/` 模块。Research 域负责输入、
+覆盖、说明校验和文档交付；Knowledge 域提供只读语料/图/Research 查询；Build 域使用独立 PoB 进程
+观察。Study 不写 Research 知识或 Phase 7 Learning Memory。内部分析、Agent 编写的教学正文和
+H5/Markdown 渲染独立分层；正文按学习顺序组织，机制图和对照表帮助理解，诊断转为相关章节的
+实际使用说明。输出语言跟随用户是首要规则，明确指定其他语言才覆盖。每处技能/辅助名称经共享
+渲染器附上精确身份绑定图标。装备、天赋与镶嵌物也有类别、图片和说明；随机名关联底材，属性与
+机制进入可点开的概念解释。H5 自包含、连续阅读、支持导航和搜索，不另做简化联动页或天赋树。
+名称使用已核实官方译名或英文原文。
+
 ```text
 External Agents
   Researcher / Architect / Reference-Comparator

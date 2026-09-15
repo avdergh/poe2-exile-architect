@@ -57,6 +57,12 @@ def _copy(src: Path, dst: Path, skip_art: bool = False) -> None:
         shutil.copy2(src, dst)
 
 
+def _copy_study_passive_art(source_tree: Path, target_tree: Path) -> None:
+    # Learning needs the small enabled icon arrays, not PoB's full GUI/background artwork.
+    for file in sorted(source_tree.glob("*/skills_*_BC1.dds.zst")):
+        _copy(file, target_tree / file.relative_to(source_tree))
+
+
 def _copy_research_seed(src: Path, dst: Path) -> None:
     """Package a validated seed input; only its installed user copy is migrated."""
     from server.knowledge import mature_learning
@@ -100,6 +106,7 @@ def main() -> int:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     from server.knowledge import gem_availability
+
     availability_con = sqlite3.connect(corpus.as_uri() + "?mode=ro", uri=True)
     try:
         gem_availability.validate_corpus_bindings(availability_con)
@@ -191,6 +198,9 @@ def main() -> int:
     _copy(ROOT / "pob" / "PINNED.md", stage / "pob" / "PINNED.md")
     pob = ROOT / "pob" / "PathOfBuilding-PoE2"
     _copy(pob / "src", stage / "pob" / "PathOfBuilding-PoE2" / "src", skip_art=True)
+    _copy_study_passive_art(
+        pob / "src" / "TreeData", stage / "pob" / "PathOfBuilding-PoE2" / "src" / "TreeData"
+    )
     _copy(
         pob / "runtime" / "lua",
         stage / "pob" / "PathOfBuilding-PoE2" / "runtime" / "lua",
@@ -215,6 +225,8 @@ def main() -> int:
             "mcp>=1.2,<2",
             "networkx>=3",
             "pydantic>=2",
+            "reportlab>=4,<5",
+            "zstandard>=0.23,<1",
         ]
     else:
         cmd = [
@@ -228,6 +240,8 @@ def main() -> int:
             "mcp>=1.2,<2",
             "networkx>=3",
             "pydantic>=2",
+            "reportlab>=4,<5",
+            "zstandard>=0.23,<1",
         ]
     subprocess.run(cmd, check=True)
 

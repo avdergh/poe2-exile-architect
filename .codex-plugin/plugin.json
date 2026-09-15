@@ -1,6 +1,6 @@
 {
   "name": "poe-bd-creator",
-  "version": "0.5.0+codex.20260913135152",
+  "version": "0.5.0+codex.20260914180841",
   "description": "Verification-first Path of Exile 2 build research and generation tooling",
   "author": {
     "name": "avdergh"
@@ -19,8 +19,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Exile Architect",
-    "shortDescription": "Research mature PoE2 builds safely through agent skills and MCP gates.",
-    "longDescription": "Queues mature PoE2 build samples, creates verified builds, and runs visible same-Family comparative learning with copy-safe Research and local Learning Memory gates.",
+    "shortDescription": "Research, create and understand PoE2 builds.",
+    "longDescription": "Agent-led PoE2 research, build creation and learning with typed MCP verification. Learning delivers a complete H5 reader in the user's language, with exact component icons, category explanations, concept definitions, navigation and search, without storing knowledge.",
     "developerName": "avdergh",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,10 +30,11 @@
     ],
     "websiteURL": "https://github.com/avdergh/poe2-exile-architect",
     "defaultPrompt": [
-      "/poe-bd-create 我想要一个适合新手开荒的 Deadeye 弓系 BD",
+      "/poe-bd-create \u6211\u60f3\u8981\u4e00\u4e2a\u9002\u5408\u65b0\u624b\u5f00\u8352\u7684 Deadeye \u5f13\u7cfb BD",
       "/poe-bd-research --limit 20",
+      "/poe-bd-learn 带我理解这个 BD，生成完整 H5 学习页，讲清技能、装备、天赋和符文的类别与配合，不入库",
       "/poe-bd-research --ascendancy Deadeye --limit 30",
-      "/poe-bd-learning-loop 使用 10 个同 Family 同等级案例做对照学习"
+      "/poe-bd-learning-loop \u4f7f\u7528 10 \u4e2a\u540c Family \u540c\u7b49\u7ea7\u6848\u4f8b\u505a\u5bf9\u7167\u5b66\u4e60"
     ],
     "brandColor": "#2563EB"
   }

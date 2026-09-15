@@ -33,6 +33,7 @@ PATCH_FILE = ROOT / "dsh" / "poe-bd.mcp.cordis.yml"
 PRESET_ID = "poe-bd"
 REQUIRED_SKILLS = (
     "poe-bd-create",
+    "poe-bd-learn",
     "poe-bd-learning-loop",
     "poe-bd-research",
     "poe-bd-research-worker",

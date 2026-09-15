@@ -11,7 +11,7 @@ FROM_CHECKOUT=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGED_MCP_BEGIN="# BEGIN poe-bd-creator managed MCP server"
 MANAGED_MCP_END="# END poe-bd-creator managed MCP server"
-PORTABLE_SKILLS="poe-bd-research poe-bd-research-worker poe-bd-create"
+PORTABLE_SKILLS="poe-bd-research poe-bd-research-worker poe-bd-create poe-bd-learn"
 
 platforms_table() {
   cat <<EOF
@@ -137,7 +137,7 @@ list_skills() {
   if [[ ! -d "$root" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       if [[ "$id" == "codex" ]]; then
-        printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+        printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-learn" "poe-bd-research-loop" "poe-bd-learning-loop"
       else
         printf '%s\n' $PORTABLE_SKILLS
       fi
@@ -163,7 +163,7 @@ list_skills_for_uninstall() {
   if [[ -d "$root" ]]; then
     list_skills codex
   else
-    printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-research-loop" "poe-bd-learning-loop"
+    printf '%s\n' "poe-bd-research" "poe-bd-research-worker" "poe-bd-create" "poe-bd-learn" "poe-bd-research-loop" "poe-bd-learning-loop"
   fi
 }
 
@@ -491,7 +491,7 @@ cmd_install() {
   if [[ "$id" == "codex" ]]; then
     say "Installed Exile Architect for $id. Restart the host to discover all four workflows."
   else
-    say "Installed Exile Architect for $id. Restart the host to discover /poe-bd-research and /poe-bd-create."
+    say "Installed Exile Architect for $id. Restart the host to discover /poe-bd-research, /poe-bd-create and /poe-bd-learn."
   fi
 }
 

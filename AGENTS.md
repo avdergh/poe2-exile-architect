@@ -344,6 +344,16 @@ API runner、隐藏 agent loop，或持久化模型调用 prompt/report 日志�
 
 ## 当前事实源
 
+面向玩家的 Learning 使用 `poe-bd-learn` 与 `server/study/`，不属于 Phase 7 learning-loop。
+必须保留 Research 粒度，单独组织面向玩家的完整 H5 学习页，正文配合机制图、比较表与随文提示，
+会话保留导读；语言一致性是 Learning 首要规则，默认跟随用户本次请求语言，明确指定才覆盖。
+标题、目录、正文、图表、提示和导读保持同一语言，英文专有名称不改变正文语言。每处具体技能/辅助
+名称后附身份精确匹配的图标；装备、天赋与符文也要配图并讲清类别，随机名和底材要区分，属性用
+概念说明。页面支持连续阅读、搜索与按需查看组件说明，不另做简化联动页或天赋树。内部诊断不直接作为教学正文。
+逐项解释装备、宝石、技能组和关键天赋，说明输出/资源循环、条件、取舍与失效场景。专有名称只采用
+精确身份/版本绑定的已审核官方简中译名，缺失保留英文。Study 不写 Research、图知识或 Learning
+Memory；数值观察使用独立 PoB，回执仅 educational_only。详细合同见 `docs/phases/08_study.md`。
+
 - `AGENTS.md`：标准 agent 操作规则、工具地图和变更审查 Checklist。
 - `CLAUDE.md`：轻量 Claude Code shim，指回本文件。
 - `docs/PROJECT_SPEC.md`：中文唯一项目总纲，维护方向、边界、Phase 关系和 Phase 状态。

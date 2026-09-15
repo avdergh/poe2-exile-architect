@@ -1,7 +1,6 @@
 # Exile Architect — Build server
 
-One headless PoB build, Judge, generation runs and exports. Knowledge and Research use separate
-servers.
+Build/Judge/exports. Study uses isolated PoB, never the active build or Judge attempts.
 
 ## Hard boundaries
 
