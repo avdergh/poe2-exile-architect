@@ -55,6 +55,8 @@ runtime/luajit/
 
 # Bundle build output
 dist/
+/ci-results/
+/ci-inputs/
 
 # OS
 Thumbs.db

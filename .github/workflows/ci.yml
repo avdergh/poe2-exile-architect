@@ -5,51 +5,123 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  POB_COMMIT: ce566eac45ea8a86477f513c7ee65a1ebe60014e
+  PYTHONHASHSEED: "0"
+  PYTHONUNBUFFERED: "1"
+
 jobs:
-  test:
+  prepare:
+    name: Prepare and validate inputs
     runs-on: ubuntu-latest
-    env:
-      POB_COMMIT: ce566eac45ea8a86477f513c7ee65a1ebe60014e # pinned PoB-PoE2 (see pob/PINNED.md)
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Install LuaJIT
-        run: sudo apt-get update && sudo apt-get install -y luajit
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Check out PoB-PoE2 (pinned) + apply fork patches
-        # Pinned commit recorded in pob/PINNED.md. A blobless clone keeps the full commit graph so
-        # the pinned SHA stays reachable after dev moves (GitHub refuses a shallow fetch of an
-        # unadvertised SHA); then checkout + apply our tracked fork patches (pob/patches/, §7).
-        shell: bash
-        run: |
-          git clone --filter=blob:none --no-checkout https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git pob/PathOfBuilding-PoE2
-          git -C pob/PathOfBuilding-PoE2 config core.autocrlf false # keep LF so the LF patch applies
-          git -C pob/PathOfBuilding-PoE2 checkout -q "$POB_COMMIT"
-          (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
-
-      - name: Install dependencies
-        run: uv sync
-
+      - uses: ./.github/actions/setup-ci
       - name: Lint
         run: uv run ruff check server scripts pipeline tests
-
       - name: Format advisory
         run: uv run python scripts/check_format_advisory.py
-
       - name: Validate .mcpb manifest
         run: npx --yes @anthropic-ai/mcpb validate manifest.json
-
       - name: Build corpus
         run: |
           cp data/corpus.sqlite reviewed-corpus.sqlite
           uv run python -m pipeline.build_corpus --reviewed-source
           uv run python -m pipeline.corpus_certificate --reviewed-corpus reviewed-corpus.sqlite
+      - name: Record the complete test collection
+        run: |
+          uv run python -m pytest --collect-only -q -p scripts.ci_pytest \
+            --ci-manifest ci-results/expected.json
+      - name: Freeze inputs for every shard
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ci-inputs
+          path: |
+            data/corpus.sqlite
+            data/compatibility/corpus.json
+            ci-results/expected.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
-      - name: Run tests (golden engine + corpus)
-        run: uv run pytest
+  tests:
+    name: Tests (shard ${{ matrix.shard }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: ci-inputs
+      - name: Run tests with progress and resource diagnostics
+        shell: bash
+        env:
+          CI_SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          mkdir -p ci-results
+          (
+            while true; do
+              {
+                date -u
+                free -m
+                ps -eo pid,ppid,pcpu,rss,comm --sort=-rss | sed -n '1,12p'
+              } | tee -a ci-results/resources.log
+              sleep 30
+            done
+          ) &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          trap 'echo "::error::Test job received SIGTERM"; exit 143' TERM
+          uv run python -m pytest -o addopts= -vv -p scripts.ci_pytest \
+            --ci-shard-index "$CI_SHARD_INDEX" --ci-shard-count 6 \
+            --ci-manifest ci-results/selection.json \
+            --junitxml ci-results/pytest.xml --durations=20
+      - name: Preserve test and resource reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ci-shard-${{ matrix.shard }}
+          path: |
+            ci-results/selection.json
+            ci-results/pytest.xml
+            ci-results/resources.log
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  test:
+    name: test
+    needs: [prepare, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require all test jobs to pass
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+        run: |
+          if [[ "$PREPARE_RESULT" != success || "$TESTS_RESULT" != success ]]; then
+            echo "::error::Preparation or at least one test shard did not pass."
+            exit 1
+          fi
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: ci-inputs
+          path: ci-inputs
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: ci-shard-*
+          path: ci-results
+      - name: Verify complete test coverage
+        run: |
+          python3 scripts/verify_ci_coverage.py \
+            --expected ci-inputs/ci-results/expected.json --results ci-results --count 6

@@ -1,0 +1,22 @@
+name: Set up PoE CI
+description: Prepare the pinned PoB runtime and locked Python dependencies.
+runs:
+  using: composite
+  steps:
+    - name: Install LuaJIT
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y luajit
+    - uses: astral-sh/setup-uv@v10.1.0
+    - name: Set up Python
+      shell: bash
+      run: uv python install 3.12
+    - name: Check out pinned PoB and apply patches
+      shell: bash
+      run: |
+        git clone --filter=blob:none --no-checkout https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2.git pob/PathOfBuilding-PoE2
+        git -C pob/PathOfBuilding-PoE2 config core.autocrlf false
+        git -C pob/PathOfBuilding-PoE2 checkout -q "$POB_COMMIT"
+        (cd pob/PathOfBuilding-PoE2 && git apply --ignore-whitespace ../patches/*.patch)
+    - name: Install dependencies
+      shell: bash
+      run: uv sync --locked
