@@ -2120,6 +2120,7 @@ def test_optimize_build_rejects_unset_build(engine):
 def test_optimize_build_smoke(engine):
     # Maintenance-only orchestration smoke with explicit attribute prerequisites. The pure-DPS
     # tree does not supply them; planning must not obtain resistance from illegal auto-bases.
+    memory_before = engine.ping()
     _spark_caster(engine)
     engine.set_config(custom_mods="+200 to Strength\n+200 to Dexterity\n+200 to Intelligence")
     bare = engine.paste_skill("Spark 20/20  1")["stats"]["TotalDPS"]
@@ -2132,6 +2133,11 @@ def test_optimize_build_smoke(engine):
     # the winner is loaded in the session, so the live engine matches the reported result
     live = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
     assert live == pytest.approx(res["TotalDPS"], rel=1e-3)
+    # This same scenario previously exhausted a 16 GiB Linux runner. Search results and the
+    # active build must stay intact while unreachable calculator state is reclaimed.
+    memory_after = engine.ping()
+    assert memory_after["gcCollections"] > memory_before["gcCollections"]
+    assert memory_after["luaMemoryKB"] < memory_before["luaMemoryKB"] + 512 * 1024
 
 
 # -- crafting system (runes + essences + corruptions, from PoB's own data) ------------------

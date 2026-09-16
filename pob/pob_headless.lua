@@ -42,13 +42,28 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 13
+local HEADLESS_RUNTIME_CONTRACT = 14
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
 if not booted or not build then
 	emit(json.encode({ ready = false, error = "engine init failed: " .. tostring(bootErr) }))
 	os.exit(1)
+end
+
+-- GUI-sized GC pauses let native what-if calculations accumulate gigabytes of dead tables
+-- during long headless searches. Reclaim only unreachable objects at safe calculation boundaries;
+-- do not discard live PoB caches, alter the build, or reduce the candidate search space.
+local GC_GROWTH_KB = 128 * 1024
+local gcCollections = 0
+collectgarbage("collect")
+local nextGcKB = collectgarbage("count") + GC_GROWTH_KB
+local function reclaimCalculationGarbage()
+	if collectgarbage("count") >= nextGcKB then
+		collectgarbage("collect")
+		gcCollections = gcCollections + 1
+		nextGcKB = collectgarbage("count") + GC_GROWTH_KB
+	end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1379,7 +1394,11 @@ end
 local methods = {}
 
 function methods.ping()
-	return { pong = true, jit = jit and jit.version }
+	reclaimCalculationGarbage()
+	return {
+		pong = true, jit = jit and jit.version,
+		luaMemoryKB = collectgarbage("count"), gcCollections = gcCollections,
+	}
 end
 
 function methods.new_build()
@@ -3241,6 +3260,7 @@ local function evaluateItemReplacements(p)
 			else
 				contexts[index] = false
 			end
+			reclaimCalculationGarbage()
 		end
 	end)
 	local restored = pcall(function() loadBuildFromXML(snapshot); runCallback("OnFrame") end)
@@ -3292,6 +3312,7 @@ function methods.eval_items(p)
 		else
 			out[i] = false -- candidate failed to parse/equip
 		end
+		reclaimCalculationGarbage()
 	end
 	loadBuildFromXML(snapshot)
 	runCallback("OnFrame")
@@ -4093,6 +4114,7 @@ function methods.optimize_passives(p)
 				if node.id and not pathSeen[node.id] then pathIds[#pathIds + 1] = node.id end
 				table.sort(pathIds)
 				local gain = scoreGain(calcBase, calcFunc({ addNodes = pathNodes }))
+				reclaimCalculationGarbage()
 				-- Quantize the score before comparison so insignificant floating-point noise cannot change
 				-- the selected node across processes/platforms. Cost and node id complete the total order.
 				local score = tonumber(string.format("%.12g", gain)) or gain
@@ -4223,6 +4245,7 @@ for line in io.lines() do
 			emit(json.encode({ id = id, ok = false, error = "unknown method: " .. tostring(req.method) }))
 		else
 			local ok, result = pcall(fn, req.params or {})
+			reclaimCalculationGarbage()
 			if ok then
 				emit(json.encode({ id = id, ok = true, result = result }))
 			else

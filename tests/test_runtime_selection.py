@@ -117,11 +117,14 @@ class PobRuntimeSelectionTests(unittest.TestCase):
     def test_contract_eleven_without_source_loadouts_cannot_override_bundle(self) -> None:
         self.assertEqual(self._select(contract=11, engine_version="99.0.0"), "bundle")
 
+    def test_contract_thirteen_without_gc_boundaries_cannot_override_bundle(self) -> None:
+        self.assertEqual(self._select(contract=13, engine_version="99.0.0"), "bundle")
+
     def test_bundled_bridge_advertises_native_reservation_contract(self) -> None:
         engine = PobEngine()
         try:
             self.assertEqual(engine.info["runtimeContract"], paths.POB_RUNTIME_CONTRACT)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 13)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 14)
             self.assertEqual(engine.inspect_reservation_ledger()["schemaVersion"], "pob_reservation_ledger_v1")
         finally:
             engine.close()
