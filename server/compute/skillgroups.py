@@ -98,6 +98,10 @@ def _apply_complete_group(
         )
         if operation == "set_main_skill":
             target_index = after.get("mainGroupIndex")
+        elif isinstance(result.get("groupIndex"), int):
+            # PoB can merge the pasted loadout into an existing granted-source group.
+            # Its final position is not necessarily a newly appended array index.
+            target_index = result["groupIndex"]
         else:
             previous_indices = {
                 group.get("index") for group in before.get("groups", []) if isinstance(group, dict)
@@ -122,6 +126,10 @@ def _apply_complete_group(
                 "droppedGemNames": list((Counter(requested) - Counter(actual)).elements()),
                 "stateHash": before_hash,
             }
+        if operation == "add_skill_group":
+            result["addedGroupCount"] = max(
+                0, len(after.get("groups", [])) - len(before.get("groups", []))
+            )
         return result
 
 
@@ -210,7 +218,7 @@ def configure_source_skill_supports(
     expected_fingerprint: str,
     expected_state_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically replace supports on a Tree, Item, or native default attack group."""
+    """Replace source supports while preserving its root and socketed active payloads."""
 
     if source_group_index < 1:
         return _error("invalid_group_index", "source_group_index must be at least 1")
@@ -340,17 +348,25 @@ def configure_source_skill_supports(
         actual_group = _group_at(after, source_group_index)
         expected_supports = [str(gem["name"]) for gem in runtime_supports]
         actual_gems = (actual_group or {}).get("gems") or []
+        expected_actives = [
+            gem for gem in group.get("gems", [])
+            if isinstance(gem, dict) and not gem.get("isSupport")
+        ]
+        actual_actives = [
+            gem for gem in actual_gems
+            if isinstance(gem, dict) and not gem.get("isSupport")
+        ]
         actual_supports = [
             str(gem.get("name"))
             for gem in actual_gems[1:]
             if isinstance(gem, dict) and gem.get("isSupport")
         ]
-        if actual_supports != expected_supports:
+        if actual_supports != expected_supports or actual_actives != expected_actives:
             engine.load_build_xml(before_xml, name="source-support-completeness-rollback")
             return {
                 **_error(
                     "source_supports_incomplete",
-                    "PoB did not preserve every requested source support; build restored",
+                    "PoB did not preserve the source loadout; build restored",
                 ),
                 "requestedSupports": expected_supports,
                 "appliedSupports": actual_supports,

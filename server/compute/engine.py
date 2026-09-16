@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -184,6 +185,7 @@ class PobEngine:
                 "headless engine runtime contract is incompatible with this server"
             )
         self.info: dict[str, Any] = ready
+        self._last_response_time = time.monotonic()
 
     # -- low-level I/O -------------------------------------------------------
     def _read_frame(self) -> dict[str, Any]:
@@ -220,6 +222,7 @@ class PobEngine:
             for _ in range(10000):
                 resp = self._read_frame()
                 if resp.get("id") == req_id:
+                    self._last_response_time = time.monotonic()
                     break
                 # A non-matching frame means a desync (stray/leftover emit); skip it but surface it
                 # on stderr rather than silently swallowing what could be a real protocol problem.
@@ -286,6 +289,22 @@ class PobEngine:
     # -- convenience wrappers ------------------------------------------------
     def ping(self) -> dict[str, Any]:
         return self.call("ping")
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Process/activity observation, not an RPC or proof of valid build state."""
+        running = self.proc.poll() is None
+        acquired = self._lock.acquire(blocking=False)
+        if acquired:
+            self._lock.release()
+        last = getattr(self, "_last_response_time", None)
+        return {
+            "processRunning": running,
+            "engineBusy": not acquired,
+            "processId": self.proc.pid,
+            "lastResponseAgeSeconds": (
+                round(max(0.0, time.monotonic() - last), 3) if last is not None else None
+            ),
+        }
 
     def new_build(self) -> dict[str, Any]:
         return self.call("new_build")

@@ -14,6 +14,24 @@ def has_source_groups(xml: str) -> bool:
     return any(node.get("source") for node in parse_pob_xml(xml).iter("Skill"))
 
 
+def requires_source_snapshot_probe(xml: str) -> bool:
+    """Keep the conservative path for item-owned or unknown source configurations.
+
+    The native replacement evaluator already verifies every non-target source and
+    the exact selected effect. A tree grant or unconfigured default attack must not
+    force a whole-build reload for every Rune candidate. Item ownership keeps its
+    established snapshot path, including interactions from a different equipment slot.
+    """
+    for group in parse_pob_xml(xml).iter("Skill"):
+        source = group.get("source") or ""
+        if not source or source.startswith("Tree:"):
+            continue
+        if source == "Default Attack" and len(group.findall("Gem")) <= 1:
+            continue
+        return True
+    return False
+
+
 def replace_equipped_item(xml: str, slot: str, raw: str, *, _mask_contents: bool = False) -> str:
     """Replace exactly one item's text; never serialize the read-only XML projection."""
     root = parse_pob_xml(xml)

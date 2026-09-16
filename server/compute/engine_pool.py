@@ -8,10 +8,12 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 import os
 import threading
+import time
 from typing import Any, AsyncIterator, Callable, Iterator
 import weakref
 
 from .engine import PobEngine, PobEngineError, max_engine_processes
+from ..runtime.tool_execution import threaded_tool
 
 
 DEFAULT_MAX_ENGINES = 5
@@ -55,6 +57,8 @@ class _EngineEntry:
 class _GateEntry:
     session: _SessionRef
     lock: asyncio.Lock
+    tool_name: str | None = None
+    started_at: float | None = None
 
 
 def configured_max_engines() -> int:
@@ -120,6 +124,17 @@ class SessionEnginePool:
             self._entries.clear()
         for engine in engines:
             _close_engine(engine)
+
+    def peek(self, session: object | None = None) -> tuple[PobEngine | None, bool]:
+        """Observe ownership without starting, replacing or waiting for an engine."""
+        owner = session if session is not None else _DEFAULT_SESSION
+        if not self._lock.acquire(blocking=False):
+            return None, True
+        try:
+            entry = self._entries.get(id(owner))
+            return (entry.engine if entry and entry.session.get() is owner else None), False
+        finally:
+            self._lock.release()
 
     @contextmanager
     def preserve_sessions(self) -> Iterator[None]:
@@ -211,7 +226,7 @@ class SessionCallGate:
         self._maintenance_lock = _ThreadRWLock()
 
     @asynccontextmanager
-    async def hold(self, session: object | None) -> AsyncIterator[None]:
+    async def hold(self, session: object | None, *, tool_name: str | None = None) -> AsyncIterator[None]:
         owner = session if session is not None else _DEFAULT_SESSION
         key = id(owner)
         with self._lock:
@@ -220,16 +235,45 @@ class SessionCallGate:
             if entry is None or entry.session.get() is not owner:
                 entry = _GateEntry(session=_SessionRef.create(owner), lock=asyncio.Lock())
                 self._entries[key] = entry
-        await asyncio.to_thread(self._maintenance_lock.acquire_read)
+        try:
+            await threaded_tool(self._maintenance_lock.acquire_read)()
+        except asyncio.CancelledError:
+            # The worker has finished acquiring before cancellation propagates.
+            # Do not strand a reader when a request is cancelled during maintenance.
+            self._maintenance_lock.release_read()
+            raise
         try:
             async with entry.lock:
-                yield
+                with self._lock:
+                    entry.tool_name, entry.started_at = tool_name, time.monotonic()
+                try:
+                    yield
+                finally:
+                    with self._lock:
+                        entry.tool_name, entry.started_at = None, None
         finally:
             self._maintenance_lock.release_read()
 
+    def status(self, session: object | None) -> dict[str, Any]:
+        """Safe activity metadata only; never reads mutable PoB state or arguments."""
+        owner = session if session is not None else _DEFAULT_SESSION
+        with self._lock:
+            entry = self._entries.get(id(owner))
+            if not entry or entry.session.get() is not owner or entry.started_at is None:
+                return {"busy": False, "activeTool": None, "elapsedSeconds": None}
+            return {
+                "busy": True,
+                "activeTool": entry.tool_name,
+                "elapsedSeconds": round(max(0.0, time.monotonic() - entry.started_at), 3),
+            }
+
     @asynccontextmanager
     async def maintenance(self) -> AsyncIterator[None]:
-        await asyncio.to_thread(self._maintenance_lock.acquire_write)
+        try:
+            await threaded_tool(self._maintenance_lock.acquire_write)()
+        except asyncio.CancelledError:
+            self._maintenance_lock.release_write()
+            raise
         try:
             yield
         finally:

@@ -58,6 +58,13 @@ def test_already_canonical_is_stable_idempotent():
     assert normalize_skill_text(normalize_skill_text(canonical)) == canonical
 
 
+@pytest.mark.parametrize("name", ["Ice-Tipped Arrows", "Future-Past", "Uul-Netol's Embrace"])
+def test_hyphenated_catalog_names_are_preserved(name):
+    assert normalize_skill_text(name) == f"{name} 20/20 1"
+    assert normalize_skill_text(name, default_level=None) == name
+    assert normalize_skill_text(f"{name} 20/0") == f"{name} 20/0  1"
+
+
 def test_apply_template_multiple_placeholders():
     # The crash case: two "{}" must both fill instead of raising "Replacement index out of range".
     assert _apply_template("Adds {} to {} Lightning Damage to Spells", 10) == (

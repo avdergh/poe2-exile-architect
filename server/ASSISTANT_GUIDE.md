@@ -145,6 +145,11 @@ process cap is five, including reserved Judge/optimizer capacity.
 
 - `new_build` resets the build. `import_build` replaces it. `set_class` re-roots the tree but
   retains gear/skills/config; use a fresh bootstrap for a new build.
+- `engine_health` observes process/activity metadata without entering the mutable-build queue.
+  It can report `busy` during a long call; `not_started` is normal before the first compute call.
+  Neither status proves a failed build. A client timeout or response error does not prove the
+  backend stopped: wait for the running transaction to finish, then verify the current state.
+  `new_build` clears the build; it is not a process restart or a remedy for a slow health check.
 - `apply_build_mutation_batch` accepts exact, function-scoped transactions:
   `bootstrap/mechanism_shell/skill_loadout/passive_delta/required_gear/ordinary_gear/config`.
   Do not mix the whole build into one transaction. Only a bootstrap starting with `new_build`
@@ -155,6 +160,11 @@ process cap is five, including reserved Judge/optimizer capacity.
 - Read `list_skill_groups` before exact edits. Group writes resolve all gems and compare the
   persisted canonical multiset. `skill_group_incomplete` restores the prior XML rather than
   silently discarding requested gems.
+  For a granted meta host, `add_skill_group` accepts the host, active payload and supports as
+  one complete loadout: PoB must adopt it into the actual granted source. Use its returned
+  `groupIndex` and refresh the group list; reconciliation can move existing indices.
+  `configure_source_skill_supports` then changes only supports, preserving active payloads
+  and counting them against the source's socket capacity. Do not pass active gems as supports.
 - `apply_combat_profile` replaces its Boss tier and six booleans, including false values;
   `set_config` remains a partial patch. Both return the latest semantic state hash.
 - Use `testedSkillGroups` and the exact offense group/name to interpret measurements.

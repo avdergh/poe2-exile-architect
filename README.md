@@ -102,6 +102,8 @@ then confirm that poe-bd-research, poe-bd-create, and poe-bd-learn are available
 
 If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration. In DeepSeek Harness the tools appear only in a session that uses the `poe-bd` preset. If the engine cannot start, check LuaJIT and the pinned PoB checkout above.
 
+`engine_health` observes process and tool activity without starting or resetting PoB. `not_started` is normal before the first calculation, and `busy` means work is still running; neither certifies the build or calls for `new_build`.
+
 ## Use it
 
 Send these requests **in your agent conversation**, with the relevant file attached. These are example prompts, not terminal commands. You can also select the named skill through your host's skill menu.

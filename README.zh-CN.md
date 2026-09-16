@@ -102,6 +102,8 @@ bash install.sh --from-checkout dsh
 
 没有找到工具时，检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。DeepSeek Harness 中只有在使用 `poe-bd` preset 的会话里才会出现这些工具。计算引擎无法启动时，检查上面的 LuaJIT 安装路径与固定 PoB 源码。
 
+`engine_health` 只观察进程和工具活动，不启动或重置 PoB。首次计算前的 `not_started` 属于正常状态，`busy` 表示任务仍在运行；两者都不认证构筑，也不要求执行 `new_build`。
+
 ## 使用方式
 
 把下面的请求**发送到 Agent 对话中**，需要已有 BD 时附上文件。这些是使用示例，不是终端命令；也可以通过宿主的 skill 菜单选择对应功能。

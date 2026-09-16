@@ -670,7 +670,7 @@ def _scope_postconditions(
     if batch_kind == "skill_loadout":
         state = engine.call("list_skill_groups")
         groups = state.get("groups") if isinstance(state, dict) else None
-        if not isinstance(groups, list) or len(groups) < len(operations):
+        if not isinstance(groups, list) or not groups:
             return {"status": "failed", "check": "skill_group_count"}, (
                 "mutation_batch_skill_loadout_postcondition_failed"
             )
@@ -678,7 +678,8 @@ def _scope_postconditions(
             {
                 "status": "passed",
                 "skillGroupCount": len(groups),
-                "addedGroupCount": len(operations),
+                "configuredGroupCount": len(operations),
+                "addedGroupCount": sum(int(result.get("addedGroupCount", 1)) for result in raw_results),
                 "freshFingerprintReadRequiredForPreciseEdits": True,
             },
             None,

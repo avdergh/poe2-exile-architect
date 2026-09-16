@@ -24,6 +24,8 @@ Build/Judge/exports. Study uses isolated PoB, never the active build or Judge at
 6. Create builds the requested target-level single-stage BD. A matching Research Family is identity
    and design authority; Blind packets execute without follow-up. Judge is advisory only.
 7. Stop on `recoveryRequired=true`; explicitly recover the session before continuing.
+   `engine_health` is a non-queued process/activity observation: `busy` is not failure.
+   A client timeout does not prove backend completion; `new_build` clears a build, not the process.
 8. Raw PoB stays private in responses. Final save runs one structural round-trip. Final package
    publishing sends the verified code to poe.ninja and returns only its public URL. Candidate
    exports keep their label; only `deliveryStatus=recommended` is a finished recommendation.

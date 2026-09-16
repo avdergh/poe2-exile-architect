@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 11
+local HEADLESS_RUNTIME_CONTRACT = 13
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -1165,6 +1165,51 @@ local function normalizeSkillText(text)
 	return table.concat(lines, "\n")
 end
 
+local function pasteSocketGroup(text)
+	local normalized = normalizeSkillText(text)
+	local extendedName = false
+	for line in normalized:gmatch("([^\r\n]+)") do
+		local name = line:match("^(.-) %d+/%d+%s*%u*%s+[%d%.]+%s*C?[+%-]?%d*%s*$")
+		if name and not name:match("^[ %a':]+$") then extendedName = true end
+	end
+	if not extendedName then
+		return build.skillsTab:PasteSocketGroup(normalized)
+	end
+	-- The pinned clipboard parser only admits ASCII letters, spaces, apostrophes
+	-- and colons. Construct the same native group for exact catalog names containing
+	-- other characters; never strip punctuation or guess a different gem identity.
+	local group = { label = normalized:match("Label: (%C+)") or "", enabled = true, gemList = {} }
+	group.slot = normalized:match("Slot: (%C+)")
+	local weaponSet = normalized:match("Weapon Set: Set ([12])")
+	if weaponSet then group.set1, group.set2 = weaponSet == "1", weaponSet == "2" end
+	for line in normalized:gmatch("([^\r\n]+)") do
+		local name, level, quality, state, count, cFlag, cLevel =
+			line:match("^(.-) (%d+)/(%d+)%s*(%u*)%s+([%d%.]+)%s*(C?)([+%-]?%d*)%s*$")
+		if name then
+			local gemId = build.data.gemForBaseName[name:lower()]
+				or build.data.gemForBaseName[name:lower() .. " support"]
+			local gem = gemId and build.data.gems[gemId]
+			if not gem or not gem.name or gem.name:lower() ~= name:lower() then return end
+			group.gemList[#group.gemList + 1] = {
+				nameSpec = gem.name, gemId = gemId,
+				level = tonumber(level), quality = tonumber(quality), count = tonumber(count),
+				enabled = state ~= "DISABLED", corrupted = cFlag == "C",
+				corruptLevel = tonumber(cLevel) or 0, enableGlobal1 = true, enableGlobal2 = true,
+			}
+		elseif not line:match("^Label: ") and not line:match("^Slot: ")
+			and not line:match("^Weapon Set: Set [12]$") then
+			return -- Preserve the all-or-nothing boundary on malformed extended requests.
+		end
+	end
+	if #group.gemList == 0 then return end
+	local tab = build.skillsTab
+	table.insert(tab.socketGroupList, group)
+	tab.controls.groupList.selIndex, tab.controls.groupList.selValue = #tab.socketGroupList, group
+	tab:SetDisplayGroup(group)
+	tab:AddUndoState()
+	tab.build.buildFlag = true
+end
+
 function selectMainSocketGroup(index, activeIndex)
 	index = index or 1
 	build.mainSocketGroup = index
@@ -1454,7 +1499,7 @@ function methods.paste_skill(p)
 	local snapshot = build:SaveDB("code")
 	local prevMain = build.mainSocketGroup
 	local before = #list
-	build.skillsTab:PasteSocketGroup(normalizeSkillText(p.text))
+	pasteSocketGroup(p.text)
 	if #list <= before then
 		-- Nothing parsed: don't repoint main at a stale group (the old corruption). Restore + report.
 		loadBuildFromXML(snapshot)
@@ -1525,9 +1570,17 @@ function methods.add_skill_group(p)
 	assert(p and p.text, "add_skill_group requires params.text")
 	local list = build.skillsTab.socketGroupList
 	local snapshot = build:SaveDB("code")
-	local prevMain = build.mainSocketGroup or 1
+	local previousMain = list[build.mainSocketGroup or 1]
+	local function selectedEffectId(group, field)
+		local active = group and group.displaySkillList and group.displaySkillList[group[field] or group.mainActiveSkill or 1]
+		return active and active.activeEffect and active.activeEffect.grantedEffect and active.activeEffect.grantedEffect.id
+	end
+	local previousSelections = {
+		mainActiveSkill = selectedEffectId(previousMain, "mainActiveSkill"),
+		mainActiveSkillCalcs = selectedEffectId(previousMain, "mainActiveSkillCalcs"),
+	}
 	local before = #list
-	build.skillsTab:PasteSocketGroup(normalizeSkillText(p.text))
+	pasteSocketGroup(p.text)
 	if #list <= before then
 		loadBuildFromXML(snapshot)
 		runCallback("OnFrame")
@@ -1537,6 +1590,7 @@ function methods.add_skill_group(p)
 			mainSkill = mainSkillName(),
 		}
 	end
+	local addedGroup = list[before + 1]
 	local levelViolations = {}
 	for index = before + 1, #list do
 		for _, violation in ipairs(activeGemLevelViolationsForSocketGroup(index)) do
@@ -1563,9 +1617,46 @@ function methods.add_skill_group(p)
 		end
 	end
 	runCallback("OnFrame")
-	-- keep the existing main skill; the new group stays enabled and applies its effect
-	selectMainSocketGroup(prevMain)
-	return statResult(p.keys)
+	-- Native source reconciliation preserves main/calcs group identity while it may
+	-- remove an old generated group and adopt the pasted loadout. Never restore an
+	-- obsolete numeric index (or reset its selected active effect).
+	local currentMain = build.skillsTab.socketGroupList[build.mainSocketGroup or 1]
+	if previousMain and currentMain ~= previousMain then
+		if not currentMain or not previousMain.source or currentMain.source ~= previousMain.source
+			or currentMain.slot ~= previousMain.slot then
+			loadBuildFromXML(snapshot)
+			runCallback("OnFrame")
+			return { ok = false, errorCode = "main_skill_identity_changed", error = "main skill source changed; build restored" }
+		end
+		for field, effectId in pairs(previousSelections) do
+			local matchedIndex
+			for activeIndex, active in ipairs(currentMain.displaySkillList or {}) do
+				if active.activeEffect and active.activeEffect.grantedEffect.id == effectId then
+					if matchedIndex then matchedIndex = nil; break end
+					matchedIndex = activeIndex
+				end
+			end
+			if not matchedIndex then
+				loadBuildFromXML(snapshot)
+				runCallback("OnFrame")
+				return { ok = false, errorCode = "main_skill_effect_changed", error = "main skill effect was lost or ambiguous; build restored" }
+			end
+			currentMain[field] = matchedIndex
+		end
+		build.buildFlag = true
+		build.modFlag = true
+		runCallback("OnFrame")
+	end
+	for index, group in ipairs(build.skillsTab.socketGroupList or {}) do
+		if group == addedGroup then
+			local result = statResult(p.keys)
+			result.groupIndex = index
+			return result
+		end
+	end
+	loadBuildFromXML(snapshot)
+	runCallback("OnFrame")
+	return { ok = false, errorCode = "skill_group_not_preserved", error = "PoB did not preserve the pasted group; build restored" }
 end
 
 function methods.list_skill_groups()
@@ -1937,7 +2028,15 @@ function methods.configure_source_skill_supports(p)
 	end
 
 	local supportIds = p.supportGemIds or {}
-	local capacity = sourceSupportCapacity(root.level)
+	local payloads = {}
+	for gemIndex = 2, #(group.gemList or {}) do
+		local gem = group.gemList[gemIndex]
+		local effect = (gem.gemData and gem.gemData.grantedEffect) or gem.grantedEffect
+		if not effect or not effect.support then
+			payloads[#payloads + 1] = gem
+		end
+	end
+	local capacity = math.max(0, sourceSupportCapacity(root.level) - #payloads)
 	if #supportIds > capacity then
 		return {
 			ok = false,
@@ -1977,6 +2076,12 @@ function methods.configure_source_skill_supports(p)
 	local beforeLevel = asNumber(root.level)
 	local beforeMainActive = group.mainActiveSkill or 1
 	local beforeMainActiveCalcs = group.mainActiveSkillCalcs or beforeMainActive
+	local function effectIdAt(activeIndex)
+		local active = group.displaySkillList and group.displaySkillList[activeIndex]
+		return active and active.activeEffect and active.activeEffect.grantedEffect and active.activeEffect.grantedEffect.id
+	end
+	local beforeMainEffect = effectIdAt(beforeMainActive)
+	local beforeCalcsEffect = effectIdAt(beforeMainActiveCalcs)
 	local beforeEnabled = group.enabled ~= false
 	local beforeLabel = group.label or ""
 	local beforeFullDPS = group.includeInFullDPS and true or false
@@ -1996,6 +2101,9 @@ function methods.configure_source_skill_supports(p)
 
 	wipeTable(group.gemList)
 	table.insert(group.gemList, root)
+	for _, payload in ipairs(payloads) do
+		table.insert(group.gemList, payload)
+	end
 	for _, gemData in ipairs(supports) do
 		table.insert(group.gemList, {
 			gemId = gemData.id,
@@ -2034,16 +2142,23 @@ function methods.configure_source_skill_supports(p)
 	end
 	if (group.mainActiveSkill or 1) ~= beforeMainActive
 		or (group.mainActiveSkillCalcs or group.mainActiveSkill or 1) ~= beforeMainActiveCalcs
+		or effectIdAt(beforeMainActive) ~= beforeMainEffect
+		or effectIdAt(beforeMainActiveCalcs) ~= beforeCalcsEffect
 		or (group.enabled ~= false) ~= beforeEnabled
 		or (group.label or "") ~= beforeLabel
 		or (group.includeInFullDPS and true or false) ~= beforeFullDPS then
 		return rollback("source_group_state_changed", "source group state or Command selection changed during support configuration")
 	end
-	if #(group.gemList or {}) ~= #supports + 1 then
+	if #(group.gemList or {}) ~= #supports + #payloads + 1 then
 		return rollback("source_supports_not_preserved", "not all requested supports survived source group refresh")
 	end
+	for payloadIndex, payload in ipairs(payloads) do
+		if group.gemList[payloadIndex + 1] ~= payload then
+			return rollback("source_payloads_not_preserved", "an active payload changed during support configuration")
+		end
+	end
 	for supportIndex, gemData in ipairs(supports) do
-		local actual = group.gemList[supportIndex + 1]
+		local actual = group.gemList[supportIndex + #payloads + 1]
 		if not actual or actual.gemId ~= gemData.id then
 			return rollback("source_supports_not_preserved", "requested supports did not survive in order", { supportIndex = supportIndex })
 		end
@@ -2079,16 +2194,23 @@ function methods.configure_source_skill_supports(p)
 	group = build.skillsTab.socketGroupList[index]
 	root = group and group.gemList and group.gemList[1]
 	if not group or group.source ~= beforeSource or not root or root.skillId ~= beforeSkillId
-		or asNumber(root.level) ~= beforeLevel or #(group.gemList or {}) ~= #supports + 1
+		or asNumber(root.level) ~= beforeLevel or #(group.gemList or {}) ~= #supports + #payloads + 1
 		or (group.mainActiveSkill or 1) ~= beforeMainActive
 		or (group.mainActiveSkillCalcs or group.mainActiveSkill or 1) ~= beforeMainActiveCalcs
+		or effectIdAt(beforeMainActive) ~= beforeMainEffect
+		or effectIdAt(beforeMainActiveCalcs) ~= beforeCalcsEffect
 		or (group.enabled ~= false) ~= beforeEnabled
 		or (group.label or "") ~= beforeLabel
 		or (group.includeInFullDPS and true or false) ~= beforeFullDPS then
 		return rollback("source_group_unstable", "source group identity or Command selection changed on a repeated frame")
 	end
+	for payloadIndex, payload in ipairs(payloads) do
+		if group.gemList[payloadIndex + 1] ~= payload then
+			return rollback("source_payloads_unstable", "an active payload changed on a repeated frame")
+		end
+	end
 	for supportIndex, gemData in ipairs(supports) do
-		local actual = group.gemList[supportIndex + 1]
+		local actual = group.gemList[supportIndex + #payloads + 1]
 		if not actual or actual.gemId ~= gemData.id then
 			return rollback("source_supports_unstable", "a requested support changed on a repeated frame", { supportIndex = supportIndex })
 		end
@@ -2264,7 +2386,7 @@ function methods.replace_skill_group(p)
 	local before = #list
 	local previousMain = build.mainSocketGroup or 1
 	local previousMainActive = list[previousMain] and list[previousMain].mainActiveSkill or 1
-	build.skillsTab:PasteSocketGroup(normalizeSkillText(p.text))
+	pasteSocketGroup(p.text)
 	if #list ~= before + 1 then
 		loadBuildFromXML(snapshot)
 		runCallback("OnFrame")

@@ -175,3 +175,28 @@ def test_parallel_optimizer_degrades_to_one_engine_when_process_pool_is_full(mon
 
     assert result == [{"lever": "crit"}, {"lever": "speed"}]
     assert seen == ["crit", "speed"]
+
+
+def test_cancelling_a_gate_wait_does_not_strand_a_maintenance_reader():
+    gate = engine_pool.SessionCallGate()
+    owner = _Session()
+
+    async def waiting():
+        async with gate.hold(owner):
+            pytest.fail("cancelled waiter must not enter the transaction")
+
+    async def scenario():
+        gate._maintenance_lock.acquire_write()
+        task = asyncio.create_task(waiting())
+        await asyncio.sleep(0.03)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        gate._maintenance_lock.release_write()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert gate._maintenance_lock._readers == 0
+        async with gate.maintenance():
+            assert gate._maintenance_lock._writer
+
+    asyncio.run(scenario())

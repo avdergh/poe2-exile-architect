@@ -20,7 +20,7 @@ _SEP_SLASH = re.compile(
 _SEP_PIPE = re.compile(r"\s*\|\s*")
 _SEP_COMMA = re.compile(r"\s*,\s*")
 _LQ = re.compile(r"\b\d+/\d+\b")  # a level/quality token
-_BARE_NAME = re.compile(r"^[A-Za-z][A-Za-z'. ]*$")  # gem name only (letters/space/'/. , no digits)
+_BARE_NAME = re.compile(r"^[A-Za-z][A-Za-z'. -]*$")  # names may contain a literal hyphen
 _HEADER = re.compile(r"^(Label|Slot)\s*:", re.IGNORECASE)
 
 

@@ -87,6 +87,7 @@ from .learning import service as learning_service
 from .build_planner import converter as build_planner_converter
 from .build_planner import exporter as build_planner_exporter
 from .runtime import tool_telemetry
+from .runtime.tool_execution import threaded_tool
 from .runtime import task_cleanup
 from .study import service as study_service
 from .study.storage import StudyError
@@ -110,6 +111,9 @@ _session_call_gate = SessionCallGate()
 
 
 class _SessionIsolatedFastMCP(FastMCP):
+    def add_tool(self, fn: Any, *args: Any, **kwargs: Any) -> None:
+        super().add_tool(threaded_tool(fn), *args, **kwargs)
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         started = time.perf_counter()
         result: Any = None
@@ -120,10 +124,10 @@ class _SessionIsolatedFastMCP(FastMCP):
             session = None
         token = set_current_session(session)
         try:
-            if name == "apply_updates":
+            if name in {"apply_updates", "engine_health"}:
                 result = await super().call_tool(name, arguments)
             else:
-                async with _session_call_gate.hold(session):
+                async with _session_call_gate.hold(session, tool_name=name):
                     result = await super().call_tool(name, arguments)
             return result
         except Exception:
@@ -571,6 +575,10 @@ def add_skill_group(skill: str, in_full_dps: bool = False) -> dict[str, Any]:
     ("<Gem> <level>/<quality>  <count>", supports newline-separated). The group is added enabled
     and its effect is reflected in the returned stats; the main skill is preserved. Mind Spirit
     reservation — check it still fits (get_build_stats / list_config_options) after stacking auras.
+
+    A complete granted-host loadout (host, active payload, supports) may be adopted by PoB into
+    its existing source group. `groupIndex` identifies the actual resulting group, even when the
+    group count does not grow. Refresh list_skill_groups to verify its source and new indices.
 
     Set `in_full_dps=True` only for a second DAMAGE skill (clear+boss combo, a trigger/totem) so it
     aggregates into FullDPS. Leave it False for auras/heralds/buffs (otherwise their standalone
@@ -2407,7 +2415,8 @@ def configure_source_skill_supports(
     """Atomically configure supports on a real passive, Ascendancy, item, or default attack skill.
 
     Read ``list_skill_groups`` first and pass its fingerprint (and preferably state hash). Names
-    must resolve uniquely to support gems. Item sources are accepted only when the equipped item
+    must resolve uniquely to support gems; existing active payloads are preserved and count
+    against the source's socket capacity. Item sources are accepted only when the equipped item
     still grants that exact source group and PoB reports ``noSupports=false``.
     Default attacks require PoB's current weapon-set grant, not an XML source label.
     """
@@ -2531,16 +2540,31 @@ def _server_version() -> str:
 
 @mcp.tool()
 def engine_health() -> dict[str, Any]:
-    """Report engine + install diagnostics: liveness, LuaJIT and passive-tree versions, the
-    installed data/server versions, and whether data is served from the auto-updated user-data
-    copy or the bundled seed — so you can confirm exactly what's running.
+    """Immediately report process liveness and current tool activity without queueing a PoB ping.
+
+    Busy means a session operation is still running, not a failed build. No engine is started or
+    reset, and no mutable build state is inspected. Last-response age is diagnostic only; this
+    observation does not certify current responsiveness, restoration, or build legality.
     """
-    eng = get_engine()
-    health = eng.ping()  # {pong, jit}
+    activity = _session_call_gate.status(current_session())
+    eng, pool_busy = _engine_pool.peek(current_session())
+    health = eng.health_snapshot() if eng is not None else {}
     info = getattr(eng, "info", {}) or {}
     from_user_data = (paths.user_data_dir() / "corpus.sqlite").exists()
     return {
+        "status": (
+            "busy" if activity["busy"] or pool_busy or health.get("engineBusy")
+            else "not_started" if eng is None
+            else "idle" if health.get("processRunning") else "exited"
+        ),
+        **activity,
         **health,
+        "enginePoolBusy": pool_busy,
+        "readOnly": True,
+        "observationScope": "process_and_activity_only",
+        "jit": info.get("jit"),
+        "runtimeContract": info.get("runtimeContract"),
+        "requiredRuntimeContract": paths.POB_RUNTIME_CONTRACT,
         "treeVersion": info.get("treeVersion"),
         "dataVersion": live_update.installed_version(),
         "serverVersion": _server_version(),

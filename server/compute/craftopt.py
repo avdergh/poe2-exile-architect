@@ -803,6 +803,7 @@ def _optimize_item_sockets_locked(
     base_raw = _without_socketed_runes(raw)
     calculation_context = item_search.capture_context(engine)
     source_snapshot = snapshot if socket_probe.has_source_groups(snapshot) else None
+    reload_source_candidates = socket_probe.requires_source_snapshot_probe(snapshot)
     prepared_receipt: dict[str, Any] | None = None
     final = base_raw
     selected_sources: list[dict[str, Any]] = []
@@ -908,7 +909,7 @@ def _optimize_item_sockets_locked(
             )
             for candidate in eligible
         ]
-        if source_snapshot is not None:
+        if source_snapshot is not None and reload_source_candidates:
             results = []
             for text in texts:
                 _socket_stage_item(

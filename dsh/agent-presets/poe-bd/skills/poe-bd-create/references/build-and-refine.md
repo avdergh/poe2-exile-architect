@@ -42,6 +42,12 @@ optimizer或依赖新group fingerprint才能决定的编辑。不要把整个BD�
    证据时不静默保留重复组。只有缺失职责进入`skill_loadout`；局部修改用
    `mcp__poe_build__list_skill_groups`后的`mcp__poe_build__replace_skill_group/mcp__poe_build__remove_skill_group/mcp__poe_build__set_skill_group_state`。
 
+升华或装备授予的meta宿主需要插入主动负载时，用`mcp__poe_build__add_skill_group`提交“宿主＋负载＋辅助”的
+完整配置，由PoB原生逻辑绑定到已存在的真实来源；随后读取返回的`groupIndex`并重新盘点，确认
+source和负载完整且没有额外代理组。组号可能因合并而变化，不能以组数未增加判定写入失败。
+后续`mcp__poe_build__configure_source_skill_supports`只替换辅助，保留主动负载；负载也占宿主插槽容量，不能把
+主动宝石放入`supports`参数。未绑定到真实来源时保留缺口，不创建未授予的普通代理。
+
 明确说明主技能如何清图，稀有怪/Boss由哪个技能或setup/payoff组合处理，不把当前计算组当作整个
 BD唯一主技能。未显式指定等级的主动宝石使用角色可合法装备的最高基础等级；显式超需求会回滚，
 最终仍复读基础等级。装备/天赋`+levels`可以提高计算等级，不能因此下调合法基础宝石。
