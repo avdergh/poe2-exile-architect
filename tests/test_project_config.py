@@ -36,8 +36,9 @@ def test_format_checks_are_advisory_but_lint_remains_blocking():
         content = Path(".github", "workflows", workflow).read_text(encoding="utf-8")
         assert "uv run ruff check server scripts pipeline tests" in content
         format_block = content.split("- name: Format advisory", maxsplit=1)[1]
-        assert "continue-on-error: true" in format_block
-        assert "uv run ruff format --check server scripts pipeline tests" in format_block
+        format_block = format_block.split("\n      - ", maxsplit=1)[0]
+        assert "continue-on-error" not in format_block
+        assert "uv run python scripts/check_format_advisory.py" in format_block
 
 
 def test_compute_profile_documents_long_runtime_timeout_budget():

@@ -24,8 +24,8 @@ jobs:
           - { os: windows-latest, plat: win-x64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv python install 3.12
 
       - name: Build LuaJIT (Unix)
@@ -66,8 +66,7 @@ jobs:
       - run: uv sync
       - run: uv run ruff check server scripts pipeline tests
       - name: Format advisory
-        continue-on-error: true
-        run: uv run ruff format --check server scripts pipeline tests
+        run: uv run python scripts/check_format_advisory.py
       - run: npx --yes @anthropic-ai/mcpb validate manifest.json
       - name: Rebuild and bind the reviewed corpus certificate
         shell: bash
@@ -91,8 +90,8 @@ jobs:
     needs: bundles
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: sudo apt-get update && sudo apt-get install -y luajit zip
       - name: Check out pinned PoB + apply fork patches
         shell: bash # Windows runners default run: to pwsh, which won't glob ../patches/*.patch

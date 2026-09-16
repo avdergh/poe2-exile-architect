@@ -21,8 +21,8 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv python install 3.12
       # PoB clone is needed for unique-item parsing in the corpus build (not the engine).
       - name: Clone pinned PoB (for uniques)
