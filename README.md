@@ -144,9 +144,20 @@ Outputs follow the language of your request unless you specify another language.
 ## Real output examples
 
 - [Twister learning guide](examples/learning-twister.en.md): a 14-chapter Chinese guide to a level 100 Gemling Legionnaire, with an English introduction. Learn the combat loop, skill interactions, equipment, and passive choices. Read it online or download the HTML reader with icons, search, and interactive explanations.
-- [Level 95 Twister build](examples/create-latest.en.md): a complete build you can import into PoB, with its import code and an online share link to explore the skill setup, equipment, and passive choices.
+- [Level 99 Deadeye Ice Shot candidate](examples/create-latest.en.md): Ice Shot and two Mirage setups, supported by Freezing Mark, Snipe, and Tornado Shot, using endgame trade gear with Headhunter and Lineage supports.
 
-Build examples are provided for reference and hands-on use. See each example for its validation status.
+[![Equipment and stats for the level 99 Deadeye Ice Shot build](examples/assets/deadeye-ice-shot-99.jpg)](https://poe.ninja/poe2/pob/29726)
+
+This example includes all four Create deliverables:
+
+| Output | Purpose | View or download |
+| --- | --- | --- |
+| Complete PoB XML | Inspect and edit skills, equipment, passives, and configuration | [PoB file](examples/Deadeye_Ice_Shot_99.xml) |
+| PoB import code | Paste into PoB to import the build | [Import code](examples/Deadeye_Ice_Shot_99.pobcode.txt) |
+| Official `.build` file | Import into the official Build Planner | [.build file](examples/Deadeye_Ice_Shot_99.build) |
+| Online share page | Browse and share the build | [poe.ninja page](https://poe.ninja/poe2/pob/29726) |
+
+The main Ice Shot reads approximately 126.2k DPS in PoB's Pinnacle boss configuration. Complete damage from the Mirage setups and some recovery mechanics still require verification. Parts of the `.build` export are represented as descriptive text; use PoB for the full configuration. See the [example](examples/create-latest.en.md) for details.
 
 ## Common questions
 

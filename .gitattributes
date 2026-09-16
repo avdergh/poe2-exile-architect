@@ -7,3 +7,6 @@
 
 # 生成暗金文件按导出字节绑定语料/图来源，跨平台检出不得自动转换换行。
 data/physical_graph/uniques/generated_uniques.lua -text whitespace=cr-at-eol
+
+# README 构筑样例保留原始导出字节，避免换行转换改变文件。
+examples/Deadeye_Ice_Shot_99.* -text whitespace=cr-at-eol,-blank-at-eol

@@ -1,0 +1,318 @@
+{
+    "name": "99级锐眼冰箭-双幻影与冻结狙击-待验证",
+    "author": "Codex",
+    "description": "99级锐眼冰箭，PoE2 0.5.5 / Forbidden Rites，中文说明。预算未指定，按成型交易装备设计，包含猎首、Cadiro's Gambit、Voices、Against the Darkness、Heart of the Well及Lineage辅助，并非低预算开荒方案。\n\n主攻组合：Ice Shot + Elemental Armament II + Ice Bite II + Fork + Garukhan's Resolve + Rakiata's Flow。\n双幻影：Mirage Deadeye由远程攻击触发；Mirage Archer由翻滚触发。两组均各自插入Ice Shot，搭配Elemental Armament II、Rapid Attacks II、Deliberation、Cooldown Recovery II。它们具有真实来源与独立触发窗口，不能把主攻面板简单乘三。\n首领辅助：Freezing Mark + Mark of Siphoning II + Charged Mark + Eternal Mark + Prolonged Duration II。先标记再推进冻结，避免提前改标记另一目标。\n狙击组合：Snipe + Bleed III + Close Combat II + Rapid Attacks II + Cold Penetration + Overextend。保留原生精确释放和消耗冻结的爆发。物理箭可以流血，冰冷命中获得穿透；Close Combat II随距离衰减，Overextend暴击后会对自身施加Daze。只在安全窗口使用，完整冻结爆炸与走位循环仍需实战验证。\n清图配套：Tornado Shot负责铺场、复制原始箭矢和致盲；Ice-Tipped Arrows按正常冷却预备，不假定狂怒球无限绕过冷却；Herald of Ice由非Herald攻击碎冰触发。\n防御和资源：高闪避胸甲配Spectral Ward、能盾头鞋、Ghost Dance；法力由自然回复、残响拾取、适用的物理偷取和药剂共同支持。Mana Remnants在受元素异常敌人的暴击命中中也能生成，纯首领不能按击杀恢复计算，也不能忽略拾取安全性和延迟。\n升华：Endless Munitions、Mirage Deadeye、Gathering Winds、Projectile Proximity Specialisation的Point Blank分支。\n操作：预备冰片、铺龙卷风、移动冰箭，安全翻滚更新幻影并拾取残响；强敌加入冻结印记和合适时机的狙击。无小怪首领阶段不把猎首、击杀护符或冰爆连锁当成常驻收益。\n\n交付为待验证方案。主观Judge反馈关闭；数值仅表示保存的PoB配置。双幻影触发率、龙卷风复制、冰片和冰爆频率、残响实际覆盖及狙击近距/Daze代价仍需实战验证，不宣称全BD总DPS。额外珠宝槽在保护核心与恢复天赋后有审查边界。完整装备、符文、珠宝与技能以PoB XML/导入码为准；官方.build中受限的装备字段以说明文本表达。\n\nGuidance only: Rare/Magic gear details, equipment sockets, Rune/Soul Core choices, and passive-tree jewels must be verified in the accompanying PoB XML/import code, which is the authoritative build.",
+    "ascendancy": "Ranger1",
+    "passives": [
+        "AscendancyRanger1Notable3",
+        "dexterity46",
+        "mana_flasks11",
+        "dexterity51",
+        "azmerianimals48",
+        "AscendancyRanger1Small3",
+        "dexterity4_",
+        "projectiles29",
+        "AscendancyRanger1Notable4",
+        "dexterity18",
+        "mana_leech8",
+        "attack8",
+        "cold41",
+        "flasks21",
+        "cold42_",
+        "mana_flasks6",
+        "evasion_and_energy_shield23",
+        "attributes28",
+        "dexterity12_",
+        "AscendancyRanger1Notable1",
+        "dexterity41",
+        "evasion_and_energy_shield10",
+        "dexterity57",
+        "dexterity3",
+        "attributes27",
+        "intelligence68",
+        "dexterity42",
+        "evasion_and_energy_shield33",
+        "azmerianimals38",
+        "dexterity47",
+        "evasion_and_energy_shield27",
+        "dexterity15",
+        "intelligence7",
+        "evasion_and_energy_shield16",
+        "projectiles27",
+        "energy_shield_recovery6",
+        "evasion_and_energy_shield26",
+        {
+            "id": "jewel_slot1979",
+            "additional_text": "<grey>{Socketed Jewel:}\n<silver>{Optimized Jewel}"
+        },
+        "azmerianimals42",
+        "energy_shield_recovery8",
+        "azmerianimals39",
+        "mana20",
+        "dexterity82_",
+        "dexterity5",
+        "dexterity81",
+        "dexterity14",
+        "evasion_and_energy_shield5",
+        "dexterity85_",
+        "dexterity40",
+        "mana_flasks1",
+        "attributes10",
+        "heralds16_",
+        "dexterity20",
+        "heralds10",
+        "ranger_huntress_notable2",
+        "mana_regeneration11",
+        "dexterity87",
+        "criticals87",
+        "attributes9",
+        "dexterity7",
+        "mana_regeneration8",
+        "cold39__",
+        {
+            "id": "jewel_slot1976",
+            "additional_text": "<grey>{Socketed Jewel:}\n<unique>{Heart of the Well}"
+        },
+        "evasion_and_energy_shield24",
+        "bow23",
+        "dexterity55",
+        "dexterity8",
+        "mana_regeneration17",
+        "evasion_and_energy_shield11",
+        "dexterity59",
+        "dexterity34",
+        "melee31",
+        "energy_shield_recovery7",
+        "mana_leech6",
+        "mana_leech19",
+        "dexterity17",
+        "cold43",
+        "dexterity80",
+        "criticals52",
+        "AscendancyRanger1Small8",
+        "cold28",
+        "attributes26",
+        "AscendancyRanger1Notable2_2",
+        "attributes74",
+        "AscendancyRanger1Notable2_Choice",
+        "evasion_and_energy_shield8",
+        "dexterity16",
+        "attack18",
+        "AscendancyRanger1Small1__",
+        "energy_shield_recovery1",
+        {
+            "id": "jewel_slot1970",
+            "additional_text": "<grey>{Socketed Jewel:}\n<silver>{Optimized Jewel}"
+        },
+        "AscendancyRanger1Start",
+        "projectiles26",
+        "attributes12",
+        "dexterity52",
+        "shadow_monk_notable2",
+        "dexterity50",
+        "bow22",
+        "azmerianimals45",
+        "shadow_monk_notable1",
+        "evasion_and_energy_shield31",
+        "azmerianimals47",
+        "flasks20_",
+        "ranger596",
+        "intelligence25",
+        "mana_leech20",
+        "mana33",
+        "bow19",
+        "energy_shield_recovery13",
+        "evasion_and_energy_shield15",
+        "azmerianimals46",
+        "dexterity54",
+        "evasion_and_energy_shield25",
+        "dexterity6",
+        "criticals90",
+        "projectiles15",
+        "evasion_and_energy_shield22",
+        "heralds12_",
+        "bow20",
+        "dexterity9",
+        "intelligence67",
+        "evasion_and_energy_shield32",
+        "criticals88_",
+        "dexterity19",
+        {
+            "id": "jewel_slot1960",
+            "additional_text": "<grey>{Socketed Jewel:}\n<unique>{Against the Darkness}"
+        },
+        "intelligence69",
+        "AscendancyRanger1Small2",
+        {
+            "id": "jewel_slot1961",
+            "additional_text": "<grey>{Socketed Jewel:}\n<unique>{Voices}"
+        },
+        "evasion_and_energy_shield17",
+        "evasion_and_energy_shield35_",
+        "attributes29",
+        "mana_leech2",
+        "life_on_kill4",
+        {
+            "id": "voices_jewel_slot2",
+            "additional_text": "<grey>{Socketed Jewel:}\n<silver>{Optimized Jewel}"
+        },
+        {
+            "id": "voices_jewel_slot1",
+            "additional_text": "<grey>{Socketed Jewel:}\n<silver>{Optimized Jewel}"
+        }
+    ],
+    "skills": [
+        {
+            "id": "Metadata/Items/Gem/SkillGemIceShot",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemPrimalArmamentTwo",
+                "Metadata/Items/Gems/SupportGemIceBiteTwo",
+                "Metadata/Items/Gems/SupportGemFork",
+                "Metadata/Items/Gem/SupportGemGarukhansResolve",
+                "Metadata/Items/Gem/SupportGemRakiatasFlow"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemMirageArcher",
+            "support_skills": [
+                "Metadata/Items/Gem/SkillGemIceShot",
+                "Metadata/Items/Gems/SupportGemPrimalArmamentTwo",
+                "Metadata/Items/Gem/SupportGemDeliberation",
+                "Metadata/Items/Gems/SupportGemMartialTempoTwo",
+                "Metadata/Items/Gems/SupportGemIngenuityTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemFreezingMark",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemMarkOfSiphoningTwo",
+                "Metadata/Items/Gems/SupportGemChargedMark",
+                "Metadata/Items/Gems/SupportGemEternalMark",
+                "Metadata/Items/Gems/SupportGemPersistenceTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemSnipe",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemLacerateThree",
+                "Metadata/Items/Gems/SupportGemCloseCombatTwo",
+                "Metadata/Items/Gems/SupportGemMartialTempoTwo",
+                "Metadata/Items/Gems/SupportGemColdPenetration",
+                "Metadata/Items/Gem/SupportGemOverextend"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemTornadoShot",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemPersistenceTwo",
+                "Metadata/Items/Gems/SupportGemOverabundanceTwo",
+                "Metadata/Items/Gem/SupportGemDurability",
+                "Metadata/Items/Gems/SupportGemBlindTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemIceTippedArrows",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemMagnifiedEffectTwo",
+                "Metadata/Items/Gems/SupportGemPrimalArmamentTwo",
+                "Metadata/Items/Gem/SupportGemExpedite",
+                "Metadata/Items/Gems/SupportGemLongshotTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gems/SkillGemGhostDance",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemIngenuityTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gem/SkillGemManaRemnants",
+            "support_skills": [
+                "Metadata/Items/Gem/SupportGemInterludeThree",
+                "Metadata/Items/Gem/SupportGemDissipateTwo"
+            ]
+        },
+        {
+            "id": "Metadata/Items/Gems/SkillGemHeraldOfIce",
+            "support_skills": [
+                "Metadata/Items/Gems/SupportGemMagnifiedEffectTwo",
+                "Metadata/Items/Gems/SupportGemPrimalArmamentTwo",
+                "Metadata/Items/Gems/SupportGemLongshotTwo",
+                "Metadata/Items/Gems/SupportGemColdInfusion",
+                "Metadata/Items/Gems/SupportGemElementalFocus"
+            ]
+        }
+    ],
+    "inventory_slots": [
+        {
+            "inventory_id": "Weapon1",
+            "additional_text": "<gold>{Sockets: 2}\n<silver>{Rare — Gemini Bow}\n<grey>{??????}\n\n<grey>{50% increased Attack Speed (rune)\nBonded: +1 to Level of all Attack Skills (rune)\nBonded: 70% increased Arrow Speed (rune)\n20% less Attack Damage (rune)\n50% increased Attack Damage against Rare or Unique Enemies (rune)\n160% increased Physical Damage\nAdds 32 to 55 Physical Damage\n69% increased Physical Damage\n+162 to Accuracy Rating\n24% increased Attack Speed}\n<grey>{… (+1 more)}\n<grey>{Runes: Farrul's Rune of the Hunt, Legacy of Quill Rain}"
+        },
+        {
+            "inventory_id": "Offhand1",
+            "unique_name": "Cadiro's Gambit",
+            "additional_text": "<unique>{Cadiro's Gambit}\n<grey>{Primed Quiver}"
+        },
+        {
+            "inventory_id": "Helm1",
+            "additional_text": "<gold>{Sockets: 2}\n<silver>{Rare — Ancestral Tiara}\n<grey>{Optimized Helmet}\n\n<grey>{40% increased Armour, Evasion and Energy Shield (rune)\nBonded: +40 to maximum Life (rune)\nBonded: +40 to maximum Mana (rune)\n89% increased Energy Shield\n+89 to maximum Energy Shield\n+44% to Fire Resistance\n+44% to Cold Resistance\n+39% to Lightning Resistance}\n<grey>{Runes: Perfect Iron Rune, Perfect Iron Rune}"
+        },
+        {
+            "inventory_id": "BodyArmour1",
+            "additional_text": "<gold>{Sockets: 2}\n<silver>{Rare — Corsair Coat}\n<grey>{Optimized Body Armour}\n\n<grey>{+30 to Armour (rune)\n+30 to Evasion Rating (rune)\n+10 to maximum Energy Shield (rune)\n20% increased Armour, Evasion and Energy Shield (rune)\nBonded: +40 to maximum Life (rune)\nBonded: +40 to maximum Mana (rune)\n+39% to Cold Resistance\n109% increased Armour and Evasion\n+44% to Fire Resistance\n+198 to maximum Life}\n<grey>{… (+1 more)}\n<grey>{Runes: Rune of Foundations, Perfect Iron Rune}"
+        },
+        {
+            "inventory_id": "Gloves1",
+            "additional_text": "<gold>{Sockets: 2}\n<silver>{Rare — Sirenscale Gloves}\n<grey>{Optimized Gloves}\n\n<grey>{Adds 5 to 12 Physical Damage to Attacks (rune)\n8% increased Attack Speed (rune)\nBonded: 20% reduced Slowing Potency of Debuffs on You (rune)\nBonded: Fissure Skills have +2 to Limit (rune)\n+44% to Cold Resistance\nAdds 23 to 36 Fire damage to Attacks\n+39% to Fire Resistance\nAdds 4 to 69 Lightning damage to Attacks\n+39% to Lightning Resistance}\n<grey>{Runes: Idol of Sirrius, The Greatwolf's Rune of Claws}"
+        },
+        {
+            "inventory_id": "Boots1",
+            "additional_text": "<gold>{Sockets: 2}\n<silver>{Rare — Sekhema Sandals}\n<grey>{??????}\n\n<grey>{40% increased Armour, Evasion and Energy Shield (rune)\nBonded: +40 to maximum Life (rune)\nBonded: +40 to maximum Mana (rune)\n+89 to maximum Energy Shield\n30% increased Movement Speed\n+120 to maximum Life\n+27% to Chaos Resistance\n+30 to Intelligence}\n<grey>{Runes: Perfect Iron Rune, Perfect Iron Rune}"
+        },
+        {
+            "inventory_id": "Amulet1",
+            "additional_text": "<silver>{Rare — Solar Amulet}\n<grey>{??????}\n\n<grey>{+40 to Spirit\n43% increased maximum Energy Shield\n+120 to maximum Life\n+27% to Chaos Resistance\n+30 to Intelligence}"
+        },
+        {
+            "inventory_id": "Ring1",
+            "additional_text": "<silver>{Rare — Biostatic Ring}\n<grey>{Optimized Ring 1}\n\n<grey>{Adds 19 to 30 Cold damage to Attacks\n+30 to Dexterity\nAdds 28 to 44 Fire damage to Attacks\nAdds 4 to 69 Lightning damage to Attacks\n+30 to Strength}"
+        },
+        {
+            "inventory_id": "Ring2",
+            "additional_text": "<silver>{Rare — Biostatic Ring}\n<grey>{Optimized Ring 2}\n\n<grey>{+10 to all Attributes\n+228 to Evasion Rating\n+116 to maximum Life\nAdds 3 to 57 Lightning damage to Attacks\n+30 to Strength}"
+        },
+        {
+            "inventory_id": "Belt1",
+            "unique_name": "Headhunter",
+            "additional_text": "<unique>{Headhunter}\n<grey>{Heavy Belt}"
+        },
+        {
+            "inventory_id": "Flask1",
+            "slot_x": 2,
+            "unique_name": "Nascent Hope",
+            "additional_text": "<unique>{Nascent Hope}\n<grey>{Thawing Charm}"
+        },
+        {
+            "inventory_id": "Flask1",
+            "slot_x": 3,
+            "unique_name": "The Fall of the Axe",
+            "additional_text": "<unique>{The Fall of the Axe}\n<grey>{Silver Charm}"
+        },
+        {
+            "inventory_id": "Flask1",
+            "slot_x": 4,
+            "unique_name": "Rite of Passage",
+            "additional_text": "<unique>{Rite of Passage}\n<grey>{Golden Charm}"
+        },
+        {
+            "inventory_id": "Flask1",
+            "slot_x": 0,
+            "additional_text": "<silver>{Magic — Ultimate Life Flask}\n\n<grey>{Instant Recovery\n50% reduced Amount Recovered\n27% reduced Charges per use}"
+        },
+        {
+            "inventory_id": "Flask1",
+            "slot_x": 1,
+            "additional_text": "<silver>{Magic — Ultimate Mana Flask}\n\n<grey>{99% more Recovery if used while on Low Mana\nGains 0.25 Charges per Second}"
+        }
+    ]
+}

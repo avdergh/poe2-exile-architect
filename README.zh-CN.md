@@ -144,9 +144,20 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 ## 真实产物案例
 
 - [Twister 学习指南](examples/learning-twister.zh-CN.md)：以 100 级 Gemling Legionnaire 为例，通过 14 章内容讲解战斗循环、技能配合、装备与天赋选择。支持在线阅读全文，或下载带图标、搜索与交互说明的 HTML 指南。
-- [95 级 Twister 构筑](examples/create-latest.zh-CN.md)：提供可直接导入 PoB 的完整构筑，以及导入码和在线分享链接，便于查看技能组合、装备配置与天赋选择。
+- [99 级锐眼冰箭 BD（待验证版）](examples/create-latest.zh-CN.md)：冰箭与双幻影配合冻结印记、狙击和龙卷风，使用包含猎首与 Lineage 辅助的成型交易装备。
 
-构筑示例供体验与参考，验证状态见案例说明。
+[![99 级锐眼冰箭的装备与属性展示](examples/assets/deadeye-ice-shot-99.jpg)](https://poe.ninja/poe2/pob/29726)
+
+本例展示 Create 的四种交付产物：
+
+| 产物 | 用途 | 查看或下载 |
+| --- | --- | --- |
+| 完整 PoB XML | 查看和编辑技能、装备、天赋与配置 | [PoB 文件](examples/Deadeye_Ice_Shot_99.xml) |
+| PoB 导入码 | 复制到 PoB 中快速导入 | [导入码](examples/Deadeye_Ice_Shot_99.pobcode.txt) |
+| 官方 `.build` 文件 | 导入官方 Build Planner | [.build 文件](examples/Deadeye_Ice_Shot_99.build) |
+| 在线分享页 | 浏览构筑并与他人分享 | [poe.ninja 页面](https://poe.ninja/poe2/pob/29726) |
+
+主冰箭在 PoB 巅峰首领配置下约 12.62 万 DPS；双幻影等完整输出及部分恢复机制仍待验证。`.build` 的部分内容以说明文本呈现，完整配置以 PoB 为准，具体边界见[案例说明](examples/create-latest.zh-CN.md)。
 
 ## 常见问题
 
