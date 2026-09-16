@@ -14,12 +14,16 @@ def collection_digest(node_ids: list[str]) -> str:
 
 
 def execution_context(root: Path) -> dict[str, str]:
+    files = [root / name for name in (
+        "data/corpus.sqlite", "data/compatibility/corpus.json", "uv.lock"
+    )]
+    files.extend(path for path in sorted((root / "data/raw").rglob("*")) if path.is_file())
     return {
         "commit": os.environ.get("GITHUB_SHA", "local"),
         "pobCommit": os.environ.get("POB_COMMIT", "local"),
         **{
-            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in ("data/corpus.sqlite", "data/compatibility/corpus.json", "uv.lock")
+            path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in files
         },
     }
 

@@ -40,8 +40,10 @@ jobs:
           path: |
             data/corpus.sqlite
             data/compatibility/corpus.json
+            data/raw/
             ci-results/expected.json
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
           overwrite: true
 
@@ -53,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/setup-ci
@@ -80,7 +82,7 @@ jobs:
           trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
           trap 'echo "::error::Test job received SIGTERM"; exit 143' TERM
           uv run python -m pytest -o addopts= -vv -p scripts.ci_pytest \
-            --ci-shard-index "$CI_SHARD_INDEX" --ci-shard-count 6 \
+            --ci-shard-index "$CI_SHARD_INDEX" --ci-shard-count 8 \
             --ci-manifest ci-results/selection.json \
             --junitxml ci-results/pytest.xml --durations=20
       - name: Preserve test and resource reports
@@ -124,4 +126,4 @@ jobs:
       - name: Verify complete test coverage
         run: |
           python3 scripts/verify_ci_coverage.py \
-            --expected ci-inputs/ci-results/expected.json --results ci-results --count 6
+            --expected ci-inputs/ci-results/expected.json --results ci-results --count 8

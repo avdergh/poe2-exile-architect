@@ -202,7 +202,9 @@ def test_product_readme_and_guides_use_poe_bd_research_entrypoint():
     assert "poe-bd-research-worker" in guide
     assert "opaque `runRef`" in guide
     assert "my-build.txt" in readme
-    assert "poe.ninja" not in readme
+    research_usage = readme.split("### Research", maxsplit=1)[1].split("### Create", maxsplit=1)[0]
+    # Research input examples stay local; user-approved Create share links are allowed.
+    assert "poe.ninja" not in research_usage
     assert "docs/" not in readme
     assert "No-Argument Behavior" in controller
     assert "--resume --run-ref REF" in controller

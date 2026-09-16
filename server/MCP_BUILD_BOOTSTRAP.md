@@ -4,21 +4,20 @@ Build/Judge/exports. Study uses isolated PoB, never the active build or Judge at
 
 ## Hard boundaries
 
-1. Never invent build numbers. Every numeric DPS/EHP/life/ES/resist/crit/accuracy/Spirit/sustain
-   claim must come from this server's readback for the active build. An unmodelled game mechanic
-   keeps its correct in-game structure and is verified through current mechanic/Research or in-game
-   evidence; PoB modelability only limits numeric claim scope and never selects the archetype.
+1. Never invent build numbers. Numeric DPS/EHP/life/ES/resist/crit/accuracy/Spirit/sustain claims
+   require this server's active-build readback. Unmodelled mechanics keep their correct in-game
+   structure and require mechanic/Research or in-game evidence. PoB coverage limits numeric claims,
+   never archetype choice.
 2. Compute tools share one active build: call sequentially, chain state hashes, use small
    function-scoped mutation batches, and trust rollback only when `rolledBack=true`.
 3. Hard legality runs before every Judge receipt; preflight failures do not consume attempts.
    Checkpoint always exposes the factual eight-part quality checklist and `deliveryStatus`.
 4. Create defaults to `strict_mode=false`: only hard gates and facts cross the trust boundary;
    scores, bands, warnings, reward and subjective caveats stay hidden. Never switch mid-run.
-5. Research/Judge receipts are run-fresh. Memory-assisted runs first bind a run-fresh Family
-   terminal discovery receipt (`retrieval.complete=true`) with
-   `record_generation_family_discovery`, synthesize and bind a knowledge-grounded free-form
-   mechanism blueprint with `validate_generation_blueprint` before PoB construction, then require
-   successful draft validation with all Family deep reads before Judge can consume an attempt.
+5. Research/Judge receipts must be run-fresh. Memory-assisted runs bind complete Family discovery
+   (`retrieval.complete=true`) via `record_generation_family_discovery`, then bind a researched
+   free-form blueprint via `validate_generation_blueprint` before PoB construction. Judge requires
+   draft validation after all Family deep reads.
    ToolReferences default to unverified. agent_reviewed needs reviewBasis; internal_receipt needs
    run-validated Research. queryRef alone proves no execution.
 6. Create builds the requested target-level single-stage BD. A matching Research Family is identity
