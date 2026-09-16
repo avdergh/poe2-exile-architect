@@ -294,10 +294,28 @@ def test_engine_reports_tree_version(engine):
     assert engine.info.get("treeVersion")
 
 
-def test_engine_health_reports_versions():
-    from server.main import engine_health
+@pytest.mark.parametrize("started", [False, True], ids=["not-started", "running"])
+def test_engine_health_reports_versions(monkeypatch, started):
+    from types import SimpleNamespace
+    from server import main
 
-    h = engine_health()
-    assert h["pong"] is True
+    info = {"treeVersion": "0_5", "runtimeContract": main.paths.POB_RUNTIME_CONTRACT}
+    engine = SimpleNamespace(
+        info=info, health_snapshot=lambda: {"processRunning": True, "engineBusy": False}
+    )
+    # Health observes an existing engine; its pool cannot start one or issue a ping.
+    monkeypatch.setattr(
+        main, "_engine_pool", SimpleNamespace(peek=lambda _session: (engine if started else None, False))
+    )
+    monkeypatch.setattr(
+        main, "_session_call_gate", SimpleNamespace(status=lambda _session: {"busy": False})
+    )
+    h = main.engine_health()
+    assert h["status"] == ("idle" if started else "not_started")
+    assert h["readOnly"] is True
+    assert h["observationScope"] == "process_and_activity_only"
+    assert "pong" not in h
     assert h["serverVersion"] and h["dataSource"] in {"bundled", "user-data"}
-    assert h["treeVersion"]
+    assert h["treeVersion"] == (info["treeVersion"] if started else None)
+    assert h["runtimeContract"] == (info["runtimeContract"] if started else None)
+    assert h["requiredRuntimeContract"] == main.paths.POB_RUNTIME_CONTRACT
