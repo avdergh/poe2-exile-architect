@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 from server import main
 from server.knowledge import graph_tools as gt
@@ -863,9 +864,7 @@ def test_run_phase3_graph_tool_benchmark_script_writes_artifacts():
     try:
         result = subprocess.run(
             [
-                str(repo_root / ".tools" / "uv" / "uv.exe"),
-                "run",
-                "python",
+                sys.executable,
                 "scripts/run_phase3_graph_tool_benchmark.py",
             ],
             cwd=repo_root,

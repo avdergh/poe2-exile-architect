@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -9,12 +8,31 @@ import pytest
 from scripts import run_judge_ninja_samples
 
 
-def test_discover_playwright_runtime_tracks_current_codex_runtime_hash(tmp_path):
+@pytest.mark.parametrize(
+    ("os_name", "platform", "runtime_parent", "browser_executable"),
+    [
+        ("nt", "win32", "AppData/Local", "chrome-win64/chrome.exe"),
+        ("posix", "linux", ".local/share", "chrome-linux/chrome"),
+        (
+            "posix",
+            "darwin",
+            "Library/Application Support",
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        ),
+    ],
+    ids=["windows", "linux", "macos"],
+)
+def test_discover_playwright_runtime_tracks_current_codex_runtime_hash(
+    tmp_path, monkeypatch, os_name, platform, runtime_parent, browser_executable
+):
+    # Simulate the discovery module's platform without changing pathlib's host platform.
+    monkeypatch.setattr(run_judge_ninja_samples, "os", SimpleNamespace(name=os_name))
+    monkeypatch.setattr(run_judge_ninja_samples, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(run_judge_ninja_samples.shutil, "which", lambda _name: None)
     home = tmp_path / "home"
     runtime_bin = (
         home
-        / "AppData"
-        / "Local"
+        / runtime_parent
         / "OpenAI"
         / "Codex"
         / "runtimes"
@@ -26,10 +44,10 @@ def test_discover_playwright_runtime_tracks_current_codex_runtime_hash(tmp_path)
     playwright.mkdir(parents=True)
     (playwright / "package.json").write_text("{}", encoding="utf-8")
     (playwright / "index.js").write_text("module.exports = {};", encoding="utf-8")
-    node = runtime_bin / ("node.exe" if os.name == "nt" else "node")
+    node = runtime_bin / ("node.exe" if os_name == "nt" else "node")
     node.write_bytes(b"node")
     browser_root = tmp_path / "local" / "ms-playwright" / "chromium-9999"
-    chromium = browser_root / "chrome-win64" / "chrome.exe"
+    chromium = browser_root / browser_executable
     chromium.parent.mkdir(parents=True)
     chromium.write_bytes(b"chrome")
 

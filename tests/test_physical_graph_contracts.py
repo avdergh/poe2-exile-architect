@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -5393,9 +5394,7 @@ def test_run_phase2_acceptance_artifact_script_writes_json(tmp_path):
     try:
         result = subprocess.run(
             [
-                str(repo_root / ".tools" / "uv" / "uv.exe"),
-                "run",
-                "python",
+                sys.executable,
                 "scripts/run_phase2_acceptance_artifact.py",
             ],
             cwd=repo_root,
@@ -5444,9 +5443,7 @@ def test_run_phase2_acceptance_artifact_script_can_emit_reviewed_pass_report(tmp
     try:
         result = subprocess.run(
             [
-                str(repo_root / ".tools" / "uv" / "uv.exe"),
-                "run",
-                "python",
+                sys.executable,
                 "scripts/run_phase2_acceptance_artifact.py",
                 "--default-review-grade",
                 "pass",
