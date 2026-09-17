@@ -411,6 +411,67 @@ def test_stale_final_audit_blocks_judge_without_consuming_attempt(tmp_path, monk
     assert not (run_dir / "trusted-evaluations").exists()
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["support_audit_stale:1", "support_audit_inconclusive:1", "positive_gain_supports_missing:1"],
+)
+def test_real_checkpoint_and_judge_report_the_same_final_gate(tmp_path, monkeypatch, reason):
+    run_id, token, run_dir = _bound_run(tmp_path, monkeypatch)
+    checkpoint = evaluation.validation_checkpoint
+    checkpoint.clear_validation_checkpoint_cache()
+    monkeypatch.setattr(
+        checkpoint.completeness, "inspect_build_completeness",
+        lambda *_args, **_kwargs: {"hardFailures": []},
+    )
+    monkeypatch.setattr(
+        checkpoint.preflight, "inspect_generation_snapshot",
+        lambda *_args, **_kwargs: {
+            "readyForJudge": True, "hardLegalityReady": True, "blockingIssues": [],
+        },
+    )
+    audit = {"status": "failed", "reasons": [reason]}
+    monkeypatch.setattr(
+        checkpoint, "_create_quality_checklist",
+        lambda **_kwargs: {
+            "skillSupportAudit": dict(audit),
+            "jewelDecision": {"status": "passed"},
+            "itemSockets": {"status": "passed"},
+            "sustain": {"status": "unknown"},
+        },
+    )
+    monkeypatch.setattr(
+        evaluation.runner, "safe_evaluate_active_build",
+        lambda *_args, **_kwargs: pytest.fail("Judge must not run"),
+    )
+    engine = _CheckpointActiveEngine()
+    observed = checkpoint.inspect_generation_checkpoint(engine)
+    assert observed["hardLegalityReady"] is True
+    assert observed["preflightReady"] is True
+    assert observed["finalChecksReady"] is False
+    assert observed["readyForJudge"] is False
+    assert observed["status"] == observed["deliveryStatus"] == "blocked"
+    evaluated = evaluation.evaluate_generation_candidate(
+        engine, run_id=run_id, run_token=token,
+        candidate_id="candidate:test:shared-gate", version_context=_version_context(),
+        engine_factory=_JudgeEngine,
+    )
+    assert evaluated["errorCode"] == "generation_final_checks_incomplete"
+    assert evaluated["finalCheckBlockers"] == observed["finalCheckBlockers"]
+    assert evaluated["attemptConsumed"] is False
+    assert not (run_dir / "trusted-evaluations").exists()
+    # Dynamic evidence can become complete without changing PoB. A cache hit must refresh
+    # readiness in both directions rather than preserving a previous blocked/ready flag.
+    audit.update(status="passed", reasons=[])
+    refreshed = checkpoint.inspect_generation_checkpoint(engine)
+    assert refreshed["cacheHit"] is True
+    assert refreshed["readyForJudge"] is True
+    assert refreshed["finalCheckBlockers"] == []
+    assert refreshed["deliveryStatus"] == "candidate"  # sustain is still unknown
+    audit.update(status="failed", reasons=[reason])
+    assert checkpoint.inspect_generation_checkpoint(engine)["readyForJudge"] is False
+    checkpoint.clear_validation_checkpoint_cache()
+
+
 @pytest.mark.parametrize("gap_kind", ["rate", "inconsistent", "declared", "both"])
 def test_current_runtime_verified_support_capability_gap_can_reach_judge(gap_kind):
     reasons = [] if gap_kind == "declared" else ["trigger_rate_unmodelled"]

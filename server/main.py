@@ -10,6 +10,8 @@ assistant-facing operating guide via the MCP `instructions` channel.
 from __future__ import annotations
 
 import json
+import inspect
+from functools import wraps
 import os
 import re
 import threading
@@ -30,6 +32,7 @@ from .compute.engine import PobEngine
 from .compute.defense_state import has_chaos_inoculation
 from .compute.engine_pool import (
     SessionCallGate,
+    SessionComputeBusy,
     SessionEnginePool,
     current_session,
     reset_current_session,
@@ -89,6 +92,8 @@ from .build_planner import exporter as build_planner_exporter
 from .runtime import tool_telemetry
 from .runtime.tool_execution import threaded_tool
 from .runtime import task_cleanup
+from .runtime import craft_receipts
+from .runtime.compute_operations import ComputeOperations, COMPUTE_BUDGETS
 from .study import service as study_service
 from .study.storage import StudyError
 
@@ -108,11 +113,45 @@ except OSError:
 
 _engine_pool = SessionEnginePool()
 _session_call_gate = SessionCallGate()
+_compute_operations = ComputeOperations()
+
+
+def _compute_runtime_context(engine: Any) -> dict[str, Any]:
+    return craft_receipts.current_runtime_context(getattr(engine, "info", None))
+
+
+def _compute_tool_adapter(function: Any) -> Any:
+    """FastMCP validates the original schema before this async admission layer runs."""
+    signature = inspect.signature(function, eval_str=True)
+    synchronous = threaded_tool(function)
+
+    @wraps(function)
+    async def run(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        arguments = dict(bound.arguments)
+        background = arguments.pop("background", False)
+        session = current_session()
+        if background:
+            return await _compute_operations.submit(
+                session, tool=function.__name__, arguments=arguments, function=function,
+                gate=_session_call_gate, pool=_engine_pool,
+                runtime_context=_compute_runtime_context,
+            )
+        try:
+            async with _session_call_gate.hold(session, tool_name=function.__name__):
+                return await synchronous(**arguments)
+        except SessionComputeBusy as exc:
+            return {"ok": False, "errorCode": "compute_busy", "operationId": exc.operation_id}
+
+    run.__signature__ = signature
+    return run
 
 
 class _SessionIsolatedFastMCP(FastMCP):
     def add_tool(self, fn: Any, *args: Any, **kwargs: Any) -> None:
-        super().add_tool(threaded_tool(fn), *args, **kwargs)
+        wrapped = _compute_tool_adapter(fn) if fn.__name__ in COMPUTE_BUDGETS else threaded_tool(fn)
+        super().add_tool(wrapped, *args, **kwargs)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         started = time.perf_counter()
@@ -124,11 +163,19 @@ class _SessionIsolatedFastMCP(FastMCP):
             session = None
         token = set_current_session(session)
         try:
-            if name in {"apply_updates", "engine_health"}:
+            if name == "apply_updates" and _session_call_gate.has_operations():
+                result = {"ok": False, "errorCode": "compute_busy"}
+            elif name in {
+                "apply_updates", "engine_health", "get_compute_operation", "cancel_compute_operation",
+                *COMPUTE_BUDGETS,
+            }:
                 result = await super().call_tool(name, arguments)
             else:
                 async with _session_call_gate.hold(session, tool_name=name):
                     result = await super().call_tool(name, arguments)
+            return result
+        except SessionComputeBusy as exc:
+            result = {"ok": False, "errorCode": "compute_busy", "operationId": exc.operation_id}
             return result
         except Exception:
             failed = True
@@ -323,7 +370,7 @@ def _apply_public_config_mutation(
 
 @contextmanager
 def _runtime_install_context(replace_engine: bool):
-    with _session_call_gate.maintenance_sync():
+    with _session_call_gate.maintenance_sync(wait=False):
         context = _engine_pool.preserve_sessions() if replace_engine else nullcontext()
         with context:
             yield
@@ -2229,9 +2276,13 @@ def optimize_supports(
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
     availability_reviews: list[supportopt.gem_availability.SupportAvailabilityReview] | None = None,
+    purpose: Literal["final_audit", "exploration"] = "final_audit",
+    background: bool = False,
 ) -> dict[str, Any]:
     """Compare complete support sets for one exact active effect using PoB.
 
+    Pass background=true for a process-local operation ID; poll get_compute_operation.
+    Cancellation is cooperative and never releases a temporary build before restoration.
     Known removed gems are excluded by exact ID before measurement. If an Agent finds a new
     removal, read official evidence and independent corroboration, then pass availability_reviews
     with the exact componentKey and targetPatch. These engine-session exclusions are explicitly
@@ -2261,6 +2312,8 @@ def optimize_supports(
     and complete constraints retain unknown/candidate status, not a numeric pass or zero gain.
     Greedy, not a global optimum.
     """
+    if background:
+        return {"ok": False, "errorCode": "background_requires_mcp_session"}
     return supportopt.optimize_supports(
         get_engine(),
         metric=metric,
@@ -2272,6 +2325,7 @@ def optimize_supports(
         max_mana_cost=max_mana_cost,
         spirit_limit=spirit_limit,
         availability_reviews=availability_reviews,
+        purpose=purpose,
     )
 
 
@@ -2359,9 +2413,11 @@ def optimize_item_sockets(
     socket_count: int,
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Preserve an equipped ordinary item and optimize only 1-2 rune/soul-core sockets.
 
+    Pass background=true to return an operation ID instead of waiting for the search.
     Reads current PoB `crafting_options`, keeps the base, item level, implicit and every explicit,
     then returns the incrementally socketed item plus a `craftReceiptRef` for `equip_item`. A valid
     no-benefit result may be unchanged; Create should evaluate each socketable item, not blindly fill
@@ -2371,6 +2427,8 @@ def optimize_item_sockets(
     endgame; pass explicit 75 targets only when the user requires capped resistances.
     """
 
+    if background:
+        return {"ok": False, "errorCode": "background_requires_mcp_session"}
     return craftopt.optimize_item_sockets(
         get_engine(),
         slot=slot,
@@ -2387,15 +2445,19 @@ def plan_item_sockets_batch(
     goals: dict[str, float],
     elemental_resist_target: int | None = None,
     chaos_resist_target: int | None = None,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Plan Rune/Soul Core decisions for up to eight equipped slots in one read-only call.
 
+    Pass background=true for one operation with a shared cooperative batch deadline.
     Socket capacity is preserved independently from the number of beneficial Runes. A partial
     result first reports ``partial_socketed``; trusted equip carries it to ``partial_no_positive``
     for the remaining holes. Only receipt-verified Rune
     effects count as installed during the later quality check.
     """
 
+    if background:
+        return {"ok": False, "errorCode": "background_requires_mcp_session"}
     return craftopt.plan_item_sockets_batch(
         get_engine(),
         slot_socket_counts=slot_socket_counts,
@@ -2536,6 +2598,36 @@ def _server_version() -> str:
         )
     except (OSError, ValueError):
         return "unknown"
+
+
+@mcp.tool()
+def get_compute_operation(operation_id: str) -> dict[str, Any]:
+    """Read a background result owned by this session without entering the PoB gate.
+
+Results live only in this process/session (32 completed results, FIFO). Restart, eviction,
+or a different session returns result_unavailable, never recomputation. completed means
+the computation and restoration ended, not that its embedded result passed an audit.
+"""
+    result = _compute_operations.get(current_session(), operation_id)
+    if result.get("engineGeneration") is not None:
+        engine, busy = _engine_pool.peek(current_session())
+        result["engineBindingCurrent"] = (
+            not busy and engine is not None
+            and getattr(engine, "_poe_compute_generation", None) == result["engineGeneration"]
+            and engine.proc.poll() is None
+            and _compute_runtime_context(engine) == result.get("runtimeContext")
+        )
+    return result
+
+
+@mcp.tool()
+def cancel_compute_operation(operation_id: str) -> dict[str, Any]:
+    """Request a cooperative stop at the next candidate boundary; no hard kill.
+
+cancel_requested is not cancelled. RPCs already running and state restoration must finish.
+A final publication already in progress wins a late cancellation. Poll the same operation.
+"""
+    return _compute_operations.cancel(current_session(), operation_id)
 
 
 @mcp.tool()
@@ -3341,6 +3433,8 @@ def _compact_lifecycle_verification_response(result: dict[str, Any]) -> dict[str
         "offense",
     )
     compact: dict[str, Any] = {
+        "scope": result.get("scope", "selected_skill_only"),
+        "rotationCovered": result.get("rotationCovered", False),
         "ok": result.get("ok"),
         "stage": result.get("stage"),
         "status": result.get("status"),

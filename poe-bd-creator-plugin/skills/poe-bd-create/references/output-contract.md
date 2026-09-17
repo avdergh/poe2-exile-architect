@@ -8,6 +8,10 @@
 
 模板的 `researchMemoryUse / researchExecutionPlan / mechanismBlueprint` 初始为 null，不能据此省掉匹配模式所需的嵌套合同。四种对象各负其责：
 
+`start_generation_run.agentInputContracts` 提供从实际模型派生的输入schema及共享定义，
+按本次填写的对象查约束，不猜数组上限、引用格式或理由长度，也不要把schema塞进candidate。
+重复且仍合法的Draft返回 `already_validated` 时沿用原验证；它不刷新时间、不替代状态变化后的重验。
+
 | 对象 | 责任 |
 | --- | --- |
 | `researchMemoryUse` 的 insight/premise 决策 | 已召回证据的实际利用、逐组件subject决定、失败前提处置 |

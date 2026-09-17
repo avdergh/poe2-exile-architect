@@ -70,6 +70,7 @@ def test_item_text_keeps_the_affix_pool_item_level():
 
     assert "Item Level: 58" in item
     assert "Charm Slots: 1" in item
-    assert "Implicits: 1" in item
+    assert "Implicits: 2" in item
     assert "Has 1 Charm Slot" in item
-    assert item.index("Item Level: 58") < item.index("Implicits: 1")
+    assert "Flasks gain 0.17 charges per Second" in item
+    assert item.index("Item Level: 58") < item.index("Implicits: 2")

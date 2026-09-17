@@ -24,6 +24,7 @@ class _SlotRegressionEngine:
                 "Ring 2",
             )
         }
+        self.before_gear['Amulet']['base'] = 'Gold Amulet'
 
     def get_build(self):
         gear = dict(self.before_gear)

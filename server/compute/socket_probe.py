@@ -3,11 +3,55 @@
 from __future__ import annotations
 
 import re
+import hashlib
+from copy import deepcopy
 from typing import Any
 from xml.sax.saxutils import escape
 
 from .pob_xml_input import parse_pob_xml
 from .state import _semantic_element, build_state_hash, canonical_payload_hash
+
+
+class SocketProbeInputError(ValueError):
+    def __init__(self, expected: str, observed: str):
+        super().__init__("socket_probe_non_item_inputs_changed")
+        self.details = {"inputDiff": semantic_input_diff(expected, observed)}
+
+
+def semantic_input_diff(expected: str, observed: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Bounded semantic field differences, without copying item/XML bodies into diagnostics."""
+    left, right = _semantic_element(parse_pob_xml(expected)), _semantic_element(parse_pob_xml(observed))
+    result: list[dict[str, Any]] = []
+
+    def safe(value):
+        if value is None or isinstance(value, (int, float, bool)):
+            return value
+        value = str(value)
+        if len(value) <= 96 and '\n' not in value:
+            return value
+        return 'sha256:' + hashlib.sha256(value.encode()).hexdigest()
+
+    def walk(a, b, path):
+        if a == b or len(result) >= limit:
+            return
+        if a is None or b is None or a[0] != b[0]:
+            result.append({'path': path, 'change': 'node_identity', 'expected': a[0] if a else None, 'observed': b[0] if b else None})
+            return
+        aa, ba = dict(a[1]), dict(b[1])
+        for key in sorted(aa.keys() | ba.keys()):
+            if aa.get(key) != ba.get(key) and len(result) < limit:
+                result.append({'path': path + '/@' + key, 'expected': safe(aa.get(key)), 'observed': safe(ba.get(key))})
+        if a[2] != b[2] and len(result) < limit:
+            result.append({'path': path + '/text()', 'expected': safe(a[2]), 'observed': safe(b[2])})
+        counts: dict[str, int] = {}
+        for index in range(max(len(a[3]), len(b[3]))):
+            av = a[3][index] if index < len(a[3]) else None
+            bv = b[3][index] if index < len(b[3]) else None
+            tag = (av or bv)[0]
+            counts[tag] = counts.get(tag, 0) + 1
+            walk(av, bv, path + '/' + tag + '[' + str(counts[tag]) + ']')
+    walk(left, right, '/' + left[0])
+    return result
 
 
 def has_source_groups(xml: str) -> bool:
@@ -77,10 +121,64 @@ def load_candidate(engine: Any, snapshot: str, slot: str, raw: str) -> None:
     # inputs survived, including inactive sets, source supports and source item IDs.
     observed = replace_equipped_item(engine.get_xml(), slot, "", _mask_contents=True)
     expected = replace_equipped_item(snapshot, slot, "", _mask_contents=True)
-    if build_state_hash(observed) != build_state_hash(
-        expected
-    ) and not _only_new_default_derived_groups(engine, expected, observed):
-        raise ValueError("socket_probe_non_item_inputs_changed")
+    if build_state_hash(observed) != build_state_hash(expected):
+        normalized = _item_grant_level_projection(engine, expected, observed)
+        if normalized is not None:
+            same = canonical_payload_hash(_semantic_element(normalized[0])) == canonical_payload_hash(_semantic_element(normalized[1]))
+        else:
+            same = False
+        if not same and not _only_new_default_derived_groups(engine, *(normalized or (expected, observed))):
+            raise SocketProbeInputError(expected, observed)
+
+
+def _item_grant_level_projection(engine: Any, expected: str, observed: str) -> tuple[Any, Any] | None:
+    """Allow only a real, same-owner item's native attribute-dependent root level.
+
+    Supports and every other group field remain exact. This read-only projection is never loaded
+    into PoB. Authority comes from the runtime's source-bound itemGrantedLevelForSocketGroup.
+    """
+    before, after = parse_pob_xml(expected), parse_pob_xml(observed)
+    before_skills, after_skills = before.find('Skills'), after.find('Skills')
+    if before_skills is None or after_skills is None:
+        return None
+    active_id = before_skills.get('activeSkillSet') or '1'
+    if (after_skills.get('activeSkillSet') or '1') != active_id:
+        return None
+    old_active = next((node for node in before_skills.findall('SkillSet') if node.get('id') == active_id), None)
+    new_active = next((node for node in after_skills.findall('SkillSet') if node.get('id') == active_id), None)
+    if old_active is None or new_active is None:
+        return None
+    prior = list(before.iter('Skill'))
+    current = list(after.iter('Skill'))
+    if len(prior) != len(current):
+        return None
+    changed = []
+    for old, new in zip(prior, current):
+        og, ng = old.find('Gem'), new.find('Gem')
+        if og is None or ng is None or og.get('level') == ng.get('level'):
+            continue
+        if not (old in list(old_active) and new in list(new_active)
+                and old.get('source', '').startswith('Item:') and old.get('source') == new.get('source')
+                and old.get('slot') == new.get('slot') and og.get('skillId') == ng.get('skillId')):
+            return None
+        changed.append((old, new, og, ng))
+    if not changed:
+        return None
+    runtime = engine.call('list_skill_groups')
+    for old, new, og, ng in changed:
+        matches = [row for row in runtime.get('groups', []) if row.get('source') == new.get('source')
+                   and row.get('slot') == new.get('slot') and row.get('rootSkillId') == ng.get('skillId')]
+        if len(matches) != 1:
+            return None
+        group = matches[0]
+        gems = group.get('gems') or []
+        root = next((gem for gem in gems if gem.get('effectId') == ng.get('skillId') and not gem.get('isSupport')), None)
+        if not (group.get('sourceKind') == 'item' and root and root.get('levelAuthority') == 'item_grant'
+                and root.get('levelRequirementMet') is True and str(root.get('level')) == ng.get('level')):
+            return None
+        og.attrib.pop('level', None)
+        ng.attrib.pop('level', None)
+    return before, after
 
 
 # Pinned CalcSetup's item-derived, non-supportable effect groups. These are engine
@@ -142,7 +240,8 @@ def _only_new_default_derived_groups(engine: Any, expected: str, observed: str) 
     No existing group is masked, and no selected or full-DPS group can be exempted.
     This private hash projection is never serialized back to the active build.
     """
-    before, after = parse_pob_xml(expected), parse_pob_xml(observed)
+    before = parse_pob_xml(expected) if isinstance(expected, str) else deepcopy(expected)
+    after = parse_pob_xml(observed) if isinstance(observed, str) else deepcopy(observed)
     existing_sources = {group.get("source") for group in before.iter("Skill")}
     additions = [
         group

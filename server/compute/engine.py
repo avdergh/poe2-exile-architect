@@ -348,6 +348,19 @@ class PobEngine:
             expectedEffectId=expected_effect_id,
         )
 
+    def probe_source_skill_group(
+        self, *, group_index: int, source: str, support_ids: list[str],
+        active_skill_index: int, expected_skill_name: str, keys: list[str],
+        objective_keys: list[str], expected_effect_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically measure real source supports after the caller restores its full baseline."""
+        return self.call(
+            "probe_source_skill_group", index=group_index, expectedSource=source,
+            supportGemIds=support_ids, activeSkillIndex=active_skill_index,
+            expectedSkillName=expected_skill_name, expectedEffectId=expected_effect_id,
+            keys=keys, objectiveKeys=objective_keys,
+        )
+
     def add_skill_group(self, text: str, include_in_full_dps: bool = False) -> dict[str, Any]:
         return self.call(
             "add_skill_group",

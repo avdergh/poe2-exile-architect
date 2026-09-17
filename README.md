@@ -104,6 +104,12 @@ If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_resea
 
 `engine_health` observes process and tool activity without starting or resetting PoB. `not_started` is normal before the first calculation, and `busy` means work is still running; neither certifies the build or calls for `new_build`.
 
+Support and socket optimization also accept `background=true`: the tool returns an operation ID
+so `get_compute_operation` can retrieve the complete result without restarting the search.
+`cancel_compute_operation` requests cancellation at a safe calculation boundary. Only one
+calculation runs per session, and results are retained in that server process, not across restarts.
+Execution completion is separate from audit success; final support checks use `purpose="final_audit"`.
+
 ## Use it
 
 Send these requests **in your agent conversation**, with the relevant file attached. These are example prompts, not terminal commands. You can also select the named skill through your host's skill menu.

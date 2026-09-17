@@ -104,6 +104,11 @@ bash install.sh --from-checkout dsh
 
 `engine_health` 只观察进程和工具活动，不启动或重置 PoB。首次计算前的 `not_started` 属于正常状态，`busy` 表示任务仍在运行；两者都不认证构筑，也不要求执行 `new_build`。
 
+辅助与镶嵌优化支持 `background=true`：先返回操作ID，再用 `get_compute_operation` 取回完整结果，
+无需重新搜索。`cancel_compute_operation` 在安全计算边界请求取消；每个会话仍只运行一项计算，
+结果保留在当前服务进程，不支持跨重启恢复。执行结束与审计通过分别判断，最终辅助检查使用
+`purpose="final_audit"`。
+
 ## 使用方式
 
 把下面的请求**发送到 Agent 对话中**，需要已有 BD 时附上文件。这些是使用示例，不是终端命令；也可以通过宿主的 skill 菜单选择对应功能。

@@ -7,12 +7,88 @@ from copy import deepcopy
 from typing import Any
 import xml.etree.ElementTree as ET
 
-from server.compute import completeness
+from server.compute import completeness, supportopt
 from server.compute.defense_state import defense_keystones
 from server.judge import hard_legality, rules
 
 
 _OBJECTIVE_COMPLETENESS_ADVISORIES = frozenset({"spirit_opportunity_review_required"})
+
+
+def final_check_blockers(checklist: dict[str, Any]) -> list[str]:
+    """Shared deterministic final-evidence gate for checkpoints and formal evaluation.
+
+    Unknown is not a blanket exemption: only the same current, typed capability/policy gaps
+    accepted by the formal gate can continue. This function does not inspect or mutate PoB.
+    """
+
+    blockers: list[str] = []
+    for name in ("skillSupportAudit", "jewelDecision", "itemSockets"):
+        item = checklist.get(name) if isinstance(checklist, dict) else None
+        if not isinstance(item, dict):
+            blockers.append(f"{name}:missing_result")
+            continue
+        status = item.get("status")
+        if status in {"passed", "not_applicable"}:
+            continue
+        if status not in {"failed", "unknown"}:
+            blockers.append(f"{name}:invalid_status")
+            continue
+        if name == "skillSupportAudit" and status == "unknown":
+            groups = item.get("groupResults") or []
+            if groups and all(
+                isinstance(group, dict)
+                and (
+                    group.get("status") == "passed"
+                    or (
+                        group.get("status") == "unknown"
+                        and group.get("freshness") == "current"
+                        and group.get("auditVersion") == "support_audit_v5"
+                        and group.get("reasonClass") == "capability_gap"
+                        and group.get("verificationRequired") is True
+                        and supportopt.support_capability_is_model_gap(group.get("capability"))
+                    )
+                )
+                for group in groups
+            ):
+                continue
+        if name == "jewelDecision" and status == "unknown":
+            jewel_reasons = {str(value) for value in item.get("reasons") or []}
+            allowed_reasons = {
+                "selected_candidate_socket_policy_limited",
+                "selected_candidate_socket_probe_inconclusive",
+            }
+            executed = sum(
+                int(item.get(key) or 0)
+                for key in (
+                    "evaluatedSocketCount",
+                    "limitedSocketCount",
+                    "inconclusiveSocketCount",
+                )
+            )
+            if (
+                item.get("evidenceFreshness") == "current"
+                and item.get("reviewPolicyVersion") == "jewel_socket_review_v2"
+                and item.get("protectionDeclared") is True
+                and bool(jewel_reasons)
+                and jewel_reasons <= allowed_reasons
+                and executed > 0
+            ):
+                continue
+        reasons = [str(value) for value in item.get("reasons") or []]
+        if not reasons:
+            reasons = ["failed_without_reason"]
+        blockers.extend(f"{name}:{value}" for value in reasons)
+    sustain_item = checklist.get("sustain") if isinstance(checklist, dict) else None
+    if not isinstance(sustain_item, dict):
+        blockers.append("sustain:missing_result")
+    elif sustain_item.get("status") == "failed":
+        blockers.extend(
+            f"sustain:{value}" for value in sustain_item.get("reasons") or ["unsustainable"]
+        )
+    elif sustain_item.get("status") not in {"passed", "unknown", "not_applicable"}:
+        blockers.append("sustain:invalid_status")
+    return sorted(set(blockers))
 
 
 def inspect_generation_preflight(
@@ -150,6 +226,7 @@ def inspect_generation_snapshot(
     return {
         "status": "blocked" if blocking else ("needs_attention" if advisories else "ready"),
         "readyForJudge": not blocking,
+        "readinessScope": "structural_preflight_only",
         "blockingIssues": blocking,
         "hardLegality": legality,
         "hardLegalityReady": bool(legality.get("hardLegalityReady")),

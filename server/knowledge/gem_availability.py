@@ -66,6 +66,22 @@ def _load(path: Path, mtime: int, size: int) -> dict[str, Any]:
             raise ValueError("invalid_gem_availability_identity_binding")
         used.update(ids)
         _patch(entry["sincePatch"])
+    source_used: set[str] = set()
+    for entry in payload.get("sourceRestrictions", []):
+        ids = set(entry["gemIds"])
+        if (
+            not ids or ids & source_used
+            or entry["componentKey"] not in {"gem:" + key for key in ids}
+            or entry.get("ordinaryGemAllowed") is not False
+            or not entry.get("allowedSourceKinds")
+            or not set(entry["allowedSourceKinds"]) <= {"item", "tree"}
+            or not entry.get("sourceRefs")
+            or not set(entry["sourceRefs"]) <= sources
+            or not entry.get("effectIds")
+        ):
+            raise ValueError("invalid_gem_source_identity_binding")
+        _patch(entry["verifiedPatch"])
+        source_used.update(ids)
     return {**payload, "catalogRef": fingerprint(payload)}
 
 
@@ -112,6 +128,37 @@ def unavailable_ids(*, target_patch: str | None = None) -> set[str]:
     }
 
 
+def inspect_acquisition(gem_ids: list[str], *, target_patch: str | None = None) -> dict[str, Any]:
+    """Report only explicitly reviewed provider requirements, never infer them from tier zero.
+
+    Unlike a historical removal, an acquisition review is bound to its exact patch. A future
+    patch must be reviewed again before this catalogue can reject an ordinary gem.
+    """
+    data = catalog()
+    target = target_patch or data["targetPatch"]
+    _patch(target)
+    ids = {str(key).removeprefix("gem:") for key in gem_ids}
+    for entry in data.get("sourceRestrictions", []):
+        # A historical removal has monotonic patch semantics; an acquisition review does not.
+        # Keep hotfix suffixes so a review of 0.5.5 cannot certify an unreviewed 0.5.5a/a1.
+        if ids.intersection(entry["gemIds"]) and target == entry["verifiedPatch"]:
+            return {
+                "status": "requires_provider",
+                "ordinaryGemAllowed": False,
+                "allowedSourceKinds": list(entry["allowedSourceKinds"]),
+                "componentKey": entry["componentKey"],
+                "providerNames": list(entry.get("providerNames") or []),
+                "targetPatch": target,
+                "catalogRef": data["catalogRef"],
+                "evidenceKind": "static_source",
+                "sourceRefs": list(entry["sourceRefs"]),
+            }
+    return {
+        "status": "unknown", "ordinaryGemAllowed": None,
+        "targetPatch": target, "catalogRef": data["catalogRef"],
+    }
+
+
 def validate_corpus_bindings(connection: Any) -> dict[str, Any]:
     """Release check: exact identifiers cannot silently move to a different component."""
     checked = 0
@@ -123,10 +170,20 @@ def validate_corpus_bindings(connection: Any) -> dict[str, Any]:
         if row[0] != entry["displayName"] or set(json.loads(row[1])) != set(entry["effectIds"]):
             raise ValueError("gem_availability_corpus_identity_mismatch:" + key)
         checked += 1
+    source_checked = 0
+    for entry in catalog().get("sourceRestrictions", []):
+        key = entry["componentKey"].removeprefix("gem:")
+        row = connection.execute("SELECT name, grants FROM gems WHERE id = ?", (key,)).fetchone()
+        if row is None:
+            continue
+        if row[0] != entry["displayName"] or set(json.loads(row[1])) != set(entry["effectIds"]):
+            raise ValueError("gem_source_corpus_identity_mismatch:" + key)
+        source_checked += 1
     return {
         "catalogRef": catalog()["catalogRef"],
         "checkedBindings": checked,
         "removedSubjects": len(catalog()["entries"]),
+        "checkedSourceBindings": source_checked,
     }
 
 

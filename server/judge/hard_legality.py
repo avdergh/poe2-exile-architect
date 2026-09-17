@@ -17,13 +17,14 @@ from server.knowledge import gem_availability
 from . import rules, scoring
 
 
-AUDIT_VERSION = "hard_legality_v7"
+AUDIT_VERSION = "hard_legality_v8"
 SUPPORTED_AUDIT_VERSIONS = frozenset(
     {"hard_legality_v1", "hard_legality_v2", "hard_legality_v3", "hard_legality_v4",
-     "hard_legality_v5", "hard_legality_v6", AUDIT_VERSION}
+     "hard_legality_v5", "hard_legality_v6", "hard_legality_v7", AUDIT_VERSION}
 )
 ARTIFACT_COMPATIBLE_AUDIT_VERSIONS = frozenset(
-    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", "hard_legality_v5", "hard_legality_v6", AUDIT_VERSION}
+    {"hard_legality_v2", "hard_legality_v3", "hard_legality_v4", "hard_legality_v5", "hard_legality_v6",
+     "hard_legality_v7", AUDIT_VERSION}
 )
 def audit_active_build(
     engine: Any,
@@ -121,6 +122,8 @@ def audit_build(
     availability = check_gem_availability(build)
     if availability["unavailableCount"] and source_context == "generated_candidate":
         failures.append("equipped_gem_unavailable_in_target_patch")
+    if availability["invalidSourceCount"] and source_context == "generated_candidate":
+        failures.append("equipped_gem_requires_provider")
 
     create_completion = check_create_completion(
         build,
@@ -179,7 +182,19 @@ def audit_build(
 def check_gem_availability(build: dict[str, Any]) -> dict[str, Any]:
     subjects = build.get("gemAvailabilitySubjects")
     unavailable = []
+    invalid_sources = []
     for subject in subjects or []:
+        acquisition = gem_availability.inspect_acquisition(
+            [str(subject.get("gemId") or ""), str(subject.get("gameId") or "")]
+        )
+        # Missing provenance on old readbacks is unknown, not proof of an ordinary gem.
+        ordinary = subject.get("sourceKind") == "ordinary" or (
+            "source" in subject and not subject["source"] and not subject.get("sourceKind")
+        )
+        if ordinary and acquisition["ordinaryGemAllowed"] is False:
+            invalid_sources.append({
+                "groupIndex": subject.get("groupIndex"), "name": subject.get("name"), **acquisition,
+            })
         result = gem_availability.inspect_ids([str(subject.get("gemId") or ""), str(subject.get("gameId") or "")])
         if result["status"] != "unavailable":
             for review in build.get("agentAvailabilityReviews") or []:
@@ -192,6 +207,7 @@ def check_gem_availability(build: dict[str, Any]) -> dict[str, Any]:
             unavailable.append({"groupIndex": subject.get("groupIndex"), "name": subject.get("name"), **result})
     return {"status": "unavailable" if unavailable else "checked_known_removals" if isinstance(subjects, list) else "unknown",
             "unavailableCount": len(unavailable), "unavailable": unavailable,
+            "invalidSourceCount": len(invalid_sources), "invalidSources": invalid_sources,
             "currentAvailabilityCertified": False, "catalogRef": gem_availability.catalog()["catalogRef"]}
 
 

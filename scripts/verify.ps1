@@ -128,6 +128,12 @@ function Invoke-ReleaseContractChecks {
             "--stage",
             (Join-Path $VerifyRoot ("bundle-" + $Platform))
         )
+        Invoke-Uv "staged background compute transport smoke" @(
+            "python",
+            "scripts/smoke_staged_compute_operations.py",
+            "--stage",
+            (Join-Path $VerifyRoot ("bundle-" + $Platform))
+        )
         Invoke-Uv "pinned PoB Research readback E2E" @(
             "python",
             "scripts/smoke_research_readback.py"
@@ -193,6 +199,8 @@ try {
                 "tests/test_skill_group_names.py",
                 "tests/test_socket_probe_paths.py",
                 "tests/test_socket_source_context.py",
+                "tests/test_source_socket_regression.py",
+                "tests/test_gem_source_acquisition.py",
                 "tests/test_socket_measurement_contract.py",
                 "tests/test_runtime_selection.py",
                 "-q",

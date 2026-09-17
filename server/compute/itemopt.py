@@ -25,7 +25,7 @@ from typing import Any, Literal
 from weakref import WeakKeyDictionary
 import xml.etree.ElementTree as ET
 
-from ..knowledge import db, item_legality, itemparse
+from ..knowledge import db, item_base_sources, item_legality, itemparse
 from ..judge import hard_legality
 from ..runtime import craft_receipts
 from . import attainability, completeness, item_search, pob_structure
@@ -434,12 +434,15 @@ def _generated_item_property_lines(base: str, *, ilvl: int | None) -> list[str]:
     return [f"Charm Slots: {charm_slots}"]
 
 
-def _generated_item_implicit_lines(base: str, *, ilvl: int | None) -> list[str]:
+def _generated_item_implicit_lines(
+    base: str, *, ilvl: int | None, reference_raw: str | None = None,
+    variant: str | int | None = None,
+) -> list[str]:
     charm_slots = _generated_belt_charm_slots(base, ilvl=ilvl)
-    if charm_slots is None:
-        return []
-    noun = "Slot" if charm_slots == 1 else "Slots"
-    return [f"Has {charm_slots} Charm {noun}"]
+    return item_base_sources.implicit_lines(
+        base, item_level=ilvl, reference_raw=reference_raw,
+        variant=variant, charm_slots=charm_slots,
+    )
 
 
 def _generated_item_radius_line(base: str) -> str:
@@ -470,14 +473,16 @@ def _item_text(
     *,
     ilvl: int | None = None,
     profile: dict[str, Any] | None = None,
+    reference_raw: str | None = None,
+    _base_lines: tuple[tuple[str, ...], tuple[str, ...]] | None = None,
 ) -> str:
     profile = profile or _craft_profile(base)
     body = "\n".join(lines)
     level_line = f"Item Level: {int(ilvl)}\n" if ilvl is not None else ""
     radius_line = _generated_item_radius_line(base)
-    property_lines = _generated_item_property_lines(base, ilvl=ilvl)
+    property_lines = _base_lines[0] if _base_lines is not None else _generated_item_property_lines(base, ilvl=ilvl)
     property_text = "".join(f"{line}\n" for line in property_lines)
-    implicit_lines = _generated_item_implicit_lines(base, ilvl=ilvl)
+    implicit_lines = _base_lines[1] if _base_lines is not None else _generated_item_implicit_lines(base, ilvl=ilvl, reference_raw=reference_raw)
     implicit_text = (
         f"Implicits: {len(implicit_lines)}\n" + "\n".join(implicit_lines) + "\n"
         if implicit_lines
@@ -737,6 +742,13 @@ def optimize_item(
 
     snapshot = engine.get_xml()
     before_equipped_slots = _equipped_slots(build)
+    reference_raw = completeness.equipped_item_text_from_engine(engine, slot, snapshot_xml=snapshot)
+    if reference_raw and base not in [line.strip() for line in reference_raw.splitlines()[:8]]:
+        reference_raw = None
+    base_source_lines = (
+        tuple(_generated_item_property_lines(base, ilvl=ilvl)),
+        tuple(_generated_item_implicit_lines(base, ilvl=ilvl, reference_raw=reference_raw)),
+    )
     before_whole_build_legality = hard_legality.audit_build(
         hard_legality.augment_build_with_snapshot_gear(build, snapshot)
     )
@@ -757,7 +769,7 @@ def optimize_item(
 
         def stats_of(line_sets: list[list[str]]) -> list[dict[str, Any]]:
             return item_search.evaluate_items(
-                engine, slot, [_item_text(base, ls, slot, ilvl=ilvl) for ls in line_sets], keys
+                engine, slot, [_item_text(base, ls, slot, ilvl=ilvl, reference_raw=reference_raw, _base_lines=base_source_lines) for ls in line_sets], keys
             )
 
         # Bare base = the craft's starting point; relative gains in `goals` mode are measured from it.
@@ -844,7 +856,7 @@ def optimize_item(
                     continue
 
         chosen = chosen_pre + chosen_suf
-        final = _item_text(base, lines(), slot, ilvl=ilvl)
+        final = _item_text(base, lines(), slot, ilvl=ilvl, reference_raw=reference_raw, _base_lines=base_source_lines)
         selected_special_sources = [
             special_affix_sources[line]
             for line in lines()
@@ -1019,7 +1031,7 @@ def optimize_item(
                 "item is blank; pick a slot/metric the skill actually moves, or optimize a defensive "
                 "metric (e.g. TotalEHP) on this slot instead."
             )
-    except item_search.ItemSearchError:
+    except (item_search.ItemSearchError, item_base_sources.ItemBaseSourceError):
         raise
     except ValueError as exc:
         return {
@@ -1779,6 +1791,30 @@ _AUTO_BASE_CLASS = {
 }
 
 
+def pick_ordinary_base(
+    item_class: str, attr: str | None = None, *, max_drop_level: int | None = None,
+) -> str | None:
+    """Auto-fill only ordinary defensive bases; a granted-skill choice belongs to the Agent.
+
+    Keep the existing level/attribute ordering, but do not silently choose a mechanism variant
+    or invent its granted level while scaffolding otherwise empty armour/jewellery slots.
+    """
+    rows = db.search_items(item_class=item_class, limit=100, max_drop_level=max_drop_level)
+    ordinary = []
+    for row in rows:
+        source = item_base_sources.base_source(str(row.get('name') or ''))
+        if source.get('status') != 'available' or source.get('variants'):
+            continue
+        if any('Grants Skill:' in line for line in source.get('lines') or []):
+            continue
+        ordinary.append(row)
+    if attr and item_class in {'Helmet', 'Body Armour', 'Gloves', 'Boots'}:
+        matching = [row for row in ordinary if f'{attr}_armour' in (row.get('tags') or [])]
+        if matching:
+            return str(matching[0]['name'])
+    return str(ordinary[0]['name']) if ordinary else None
+
+
 def _attr_bias(engine: PobEngine) -> str:
     """The build's dominant attribute ('str'/'dex'/'int') — picks wearable, layer-appropriate bases."""
     st = engine.get_stats(["Str", "Dex", "Int"]).get("stats") or {}
@@ -1851,6 +1887,9 @@ def _marginal_craft_locked(
     ilvl: int,
     acquisition_policy: attainability.GearAttainabilityPolicy,
 ) -> str | None:
+    reference_raw = completeness.equipped_item_text_from_engine(engine, slot)
+    if reference_raw and base not in [line.strip() for line in reference_raw.splitlines()[:8]]:
+        reference_raw = None
     pool = db.affix_pool(base, ilvl=ilvl)
     current_resists = item_search.resistances_without_slot(engine, slot)
     pre = _without_satisfied_resistances(
@@ -1876,6 +1915,10 @@ def _marginal_craft_locked(
         raise item_search.ItemSearchError("invalid_item_search_goals")
     keys = list(weights)
     original_stats = item_search.finite_stats(engine.get_stats(keys).get("stats"), keys)
+    base_source_lines = (
+        tuple(_generated_item_property_lines(base, ilvl=ilvl)),
+        tuple(_generated_item_implicit_lines(base, ilvl=ilvl, reference_raw=reference_raw)),
+    )
     meta: list[tuple[dict[str, Any], str]] = []
     for source in pre + suf:
         for candidate in _affix_candidates_for_policy(
@@ -1886,11 +1929,11 @@ def _marginal_craft_locked(
         ):
             meta.append((candidate, str(candidate["line"])))
     base_stats = item_search.evaluate_items(
-        engine, slot, [_item_text(base, [], slot, ilvl=ilvl)], keys
+        engine, slot, [_item_text(base, [], slot, ilvl=ilvl, reference_raw=reference_raw, _base_lines=base_source_lines)], keys
     )[0]
     denom = {k: max(abs(base_stats[k]), 1.0) for k in keys}
     results = item_search.evaluate_items(
-        engine, slot, [_item_text(base, [ln], slot, ilvl=ilvl) for _m, ln in meta], keys
+        engine, slot, [_item_text(base, [ln], slot, ilvl=ilvl, reference_raw=reference_raw, _base_lines=base_source_lines) for _m, ln in meta], keys
     )
 
     def score(stats: dict[str, Any]) -> float:
@@ -1914,7 +1957,7 @@ def _marginal_craft_locked(
     ]
     if not chosen_lines:
         return None
-    final = _item_text(base, chosen_lines, slot, ilvl=ilvl)
+    final = _item_text(base, chosen_lines, slot, ilvl=ilvl, reference_raw=reference_raw, _base_lines=base_source_lines)
     reasons = _item_attainability_reasons(final, acquisition_policy)
     if reasons:
         raise item_search.ItemSearchError(
@@ -2082,7 +2125,7 @@ def plan_gear(
                 # Allocated defence passives (Spectral Ward / Subterfuge Mask / Iron Reflexes) can
                 # override the dominant-attribute base so the planned layer actually feeds them.
                 slot_attr = layer_bias.get(slot, dominant_attr)
-                base = db.pick_base(
+                base = pick_ordinary_base(
                     _AUTO_BASE_CLASS[slot], slot_attr, max_drop_level=character_level
                 )
                 if base:

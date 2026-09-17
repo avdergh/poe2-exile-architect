@@ -400,7 +400,7 @@ def test_lost_bundle_blocks_judge_then_same_draft_rebuilds_original_marker(
     assert rebuilt["status"] == "accepted" and rebuilt["evidenceRebuilt"] is True, rebuilt
     assert marker.read_bytes() == before
     assert mechanism_evidence._DRAFTS[key] == (original_time, original_bundle)
-    assert _draft(bound, token, payload)["errorCode"] == "generation_draft_unchanged"
+    assert _draft(bound, token, payload)["status"] == "already_validated"
     evaluated = _judge(bound, token, payload)
     assert evaluated["status"] == "evaluated" and evaluated["attemptConsumed"] is True, evaluated
     assert len(evaluated["mechanismEvidenceHash"]) == 64
@@ -445,8 +445,30 @@ def test_narrative_and_reference_order_changes_never_refresh_design(tmp_path, mo
     use["deepRecordIds"].reverse()
     candidate["researchExecutionPlan"]["coherenceSummary"] += " Additional implementation detail."
     unchanged = _draft(bound, token, changed)
-    assert unchanged["errorCode"] == "generation_draft_unchanged", unchanged
+    assert unchanged["status"] == "already_validated", unchanged
+    assert unchanged["changed"] is False
+    assert unchanged["evidenceRebuilt"] is False
+    assert unchanged["validatedAt"] == json.loads(before)["validatedAt"]
     assert marker.read_bytes() == before and mechanism_evidence._DRAFTS[key] == original
+
+
+@pytest.mark.parametrize("defect", ["stale", "missing"])
+def test_duplicate_draft_rechecks_receipts_even_when_validated_bundle_exists(
+    tmp_path, monkeypatch, defect
+):
+    bound, token, payload, catalog = _setup(tmp_path, monkeypatch)
+    marker = bound.run_dir / "draft-validation.json"
+    before = marker.read_bytes()
+    if defect == "stale":
+        catalog[AUTH]["lastSeenAt"] = (
+            datetime.now(timezone.utc) - timedelta(days=1)
+        ).isoformat()
+    else:
+        catalog.pop(AUTH)
+    result = _draft(bound, token, payload)
+    assert result["status"] == "rejected"
+    assert marker.read_bytes() == before
+    assert not bound.trusted_evaluations_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -473,7 +495,6 @@ def test_rebuild_and_revision_revalidate_receipt_authority(tmp_path, monkeypatch
         catalog[DEEP]["result"]["deepReadRecordIds"] = []
     rejected = _draft(bound, token, changed)
     assert rejected["status"] == "rejected", rejected
-    assert rejected["errorCode"] != "generation_draft_unchanged"
     assert marker.read_bytes() == before and key not in mechanism_evidence._DRAFTS
     assert not bound.trusted_evaluations_dir.exists()
 

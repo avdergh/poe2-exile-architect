@@ -185,6 +185,7 @@ process cap is five, including reserved Judge/optimizer capacity.
 | Proven special crafting | `craft_item`; pass its unchanged `craftReceiptRef` to `equip_item` |
 | Existing-item sockets | `optimize_item_sockets`; apply the returned plan through trusted equip |
 | Support combination | `optimize_supports`; same exact effect, full current/candidate combinations |
+| Long compute results | Support/socket optimizers support `background=true`; use `get_compute_operation` and `cancel_compute_operation` with the returned session-owned ID |
 | Jewel replacement | `list_jewel_sockets/evaluate_jewel_socket/optimize_jewel/equip_jewel`; explicit already allocated sockets, transactional source/legality/active-Spec readback. A positive replacement is allowed; acquiring an extra socket still uses the protected evaluate/apply decision |
 | Next reachable jewel socket | `evaluate_next_jewel_socket/apply_next_jewel_socket_decision` |
 | Ordinary Flask | use `optimize_flask` to create a legal Magic target |

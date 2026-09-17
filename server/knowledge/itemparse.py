@@ -150,18 +150,19 @@ def classify_affix(line: str, *, base_name: str | None = None) -> dict[str, Any]
     # craftable affixes only when present (ignore unique-only mods that share the stat text)
     matches = [c for c in matches if c["type"] in ("prefix", "suffix")] or matches
     if base_name:
+        base = db.get_item(base_name)
         base_matches = [
             c
             for c in matches
-            if db.mod_tags_match_base(
-                base_name,
+            if db._mod_tags_match_item(
+                base,
                 c.get("tags") or [],
                 mod_domain=str(c.get("domain") or "") or None,
             )
         ]
         # Unknown/legacy bases retain the conservative generic classifier. For a recognized base,
         # use only its real spawn-tag candidates so overlapping weapon-family tiers cannot leak in.
-        if db.get_item(base_name) is not None:
+        if base is not None:
             matches = base_matches
         if not matches:
             return None
@@ -360,10 +361,7 @@ def _structured_effect_lines(
             and ":" in value
             and prefix is None
             and suffix is None
-            and not (
-                str(info.get("rarity") or "").casefold() == "unique"
-                and value.startswith("Grants Skill:")
-            )
+            and not value.startswith("Grants Skill:")
         ):
             continue
         if not value:
@@ -458,6 +456,8 @@ def parse_item(text: str) -> dict[str, Any]:
         u = db.get_unique(info["name"])
         if u:
             out["unique"] = {"base": u["base"], "text": u["text"]}
+    from .item_base_sources import audit_required_grants
+    out["baseSkillGrants"] = audit_required_grants(str(info.get("base") or ""), text, rarity=rarity)
     return out
 
 
@@ -818,7 +818,21 @@ def audit_item_legality(
     }
     all_source_hashes = essence_hashes | special_non_affix_hashes
 
-    issues: list[str] = list(source_issues)
+    issues: list[str] = [*source_issues, *(parsed.get("baseSkillGrants") or {}).get("issues", [])]
+    # A native parsed Item grant proves runtime ownership, not game acquisition. Ordinary items
+    # need a pinned base declaration, a trusted special-source line, or a real natural affix.
+    # Unique alternatives continue to use the existing exact unique-source audit above.
+    for grant in (parsed.get('baseSkillGrants') or {}).get('additionalGrants') or []:
+        fingerprint = line_fingerprint(grant)
+        natural = any(
+            affix.get('lineFingerprint') == fingerprint
+            and affix.get('kind') == 'explicit'
+            and affix.get('type') in {'prefix', 'suffix'}
+            and affix.get('tier') is not None
+            for affix in parsed.get('affixes') or []
+        ) and not db.illegal_affixes(str(parsed.get('base') or ''), [grant])
+        if fingerprint not in all_source_hashes and not natural:
+            issues.append('item_skill_grant_source_unverified')
     if unique_issue:
         issues.append(unique_issue)
     if domain_rarity_issue:

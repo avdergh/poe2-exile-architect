@@ -416,7 +416,7 @@ def test_better_damage_with_resource_regression_is_not_an_upgrade(monkeypatch, k
 
 
 def test_unknown_objective_is_not_checkpoint_authority(monkeypatch):
-    _, result = run_oracle(
+    engine, result = run_oracle(
         monkeypatch,
         {
             (): {"CustomMetric": 100},
@@ -425,8 +425,9 @@ def test_unknown_objective_is_not_checkpoint_authority(monkeypatch):
         },
         metric="CustomMetric",
     )
-    assert result["supportAudit"]["status"] == "inconclusive"
-    assert not result["supportAudit"]["positiveGainSupportsMissing"]
+    assert result["errorCode"] == "unsupported_support_objective"
+    assert result["candidateProbes"] == 0
+    assert engine.probes == []
 
 
 def test_rejected_whole_character_legality_regression_restores_current_choice(monkeypatch):
@@ -442,7 +443,9 @@ def test_rejected_whole_character_legality_regression_restores_current_choice(mo
 
 
 def test_narrow_search_keeps_unscreened_current_combination(monkeypatch):
-    _, result = run_oracle(monkeypatch, candidates=1, screen=1, max_supports=1)
+    _, result = run_oracle(
+        monkeypatch, candidates=1, screen=1, max_supports=1, purpose="exploration",
+    )
     assert result["supports"] == ["Pair A", "Pair B"]
     assert result["currentValue"] == result["finalValue"] == 300
     assert result["supportAudit"]["status"] == "inconclusive"
@@ -852,7 +855,7 @@ def test_latest_same_context_evidence_revokes_old_public_carry(
 @pytest.mark.parametrize(
     "later_query",
     [
-        {"screen": 1, "candidates": 1, "max_supports": 1},
+        {"screen": 1, "candidates": 1, "max_supports": 1, "purpose": "exploration"},
         {"metric": "ManaCost"},
         {"goals": {"TotalDPS": 1}},
         {"max_mana_cost": 20},

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from ..knowledge import db
+from ..knowledge import db, gem_availability
 from ..knowledge.skill_equivalence import SkillEquivalenceIndex
 from .engine import PobEngine
 from .skilltext import normalize_skill_text, requested_gem_names
@@ -66,6 +66,8 @@ def _apply_complete_group(
         }
     if not requested:
         return _error("skill_text_required", "skill text must contain at least one gem")
+    if source_error := _ordinary_source_error(requested):
+        return source_error
 
     with engine.transaction_lock():
         before_xml = engine.get_xml()
@@ -147,6 +149,8 @@ def replace_skill_group(
             **_error("unknown_skill_gem", "one or more requested gems are unknown"),
             "unresolvedGemNames": unresolved,
         }
+    if source_error := _ordinary_source_error(requested):
+        return source_error
     return _mutate(
         engine,
         method="replace_skill_group",
@@ -569,6 +573,24 @@ def _canonical_skill_request(engine: PobEngine, skill: str) -> tuple[list[str], 
         # Keep every caller-specified level, quality and count; only the verified name changes.
         lines.append(canonical_name + line[len(name):])
     return canonical, unresolved, "\n".join(lines)
+
+
+def _ordinary_source_error(requested: list[str]) -> dict[str, Any] | None:
+    restricted = []
+    for name in requested:
+        gem = db.get_gem(name)
+        if not gem:
+            continue
+        acquisition = gem_availability.inspect_acquisition([str(gem["id"])])
+        if acquisition["ordinaryGemAllowed"] is False:
+            restricted.append({"name": name, **acquisition})
+    if restricted:
+        return {
+            **_error("skill_requires_provider", "Use the real granted skill and configure its source supports"),
+            "restrictedSkills": restricted,
+            "recoveryAction": "equip_or_allocate_provider_then_configure_source_skill_supports",
+        }
+    return None
 
 
 def _canonical_actual_gems(group: dict[str, Any] | None) -> list[str]:

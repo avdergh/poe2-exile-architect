@@ -16,7 +16,6 @@ from typing import Any
 
 from .compute import itemopt
 from .compute.engine import PobEngine
-from .knowledge import db
 
 # Defensive slots only (no weapons) -> the corpus item_class to pull a base from.
 _SLOT_CLASS = {
@@ -37,7 +36,7 @@ _INT_CLASSES = {"Sorceress", "Witch"}
 
 
 def _base_for(item_class: str, level: int) -> str | None:
-    return db.pick_base(item_class, max_drop_level=level)
+    return itemopt.pick_ordinary_base(item_class, max_drop_level=level)
 
 
 def scaffold_gear(

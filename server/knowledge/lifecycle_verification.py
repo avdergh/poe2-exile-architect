@@ -414,6 +414,8 @@ def verify_stage_metrics(
         "stage": stage,
         "status": "passed" if passed else "failed" if failed else "unknown",
         "pass": passed,
+        "scope": "selected_skill_only",
+        "rotationCovered": False,
         "verificationRequired": verification_required,
         "plan": plan,
         "stateSnapshot": state or {},

@@ -46,6 +46,8 @@ def classify_resource_sustain(
         classification = "sustainable_baseline"
         status = "passed"
     return {
+        "scope": "selected_skill_only",
+        "rotationCovered": False,
         "classification": classification,
         "status": status,
         "manaSustain": mana,
@@ -131,6 +133,8 @@ def _classify_pool_sustain(
                 upfront_payable = False
 
     result: dict[str, Any] = {
+        "scope": "selected_skill_only",
+        "rotationCovered": False,
         "resource": resource_key,
         "classification": "unknown",
         "evidenceStatus": "incomplete",

@@ -30,6 +30,11 @@ optimizer或依赖新group fingerprint才能决定的编辑。不要把整个BD�
 
 ## 2. 先落实机制来源，再补技能职责
 
+在任何耗时优化前，读取选中技能的 `acquisition` 和实际提供者。`not_flagged_unavailable`
+只表示没有已知移除记录，不认证普通宝石可获得性；`requires_provider` 必须先落实真实来源。
+未知不能按刻印等级0、released或显示名称推断。特殊幽魂/授予技能先做最小实装与读回，
+确认当前接口可表达，再扩大配置。底材名称不自动补齐固有授予词缀，使用完整受检物品。
+
 1. 先设置最终目标等级，落实Blueprint及组件决策采用的非可选`unique_enabler`、会授予技能的
    升华/核心被动。逐件读当前静态全文并验证；不能把整个adopted package的每个组件自动视为采用。
 2. 调用`list_skill_groups`，按实际source、slot、active effect和enabled状态盘点已有清图、Boss、

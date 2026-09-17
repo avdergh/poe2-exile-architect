@@ -42,7 +42,7 @@ end
 io.write = function(...) io.stderr:write(...); return io.stderr end
 
 local json = require("dkjson")
-local HEADLESS_RUNTIME_CONTRACT = 14
+local HEADLESS_RUNTIME_CONTRACT = 15
 
 -- Boot the engine (its prints now land on stderr).
 local booted, bootErr = pcall(dofile, "HeadlessWrapper.lua")
@@ -1227,10 +1227,12 @@ end
 
 function selectMainSocketGroup(index, activeIndex)
 	index = index or 1
-	build.mainSocketGroup = index
 	local sg = build.skillsTab.socketGroupList[index]
+	local active = activeIndex or 1
+	-- Callers can update a group's selection before arriving here. Always rebuild after an
+	-- explicit selection mutation; read-only context verification avoids calling this helper.
+	build.mainSocketGroup = index
 	if sg then
-		local active = activeIndex or 1
 		sg.mainActiveSkill = active
 		sg.mainActiveSkillCalcs = active
 	end
@@ -1963,6 +1965,13 @@ function methods.inspect_support_evaluation_capability(p)
 			reasons[#reasons + 1] = "trigger_rate_unmodelled"
 		end
 	end
+	local function selectedHasType(name)
+		local kind = type(SkillType) == "table" and SkillType[name]
+		return hasType(ge, name) or (kind and active.skillTypes and active.skillTypes[kind] and true) or false
+	end
+	local minionActor = selectedHasType("Minion")
+	local playerDamageRole = selectedHasType("Attack") or selectedHasType("Damage")
+		or selectedHasType("Projectile") or selectedHasType("DamageOverTime")
 	return {
 		ok = true,
 		applicationCheck = applicationCheck,
@@ -1976,6 +1985,16 @@ function methods.inspect_support_evaluation_capability(p)
 		rateSourceEffectIds = rateSourceEffectIds,
 		usageConditionContractVersion = 1,
 		usageConditionContracts = usageConditionContracts,
+		objectiveContext = {
+			version = 1,
+			selectedEffectId = ge and ge.id,
+			actor = minionActor and (playerDamageRole and "mixed" or "minion") or "player",
+			roles = {
+				duration = selectedHasType("Duration"),
+				area = selectedHasType("Area"),
+				curse = selectedHasType("Curse") or selectedHasType("AppliesCurse"),
+			},
+		},
 	}
 end
 
@@ -2261,6 +2280,55 @@ function methods.configure_source_skill_supports(p)
 	}
 end
 
+-- One source probe after Python reloads the immutable full snapshot. Keep the existing native
+-- source mutation/stability checks, but avoid repeating selection and serializing all groups
+-- for separate capability/stat RPCs. This does not introduce a group-local source mutation path.
+function methods.probe_source_skill_group(p)
+	p = p or {}
+	local index = math.floor(tonumber(p.index) or 0)
+	local activeIndex = math.floor(tonumber(p.activeSkillIndex) or 0)
+	local group = (build.skillsTab.socketGroupList or {})[index]
+	if not group or not group.source or group.source ~= p.expectedSource then
+		return { ok = false, errorCode = "source_skill_identity_changed" }
+	end
+	if activeIndex < 1 or type(p.expectedSkillName) ~= "string" or p.expectedSkillName == "" then
+		return { ok = false, errorCode = "support_probe_target_required" }
+	end
+	-- Selecting first activates inactive weapon/item sources. The exact effect is checked after
+	-- that calculation, before any supports are configured; no guessed display-name substitution.
+	selectMainSocketGroup(index, activeIndex)
+	group = (build.skillsTab.socketGroupList or {})[index]
+	local active = group and group.displaySkillList and group.displaySkillList[activeIndex]
+	local effect = active and active.activeEffect and active.activeEffect.grantedEffect
+	if not group or group.source ~= p.expectedSource or skillNameAt(index, activeIndex) ~= p.expectedSkillName
+		or (p.expectedEffectId and (not effect or effect.id ~= p.expectedEffectId)) then
+		return { ok = false, errorCode = "support_selected_effect_changed" }
+	end
+	local configured = methods.configure_source_skill_supports({ index = index, supportGemIds = p.supportGemIds })
+	if not configured.ok then return configured end
+	group = (build.skillsTab.socketGroupList or {})[index]
+	local matches = 0
+	for candidateIndex, candidate in ipairs(group and group.displaySkillList or {}) do
+		local candidateEffect = candidate.activeEffect and candidate.activeEffect.grantedEffect
+		if skillNameAt(index, candidateIndex) == p.expectedSkillName
+			and (not p.expectedEffectId or (candidateEffect and candidateEffect.id == p.expectedEffectId)) then
+			matches = matches + 1
+		end
+	end
+	if matches ~= 1 then
+		return { ok = false, errorCode = matches > 1 and "support_selected_effect_ambiguous" or "support_selected_effect_changed" }
+	end
+	return {
+		ok = true,
+		activeSkillIndex = activeIndex,
+		state = configured.state,
+		capability = methods.inspect_support_evaluation_capability({
+			index = index, activeIndex = activeIndex, objectiveKeys = p.objectiveKeys or {},
+		}),
+		stats = collectStats(p.keys),
+	}
+end
+
 -- Replace exactly one user-owned group while preserving its position and group-level state.  The
 -- Python layer guards the index with a content fingerprint; this low-level method snapshots again
 -- so parse/legality failures never leave a partial group behind.
@@ -2525,6 +2593,27 @@ function methods.remove_skill_group(p)
 	return { ok = true, state = skillGroupState() }
 end
 
+local function utf8Prefix(value, limit)
+	local text, cursor, count = tostring(value), 1, 0
+	while cursor <= #text and count < limit do
+		local first = text:byte(cursor)
+		local width = first < 128 and 1 or first >= 194 and first <= 223 and 2
+			or first >= 224 and first <= 239 and 3 or first >= 240 and first <= 244 and 4 or nil
+		if not width or cursor + width - 1 > #text then error("invalid_utf8_label") end
+		local second = text:byte(cursor + 1)
+		if (first == 224 and second < 160) or (first == 237 and second >= 160)
+			or (first == 240 and second < 144) or (first == 244 and second > 143) then
+			error("invalid_utf8_label")
+		end
+		for index = cursor + 1, cursor + width - 1 do
+			local byte = text:byte(index)
+			if byte < 128 or byte > 191 then error("invalid_utf8_label") end
+		end
+		cursor, count = cursor + width, count + 1
+	end
+	return text:sub(1, cursor - 1)
+end
+
 function methods.set_skill_group_state(p)
 	p = p or {}
 	local index = math.floor(tonumber(p.index) or 0)
@@ -2556,9 +2645,11 @@ function methods.set_skill_group_state(p)
 		}
 	end
 
+	-- Validate before changing any flags so malformed Unicode cannot partially mutate a group.
+	local label = p.label ~= nil and utf8Prefix(p.label, 50) or nil
 	if p.enabled ~= nil then group.enabled = p.enabled and true or false end
 	if p.includeInFullDPS ~= nil then group.includeInFullDPS = p.includeInFullDPS and true or false end
-	if p.label ~= nil then group.label = tostring(p.label):sub(1, 50) end
+	if label ~= nil then group.label = label end
 	if activeIndex then
 		group.mainActiveSkill = activeIndex
 		group.mainActiveSkillCalcs = activeIndex
@@ -2684,9 +2775,25 @@ local function equipItemRaw(raw, slot)
 	if not sc then
 		return false, "unknown slot: " .. tostring(sl)
 	end
+	local priorItem = build.itemsTab.items[sc.selItemId]
 	local attached, err = pcall(function()
 		build.itemsTab:AddItem(newItem, true) -- no auto-equip or intermediate PopulateSlots
 		sc:SetSelItemId(newItem.id)
+		-- Item IDs change on replacement. Carry a configured group only when its actual old
+		-- owner, slot and unique native root effect still exist on the new item. PoB remains
+		-- responsible for the grant's derived level/quality/requirements on the next frame.
+		for _, group in ipairs(build.skillsTab.socketGroupList or {}) do
+			local root = group.gemList and group.gemList[1]
+			if priorItem and group.sourceItem == priorItem and group.slot == sl and root then
+				local matches = {}
+				for _, grant in ipairs(newItem.grantedSkills or {}) do
+					if grant.skillId == root.skillId then matches[#matches + 1] = grant end
+				end
+				if #matches == 1 and (group.noSupports and true or false) == (matches[1].noSupports and true or false) then
+					group.source, group.sourceItem = matches[1].source, newItem
+				end
+			end
+		end
 		-- Validate against the complete new loadout. A genuinely incompatible new
 		-- weapon may invalidate its offhand; the caller's input/legality guard rejects it.
 		build.itemsTab:PopulateSlots()
@@ -2989,6 +3096,26 @@ local function replacementGroupIdentity(group, ordinal)
 	}
 end
 
+-- Read-only restoration evidence. The XML input hash intentionally excludes the CALCS tab.
+function methods.item_replacement_selection()
+	local groups = build.skillsTab.socketGroupList or {}
+	local function selected(index, calcs)
+		local group = groups[index]
+		if not group then return { groupIndex = index or 1, missing = true } end
+		local activeIndex = (calcs and group.mainActiveSkillCalcs or group.mainActiveSkill) or 1
+		local active = group.displaySkillList and group.displaySkillList[activeIndex]
+		local effect = active and active.activeEffect and active.activeEffect.grantedEffect
+		return { groupIndex = index, activeSkillIndex = activeIndex, effectId = effect and effect.id,
+			weaponSet = build.skillsTab:GetSocketGroupWeaponSet(group), source = group.source,
+			rootSkillId = group.gemList and group.gemList[1] and group.gemList[1].skillId }
+	end
+	return { main = selected(build.mainSocketGroup or 1, false),
+		calcs = selected(build.calcsTab.input.skill_number or 1, true),
+		activeSkillSetId = build.skillsTab.activeSkillSetId,
+		activeItemSetId = build.itemsTab.activeItemSetId,
+		secondWeaponSet = build.itemsTab.activeItemSet.useSecondWeaponSet and true or false }
+end
+
 local function resolveItemReplacementContext(expected, selectTarget, allowUnselected)
 	local list = build.skillsTab.socketGroupList or {}
 	local nodes = replacementSkillNodes()
@@ -3043,6 +3170,9 @@ local function resolveItemReplacementContext(expected, selectTarget, allowUnsele
 	end
 	if not matchIndex then return nil, "item_replacement_context_mismatch" end
 	local selected = list[matchIndex]
+	if expected.weaponSet and build.skillsTab:GetSocketGroupWeaponSet(selected) ~= expected.weaponSet then
+		return nil, "item_replacement_context_mismatch"
+	end
 	if replacementGroupSignature(nodes[matchIndex], expected.sourceKind) ~= expected.groupConfigSignature
 		or (selected.noSupports and true or false) ~= expected.noSupports then
 		return nil, "item_replacement_group_config_changed"
@@ -3060,6 +3190,10 @@ local function resolveItemReplacementContext(expected, selectTarget, allowUnsele
 	end
 	local resolved = copyTable(expected, true)
 	resolved.groupIndex, resolved.activeSkillIndex = matchIndex, matchActive
+	resolved.selectionMatches = mainIndex == matchIndex and (selected.mainActiveSkill or 1) == matchActive
+		and (selected.mainActiveSkillCalcs or selected.mainActiveSkill or 1) == matchActive
+		and build.calcsTab.input.skill_number == matchIndex
+	resolved.weaponSet = build.skillsTab:GetSocketGroupWeaponSet(selected)
 	resolved.rootLevel = selected.source and selected.gemList and selected.gemList[1] and selected.gemList[1].level or nil
 	return resolved
 end
@@ -3403,6 +3537,8 @@ function methods.get_build()
 					gemAvailabilitySubjects[#gemAvailabilitySubjects + 1] = {
 						groupIndex = groupIndex, name = gem.name, gemId = gem.gemId,
 						gameId = gem.gameId, effectId = gem.effectId,
+						source = group.source,
+						sourceKind = group.sourceItem and "item" or group.sourceNode and "tree" or group.source and "other" or "ordinary",
 					}
 				end
 			end
