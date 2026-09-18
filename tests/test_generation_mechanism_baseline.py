@@ -682,7 +682,7 @@ def test_public_draft_validation_freezes_once_without_refreshing_unchanged_marke
     marker_bytes = marker_path.read_bytes()
     assert frozen["draftMarker"] == json.loads(marker_bytes)
     unchanged = create_build.validate_generation_draft(run_id, token, payload, **arguments)
-    assert unchanged["errorCode"] == "generation_draft_unchanged"
+    assert unchanged["status"] == "already_validated"
     assert len(calls) == 1
     assert marker_path.read_bytes() == marker_bytes
     assert blueprint_path.read_bytes() == blueprint_bytes

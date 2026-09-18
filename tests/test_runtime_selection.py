@@ -124,7 +124,7 @@ class PobRuntimeSelectionTests(unittest.TestCase):
         engine = PobEngine()
         try:
             self.assertEqual(engine.info["runtimeContract"], paths.POB_RUNTIME_CONTRACT)
-            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 14)
+            self.assertEqual(paths.POB_RUNTIME_CONTRACT, 15)
             self.assertEqual(engine.inspect_reservation_ledger()["schemaVersion"], "pob_reservation_ledger_v1")
         finally:
             engine.close()

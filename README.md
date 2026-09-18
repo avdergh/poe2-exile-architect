@@ -159,6 +159,8 @@ resource recovery, and defensive layers. Deliver an English HTML guide.
 
 Open the generated HTML file in a browser. The guide includes component explanations, diagrams, and search, so you can read from start to finish or look up a specific part. Learning does not write Research knowledge or create a new build.
 
+Long support and socket optimizations can also run in the background: `background=true` returns an operation ID, so `get_compute_operation` can retrieve the complete result without restarting the search, and `cancel_compute_operation` requests cancellation at a safe calculation boundary. Only one calculation runs per session, and results are retained in that server process, not across restarts. Finishing the search is not the same as passing the audit; final support checks use `purpose="final_audit"`.
+
 Outputs follow the language of your request unless you specify another language.
 
 ## Showcase

@@ -62,6 +62,13 @@ def isolated_checkpoints(monkeypatch):
         }
 
     monkeypatch.setattr(checkpoint.preflight, "inspect_generation_snapshot", preflight)
+    monkeypatch.setattr(
+        checkpoint, "_create_quality_checklist",
+        lambda **_kwargs: {
+            name: {"status": "passed"}
+            for name in ("skillSupportAudit", "jewelDecision", "itemSockets", "sustain")
+        },
+    )
     yield
     checkpoint.clear_validation_checkpoint_cache()
 

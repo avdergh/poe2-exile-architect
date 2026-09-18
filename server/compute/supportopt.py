@@ -13,7 +13,7 @@ from collections import Counter
 from copy import deepcopy
 import math
 import threading
-from typing import Any
+from typing import Any, Literal
 from weakref import WeakKeyDictionary
 from xml.etree import ElementTree as ET
 from xml.parsers import expat
@@ -23,8 +23,14 @@ from pydantic import ValidationError
 from ..knowledge import db, gem_availability
 from ..knowledge.skill_equivalence import SkillEquivalenceIndex
 from ..judge import hard_legality, modelability
+from ..runtime.compute_control import (
+    check_compute_budget, publication_guard, report_compute_progress,
+)
 from .engine import PobEngine
 from .state import build_state_hash, canonical_payload_hash
+from .support_objectives import (
+    METRIC_DIRECTIONS, UTILITY_ROLES, inspect_objective_names, inspect_objectives,
+)
 
 
 _AUDIT_LOCK = threading.RLock()
@@ -87,24 +93,7 @@ def _availability_current(engine: Any, audit: dict[str, Any]) -> bool:
     return (audit.get("measurement", {}).get("availabilityContext", {}).get("fingerprint")
             == _availability_context(engine)["fingerprint"])
 
-_CHECKPOINT_AUDIT_METRIC_DIRECTIONS = {
-    "TotalDPS": "higher",
-    "FullDPS": "higher",
-    "CombinedDPS": "higher",
-    "AverageDamage": "higher",
-    "Speed": "higher",
-    "HitChance": "higher",
-    "CritChance": "higher",
-    "CritMultiplier": "higher",
-    "TotalEHP": "higher",
-    "LifeRegenRecovery": "higher",
-    "EnergyShieldRegenRecovery": "higher",
-    "ManaRegenRecovery": "higher",
-    "MinionCombinedDPS": "higher",
-    "MinionTotalDPS": "higher",
-    "ManaCost": "lower",
-    "SpiritReserved": "lower",
-}
+_CHECKPOINT_AUDIT_METRIC_DIRECTIONS = METRIC_DIRECTIONS
 
 # These are authoritative PoB feasibility decisions, not failed measurements.  A broad tag-based
 # corpus screen is expected to contain supports that the live source skill or selected Command
@@ -337,7 +326,13 @@ def _revoke_derived_support_audits(
             changed = True
 
 
-def _record_support_audit(
+def _record_support_audit(**kwargs: Any) -> dict[str, Any]:
+    """Publish only while cancellation and receipt issuance share the same arbitration lock."""
+    with publication_guard(final=kwargs["measurement"].get("purpose") != "exploration"):
+        return _record_support_audit_locked(**kwargs)
+
+
+def _record_support_audit_locked(
     *,
     engine: Any,
     state_hash: str,
@@ -438,6 +433,29 @@ def _record_support_audit(
     if carried_from_ref is not None:
         audit["carriedFromAuditRef"] = carried_from_ref
     audit["auditRef"] = canonical_payload_hash(audit, prefix="support-audit")
+    if measurement_copy.get("purpose") == "exploration":
+        audit["explorationOnly"] = True
+        if audit["reasonClass"] == "capability_gap":
+            # The final gate permits certain current capability-gap certificates without
+            # numeric search. An exploratory observation must not acquire that authority.
+            audit["explorationReasonClass"] = "capability_gap"
+            audit["reasonClass"] = "evidence_gap"
+            audit["reasonCodes"] = sorted({*audit["reasonCodes"], "exploration_not_final_audit"})
+        # Exploratory evidence never replaces a valid final certificate merely because it is
+        # bounded. Preserve existing adverse-evidence handling when the same complete search
+        # finds an actual measurement contradiction, or the current effect itself fails.
+        adverse = bool(
+            unavailable_current
+            or measurement_copy.get("scopeKind") == "current_effect_capability"
+            or measurement_copy.get("currentCombinationFailureCode")
+            or (
+                measurement_copy.get("coverageComplete") is True
+                and measurement_copy.get("classificationComplete") is True
+                and reason_class == "measurement_error"
+            )
+        )
+        if not adverse:
+            return audit
     with _AUDIT_LOCK:
         engine_audits = _SUPPORT_AUDITS.setdefault(engine, {})
         existing = engine_audits.get((state_hash, int(group_index)))
@@ -897,6 +915,8 @@ def _optimize_supports_locked(
     expected_fingerprint: str | None = None,
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
+    purpose: Literal["final_audit", "exploration"] = "final_audit",
+    snapshot_xml: str | None = None,
 ) -> dict[str, Any]:
     """Compare complete support sets with the installed set as an immutable search baseline.
 
@@ -908,7 +928,8 @@ def _optimize_supports_locked(
     retained for contextual trials. This is a heuristic, not an exhaustive combination search.
     Only a complete, same-context improvement can require a change. The build is restored.
     """
-    snapshot = engine.get_xml()
+    check_compute_budget()
+    snapshot = snapshot_xml if snapshot_xml is not None else engine.get_xml()
     state_hash = build_state_hash(snapshot)
     listed = engine.call("list_skill_groups")
     selected_group_index = int(group_index or listed.get("mainGroupIndex") or 1)
@@ -1001,6 +1022,9 @@ def _optimize_supports_locked(
             }
         weights = {str(key): float(value) for key, value in goals.items()}
     keys = list(weights) if weights else [metric]
+    if objective_error := inspect_objective_names(keys, weighted=bool(weights)):
+        engine.load_build_xml(snapshot)
+        return {**objective_error, "purpose": purpose, "candidateProbes": 0}
     metric_directions = {key: _CHECKPOINT_AUDIT_METRIC_DIRECTIONS.get(key) for key in keys}
     checkpoint_objective_eligible = (
         all(direction == "higher" for direction in metric_directions.values())
@@ -1065,6 +1089,7 @@ def _optimize_supports_locked(
                 reason_class = constraint_reason_class
             reason_codes = [*constraint_check["reasonCodes"], *reason_codes]
         measurement = {
+            "purpose": purpose,
             "status": "inconclusive",
             "availabilityContext": availability_context,
             "currentUnavailableSupports": current_unavailable,
@@ -1094,6 +1119,9 @@ def _optimize_supports_locked(
             "objectiveDirections": metric_directions,
             "measurementKeys": list(measurement_keys),
             "objectiveSpecification": objective_specification,
+            "objectiveDiagnostic": inspect_objectives(
+                keys, weighted=bool(weights), capability=capability,
+            ),
             "scopeKind": "current_effect_capability",
         }
         engine.load_build_xml(snapshot, name="support-capability-restore")
@@ -1132,6 +1160,15 @@ def _optimize_supports_locked(
             "supportAudit": audit,
         }
 
+    utility_keys = [key for key in keys if key in UTILITY_ROLES]
+    utility_stats = engine.get_stats(utility_keys).get("stats", {}) if utility_keys else None
+    objective_error = inspect_objectives(
+        keys, weighted=bool(weights), capability=capability, utility_stats=utility_stats,
+    )
+    if objective_error is not None:
+        engine.load_build_xml(snapshot)
+        return {**objective_error, "purpose": purpose, "candidateProbes": 0}
+
     discovery_skills = list(
         dict.fromkeys(
             [
@@ -1158,7 +1195,28 @@ def _optimize_supports_locked(
         return {"ok": False, "error": f"No supports found for '{skill}'."}
     support_capacity = _support_capacity(selected_group)
     effective_max_supports = min(max_supports, support_capacity)
-    resolved_identities = {name: _runtime_support_identity(engine, name) for name in screen_names}
+    if purpose == "final_audit" and (
+        max_supports < support_capacity
+        or len(screen_names) != len(all_screen_names)
+        or candidates < len(screen_names)
+    ):
+        engine.load_build_xml(snapshot)
+        return {
+            "ok": False, "errorCode": "support_final_audit_coverage_insufficient",
+            "purpose": purpose, "candidateProbes": 0,
+            "requiredMaxSupports": support_capacity,
+            "requiredCandidates": len(all_screen_names),
+            "requiredScreen": len(all_screen_names),
+            "recoveryAction": "use_complete_scope_or_explicit_exploration",
+        }
+    check_compute_budget()
+    resolved_identities = {}
+    for name in screen_names:
+        check_compute_budget()
+        resolved_identities[name] = (
+            current_identities[name] if name in current_identities
+            else _runtime_support_identity(engine, name)
+        )
     identities_by_canonical_name = {
         str(identity["name"]): identity
         for identity in resolved_identities.values()
@@ -1195,6 +1253,15 @@ def _optimize_supports_locked(
     try:
         last_measured_group: dict[str, Any] = {}
         topology_rebuilds = 0
+        support_gem_cache: dict[str, dict[str, Any] | None] = {}
+        probe_cache: dict[tuple[str, bool, tuple[str, ...]], tuple[Any, dict[str, Any]]] = {}
+        probe_context = canonical_payload_hash({
+            "stateHash": state_hash, "groupIndex": selected_group_index,
+            "effectId": selected_effect_id, "activeSkillIndex": source_active_index,
+            "objectives": objective_specification, "measurementKeys": measurement_keys,
+            "maxManaCost": max_mana_cost, "spiritLimit": spirit_limit,
+            "searchScopeHash": search_scope_hash, "auditVersion": _SUPPORT_AUDIT_VERSION,
+        })
 
         def activate_source_probe() -> str | None:
             # Inactive item/weapon-swap sources have no runtime active effects after an
@@ -1211,10 +1278,11 @@ def _optimize_supports_locked(
                 )
             return None
 
-        def measure(
+        def measure_uncached(
             supports: list[str], *, original: bool = False
         ) -> tuple[dict[str, Any], str, str | None]:
             nonlocal last_measured_group, topology_rebuilds
+            check_compute_budget()
             last_measured_group = {}
             local_probe: dict[str, Any] | None = None
             measured_active_index = source_active_index
@@ -1246,7 +1314,10 @@ def _optimize_supports_locked(
                             and current_identity.get("name") == name
                         ):
                             identity = current_identity
-                    gem = db.get_gem(str(identity.get("requestedName") or name))
+                    lookup_name = str(identity.get("requestedName") or name)
+                    if lookup_name not in support_gem_cache:
+                        support_gem_cache[lookup_name] = db.get_gem(lookup_name)
+                    gem = support_gem_cache[lookup_name]
                     if identity.get("status") == "resolved" and identity.get("gemId"):
                         support_ids.append(str(identity["gemId"]))
                         support_gems.append(gem or {})
@@ -1256,27 +1327,38 @@ def _optimize_supports_locked(
                     support_ids.append(str(identity.get("gemId") or gem["id"]))
                     support_gems.append(gem)
                 engine.load_build_xml(snapshot, name="source-support-measurement-reset")
-                if error := activate_source_probe():
-                    return {}, "failed", error
-                select_params: dict[str, Any] = {
-                    "index": selected_group_index,
-                    "makeMain": True,
-                    "activeSkillIndex": source_active_index,
-                }
-                selected = engine.call("set_skill_group_state", **select_params)
-                if not isinstance(selected, dict) or selected.get("ok") is False:
-                    code = (
-                        str(selected.get("errorCode") or "skill_group_selection_failed")
-                        if isinstance(selected, dict)
-                        else "invalid_skill_group_selection_result"
+                source_probe = getattr(engine, "probe_source_skill_group", None)
+                if callable(source_probe):
+                    local_probe = source_probe(
+                        group_index=selected_group_index, source=source,
+                        support_ids=support_ids, active_skill_index=source_active_index,
+                        expected_skill_name=skill, keys=measurement_keys,
+                        objective_keys=keys, expected_effect_id=selected_effect_id,
                     )
-                    return {}, "failed", code
-                configured = engine.call(
-                    "configure_source_skill_supports",
-                    index=select_params["index"],
-                    supportGemIds=support_ids,
-                )
+                    configured = local_probe
+                else:
+                    # Lightweight contract engines retain the old typed operations. A real
+                    # PobEngine uses the versioned atomic bridge method above.
+                    if error := activate_source_probe():
+                        return {}, "failed", error
+                    selected = engine.call(
+                        "set_skill_group_state", index=selected_group_index, makeMain=True,
+                        activeSkillIndex=source_active_index,
+                    )
+                    if not isinstance(selected, dict) or selected.get("ok") is False:
+                        code = (
+                            str(selected.get("errorCode") or "skill_group_selection_failed")
+                            if isinstance(selected, dict)
+                            else "invalid_skill_group_selection_result"
+                        )
+                        return {}, "failed", code
+                    configured = engine.call(
+                        "configure_source_skill_supports",
+                        index=selected_group_index, supportGemIds=support_ids,
+                    )
                 if not isinstance(configured, dict) or configured.get("ok") is False:
+                    if isinstance(configured, dict) and configured.get("recoveryRequired"):
+                        raise _SupportRecoveryRequired(configured)
                     code = (
                         str(configured.get("errorCode") or "source_support_configuration_failed")
                         if isinstance(configured, dict)
@@ -1447,6 +1529,14 @@ def _optimize_supports_locked(
             stats = measured.get("stats") if isinstance(measured, dict) else None
             if not isinstance(stats, dict) or measured.get("ok") is False:
                 return {}, "failed", "support_stats_missing"
+            objective_error = inspect_objectives(
+                keys, weighted=bool(weights), capability=probe_capability, utility_stats=stats,
+            )
+            if objective_error:
+                # Removing a support can remove the very role being optimized (for example
+                # a duration granted by that support). This is an inapplicable candidate,
+                # never evidence that the missing duration had zero value.
+                return {}, "failed" if original else "rejected", objective_error["errorCode"]
             reservation = hard_legality.life_reservation_check({"stats": stats})
             if reservation["status"] == "unknown":
                 return {}, "failed", "life_reservation_evidence_missing"
@@ -1454,6 +1544,23 @@ def _optimize_supports_locked(
                 return {}, "rejected", reservation["failureCode"]
             last_measured_group = deepcopy(actual)
             return stats, "measured", None
+
+        def measure(
+            supports: list[str], *, original: bool = False, force: bool = False,
+        ) -> tuple[dict[str, Any], str, str | None]:
+            nonlocal last_measured_group
+            check_compute_budget()
+            # Preserve order and original-vs-generated gem settings. A same-name original
+            # support may have a different level/quality from a generated probe.
+            key = (probe_context, original, tuple(supports))
+            if not force and key in probe_cache:
+                result, group_state = deepcopy(probe_cache[key])
+                last_measured_group = group_state
+                return result
+            result = measure_uncached(supports, original=original)
+            if result[1] in {"measured", "rejected"}:
+                probe_cache[key] = (deepcopy(result), deepcopy(last_measured_group))
+            return result
 
         current_stats, current_outcome, current_error = measure(current_supports, original=True)
         current_legality = hard_legality.audit_build(
@@ -1528,7 +1635,9 @@ def _optimize_supports_locked(
             key = str(code or fallback)
             counts[key] = counts.get(key, 0) + 1
 
-        for name in screen_names:
+        for candidate_index, name in enumerate(screen_names):
+            check_compute_budget()
+            report_compute_progress("support_screen", candidate_index, len(screen_names))
             identity = resolved_identities[name]
             availability = _candidate_availability(identity, availability_context)
             if availability["status"] == "unavailable":
@@ -1616,10 +1725,12 @@ def _optimize_supports_locked(
             while len(picked) < effective_max_supports:
                 best_name, best_score, best_stats = None, score(picked_stats), None
                 for name in pool:
+                    check_compute_budget()
                     if name in picked:
                         continue
                     combination = tuple(sorted([*picked, name]))
                     if combination not in measured_combinations:
+                        report_compute_progress("support_combinations", len(measured_combinations))
                         probe = measure([*picked, name])
                         measured_combinations[combination] = probe
                         stats, outcome, error_code = probe
@@ -1660,8 +1771,9 @@ def _optimize_supports_locked(
             candidate_score = score(candidate_stats)
             if candidate_score > cur + 1e-9:
                 chosen, cur, progression = candidate_set, candidate_score, candidate_steps
+        report_compute_progress("support_final_validation", 0, 1)
         final_stats, final_outcome, final_error = measure(
-            chosen, original=Counter(chosen) == Counter(current_supports)
+            chosen, original=Counter(chosen) == Counter(current_supports), force=True,
         )
         if final_outcome != "measured" or not audit_measurement_valid(final_stats):
             failed_combination_count += 1
@@ -1687,7 +1799,7 @@ def _optimize_supports_locked(
             count_code(combination_rejection_codes, "support_combination_legality_regression", "")
             chosen = list(current_supports)
             progression = []
-            final_stats, final_outcome, final_error = measure(chosen, original=True)
+            final_stats, final_outcome, final_error = measure(chosen, original=True, force=True)
             if final_outcome != "measured" or not audit_measurement_valid(final_stats):
                 failed_combination_count += 1
                 count_code(
@@ -1714,6 +1826,7 @@ def _optimize_supports_locked(
         # not let a second failure here replace the search failure (or a stop).
         raise
     else:
+        report_compute_progress("support_restore", 0, 1)
         engine.load_build_xml(snapshot)
     restored_state_hash = build_state_hash(engine.get_xml())
     if restored_state_hash != state_hash:
@@ -1792,7 +1905,8 @@ def _optimize_supports_locked(
         "positiveGainProven": comparison_complete and float(net_gain) > 1e-9,
     }
     checkpoint_eligible = (
-        checkpoint_objective_eligible
+        purpose == "final_audit"
+        and checkpoint_objective_eligible
         and coverage_complete
         and classification_complete
         and current_measurable
@@ -1804,6 +1918,7 @@ def _optimize_supports_locked(
         and comparison_complete
     )
     measurement = {
+        "purpose": purpose,
         "availabilityContext": availability_context,
         "currentUnavailableSupports": current_unavailable,
         "unavailableInGameCandidates": unavailable_in_game,
@@ -2052,9 +2167,12 @@ def optimize_supports(
     max_mana_cost: float | None = None,
     spirit_limit: float | None = None,
     availability_reviews: list[gem_availability.SupportAvailabilityReview] | None = None,
+    purpose: Literal["final_audit", "exploration"] = "final_audit",
 ) -> dict[str, Any]:
     """Run one read-only support search under a build-wide transaction and restore guard."""
 
+    if purpose not in {"final_audit", "exploration"}:
+        return {"ok": False, "errorCode": "invalid_support_search_purpose"}
     if (
         isinstance(max_supports, bool)
         or not isinstance(max_supports, int)
@@ -2118,6 +2236,8 @@ def optimize_supports(
                     expected_fingerprint=expected_fingerprint,
                     max_mana_cost=max_mana_cost,
                     spirit_limit=spirit_limit,
+                    purpose=purpose,
+                    snapshot_xml=snapshot,
                 )
                 if not isinstance(search_result, dict):
                     raise TypeError("invalid_support_optimizer_result")

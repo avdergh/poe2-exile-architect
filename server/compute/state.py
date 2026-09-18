@@ -41,7 +41,7 @@ def canonical_payload_hash(payload: Any, *, prefix: str = "sha256") -> str:
 
 
 _ROOT_IGNORED = {"Notes", "TreeView", "Import", "Calcs", "Party"}
-_BUILD_DERIVED = {"PlayerStat", "FullDPSSkill", "Buffs", "TimelessData"}
+_BUILD_DERIVED = {"PlayerStat", "MinionStat", "FullDPSSkill", "Buffs", "TimelessData"}
 _ORDER_SENSITIVE_PARENTS = {"Skills", "SkillSet", "Skill"}
 _DEFAULT_ATTRIBUTES: dict[str, dict[str, str]] = {
     "Items": {"useSecondWeaponSet": "false"},

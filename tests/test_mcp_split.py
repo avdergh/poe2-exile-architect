@@ -48,6 +48,8 @@ def test_splits_cover_the_entire_legacy_surface():
 
 
 def test_key_tools_land_in_the_right_server():
+    assert "get_compute_operation" in _tool_names(build_server.mcp)
+    assert "cancel_compute_operation" in _tool_names(build_server.mcp)
     assert "get_build_stats" in _tool_names(build_server.mcp)
     assert "import_build" in _tool_names(build_server.mcp)
     assert "evaluate_generation_candidate" in _tool_names(build_server.mcp)

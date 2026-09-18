@@ -24,6 +24,26 @@ playability/quality warning、reward 或主观 caveat。严格模式统一传 `s
 
 ## 配置锁定与最终审计
 
+### 长计算与搜索用途
+
+`optimize_supports`、`optimize_item_sockets`、`plan_item_sockets_batch` 使用
+`background=true`，先保存返回的 `operationId`，再用 `get_compute_operation` 取状态与完整结果。
+同会话只允许一个活跃计算；`compute_busy` 时不要再发其他PoB调用，也不要重新提交相同优化。
+请求断开不等于计算结束，查询结果不重新计算；`completed` 只表示执行结束，仍须检查原结果的
+业务错误、恢复状态和审计结论。完整结果只保留在当前服务进程，重启、会话结束或淘汰后不可取回，
+不能声称已有跨重启恢复。取消使用 `cancel_compute_operation`，`cancel_requested` 不是已停止；
+只有候选边界执行恢复后才结束。合作预算不是对阻塞Lua调用的强制截止。
+
+辅助最终审计显式使用 `purpose="final_audit"`，保留完整候选范围和真实辅助容量；
+`purpose="exploration"` 的窄搜索只用于探索，不代替最终回执，也不能清掉既有已证提升或反证。
+先根据精确effect和职责选择工具支持的指标：召唤输出检查召唤物对象，utility不套人物DPS。
+不支持的指标或覆盖不足先改输入，不能用负权重、缩窄候选或无关目标让状态变绿。
+`noSupports` 与原生模型缺口按既有规则分类，不制造无意义的数值搜索。
+
+先完成来源与结构修复、集中处理采用的变更，再冻结并生成最终回执。仅当真实阻塞清单已清空，
+才说进入交付；同根因、同输入、没有新证据的失败不得重复计算。同一计划更改状态后，
+按实际绑定刷新受影响证据，不把一批旧回执直接连续应用为新状态证明。
+
 1. 对终局/Boss 目标调用一次 `apply_combat_profile`，选择符合用户目标的 tier，并传最新
    `expected_state_hash`；也可用 `set_config` 设置相同 key。公共 `set_config` 是只修改显式字段的PATCH；
    `apply_combat_profile` 完整替换自己的Boss tier与六个布尔条件，false会清除旧值；二者返回最新stateHash。
@@ -145,6 +165,8 @@ generation_contract_upgrade_requires_restart，应按新合同开启run，不补
 防御和续航；PoB 建模支持、core threshold、upgrade budget、pinnacle readiness 是 advisory。
 实际存在的未建模恢复层可能得到带 `verificationRequired` 的通过结论，仍需验证真实覆盖，不能
 据此编造吞吐。`detail="full"` 只用于具名局部诊断。
+续航报告的 `selected_skill_only` 与 `rotationCovered=false` 表示只覆盖所选效果，
+不能用零成本召唤面板证明命令、铺场和保护技能组合的完整循环；没有覆盖也不能直接断言会断蓝。
 
 若阶段要求关键组件证据，在 lifecycle 的 typed `state` 中声明所选机制实际依赖的组件
 kind/name/stable key 与 evidence refs。工具从同一快照核对实物；不要提交“已验证”布尔值。

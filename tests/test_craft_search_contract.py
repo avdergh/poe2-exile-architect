@@ -55,7 +55,9 @@ class CraftOracle(ItemOracle):
         return deepcopy(self.options)
 
     def add_item(self, raw, slot):
-        assert slot in self.items, "a complete replacement must not expose an empty intermediate slot"
+        assert slot in self.items, (
+            "a complete replacement must not expose an empty intermediate slot"
+        )
         self.add_count += 1
         if self.add_count == self.fail_add_at:
             return {"ok": False}
@@ -157,7 +159,8 @@ def craft_fixture(monkeypatch):
 
 
 def run_craft(engine, **kwargs):
-    return craftopt.craft_item(engine, SLOT, metric="TotalEHP", rune_sockets=1, **kwargs)
+    kwargs.setdefault("rune_sockets", 1)
+    return craftopt.craft_item(engine, SLOT, metric="TotalEHP", **kwargs)
 
 
 def assert_rejected(result, engine, original_xml, recorded, code):
@@ -194,7 +197,10 @@ def test_craft_uses_original_baseline_and_persists_only_after_verified_restorati
     assert result["stateHash"] == build_state_hash(original_xml)
     assert engine.get_xml() == original_xml
     assert len(recorded) == 1
-    assert len(engine.context_selections) == 2
+    assert all(
+        selection == {"index": 3, "activeSkillIndex": 2, "makeMain": True}
+        for selection in engine.context_selections
+    )
 
 
 def test_weighted_metrics_distinguish_current_item_from_plain_rare(craft_fixture):
@@ -217,7 +223,7 @@ def test_crafted_candidate_is_not_labelled_upgrade_when_original_item_is_better(
     assert result["comparison"]["netGain"] == -875
 
 
-@pytest.mark.parametrize("phase", [1, 2, 3, 4])
+@pytest.mark.parametrize(("sockets", "phase"), [(1, 1), (1, 2), (2, 1), (2, 2), (2, 3)])
 @pytest.mark.parametrize(
     ("response", "code"),
     [
@@ -228,11 +234,13 @@ def test_crafted_candidate_is_not_labelled_upgrade_when_original_item_is_better(
         ({"results": [{"TotalEHP": float("nan")}]}, "item_measurement_incomplete"),
     ],
 )
-def test_rune_and_corruption_failures_never_become_no_gain(phase, response, code, craft_fixture):
+def test_rune_and_corruption_failures_never_become_no_gain(
+    sockets, phase, response, code, craft_fixture
+):
     engine, original_xml, recorded = craft_fixture
     engine.fail_batch = phase
     engine.fail_batch_result = response
-    assert_rejected(run_craft(engine), engine, original_xml, recorded, code)
+    assert_rejected(run_craft(engine, rune_sockets=sockets), engine, original_xml, recorded, code)
 
 
 @pytest.mark.parametrize("phase", [1, 2, 3])

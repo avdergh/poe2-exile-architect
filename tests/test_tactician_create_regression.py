@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from scripts import create_build
 from server import main as server_main
-from server.compute import completeness
+from server.compute import completeness, supportopt
 from server.generation import artifacts
 from server.knowledge import graph_tools as gt
 from server.knowledge import physical_graph as pg
@@ -152,7 +152,7 @@ def test_tactician_95_real_create_toolchain_regression(tmp_path, monkeypatch, en
         page["dedupeQueryRef"],
         family_key,
     )
-    assert family["status"] == "recorded"
+    assert family["status"] == "recorded", family
     assert engine.get_build().get("mainSkill") is None
 
     assert _tool(server_main.set_class)("Mercenary", "Tactician").get("ok") is not False
@@ -171,7 +171,10 @@ def test_tactician_95_real_create_toolchain_regression(tmp_path, monkeypatch, en
         {"Weapon 1": 2},
         {"TotalDPS": 1.0},
     )
-    assert rune_plan["ok"] is True, rune_plan
+    assert rune_plan["ok"] is True, [
+        {key: row.get(key) for key in ("errorCode", "error", "firstFailure", "measurementStatus", "reasonCodes")}
+        for row in rune_plan.get("results", [])
+    ]
     rune_result = rune_plan["results"][0]
     assert rune_result["changed"] is True, rune_result
     assert rune_result["socketCapacity"] == 2
@@ -236,6 +239,11 @@ Has 1 Charm Slot"""
         sum(1 for gem in group["gems"] if gem.get("isSupport")) for group in groups
     ] == [2, 2]
     assert any(group.get("source") == "Default Attack" for group in current["groups"])
+    # This checks the real Create toolchain, not the full support catalogue search. Keep
+    # both installed mechanisms in a fixed real candidate fixture; compute golden and
+    # support-contract tests separately cover discovery breadth and final-audit coverage.
+    support_fixture = ["Double Barrel I", "Shock", "Magnified Area I", "Elemental Armament I"]
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: list(support_fixture))
     for name in skills:
         current = _tool(server_main.list_skill_groups)()
         group = ordinary_group(current, name)
@@ -243,11 +251,15 @@ Has 1 Charm Slot"""
         audit = _tool(server_main.optimize_supports)(
             max_supports=2,
             candidates=6,
+            purpose="exploration",
             group_index=group_index,
             expected_fingerprint=group["fingerprint"],
         )
         assert audit["ok"] is True
         assert audit["supportAudit"]["groupIndex"] == group_index
+        assert audit["measurement"]["checkpointEligible"] is False
+        assert audit["screened"] == len(support_fixture)
+        assert _tool(server_main.list_skill_groups)()["stateHash"] == current["stateHash"]
 
     boss_group = ordinary_group(_tool(server_main.list_skill_groups)(), "Stormblast Bolts")
     selection = engine.select_judge_skill(
@@ -264,6 +276,7 @@ Has 1 Charm Slot"""
     assert checkpoint["calculationContext"]["groupIndex"] == boss_group["index"]
     assert checkpoint["calculationContext"]["skillName"] == "Stormblast Bolts"
     assert checkpoint["lifecycleVerification"]["stage"] == "endgame_final"
+    assert checkpoint["readyForJudge"] is False  # Bounded exploration is not final evidence.
 
     gear = completeness.equipped_item_metadata(engine.get_xml())
     assert gear["Weapon 1"]["runeSockets"] == 2

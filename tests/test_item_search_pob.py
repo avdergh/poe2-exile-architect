@@ -101,7 +101,9 @@ def test_source_target_disappearance_cannot_rank_another_skill(fireball, monkeyp
         "suffixes": [],
     }
     monkeypatch.setattr(itemopt.db, "affix_pool", lambda *_args, **_kwargs: pool)
-    result = itemopt.optimize_item(engine, "Weapon 1", ilvl=90)
+    # Same-base grants are now preserved. Explicitly replace its root with a base which
+    # does not grant Firebolt to keep this a real disappearing-target negative test.
+    result = itemopt.optimize_item(engine, "Weapon 1", base="Steelpoint Quarterstaff", ilvl=90)
     assert result["ok"] is False, result
     assert result["errorCode"] == "item_measurement_incomplete"
     assert result["failureCodes"]
@@ -119,7 +121,7 @@ def test_attack_craft_unknown_baseline_is_limited_to_empty_weapon(
     engine.paste_skill("Lightning Spear 20/20  1")
     engine.set_config(custom_mods="+200 to Strength\n+200 to Dexterity")
     if wrong_weapon:
-        assert engine.add_item("Rarity: Normal\nAttuned Wand\nItem Level: 82", slot="Weapon 1")[
+        assert engine.add_item("Rarity: Normal\nAttuned Wand\nItem Level: 82\nImplicits: 1\nGrants Skill: Level 18 Mana Drain", slot="Weapon 1")[
             "ok"
         ]
     before = build_state_hash(engine.get_xml())

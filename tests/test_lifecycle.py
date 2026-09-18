@@ -601,6 +601,22 @@ def test_verify_stage_metrics_model_gap_does_not_require_a_mana_flask():
     assert result["pass"] is True
 
 
+def test_zero_cost_selected_skill_does_not_certify_a_multi_skill_rotation():
+    from server.compute import sustain
+
+    result = sustain.classify_resource_sustain(
+        {"ManaCost": 0, "LifeCost": 0, "Speed": 0},
+        mana_flask_equipped=False,
+    )
+    assert result["status"] == "passed"
+    assert result["scope"] == "selected_skill_only"
+    assert result["rotationCovered"] is False
+    for pool in ("manaSustain", "lifeSustain"):
+        assert result[pool]["scope"] == "selected_skill_only"
+        assert result[pool]["rotationCovered"] is False
+        assert result[pool]["grossDemandPerSecond"] == 0
+
+
 def test_endgame_final_uses_required_sustain_and_advisory_pinnacle_checks():
     from server.knowledge import lifecycle_verification
 

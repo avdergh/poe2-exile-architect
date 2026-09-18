@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts import create_build
-from server.generation import run_store
+from server.generation import models, run_store
 from tests.test_generation_blueprint import EVIDENCE_REF, _blueprint
 from tests.test_phase5_prototype_models import agent_submission_payload
 
@@ -94,6 +94,30 @@ def test_plugin_start_generation_run_manages_storage_without_exposing_paths(
     run_id = result["runContext"]["runId"]
     assert (runs / run_id / "run-manifest.json").is_file()
     assert (runs / run_id / "agent-output.json").is_file()
+
+
+def test_start_exposes_model_generated_nested_contracts_without_polluting_template(tmp_path):
+    run = _start_run(tmp_path)
+    contracts = run["agentInputContracts"]
+    definitions = contracts["$defs"]
+    for name, model in (
+        ("blueprintDraft", models.GenerationMechanismBlueprintDraft),
+        ("agentOutputDraftContent", models.GenerationDraft),
+    ):
+        schema = model.model_json_schema(by_alias=True)
+        expected_defs = schema.pop("$defs", {})
+        assert contracts[name] == schema
+        assert all(definitions[key] == value for key, value in expected_defs.items())
+    memory = definitions["ResearchMemoryUse"]["properties"]
+    assert memory["componentKeys"]["maxItems"] == 24
+    assert memory["insightDecisions"]["maxItems"] == 24
+    cross_case = definitions["CrossCaseMechanismPlan"]["properties"]
+    assert cross_case["planId"]["pattern"] == r"^xcp-[0-9a-f]{16}$"
+    assert cross_case["mechanismRationale"]["minLength"] == 80
+    assert cross_case["verificationPlan"]["minItems"] == 2
+    assert cross_case["verificationPlan"]["items"]["minLength"] == 24
+    assert contracts["scope"] == "input_structure_not_evidence_authorization"
+    assert "agentInputContracts" not in run["agentOutputDraftTemplate"]
 
 
 def _family_discovery_receipt(*, authorized: bool) -> dict[str, object]:
@@ -529,7 +553,7 @@ def test_validate_generation_draft_checks_premise_contract_and_deep_read(
         str(run["runContext"]["runToken"]),
         payload,
     )
-    assert unchanged["errorCode"] == "generation_draft_unchanged"
+    assert unchanged["status"] == "already_validated"
 
 
 def _bind_submission_to_run(payload: dict[str, object], run: dict[str, object]) -> None:

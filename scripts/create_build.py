@@ -448,6 +448,7 @@ def validate_generation_draft(
     existing_marker = _read_json(run_dir / "draft-validation.json")
     bound_run = run_store.BoundRun(run_id=canonical, run_dir=run_dir, manifest=manifest)
     evidence_rebuilt = False
+    already_validated = False
     if isinstance(existing_marker, dict) and all(
         existing_marker.get(key) == marker.get(key)
         for key in marker
@@ -467,12 +468,12 @@ def validate_generation_draft(
             or not marker.get("mechanismSignatureHash")
             or blueprint_marker is None
         ):
-            return models.rejected("generation_draft_unchanged")
+            already_validated = True
         marker = existing_marker
-        evidence_rebuilt = True
+        evidence_rebuilt = not already_validated
     elif not _write_json_atomic(run_dir / "draft-validation.json", marker):
         return models.rejected("run_state_write_failed")
-    if marker.get("mechanismSignatureHash"):
+    if marker.get("mechanismSignatureHash") and not already_validated:
         try:
             mechanism_evidence.remember_validated_draft(
                 bound_run,
@@ -483,8 +484,10 @@ def validate_generation_draft(
         except run_store.RunStoreError as exc:
             return models.rejected(exc.code)
     return {
-        "status": "accepted",
+        "status": "already_validated" if already_validated else "accepted",
         "validationOnly": True,
+        "changed": not (already_validated or evidence_rebuilt),
+        "validatedAt": marker["validatedAt"],
         "evidenceRebuilt": evidence_rebuilt,
         "candidateId": draft.prototype_build_candidate.candidate_id,
         "promptId": draft.agent_refined_build_prompt.prompt_id,
@@ -719,8 +722,44 @@ def _start_run(args: argparse.Namespace) -> dict[str, Any]:
         "agentOutputTemplateInitialized": True,
         "agentOutputContractVersion": manifest["agentOutputContractVersion"],
         "agentOutputDraftTemplate": output_template,
+        "agentInputContracts": _generation_input_contracts(),
         "reviewResultFile": str(run_dir / "review-result.json"),
         "experimentContext": manifest["experimentContext"],
+    }
+
+
+def _generation_input_contracts() -> dict[str, Any]:
+    """Publish the actual nested model constraints once, sharing repeated definitions.
+
+    Schemas describe content; the run envelope comes from the template and runtime provenance
+    checks still apply. Keeping this outside the template avoids adding non-input metadata to a
+    candidate and avoids inventing Research/Blueprint content just to populate null placeholders.
+    """
+    definitions: dict[str, Any] = {}
+    schemas: dict[str, Any] = {}
+    for name, model in (
+        ("blueprintDraft", models.GenerationMechanismBlueprintDraft),
+        ("agentOutputDraftContent", models.GenerationDraft),
+    ):
+        schema = model.model_json_schema(by_alias=True)
+        definitions.update(schema.pop("$defs", {}))
+        schemas[name] = schema
+    return {
+        "$defs": definitions,
+        **schemas,
+        "scope": "input_structure_not_evidence_authorization",
+        "draftEnvelope": {
+            "source": "agentOutputDraftTemplate",
+            "boundFields": ["runContext", "packetId"],
+            "contentFields": ["agentRefinedBuildPrompt", "prototypeBuildCandidate"],
+        },
+        "runtimeValidationRequired": [
+            "copy_safety_and_no_hidden_reasoning",
+            "run_fresh_research_receipts_and_authority",
+            "research_subject_coverage_and_source_associations",
+            "cross_field_consistency_and_unique_references",
+            "blueprint_and_observed_build_signature_binding",
+        ],
     }
 
 

@@ -248,7 +248,7 @@ def _spark_caster(engine):
     engine.set_class("Sorceress", "Stormweaver")
     engine.set_level(90)
     engine.add_item(
-        "Rarity: Rare\nW\nDueling Wand\n+5 to Level of all Lightning Spell Skills\n"
+        "Rarity: Rare\nW\nDueling Wand\nItem Level: 82\nImplicits: 1\nGrants Skill: Level 18 Spellslinger\n+5 to Level of all Lightning Spell Skills\n"
         "Adds 1 to 85 Lightning Damage to Spells\n112% increased Spell Damage"
     )
 
@@ -404,7 +404,7 @@ def test_optimize_item_improves_and_is_valid(engine):
     engine.set_class("Sorceress", "Stormweaver")
     engine.set_level(90)
     engine.add_item(
-        "Rarity: Rare\nBasic\nDueling Wand\n20% increased Spell Damage", slot="Weapon 1"
+        "Rarity: Rare\nBasic\nDueling Wand\nItem Level: 82\nImplicits: 1\nGrants Skill: Level 18 Spellslinger\n20% increased Spell Damage", slot="Weapon 1"
     )
     engine.paste_skill("Spark 20/20  1\nControlled Destruction 20/20  1")  # non-crit
     base = engine.get_stats(["TotalDPS"])["stats"]["TotalDPS"]
@@ -541,6 +541,13 @@ def test_optimize_item_warns_when_it_breaks_resist_cap(engine):
         "Rarity: Rare\nX\nGrand Spear\n--------\nAdds 40 to 80 Lightning Damage", slot="Weapon 1"
     )
     scaffold.scaffold_gear(engine, pool="life", target_resist=75)
+    # Complete native base implicits can raise the real cap (e.g. Biostatic Ring).
+    # Establish this warning test's capped precondition from actual PoB shortfalls.
+    missing = engine.get_defenses()['resistMissing']
+    engine.set_config(custom_mods='\n'.join(
+        f'+{amount}% to {element.capitalize()} Resistance'
+        for element, amount in missing.items() if amount > 0
+    ))
     assert engine.get_defenses()["resistMissing"] == {"fire": 0, "cold": 0, "lightning": 0}
     # a max-DPS amulet carries no resistances, so replacing the scaffold amulet must break a cap
     r = itemopt.optimize_item(engine, "Amulet", metric="TotalDPS")
@@ -560,7 +567,7 @@ def test_optimize_item_blended_goals_balances_offense_and_defense(engine):
         "Rarity: Rare\nX\nGrand Spear\n--------\nAdds 40 to 80 Lightning Damage", slot="Weapon 1"
     )
     blend = itemopt.optimize_item(
-        engine, "Amulet", base="Absent Amulet", goals={"TotalDPS": 0.6, "TotalEHP": 0.4}
+        engine, "Amulet", base="Gold Amulet", goals={"TotalDPS": 0.6, "TotalEHP": 0.4}
     )
     assert blend["ok"] and "goals" in blend
     assert set(blend["metricsBefore"]) == {"TotalDPS", "TotalEHP"}
@@ -570,7 +577,7 @@ def test_optimize_item_blended_goals_balances_offense_and_defense(engine):
     # ...and carries a real defensive affix (life/resistance), which a pure-DPS craft would not
     assert any(("life" in a.lower() or "resist" in a.lower()) for a in blend["affixes"])
     # invalid goals are rejected, not silently treated as single-metric
-    bad = itemopt.optimize_item(engine, "Amulet", base="Absent Amulet", goals={"TotalDPS": 0})
+    bad = itemopt.optimize_item(engine, "Amulet", base="Gold Amulet", goals={"TotalDPS": 0})
     assert bad["ok"] is False
 
 
@@ -643,7 +650,9 @@ def test_optimize_supports_picks_improving_set(engine):
         "100% increased Elemental Damage with Attacks",
         slot="Weapon 1",
     )
-    r = supportopt.optimize_supports(engine, metric="TotalDPS", max_supports=5, candidates=16)
+    r = supportopt.optimize_supports(
+        engine, metric="TotalDPS", max_supports=5, candidates=16, purpose="exploration",
+    )
     assert r["ok"] and r["supports"]
     assert r["finalValue"] > r["baseValue"]  # the chosen set raises DPS
     dps = [p["TotalDPS"] for p in r["progression"]]
@@ -656,6 +665,130 @@ def test_optimize_supports_picks_improving_set(engine):
     assert r["supportAudit"]["measurement"]["checkpointEligible"] is False
     assert r["supportAudit"]["positiveGainSupportsMissing"] == []
     assert engine.get_build()["mainSkill"] == "Lightning Spear"  # read-only: build restored
+
+
+@pytest.mark.parametrize("source_kind", ["tree", "item"])
+def test_atomic_source_support_probe_matches_native_operations_and_restores_selection(
+    engine, monkeypatch, record_property, source_kind,
+):
+    import time
+
+    from server.compute import supportopt
+    from server.compute.pob_xml_input import parse_pob_xml
+
+    engine.new_build()
+    engine.set_class("Sorceress", "Disciple of Varashta") if source_kind == "tree" else engine.set_class("Witch", "Infernalist")
+    engine.set_level(95)
+    engine.paste_skill("Spark 20/20 1")
+    engine.set_config(custom_mods="+500 to Strength\n+500 to Dexterity\n+500 to Intelligence\n+500 to Spirit")
+    if source_kind == "tree":
+        assert engine.alloc_passive(32705)["ok"]
+        support_name = "Bidding III"
+    else:
+        assert engine.add_item(
+            "Rarity: Rare\nSource Probe\nStoic Sceptre\nItem Level: 84\n"
+            "Implicits: 1\nGrants Skill: Level 19 Discipline\n+100 to maximum Mana",
+            slot="Weapon 1",
+        )["ok"]
+        support_name = "Clarity II"
+    listed = engine.call("list_skill_groups")
+    source = next(g for g in listed["groups"] if g.get("sourceKind") == source_kind)
+    spark = next(g for g in listed["groups"] if g.get("rootSkillId") == "SparkPlayer")
+    effect = next(e for e in source["activeSkills"] if e["name"] == "Command") if source_kind == "tree" else source["activeSkills"][0]
+    assert engine.call("set_skill_group_state", index=source["index"], makeMain=True,
+                       activeSkillIndex=effect["index"])["ok"]
+    capability = engine.call("inspect_support_evaluation_capability", index=source["index"],
+                             activeIndex=effect["index"], objectiveKeys=["ManaCost"])
+    assert engine.call("set_skill_group_state", index=spark["index"], makeMain=True)["ok"]
+    snapshot = engine.get_xml()
+    identity = engine.call("resolve_support_gem_identity", runtimeName=support_name)
+    assert identity["status"] == "resolved"
+    keys = ["ManaCost", "SpiritReserved", "Life", "LifeReserved", "LifeUnreserved"]
+
+    rpc_calls = []
+    original_call = engine.call
+
+    def call(method, **kwargs):
+        rpc_calls.append(method)
+        return original_call(method, **kwargs)
+
+    monkeypatch.setattr(engine, "call", call)
+    # Replay the previous optimizer's exact source-probe RPC sequence as the reference.
+    started = time.perf_counter()
+    engine.load_build_xml(snapshot)
+    assert engine.call("set_skill_group_state", index=source["index"], makeMain=True)["ok"]
+    assert engine.call("set_skill_group_state", index=source["index"], makeMain=True,
+                       activeSkillIndex=effect["index"])["ok"]
+    legacy = engine.call("configure_source_skill_supports", index=source["index"],
+                         supportGemIds=[identity["gemId"]])
+    assert legacy["ok"], legacy
+    engine.call("list_skill_groups")
+    assert engine.call("set_skill_group_state", index=source["index"], makeMain=True,
+                       activeSkillIndex=effect["index"])["ok"]
+    engine.call("list_skill_groups")
+    engine.call("inspect_support_evaluation_capability", index=source["index"],
+                activeIndex=effect["index"], objectiveKeys=["ManaCost"])
+    expected_stats = engine.get_stats(keys)["stats"]
+    record_property("legacy_seconds", time.perf_counter() - started)
+    record_property("legacy_rpc_count", len(rpc_calls))
+    record_property("legacy_full_loads", rpc_calls.count("load_build_xml"))
+    assert len(rpc_calls) == 9
+    expected_hash = build_state_hash(engine.get_xml())
+    rpc_calls.clear()
+    started = time.perf_counter()
+    engine.load_build_xml(snapshot)
+    atomic = engine.probe_source_skill_group(
+        group_index=source["index"], source=source["source"], support_ids=[identity["gemId"]],
+        active_skill_index=effect["index"], expected_skill_name=effect["name"],
+        expected_effect_id=capability["selectedEffectId"], keys=keys, objective_keys=["ManaCost"],
+    )
+    record_property("atomic_seconds", time.perf_counter() - started)
+    record_property("atomic_rpc_count", len(rpc_calls))
+    record_property("atomic_full_loads", rpc_calls.count("load_build_xml"))
+    assert len(rpc_calls) == 2
+    assert atomic["ok"], atomic
+    assert atomic["stats"] == pytest.approx(expected_stats)
+    assert build_state_hash(engine.get_xml()) == expected_hash
+    assert atomic["capability"]["applicationCheck"] == "verified"
+
+    engine.load_build_xml(snapshot)
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: [support_name])
+    result = supportopt.optimize_supports(engine, group_index=source["index"], metric="ManaCost")
+    assert result["ok"], result
+    assert result["measurement"]["failedCandidates"] == 0
+    assert build_state_hash(engine.get_xml()) == build_state_hash(snapshot)
+    before, after = parse_pob_xml(snapshot), parse_pob_xml(engine.get_xml())
+    assert after.find("Build").get("mainSocketGroup") == before.find("Build").get("mainSocketGroup")
+    assert [(n.attrib, n.text) for n in after.findall("./Calcs/Input")] == [
+        (n.attrib, n.text) for n in before.findall("./Calcs/Input")
+    ]
+
+
+@pytest.mark.parametrize("skill,index,metric,role", [
+    ("Ice Nova", 1, "AreaOfEffectMod", "area"),
+    ("Temporal Chains", 1, "CurseEffectMod", "curse"),
+    ("Convalescence", 2, "Duration", "duration"),
+])
+def test_native_utility_objective_is_bound_to_role_effect_and_actual_output(
+    engine, skill, index, metric, role,
+):
+    from server.compute.support_objectives import inspect_objectives
+
+    engine.new_build()
+    engine.set_class("Sorceress", "Stormweaver")
+    engine.set_level(95)
+    engine.set_config(custom_mods="+500 to Spirit\n+500 to Intelligence")
+    engine.paste_skill(f"{skill} 20/20 1")
+    group = next(g for g in engine.call("list_skill_groups")["groups"] if not g.get("source"))
+    assert engine.call("set_skill_group_state", index=group["index"], makeMain=True,
+                       activeSkillIndex=index)["ok"]
+    capability = engine.call("inspect_support_evaluation_capability", index=group["index"],
+                             activeIndex=index, objectiveKeys=[metric])
+    stats = engine.get_stats([metric])["stats"]
+    assert capability["objectiveContext"]["roles"][role] is True
+    assert metric in stats
+    assert inspect_objectives([metric], weighted=False, capability=capability,
+                              utility_stats=stats) is None
 
 
 def test_optimize_supports_can_target_secondary_group_and_restore(engine):
@@ -673,6 +806,7 @@ def test_optimize_supports_can_target_secondary_group_and_restore(engine):
         engine,
         metric="TotalDPS",
         max_supports=3,
+        purpose="exploration",
         group_index=target["index"],
         expected_fingerprint=target["fingerprint"],
     )
@@ -682,6 +816,27 @@ def test_optimize_supports_can_target_secondary_group_and_restore(engine):
     assert result["groupIndex"] == target["index"]
     assert engine.get_build()["mainSkill"] == "Lightning Spear"
     assert skillgroups.list_skill_groups(engine)["groups"] == groups_before["groups"]
+
+
+def test_native_minion_player_damage_mismatch_is_rejected_before_enumeration(engine, monkeypatch):
+    from server.compute import supportopt
+    from server.compute.support_objectives import inspect_objectives
+
+    engine.new_build()
+    engine.set_class("Witch", "Infernalist")
+    engine.set_level(95)
+    engine.set_config(custom_mods="+500 to Spirit\n+500 to Strength\n+500 to Intelligence")
+    engine.paste_skill("Skeletal Reaver 20/20 1")
+    group = next(g for g in engine.call("list_skill_groups")["groups"] if not g.get("source"))
+    snapshot = engine.get_xml()
+    monkeypatch.setattr(supportopt, "_screen_set", lambda *_: pytest.fail("must reject before discovery"))
+    result = supportopt.optimize_supports(engine, group_index=group["index"], metric="TotalDPS")
+    assert result["errorCode"] == "support_objective_actor_mismatch", result
+    assert result["candidateProbes"] == 0
+    assert build_state_hash(engine.get_xml()) == build_state_hash(snapshot)
+    capability = engine.call("inspect_support_evaluation_capability", index=group["index"],
+                             activeIndex=1, objectiveKeys=["MinionTotalDPS"])
+    assert inspect_objectives(["MinionTotalDPS"], weighted=False, capability=capability) is None
 
 
 def test_trigger_support_capability_short_circuits_rate_dependent_but_not_hit_metric(engine):
@@ -1328,7 +1483,7 @@ def test_plan_gear_auto_bases_a_full_set_from_scratch(engine):
     engine.set_level(95)
     engine.paste_skill("Spark 20/20  1")
     engine.add_item(
-        "Rarity: Rare\nW\nDueling Wand\n+5 to Level of all Lightning Spell Skills\n"
+        "Rarity: Rare\nW\nDueling Wand\nItem Level: 82\nImplicits: 1\nGrants Skill: Level 18 Spellslinger\n+5 to Level of all Lightning Spell Skills\n"
         "Adds 40 to 600 Lightning Damage to Spells\n117% increased Spell Damage",
         slot="Weapon 1",
     )
@@ -1385,7 +1540,7 @@ def test_campaign_plan_gear_does_not_keep_chasing_capped_chaos_resistance(engine
     engine.set_level(58)
     engine.paste_skill("Spark")
     engine.add_item(
-        "Rarity: Rare\nW\nDueling Wand\n+3 to Level of all Lightning Spell Skills\n"
+        "Rarity: Rare\nW\nAttuned Wand\nItem Level: 58\nImplicits: 1\nGrants Skill: Level 12 Mana Drain\n+3 to Level of all Lightning Spell Skills\n"
         "Adds 20 to 250 Lightning Damage to Spells\n80% increased Spell Damage",
         slot="Weapon 1",
     )
@@ -2147,14 +2302,15 @@ def test_craft_item_text_format():
     # The item-text builder lays out runes (Sockets/Rune + {rune} implicits) and a corruption
     # (implicit line + Corrupted) in the order PoB's parser accepts.
     t = craftopt._build_item(
-        "Vaal Regalia",
+        "Feathered Raiment",
         ["+100 to maximum Life"],
         [("Soul Core of X", ["+5% to all Elemental Resistances"])],
         "+1 to Level of all Skills",
     )
     assert "Sockets: S" in t and "Rune: Soul Core of X" in t
     assert "{rune}+5% to all Elemental Resistances" in t
-    assert "Implicits: 2" in t  # one rune line + one corruption implicit
+    assert "Implicits: 3" in t  # native base + one rune + one corruption implicit
+    assert "9% of Damage is taken from Mana before Life" in t
     assert t.strip().endswith("Corrupted")
 
 

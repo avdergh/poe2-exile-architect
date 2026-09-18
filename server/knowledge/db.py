@@ -358,6 +358,7 @@ def get_gem(name_or_id: str) -> dict | None:
         "types": json.loads(row["types"]),
         "requirement_weights": _requirement_weights(row["raw"]),
         "availability": gem_availability.inspect_ids([row["id"]]),
+        "acquisition": gem_availability.inspect_acquisition([row["id"]]),
         **_gem_crafting_meta(row["raw"]),
     }
     from .pob_gem_details import get_details
@@ -686,7 +687,13 @@ def mod_tags_match_base(
     unknown. Inside the Flask domain, empty/default-only tags are the corpus-wide Flask marker;
     life/mana subtype tags must still match the base exactly.
     """
-    base = get_item(base_name)
+    return _mod_tags_match_item(get_item(base_name), mod_tags, mod_domain=mod_domain)
+
+
+def _mod_tags_match_item(
+    base: dict | None, mod_tags: list[str] | set[str], *, mod_domain: str | None = None,
+) -> bool:
+    """Apply the same rule to a caller's already read corpus identity, without repeat I/O."""
     if not base:
         return False
     base_domain = str(base.get("domain") or "")
@@ -933,7 +940,7 @@ def affix_pool(base_name: str, ilvl: int = 82) -> dict[str, list[dict[str, Any]]
     tier_options: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for r in rows:
         mtags = set(json.loads(r["tags"] or "[]"))
-        if not mod_tags_match_base(base_name, mtags, mod_domain=str(r["domain"] or "")):
+        if not _mod_tags_match_item(base, mtags, mod_domain=str(r["domain"] or "")):
             continue
         # keep both range mods ("+(80-90) to Life") and fixed mods ("+5 to Level of all ... Skills");
         # the latter are already a concrete roll. Skip flag/socket lines with no number at all.

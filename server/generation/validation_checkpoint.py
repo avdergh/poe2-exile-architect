@@ -18,7 +18,7 @@ from server.knowledge import lifecycle_verification
 from . import lifecycle_observation, preflight
 
 
-CHECKPOINT_VERSION = "generation_checkpoint_v11"
+CHECKPOINT_VERSION = "generation_checkpoint_v12"
 _CACHE_LIMIT = 48
 
 
@@ -276,6 +276,8 @@ def recheck_lifecycle_verification(
         "stage": lifecycle_stage,
         "status": verified.get("status"),
         "pass": bool(verified.get("pass")),
+        "scope": verified.get("scope"),
+        "rotationCovered": bool(verified.get("rotationCovered")),
         "verificationRequired": bool(verified.get("verificationRequired")),
         "requiredChecks": list(verified.get("requiredChecks") or []),
         "advisoryChecks": list(verified.get("advisoryChecks") or []),
@@ -874,6 +876,14 @@ def _refresh_dynamic_quality(
         calculation_context=result.get("calculationContext"),
     )
     result["createQualityChecklist"] = checklist
+    final_blockers = preflight.final_check_blockers(checklist)
+    result["preflightReady"] = bool(preflight_result.get("readyForJudge"))
+    result["finalChecksReady"] = not final_blockers
+    result["finalCheckBlockers"] = final_blockers
+    result["readyForJudge"] = result["preflightReady"] and result["finalChecksReady"]
+    # This is the build-state entry gate, not authorization of run/Draft/version credentials.
+    result["readinessScope"] = "build_state_and_final_evidence"
+    result["status"] = "ready" if result["readyForJudge"] else "blocked"
     quality_unresolved = any(
         value.get("status") in {"failed", "unknown"} for value in checklist.values()
     )
@@ -961,6 +971,10 @@ def _error(
         "stateHash": state_hash,
         "actualStateHash": actual_state_hash,
         "readyForJudge": False,
+        "preflightReady": False,
+        "finalChecksReady": False,
+        "finalCheckBlockers": ["checkpoint:inspection_error"],
+        "readinessScope": "build_state_and_final_evidence",
         "hardLegalityReady": False,
         "mechanismReady": False,
         "qualityAdvisories": [],

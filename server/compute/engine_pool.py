@@ -27,6 +27,12 @@ class EnginePoolExhausted(PobEngineError):
     """Raised when every allowed session engine is still owned by a live session."""
 
 
+class SessionComputeBusy(RuntimeError):
+    def __init__(self, operation_id: str | None = None) -> None:
+        super().__init__("compute_busy")
+        self.operation_id = operation_id
+
+
 @dataclass
 class _SessionRef:
     weak: weakref.ReferenceType[object] | None
@@ -59,6 +65,7 @@ class _GateEntry:
     lock: asyncio.Lock
     tool_name: str | None = None
     started_at: float | None = None
+    operation_id: str | None = None
 
 
 def configured_max_engines() -> int:
@@ -226,7 +233,10 @@ class SessionCallGate:
         self._maintenance_lock = _ThreadRWLock()
 
     @asynccontextmanager
-    async def hold(self, session: object | None, *, tool_name: str | None = None) -> AsyncIterator[None]:
+    async def hold(
+        self, session: object | None, *, tool_name: str | None = None,
+        operation_id: str | None = None, wait: bool = True,
+    ) -> AsyncIterator[None]:
         owner = session if session is not None else _DEFAULT_SESSION
         key = id(owner)
         with self._lock:
@@ -235,16 +245,28 @@ class SessionCallGate:
             if entry is None or entry.session.get() is not owner:
                 entry = _GateEntry(session=_SessionRef.create(owner), lock=asyncio.Lock())
                 self._entries[key] = entry
+            if entry.operation_id and entry.operation_id != operation_id:
+                raise SessionComputeBusy(entry.operation_id)
+            if not wait and entry.lock.locked():
+                raise SessionComputeBusy()
+        if not wait:
+            if not self._maintenance_lock.try_acquire_read():
+                raise SessionComputeBusy()
+        else:
+            try:
+                await threaded_tool(self._maintenance_lock.acquire_read)()
+            except asyncio.CancelledError:
+                # The worker has finished acquiring before cancellation propagates.
+                self._maintenance_lock.release_read()
+                raise
         try:
-            await threaded_tool(self._maintenance_lock.acquire_read)()
-        except asyncio.CancelledError:
-            # The worker has finished acquiring before cancellation propagates.
-            # Do not strand a reader when a request is cancelled during maintenance.
-            self._maintenance_lock.release_read()
-            raise
-        try:
+            # A previously queued ordinary call must not slip behind a new operation lease.
+            if not wait and entry.lock.locked():
+                raise SessionComputeBusy()
             async with entry.lock:
                 with self._lock:
+                    if entry.operation_id and entry.operation_id != operation_id:
+                        raise SessionComputeBusy(entry.operation_id)
                     entry.tool_name, entry.started_at = tool_name, time.monotonic()
                 try:
                     yield
@@ -254,13 +276,44 @@ class SessionCallGate:
         finally:
             self._maintenance_lock.release_read()
 
+    def reserve_operation(self, session: object | None, operation_id: str) -> None:
+        """Called while holding this session's gate; protects the submit-to-worker handoff."""
+        owner = session if session is not None else _DEFAULT_SESSION
+        with self._lock:
+            entry = self._entries[id(owner)]
+            if not entry.lock.locked() or entry.operation_id:
+                raise SessionComputeBusy(entry.operation_id)
+            entry.operation_id = operation_id
+
+    def release_operation(self, session: object | None, operation_id: str) -> None:
+        owner = session if session is not None else _DEFAULT_SESSION
+        with self._lock:
+            entry = self._entries.get(id(owner))
+            if entry and entry.session.get() is owner and entry.operation_id == operation_id:
+                entry.operation_id = None
+
+    def operation_busy(self, session: object | None) -> str | None:
+        owner = session if session is not None else _DEFAULT_SESSION
+        with self._lock:
+            entry = self._entries.get(id(owner))
+            return entry.operation_id if entry and entry.session.get() is owner else None
+
+    def has_operations(self) -> bool:
+        with self._lock:
+            return any(entry.operation_id for entry in self._entries.values())
+
     def status(self, session: object | None) -> dict[str, Any]:
         """Safe activity metadata only; never reads mutable PoB state or arguments."""
         owner = session if session is not None else _DEFAULT_SESSION
         with self._lock:
             entry = self._entries.get(id(owner))
-            if not entry or entry.session.get() is not owner or entry.started_at is None:
+            if not entry or entry.session.get() is not owner:
                 return {"busy": False, "activeTool": None, "elapsedSeconds": None}
+            if entry.started_at is None:
+                return {
+                    "busy": entry.operation_id is not None, "activeTool": None,
+                    "elapsedSeconds": None, "operationId": entry.operation_id,
+                }
             return {
                 "busy": True,
                 "activeTool": entry.tool_name,
@@ -279,8 +332,21 @@ class SessionCallGate:
         finally:
             self._maintenance_lock.release_write()
 
-    def maintenance_sync(self) -> "_SynchronousMaintenance":
-        return _SynchronousMaintenance(self._maintenance_lock)
+    @contextmanager
+    def maintenance_sync(self, *, wait: bool = True) -> Iterator[None]:
+        if wait:
+            with _SynchronousMaintenance(self._maintenance_lock):
+                yield
+            return
+        with self._lock:
+            if any(entry.operation_id for entry in self._entries.values()):
+                raise SessionComputeBusy()
+            if not self._maintenance_lock.try_acquire_write():
+                raise SessionComputeBusy()
+        try:
+            yield
+        finally:
+            self._maintenance_lock.release_write()
 
     def _prune_locked(self) -> None:
         stale_keys = [key for key, entry in self._entries.items() if entry.session.get() is None]
@@ -315,6 +381,13 @@ class _ThreadRWLock:
                 self._condition.wait()
             self._readers += 1
 
+    def try_acquire_read(self) -> bool:
+        with self._condition:
+            if self._writer or self._writers_waiting:
+                return False
+            self._readers += 1
+            return True
+
     def release_read(self) -> None:
         with self._condition:
             self._readers -= 1
@@ -330,6 +403,13 @@ class _ThreadRWLock:
                 self._writer = True
             finally:
                 self._writers_waiting -= 1
+
+    def try_acquire_write(self) -> bool:
+        with self._condition:
+            if self._writer or self._readers or self._writers_waiting:
+                return False
+            self._writer = True
+            return True
 
     def release_write(self) -> None:
         with self._condition:

@@ -146,8 +146,12 @@ Controller 派发的 `poe-bd-research-worker`），它们是当前最完善的�
   `runRef` 暴露；不得把 queue/review/quarantine 写入调用者项目、源码仓库或
   插件 cache，也不得要求 Agent shell 编辑运行态文件。`scripts/research_mature_builds.py` 只保留仓库
   开发兼容入口。
-- Create 当前默认禁止 `optimize_build` 和全局被动树重排。Agent 已经决定的机械变更应通过
-  `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout / passive_delta /
+- Create 当前默认禁止 `optimize_build` 和全局被动树重排。
+  三个长耗时辅助/镶嵌入口可使用 `background=true`，通过同会话的
+  `get_compute_operation/cancel_compute_operation` 查询或合作取消；其后台仍独占当前PoB，
+  不能并发修改。结果只在当前进程有界保留；完成不等于审计通过，也不支持跨重启恢复。
+  辅助搜索 `purpose=final_audit` 才能提交最终审计，探索与原生模型缺口保持独立分类。
+  Agent 已经决定的机械变更应通过 `apply_build_mutation_batch` 按 `bootstrap / mechanism_shell / skill_loadout / passive_delta /
   required_gear / ordinary_gear / config` 职能拆成小事务；不得把整个 BD 混进一个批次。只有以
   `new_build` 开始的 bootstrap 可省略输入 hash，后续事务必须串联上一批 `outputStateHash`。
   搜索、optimizer、隐式装备槽和隐式珠宝孔不能进入批次。失败只回滚当前职能事务；只有

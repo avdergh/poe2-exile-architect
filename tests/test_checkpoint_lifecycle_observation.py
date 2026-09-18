@@ -99,7 +99,10 @@ def isolated_checkpoints(monkeypatch):
     monkeypatch.setattr(
         validation_checkpoint,
         "_create_quality_checklist",
-        lambda **_kwargs: {"skillSupportAudit": {"status": "passed", "reasons": []}},
+        lambda **_kwargs: {
+            name: {"status": "passed", "reasons": []}
+            for name in ("skillSupportAudit", "jewelDecision", "itemSockets", "sustain")
+        },
     )
     yield
     validation_checkpoint.clear_validation_checkpoint_cache()
@@ -139,6 +142,8 @@ def test_checkpoint_and_formal_lifecycle_share_declared_snapshot_mechanism(level
     assert second["deliveryStatus"] == "recommended"
     assert second["lifecycleVerification"]["stateHash"] == build_state_hash(engine.get_xml())
     assert second["lifecycleVerification"]["observationTarget"] == TARGET
+    assert second["lifecycleVerification"]["scope"] == "selected_skill_only"
+    assert second["lifecycleVerification"]["rotationCovered"] is False
 
 
 @pytest.mark.parametrize("changed_target", [
@@ -181,16 +186,35 @@ def test_reobservation_replaces_old_declarations_instead_of_preserving_pass(repl
     assert refreshed["lifecycleVerification"]["status"] == expected_status
 
 
-def test_lifecycle_success_does_not_upgrade_an_independent_quality_gap(monkeypatch):
+@pytest.mark.parametrize("typed_gap", [False, True])
+def test_lifecycle_success_does_not_upgrade_an_independent_quality_gap(monkeypatch, typed_gap):
     engine = ObservationEngine()
     _remember(engine)
     monkeypatch.setattr(
         validation_checkpoint, "_create_quality_checklist",
-        lambda **_kwargs: {"skillSupportAudit": {"status": "unknown", "reasons": ["capability_gap"]}},
+        lambda **_kwargs: {
+            "skillSupportAudit": {
+                "status": "unknown", "reasons": ["capability_gap"],
+                "groupResults": [{
+                    "status": "unknown", "freshness": "current",
+                    "auditVersion": "support_audit_v5", "reasonClass": "capability_gap",
+                    "verificationRequired": True,
+                    "capability": {
+                        "capabilitySource": "pob_runtime", "applicationCheck": "verified",
+                        "numericRanking": "unsupported", "triggerRate": "unmodelled",
+                        "reasonCodes": ["trigger_rate_unmodelled"],
+                    },
+                }] if typed_gap else [],
+            },
+            "jewelDecision": {"status": "passed"},
+            "itemSockets": {"status": "passed"},
+            "sustain": {"status": "passed"},
+        },
     )
     checkpoint = validation_checkpoint.inspect_generation_checkpoint(engine)
     assert checkpoint["lifecycleVerification"]["pass"] is True
-    assert checkpoint["deliveryStatus"] == "candidate"
+    assert checkpoint["readyForJudge"] is typed_gap
+    assert checkpoint["deliveryStatus"] == ("candidate" if typed_gap else "blocked")
 
 
 def test_selected_output_defenses_are_read_before_selector_restore():

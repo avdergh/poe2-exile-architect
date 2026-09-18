@@ -19,6 +19,7 @@ from typing import Any
 
 from .. import paths
 from ..knowledge import db
+from ..runtime.compute_runtime_lock import RuntimeLeaseBusy, runtime_write_lease
 from . import prices
 
 REPOE_PROBE = "https://repoe-fork.github.io/poe2/base_items.min.json"
@@ -81,8 +82,12 @@ def update_corpus(
         from pipeline import build_corpus
 
         build_corpus.fetch_all(refresh=True)
-        counts = build_corpus.build()
-        db.reset()
+        try:
+            with runtime_write_lease():
+                counts = build_corpus.build()
+                db.reset()
+        except RuntimeLeaseBusy:
+            return {"updated": False, "errorCode": "compute_busy", "reason": "active_compute_operation"}
         return {"updated": True, "mode": "rebuild_from_source", "counts": counts}
 
     if not release_url:
@@ -107,6 +112,11 @@ def update_corpus(
     with tempfile.NamedTemporaryFile(delete=False, dir=dest.parent, suffix=".tmp") as tf:
         tf.write(blob)
         tmp = Path(tf.name)
-    db.reset()
-    shutil.move(str(tmp), str(dest))
+    try:
+        with runtime_write_lease():
+            db.reset()
+            shutil.move(str(tmp), str(dest))
+    except RuntimeLeaseBusy:
+        tmp.unlink(missing_ok=True)
+        return {"updated": False, "errorCode": "compute_busy", "reason": "active_compute_operation"}
     return {"updated": True, "mode": "download", "version": manifest.get("version")}

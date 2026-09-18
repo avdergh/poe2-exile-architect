@@ -405,7 +405,7 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
         self.assertEqual(stale["errorCode"], "skill_group_conflict")
         self.assertEqual(self.engine.get_xml(), original_xml)
 
-    def test_optimizer_measures_real_tree_group_but_exploratory_metric_is_not_audit(self) -> None:
+    def test_tree_optimizer_rejects_unregistered_requirement_objective_without_probes(self) -> None:
         listed = self._new_varashta(34207)
         self._select_command(34207)
         listed = skillgroups.list_skill_groups(self.engine)
@@ -417,27 +417,18 @@ class TreeSourceSupportIntegrationTests(unittest.TestCase):
             max_supports=1,
             candidates=4,
             screen=4,
+            purpose="exploration",
             group_index=self._tree_group(34207, listed)["index"],
             expected_fingerprint=self._tree_group(34207, listed)["fingerprint"],
         )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["source"], "Tree:34207")
-        self.assertEqual(result["skill"], "Command")
-        self.assertEqual(len(result["supports"]), 1)
-        self.assertTrue(result["supports"][0].startswith("Bidding "))
-        self.assertGreater(result["finalValue"], 0)
-        self.assertIn(result["baseValue"], (None, 0))
-        self.assertEqual(result["supportAudit"]["status"], "inconclusive")
-        self.assertFalse(result["measurement"]["checkpointEligible"])
-        self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, original_hash, self._tree_group(34207, listed)["index"])["status"],
-            "inconclusive",
-        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["errorCode"], "unsupported_support_objective")
+        self.assertEqual(result["candidateProbes"], 0)
+        self.assertIsNone(supportopt.support_audit_for_state(
+            self.engine, original_hash, self._tree_group(34207, listed)["index"],
+        ))
         self.assertEqual(build_state_hash(self.engine.get_xml()), original_hash)
-
-        configured = self._configure(34207, result["supports"])
-        self.assertTrue(configured["ok"])
-        self.assertIsNone(configured["supportAudit"])
+        self.assertEqual(skillgroups.list_skill_groups(self.engine)["groups"], listed["groups"])
 
     def test_deallocating_ascendancy_node_removes_source_group(self) -> None:
         self._new_varashta(34207)
@@ -703,7 +694,7 @@ Grants Skill: Level 20 Herald of Ash""",
         self.assertTrue(incomplete_unique["ok"], incomplete_unique)
         self.assertEqual(self.engine.get_build()["spiritRequested"], 30)
 
-    def test_replacing_source_item_invalidates_supports_and_current_audit(self) -> None:
+    def test_replacing_source_item_preserves_supports_but_changed_input_invalidates_audit(self) -> None:
         listed = self._new_calamity()
         before_hash = listed["stateHash"]
         before_xml = self.engine.get_xml()
@@ -745,14 +736,22 @@ Grants Skill: Level 20 Herald of Ash""",
         )
         self.assertIsNotNone(supportopt.support_audit_for_state(self.engine, configured_hash, self._item_group(listed=listed)["index"]))
 
-        replaced = self.engine.add_item(COMING_CALAMITY, slot="Body Armour")
+        replacement = COMING_CALAMITY.replace("+70 to maximum Life", "+71 to maximum Life")
+        replaced = self.engine.add_item(replacement, slot="Body Armour")
         self.assertTrue(replaced["ok"], replaced)
         current = skillgroups.list_skill_groups(self.engine)
         self.assertNotEqual(configured_hash, current["stateHash"])
-        self.assertTrue(all(len(group["gems"]) == 1 for group in current["groups"]))
+        self.assertEqual(
+            [gem["name"] for gem in self._item_group(listed=current)["gems"] if gem.get("isSupport")],
+            ["Precision I"],
+        )
+        self.assertEqual(
+            {group["rootSkillId"] for group in current["groups"] if group.get("sourceKind") == "item"},
+            {group["rootSkillId"] for group in listed["groups"] if group.get("sourceKind") == "item"},
+        )
         self.assertIsNone(supportopt.support_audit_for_state(self.engine, current["stateHash"], self._item_group(listed=listed)["index"]))
 
-    def test_optimizer_measures_the_real_item_source_group_without_proxy(self) -> None:
+    def test_item_optimizer_rejects_unregistered_requirement_objective_without_proxy(self) -> None:
         listed = self._new_calamity()
         original_xml = self.engine.get_xml()
         original_hash = build_state_hash(original_xml)
@@ -767,12 +766,13 @@ Grants Skill: Level 20 Herald of Ash""",
                 max_supports=1,
                 candidates=4,
                 screen=6,
+                purpose="exploration",
                 group_index=self._item_group(listed=listed)["index"],
                 expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
-        self.assertTrue(result["ok"], result)
-        self.assertTrue(str(result["source"]).startswith("Item:"))
-        self.assertEqual(result["groupIndex"], self._item_group(listed=listed)["index"])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["errorCode"], "unsupported_support_objective")
+        self.assertEqual(result["candidateProbes"], 0)
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
         groups = skillgroups.list_skill_groups(self.engine)["groups"]
         self.assertEqual(len(groups), len(listed["groups"]))
@@ -861,24 +861,25 @@ Grants Skill: Level 20 Herald of Ash""",
         with mock.patch.object(
             supportopt,
             "_screen_set",
-            return_value=["Precision I", "Precision II"],
+            return_value=["Clarity I", "Clarity II"],
         ):
             result = supportopt.optimize_supports(
                 self.engine,
-                goals={"SpiritReserved": 1},
+                metric="ManaRegenRecovery",
                 group_index=self._item_group(listed=listed)["index"],
                 expected_fingerprint=self._item_group(listed=listed)["fingerprint"],
             )
 
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["supports"], ["Precision II"])
+        self.assertEqual(result["supports"], ["Clarity II"])
         self.assertEqual(result["measurement"]["rejectedCombinations"], 1)
         self.assertEqual(result["measurement"]["failedCombinations"], 0)
         self.assertEqual(
             result["measurement"]["combinationRejectionCodes"],
             {"duplicate_support_family": 1},
         )
-        self.assertEqual(result["supportAudit"]["status"], "inconclusive")
+        self.assertEqual(result["supportAudit"]["status"], "failed")
+        self.assertTrue(result["supportAudit"]["positiveGainCombinationAvailable"])
 
     def test_unknown_or_impossible_source_measurement_errors_still_fail_closed(self) -> None:
         self._new_calamity()
@@ -895,7 +896,7 @@ Grants Skill: Level 20 Herald of Ash""",
                 state_hash = listed["stateHash"]
 
                 def fail_nonempty_configuration(method: str, **params: object) -> dict:
-                    if method == "configure_source_skill_supports" and params.get("supportGemIds"):
+                    if method == "probe_source_skill_group" and params.get("supportGemIds"):
                         return {"ok": False, "errorCode": error_code}
                     return original_call(method, **params)
 
@@ -943,7 +944,7 @@ Grants Skill: Level 20 Herald of Ash""",
         )
 
         def fail_one_configuration(method: str, **params: object) -> dict:
-            if method == "configure_source_skill_supports" and params.get("supportGemIds") == [
+            if method == "probe_source_skill_group" and params.get("supportGemIds") == [
                 rejected_id
             ]:
                 return {"ok": False, "errorCode": "source_support_capacity_exceeded"}
@@ -991,7 +992,7 @@ Grants Skill: Level 20 Herald of Ash""",
         original_call = self.engine.call
 
         def fail_empty_configuration(method: str, **params: object) -> dict:
-            if method == "configure_source_skill_supports" and params.get("supportGemIds") == []:
+            if method == "probe_source_skill_group" and params.get("supportGemIds") == []:
                 return {"ok": False, "errorCode": "source_support_not_applied"}
             return original_call(method, **params)
 
@@ -1043,10 +1044,11 @@ Grants Skill: Level 20 Herald of Ash""",
 
         stale = supportopt.optimize_supports(
             self.engine,
-            metric="ReqDex",
+            metric="ManaCost",
             max_supports=1,
             candidates=2,
             screen=2,
+            purpose="exploration",
             expected_fingerprint="skill-group:stale",
         )
         self.assertEqual(stale["errorCode"], "skill_group_conflict")
@@ -1054,10 +1056,11 @@ Grants Skill: Level 20 Herald of Ash""",
 
         result = supportopt.optimize_supports(
             self.engine,
-            metric="ReqDex",
+            metric="ManaCost",
             max_supports=1,
             candidates=4,
             screen=6,
+            purpose="exploration",
             expected_fingerprint=second["fingerprint"],
             max_mana_cost=0,
             spirit_limit=301,
@@ -1067,10 +1070,8 @@ Grants Skill: Level 20 Herald of Ash""",
         self.assertEqual(result["skill"], "Herald of Ice")
         self.assertEqual(original_hash, build_state_hash(self.engine.get_xml()))
         self.assertIsNone(supportopt.support_audit_for_state(self.engine, original_hash, self._item_group(listed=listed)["index"]))
-        self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, original_hash, second["index"])["status"],
-            "inconclusive",
-        )
+        self.assertTrue(result["supportAudit"]["explorationOnly"])
+        self.assertIsNone(supportopt.support_audit_for_state(self.engine, original_hash, second["index"]))
 
     def test_optimizer_restores_after_exception_following_temporary_selection(self) -> None:
         listed = self._new_calamity()
@@ -1162,6 +1163,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             max_supports=1,
             candidates=1,
             screen=1,
+            purpose="exploration",
             group_index=1,
             expected_fingerprint=listed["groups"][0]["fingerprint"],
         )
@@ -1178,8 +1180,8 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             group_index=1,
             expected_fingerprint=listed["groups"][0]["fingerprint"],
         )
-        self.assertTrue(unrelated["ok"], unrelated)
-        self.assertEqual(unrelated["supportAudit"]["status"], "inconclusive")
+        self.assertFalse(unrelated["ok"], unrelated)
+        self.assertEqual(unrelated["errorCode"], "unsupported_support_objective")
         self.assertEqual(
             supportopt.support_audit_for_state(self.engine, state_hash, 1)["status"],
             "failed",
@@ -1272,7 +1274,7 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             {**capability, "reasonCodes": ["trigger_rate_unmodelled", "unknown_measurement_error"]}
         )
 
-    def test_unmeasurable_metric_is_inconclusive_and_is_cached(self) -> None:
+    def test_unknown_metric_is_rejected_before_search_and_is_not_cached(self) -> None:
         listed = self._listed()
         result = supportopt.optimize_supports(
             self.engine,
@@ -1280,16 +1282,14 @@ class SupportAuditIntegrityTests(unittest.TestCase):
             max_supports=1,
             candidates=4,
             screen=4,
+            purpose="exploration",
             group_index=1,
             expected_fingerprint=listed["groups"][0]["fingerprint"],
         )
         self.assertFalse(result["ok"])
-        self.assertEqual(result["errorCode"], "support_optimization_inconclusive")
-        self.assertEqual(result["measurement"]["status"], "inconclusive")
-        self.assertEqual(
-            supportopt.support_audit_for_state(self.engine, listed["stateHash"], 1)["status"],
-            "inconclusive",
-        )
+        self.assertEqual(result["errorCode"], "unsupported_support_objective")
+        self.assertEqual(result["candidateProbes"], 0)
+        self.assertIsNone(supportopt.support_audit_for_state(self.engine, listed["stateHash"], 1))
         self.assertEqual(listed["stateHash"], build_state_hash(self.engine.get_xml()))
 
     def test_partial_candidate_measurement_cannot_write_passed_audit(self) -> None:
@@ -2065,7 +2065,7 @@ class SourceSupportBoundaryTests(unittest.TestCase):
             xml=common["xml"],
             state_hash=common["state_hash"],
         )
-        self.assertEqual(refreshed["deliveryStatus"], "candidate")
+        self.assertEqual(refreshed["deliveryStatus"], "blocked")
 
 
 if __name__ == "__main__":

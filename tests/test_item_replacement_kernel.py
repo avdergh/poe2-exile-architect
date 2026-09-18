@@ -20,8 +20,8 @@ STAFF = (
 )
 
 
-def _raw(base="Golden Visage", mods=(), slot="Helmet"):
-    return itemopt._item_text(base, list(mods), slot, ilvl=90)
+def _raw(base="Golden Visage", mods=(), slot="Helmet", reference_raw=None):
+    return itemopt._item_text(base, list(mods), slot, ilvl=90, reference_raw=reference_raw)
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ def _source(engine, supports=True):
     )
 
 
-def test_source_weapon_lost_support_cannot_return_other_skill_dps(replacement_engine):
+def test_source_weapon_same_root_preserves_support_and_original_output(replacement_engine):
     engine = replacement_engine
     _source(engine)
     snapshot = engine.get_xml()
@@ -136,11 +136,9 @@ def test_source_weapon_lost_support_cannot_return_other_skill_dps(replacement_en
         "Weapon 1", [STAFF, STAFF.replace("50%", "100%")], keys=KEYS, replacement_context=True
     )
     assert result["ok"] and result["rolledBack"], result
-    assert result["results"] == [False, False]
-    assert all(
-        code in {"item_replacement_input_changed", "item_replacement_group_config_changed"}
-        for code in result["failureCodes"]
-    )
+    assert all(result["results"])
+    assert result["failureCodes"] == [False, False]
+    assert all(value['effectId'] == expected['effectId'] for value in result['resolvedContexts'])
     assert build_state_hash(engine.get_xml()) == build_state_hash(snapshot)
     assert engine.inspect_item_replacement_context(expected)["ok"]
 
@@ -157,7 +155,8 @@ def test_exact_effect_and_second_ordinary_group_survive_weapon_grants(replacemen
     engine = replacement_engine
     engine.add_skill_group("Spark 20/0 1")
     engine.select_judge_skill(offense_skill_group_index=2, expected_skill_name="Spark")
-    result = _compare(engine, "Weapon 1", [STAFF, _raw("Attuned Wand", slot="Weapon 1"), STAFF])
+    wand = 'Rarity: Rare\nContext Wand\nAttuned Wand\nItem Level: 90\nImplicits: 1\nGrants Skill: Level 20 Mana Drain'
+    result = _compare(engine, "Weapon 1", [STAFF, _raw("Attuned Wand", slot="Weapon 1", reference_raw=wand), STAFF])
     assert result["calculationContext"]["ordinaryGroupOrdinal"] == 2
     assert all(c["skillName"] == "Spark" for c in result["resolvedContexts"])
 

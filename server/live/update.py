@@ -24,6 +24,7 @@ from typing import Any
 
 from .. import paths
 from ..knowledge import db, corpus_certification
+from ..runtime.compute_runtime_lock import RuntimeLeaseBusy, runtime_write_lease
 
 MANIFEST_URL = os.environ.get(
     "POE2_MCP_MANIFEST_URL",
@@ -237,12 +238,14 @@ def apply_updates(
             context = (
                 install_context(replace_engine) if install_context is not None else nullcontext()
             )
-            with context, corpus_certification.corpus_guard():
+            with runtime_write_lease(), context, corpus_certification.corpus_guard():
                 if not force and _vkey(installed_version()) > _vkey(latest):
                     return {"updated": False, "reason": "a newer release was installed during download"}
                 if corpus.get("url"):
                     db.reset()
                 _install_replacements(replacements, stage / "backups")
+    except RuntimeLeaseBusy:
+        return {"updated": False, "errorCode": "compute_busy", "reason": "active_compute_operation"}
     except (OSError, zipfile.BadZipFile, ValueError) as exc:
         return {"updated": False, "error": f"update installation failed: {type(exc).__name__}"}
     return {"updated": True, "version": latest}

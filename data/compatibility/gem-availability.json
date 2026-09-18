@@ -1,8 +1,15 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-09-11.1",
+  "revision": "2026-09-17.1",
   "targetPatch": "0.5.5",
   "sources": [
+    {
+      "ref": "wiki:discipline-acquisition:20260917",
+      "url": "https://www.poe2wiki.net/wiki/Discipline",
+      "section": "Acquisition",
+      "reviewedAt": "2026-09-17",
+      "review": "取得方式明确为不掉落的节杖固有技能；精确 Metadata ID 与已固定 PoB 的 DisciplinePlayer、Stoic Sceptre implicit 交叉核对。仅认证 0.5.5 的普通宝石来源限制，不外推其他零级刻印技能或未来补丁。"
+    },
     {
       "ref": "ggg:removed:third-edict",
       "url": "https://www.pathofexile.com/forum/view-thread/3828542/filter-account-type/staff",
@@ -17,6 +24,19 @@
       "pobGemDataSha256": "2daba2e7aa586fe7669585ff93df25e9bff82a9da1c61f72d1e134886091a0a5",
       "repoeExportedVersion": "4.5.4.11",
       "review": "原始released字段只证明数据发布状态；37个辅助无普通刻印入口。该特征不单独判断移除，Lineage等特殊来源不据此排除。"
+    }
+  ],
+  "sourceRestrictions": [
+    {
+      "componentKey": "gem:Metadata/Items/Gems/SkillGemDiscipline",
+      "displayName": "Discipline",
+      "gemIds": ["Metadata/Items/Gems/SkillGemDiscipline"],
+      "effectIds": ["DisciplinePlayer"],
+      "ordinaryGemAllowed": false,
+      "allowedSourceKinds": ["item"],
+      "providerNames": ["Stoic Sceptre"],
+      "verifiedPatch": "0.5.5",
+      "sourceRefs": ["wiki:discipline-acquisition:20260917", "pinned:repoe-pob:20260911"]
     }
   ],
   "entries": [

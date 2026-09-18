@@ -9,7 +9,6 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from server.compute import supportopt
 from server.compute.engine import PobEngine
 from server.compute.state import build_state_hash
 from server.judge import evaluator, rules, runner, sample_audit
@@ -586,75 +585,8 @@ def _unavailable_quality_checklist() -> dict[str, dict[str, Any]]:
 
 
 def _final_check_blockers(checklist: dict[str, Any]) -> list[str]:
-    """Select deterministic, state-bound final checks that must precede Judge."""
-
-    blockers: list[str] = []
-    for name in ("skillSupportAudit", "jewelDecision", "itemSockets"):
-        item = checklist.get(name) if isinstance(checklist, dict) else None
-        if not isinstance(item, dict):
-            blockers.append(f"{name}:missing_result")
-            continue
-        status = item.get("status")
-        if status in {"passed", "not_applicable"}:
-            continue
-        if status not in {"failed", "unknown"}:
-            blockers.append(f"{name}:invalid_status")
-            continue
-        if name == "skillSupportAudit" and status == "unknown":
-            groups = item.get("groupResults") or []
-            if groups and all(
-                isinstance(group, dict)
-                and (
-                    group.get("status") == "passed"
-                    or (
-                        group.get("status") == "unknown"
-                        and group.get("freshness") == "current"
-                        and group.get("auditVersion") == "support_audit_v5"
-                        and group.get("reasonClass") == "capability_gap"
-                        and group.get("verificationRequired") is True
-                        and supportopt.support_capability_is_model_gap(group.get("capability"))
-                    )
-                )
-                for group in groups
-            ):
-                continue
-        if name == "jewelDecision" and status == "unknown":
-            jewel_reasons = {str(value) for value in item.get("reasons") or []}
-            allowed_reasons = {
-                "selected_candidate_socket_policy_limited",
-                "selected_candidate_socket_probe_inconclusive",
-            }
-            executed = sum(
-                int(item.get(key) or 0)
-                for key in (
-                    "evaluatedSocketCount",
-                    "limitedSocketCount",
-                    "inconclusiveSocketCount",
-                )
-            )
-            if (
-                item.get("evidenceFreshness") == "current"
-                and item.get("reviewPolicyVersion") == "jewel_socket_review_v2"
-                and item.get("protectionDeclared") is True
-                and bool(jewel_reasons)
-                and jewel_reasons <= allowed_reasons
-                and executed > 0
-            ):
-                continue
-        reasons = [str(value) for value in item.get("reasons") or []]
-        if not reasons:
-            reasons = ["failed_without_reason"]
-        blockers.extend(f"{name}:{value}" for value in reasons)
-    sustain_item = checklist.get("sustain") if isinstance(checklist, dict) else None
-    if not isinstance(sustain_item, dict):
-        blockers.append("sustain:missing_result")
-    elif sustain_item.get("status") == "failed":
-        blockers.extend(
-            f"sustain:{value}" for value in sustain_item.get("reasons") or ["unsustainable"]
-        )
-    elif sustain_item.get("status") not in {"passed", "unknown", "not_applicable"}:
-        blockers.append("sustain:invalid_status")
-    return sorted(set(blockers))
+    """Compatibility entry point; checkpoint and Judge share the same gate."""
+    return preflight.final_check_blockers(checklist)
 
 
 def _draft_validation_matches(

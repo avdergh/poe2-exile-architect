@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -376,6 +376,13 @@ class ResearchExecutionPackageDecision(StrictModel):
         return values
 
 
+# Expose the existing step-length requirement in JSON Schema as well as the whitespace-aware
+# validator below. This does not relax evidence, substantive-content or reference requirements.
+CrossCasePlanStep = Annotated[
+    str, Field(min_length=24, description="At least 24 characters after trimming whitespace.")
+]
+
+
 class CrossCaseMechanismPlan(StrictModel):
     plan_id: str = Field(pattern=r"^xcp-[0-9a-f]{16}$")
     source_case_refs: list[str] = Field(min_length=1, max_length=3)
@@ -385,10 +392,10 @@ class CrossCaseMechanismPlan(StrictModel):
     mechanism_rationale: str = Field(min_length=80, max_length=1000)
     compatibility_rationale: str = Field(min_length=80, max_length=1000)
     tradeoff_rationale: str = Field(min_length=60, max_length=800)
-    implementation_plan: list[str] = Field(min_length=2, max_length=12)
-    conflict_resolution_plan: list[str] = Field(min_length=1, max_length=12)
-    verification_plan: list[str] = Field(min_length=2, max_length=12)
-    failure_exit_conditions: list[str] = Field(min_length=1, max_length=12)
+    implementation_plan: list[CrossCasePlanStep] = Field(min_length=2, max_length=12)
+    conflict_resolution_plan: list[CrossCasePlanStep] = Field(min_length=1, max_length=12)
+    verification_plan: list[CrossCasePlanStep] = Field(min_length=2, max_length=12)
+    failure_exit_conditions: list[CrossCasePlanStep] = Field(min_length=1, max_length=12)
     evidence_refs: list[str] = Field(min_length=1, max_length=20)
 
     @field_validator(

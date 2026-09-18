@@ -343,7 +343,10 @@ def test_mechanism_shell_rolls_back_when_weapon_postcondition_fails():
             ),
             mutation_batch.BuildMutationOperation(
                 operation="equip_item",
-                raw="Rarity: Rare\nWrong Wand\nWithered Wand\nItem Level: 80",
+                raw=(
+                    "Rarity: Rare\nWrong Wand\nWithered Wand\nItem Level: 1\n"
+                    "Implicits: 1\nGrants Skill: Level 1 Chaos Bolt"
+                ),
                 slot="Weapon 1",
             ),
         ],
@@ -787,9 +790,16 @@ def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
         validation_checkpoint,
         "_create_quality_checklist",
         lambda **_kwargs: {
+            "skillSupportAudit": {"status": "passed"},
+            "itemSockets": {"status": "passed"},
+            "sustain": {"status": "passed"},
             "jewelDecision": {
                 "status": "unknown",
                 "reasons": ["selected_candidate_socket_policy_limited"],
+                "evidenceFreshness": "current",
+                "reviewPolicyVersion": "jewel_socket_review_v2",
+                "protectionDeclared": True,
+                "limitedSocketCount": 1,
             }
         },
     )
@@ -797,7 +807,7 @@ def test_unknown_quality_check_keeps_delivery_candidate(monkeypatch):
         "readyForJudge": True,
         "lifecycleVerification": {"pass": True},
         "completeness": {},
-        "preflight": {},
+        "preflight": {"readyForJudge": True},
         "_checkpointInputs": {"build": {}, "stats": {}},
     }
 

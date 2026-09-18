@@ -385,9 +385,9 @@ def test_plan_replays_only_returned_items_and_restores_input(pools):
 
 def test_skipped_autobase_cannot_affect_projected_character(pools, monkeypatch):
     engine = ItemOracle()
-    engine.base_gains["Fixture Base"] = 50
+    engine.base_gains["Golden Visage"] = 50
     monkeypatch.setattr(itemopt, "_attr_bias", lambda *_: "int")
-    monkeypatch.setattr(itemopt.db, "pick_base", lambda *_args, **_kwargs: "Fixture Base")
+    monkeypatch.setattr(itemopt, "pick_ordinary_base", lambda *_args, **_kwargs: "Golden Visage")
     result = itemopt.plan_gear(engine, slots=["Helmet"], auto_base=True)
     assert result["ok"], result
     assert result["plan"] == []

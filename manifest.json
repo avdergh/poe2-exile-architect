@@ -30,6 +30,8 @@
     }
   },
   "tools": [
+    { "name": "get_compute_operation", "description": "Read a session-owned background calculation status and its complete result without waiting for PoB." },
+    { "name": "cancel_compute_operation", "description": "Request cooperative cancellation of a session-owned calculation; restoration must finish before termination." },
     { "name": "start_study_run", "description": "Freeze one source for educational analysis without Research writes." },
     { "name": "inspect_study_case", "description": "Inspect Study coverage, expiry and deliverables." },
     { "name": "read_study_case", "description": "Read source-bound educational evidence." },

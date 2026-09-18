@@ -101,7 +101,7 @@ def test_research_mature_build_case_requires_real_packet_json():
 
 def test_tool_surface_intact():
     tools = asyncio.run(mcp.list_tools())
-    assert len(tools) == 179
+    assert len(tools) == 181
     names = {t.name for t in tools}
     assert {
         "list_jewel_sockets",
@@ -899,6 +899,8 @@ def test_lifecycle_feedback_projection_requires_explicit_strict_mode():
         "recommendedActions": ["redesign the damage loop"],
         "caveats": ["subjective_quality_caveat"],
         "failedChecks": ["sustain_ok"],
+        "scope": "selected_skill_only",
+        "rotationCovered": False,
     }
     hard_only = main._project_lifecycle_verification_feedback(
         payload,
@@ -914,6 +916,11 @@ def test_lifecycle_feedback_projection_requires_explicit_strict_mode():
     assert hard_only["failedChecks"] == ["sustain_ok"]
     assert strict["recommendedActions"] == ["redesign the damage loop"]
     assert strict["caveats"] == ["subjective_quality_caveat"]
+    assert hard_only["scope"] == "selected_skill_only"
+    assert hard_only["rotationCovered"] is False
+    compact = main._compact_lifecycle_verification_response(hard_only)
+    assert compact["scope"] == "selected_skill_only"
+    assert compact["rotationCovered"] is False
 
 
 def test_verify_lifecycle_stage_binds_immutable_artifact_hash_and_ignores_flask_claim(
