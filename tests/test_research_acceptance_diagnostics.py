@@ -68,6 +68,12 @@ def test_static_support_contract_is_bound_to_original_write_receipt(tmp_path):
         "graphSnapshotId": "physical-graph-fixture",
         "scope": "static_type_compatibility",
         "records": [{"recordIndex": 0, "packages": []}],
+        "excludedSourceSupportPairs": [{
+            "groupRef": "skill-set:1:group:2", "socketedItemRef": "skill-set:1:group:2:socketed:2",
+            "skillKey": "skill:CometPlayer", "supportKey": "support:ArcaneTempo",
+            "sourcePairInstanceCount": 1, "compatibilityStatus": "unsupported",
+            "decision": "exclude_incompatible",
+        }],
     }
     accepted = service.accept_research_unit(
         **_unit_kwargs(),
@@ -77,6 +83,12 @@ def test_static_support_contract_is_bound_to_original_write_receipt(tmp_path):
     receipt = service.get_research_write_receipt(accepted["writeReceiptRef"])
     assert receipt["acceptanceSummary"]["supportCompatibility"] == support_diagnostics
     assert receipt["writtenMapping"][0]["recordId"]
+    from server.knowledge.research_receipt_view import project_receipt
+    diagnostic = project_receipt(receipt, detail="diagnostics",
+        section="supportCompatibility.excludedSourceSupportPairs")
+    assert diagnostic["entries"] == support_diagnostics["excludedSourceSupportPairs"]
+    # The source mistake is receipt audit only; the accepted record is unchanged.
+    assert "excludedSourceSupportPairs" not in json.dumps(receipt["writtenMapping"])
 
     replay = service.accept_research_unit(
         **_unit_kwargs(),

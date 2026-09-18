@@ -46,6 +46,10 @@ safe review、校验和 accept 后停止。
 mcp__poe_research__search_research_case / mcp__poe_research__get_research_review_contract / mcp__poe_research__initialize_research_review / mcp__poe_research__validate_research_review /
 mcp__poe_research__accept_research_review / mcp__poe_research__retry_research_review`。
 
+MCP 结果先检查 `isError`；错误响应可能只有 `content` 而没有 `structuredContent`，须保留并审读
+其中的 safe error，不把缺失字段当作空证据。通过 JavaScript 包装调用时，不得将 `undefined`
+传给 `store` 等序列化接口，以免二次序列化失败掩盖原始工具错误。
+
 研究另用 `mcp__poe_knowledge__query_research_memory`、`mcp__poe_knowledge__graph_tool_query`、本地 `mcp__poe_knowledge__explain_mechanic/mcp__poe_knowledge__search_mechanics`
 和实时 `mcp__poe_knowledge__lookup_mechanic`。图组件发现与解析是同一MCP工具的两个子操作，依次调用
 `mcp__poe_knowledge__graph_tool_query(tool_name="search_graph_components", payload=...)` 和
@@ -59,9 +63,15 @@ payload={"node_key":"<stable key>"})` 深读 `statTexts` 与来源；该证据�
 
 ## 研究方法与证据
 
+- 来源 BD 不保证正确。辅助经精确来源绑定的整组校验确认不兼容后，从知识正文、组件、
+  `supportPackages` 和语义边中排除；不另写不兼容声明、`open_question` 或警告记录。
+  若该源组所有辅助均确认不兼容，在 `sourceSkillGroupReviews` 使用
+  `supportDisposition=excluded_incompatible`；混合组仍为 `packaged`，只打包有效辅助。
+  工具保留排除审核事实，不要求把来源错误存成知识，也不为凑辅助数量补造组件。
+  未解析、模型未知、缺少核验与未证实关系不能当作已确认不兼容。
 - 研究质量优先于速度和上下文预算。完整读取要求的分区，并独立盘点每个启用容器，填写
   `sourceSkillGroupReviews`。Family 主技能、核心副技能和结论依赖的高影响组保留根技能及 socketed
-  items；其他组也明确处置。真实 `source_coverage_gap` 保持 partial；低影响、内部 ID 或无法唯一解析
+  items 中有效的辅助；已确认排除项不形成覆盖缺口。其他组也明确处置。真实 `source_coverage_gap` 保持 partial；低影响、内部 ID 或无法唯一解析
   的组可 needs_followup/caveat，不静默丢弃或机械否定整案。
 - 技能、天赋与装备效果来自案例证据或 typed 事实。有价值的推断明确标为推断，
   不能把模型记忆中的免疫、转换、触发或缩放写成已证实事实。

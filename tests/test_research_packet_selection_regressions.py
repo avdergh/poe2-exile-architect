@@ -108,25 +108,12 @@ def test_config_identity_and_inputs_remain_readable_under_real_transport_guard(c
 
 
 @pytest.mark.parametrize("section,field", [("config", "value"), ("config-sets", "title")])
-def test_oversized_configuration_item_has_lossless_continuation(section, field):
+def test_oversized_configuration_prose_is_rejected_before_fragmentation(section, field):
     long_text = "a condition requiring explicit verification; " * 600
     packet = _packet(f'<Config activeConfigSet="1"><ConfigSet id="1" title="{long_text if field == "title" else "Default"}"><Input name="custom" string="{long_text if field == "value" else "value"}"/></ConfigSet></Config>')
-    # The view is transient structured evidence; this test exercises pagination, while
-    # copy-safety may independently reject unusually long prose at the product boundary.
-    cursor = 0
-    fragments = []
-    while True:
-        page = research_packet.read_packet_section(packet, section=section, cursor=cursor, limit=1)
-        assert len(json.dumps(page, ensure_ascii=False, indent=2)) <= 12_000
-        fragments.extend(page["items"])
-        assert "itemDetailTruncated" not in page
-        if page["complete"]:
-            break
-        cursor = page["nextCursor"]
-    assert [row["fragmentIndex"] for row in fragments] == list(range(len(fragments)))
-    assert all(row["fragmentCount"] == len(fragments) for row in fragments)
-    item = json.loads(''.join(row["jsonFragment"] for row in fragments))
-    assert item[field] == long_text
+    # Source safety is checked before fragmentation so pagination cannot launder prose.
+    with pytest.raises(ValueError, match="long_guide_prose_like"):
+        research_packet.read_packet_section(packet, section=section, cursor=0, limit=1)
 
 
 def test_normalized_structures_keep_readback_bound_and_reject_stale_snapshot(monkeypatch):

@@ -10,11 +10,37 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 from . import mature_learning
+
+
+MAX_COPY_SAFE_TEXT_CHARS = 1_200
+TRANSIENT_RAW_MARKERS = (
+    "eNrt",
+    "rawXml",
+    "rawImportCode",
+    "PathOfBuilding",
+    "<Build",
+    "<Skills",
+    "nameSpec",
+    "transientPacketPath",
+    "transientPromptPath",
+    "packet.json",
+    "researcher_prompt.txt",
+    "pobb.in/",
+    "poe.ninja/",
+)
+TRANSIENT_FORBIDDEN_FLAGS = frozenset({
+    "raw_pob_xml_marker",
+    "pob_code_like_blob",
+    "copyable_build_link",
+    "raw_account_or_character_url",
+    "long_guide_prose_like",
+})
 
 
 def find_forbidden_paths(value: Any, *, path: str = "") -> list[str]:
@@ -80,8 +106,17 @@ def copyability_flags(value: Any) -> list[str]:
         flags.add("ordered_passive_path")
     if _contains_gear_slot_like(lower):
         flags.add("slot_exact_gear_like")
-    if any(len(fragment) > 1200 for fragment in fragments):
+    if any(len(fragment) > MAX_COPY_SAFE_TEXT_CHARS for fragment in fragments):
         flags.add("long_guide_prose_like")
+    return sorted(flags)
+
+
+def transient_evidence_flags(value: Any) -> list[str]:
+    """Reject raw material and guide prose in lease-bound structured evidence."""
+    flags = set(copyability_flags(value)) & TRANSIENT_FORBIDDEN_FLAGS
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if any(marker in serialized for marker in TRANSIENT_RAW_MARKERS):
+        flags.add("raw_transient_marker")
     return sorted(flags)
 
 

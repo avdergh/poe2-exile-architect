@@ -66,11 +66,11 @@ CASE_COVERAGE_DIMENSIONS = {
 }
 CASE_COVERAGE_STATUSES = {"covered", "evidence_missing", "not_applicable"}
 DISPOSED_SKILL_GROUP_STATES = frozenset(
-    {"packaged", "not_applicable", "source_has_no_supports", "exempt_internal_id"}
+    {"packaged", "not_applicable", "source_has_no_supports", "exempt_internal_id", "excluded_incompatible"}
 )
 SOURCE_GROUP_RESEARCH_DISPOSITIONS = frozenset({"represented", "not_relevant", "needs_followup"})
 SOURCE_GROUP_SUPPORT_DISPOSITIONS = frozenset(
-    {"packaged", "not_applicable", "source_has_no_supports", "source_coverage_gap"}
+    {"packaged", "not_applicable", "source_has_no_supports", "source_coverage_gap", "excluded_incompatible"}
 )
 
 MECHANIC_AUDIT_CLAIM_TYPES = {
@@ -529,8 +529,8 @@ def accept_deep_review_candidates(
         accepted_records=accepted_record_summaries,
         graph_service=graph_service,
         source_skill_resolutions=source_skill_resolutions,
+        support_compatibility_diagnostics=source_support_compatibility,
     )
-    source_evidence_diagnostics.update(source_support_compatibility)
     case_coverage, coverage_advisories = _evaluate_case_coverage(
         review=review,
         accepted_records=accepted_record_summaries,
@@ -564,8 +564,8 @@ def accept_deep_review_candidates(
             accepted_records=accepted_record_summaries,
             graph_service=graph_service,
             source_skill_resolutions=source_skill_resolutions,
+            support_compatibility_diagnostics=source_support_compatibility,
         )
-        source_evidence_diagnostics.update(source_support_compatibility)
         case_coverage, coverage_advisories = _evaluate_case_coverage(
             review=review,
             accepted_records=accepted_record_summaries,
@@ -595,6 +595,14 @@ def accept_deep_review_candidates(
     source_specific_components_by_case_ref = _source_specific_components_by_case_ref(deep_payload)
     if jewel_counts is not None:
         deferred_records.extend(_unresolved_jewel_sockets_deferred(review, jewel_counts))
+    excluded_claim_pairs = _unretained_excluded_support_pairs(
+        source_evidence_diagnostics.get("excludedIncompatibleSupportPairs") or [],
+        accepted_record_summaries,
+    )
+    excluded_claim_supports = _unretained_excluded_support_keys(
+        source_evidence_diagnostics.get("excludedIncompatibleSupportPairs") or [],
+        accepted_record_summaries,
+    )
     (
         payload,
         accepted_summaries,
@@ -613,6 +621,8 @@ def accept_deep_review_candidates(
         source_specific_components_by_case_ref=source_specific_components_by_case_ref,
         component_transfer_allowed=case_coverage["gearRoles"] != "evidence_missing",
         blocked_pattern_dependencies=blocked_pattern_dependencies,
+        excluded_source_support_pairs=excluded_claim_pairs,
+        excluded_source_support_keys=excluded_claim_supports,
     )
     deferred.extend(deferred_records)
     deferred.extend(mechanic_audit_deferred)
@@ -624,6 +634,25 @@ def accept_deep_review_candidates(
         "fragments": [],
         "semantic_edges": review.get("semanticEdges") or [],
     }
+    retained_edges = []
+    for index, edge in enumerate(edge_payload["semantic_edges"]):
+        keys = ({value for field in ("source_key", "target_key")
+                 if isinstance(value := edge.get(field), str)} if isinstance(edge, dict) else set())
+        if not (keys & excluded_claim_supports or _contains_excluded_support_pair(keys, excluded_claim_pairs)):
+            retained_edges.append(edge)
+            continue
+        deferred.append({
+            "reason": "excluded_incompatible_source_support", "candidateKind": "semantic_edge",
+            "diagnosticIndex": index, "componentKeys": [edge["source_key"], edge["target_key"]],
+        })
+    edge_payload["semantic_edges"] = retained_edges
+    deferred.extend(_excluded_support_claim_issues(
+        deep_payload=deep_payload, pattern_payload=payload, edge_payload=edge_payload,
+        excluded_support_keys=excluded_claim_supports,
+        excluded_support_pairs=excluded_claim_pairs,
+        exclusions=source_evidence_diagnostics.get("excludedIncompatibleSupportPairs") or [],
+        graph_service=graph_service,
+    ))
     submitted_deep_records = _deep_record_reviews(review)
     record_kind_advisories = _record_kind_advisories(submitted_deep_records)
     # Derived diagnostics can aggregate otherwise-safe fragments into copyable or guide-like
@@ -681,7 +710,9 @@ def accept_deep_review_candidates(
     # Formal acceptance mirrors the validate-only schema gate: schema-violating
     # candidates are deferred (never silently dropped into a partial payload),
     # so a case carrying any invalid_schema deferral must not be accepted.
-    schema_gate_failed = any(str(item.get("reason") or "") == "invalid_schema" for item in deferred)
+    schema_gate_failed = any(str(item.get("reason") or "") in {
+        "invalid_schema", "excluded_incompatible_source_support",
+    } for item in deferred)
     acceptance_gate_failed = depth_gate_failed or mechanic_audit_schema_failed or schema_gate_failed
     if acceptance_gate_failed:
         payload = {"schema_version": 4, "build_design_observations": [], "patterns": []}
@@ -727,6 +758,10 @@ def accept_deep_review_candidates(
         "noRawMatureBuildMaterial": True,
     }
     support_compatibility = _support_compatibility_summary(accepted_record_summaries, graph_service)
+    # Audit only: excluded source mistakes never become reusable knowledge records.
+    support_compatibility["excludedSourceSupportPairs"] = list(
+        source_evidence_diagnostics.get("excludedIncompatibleSupportPairs") or []
+    )
     deep_payload = _without_source_support_bindings(deep_payload)
     for summary in accepted_record_summaries:
         summary["typedPayload"] = _without_source_support_bindings({"deep_research_records": [
@@ -2358,6 +2393,8 @@ def _build_payload(
     source_specific_components_by_case_ref: dict[str, set[str]],
     component_transfer_allowed: bool,
     blocked_pattern_dependencies: dict[str, list[set[str]]] | None = None,
+    excluded_source_support_pairs: set[tuple[str, str]] | None = None,
+    excluded_source_support_keys: set[str] | None = None,
 ) -> tuple[
     dict[str, Any],
     list[dict[str, Any]],
@@ -2634,6 +2671,14 @@ def _build_payload(
                 )
                 continue
         candidate_key_set = set(component_keys)
+        if (candidate_key_set & (excluded_source_support_keys or set())
+                or _contains_excluded_support_pair(candidate_key_set, excluded_source_support_pairs or set())):
+            deferred.append({
+                "titleZh": candidate["title"], "sampleId": sample_id,
+                "reason": "excluded_incompatible_source_support", "componentKeys": component_keys,
+                "candidateKind": "build_pattern",
+            })
+            continue
         blocked_by_record = next(
             (
                 blocked_keys
@@ -2850,7 +2895,7 @@ def _source_support_compatibility_diagnostics(
         root = group.get("rootSkill") or next(iter(active_skills), {})
         name = str(root.get("name") or "")
         skill_key = str((source_skill_resolutions.get(name.casefold()) or {}).get("componentKey") or "")
-        resolved_supports = [(str(item.get("name") or ""), _resolve_source_support_key(
+        resolved_supports = [(item, _resolve_source_support_key(
             graph_service=graph_service, support=item)) for item in supports]
         package = {"skillKey": skill_key, "supportKeys": [key for _, key in resolved_supports]}
         if group.get("groupRef"):
@@ -2869,17 +2914,20 @@ def _source_support_compatibility_diagnostics(
         except ValueError as exc:
             unverified.extend({
                 "groupRef": str(group.get("groupRef") or ""), "skillName": name,
-                "skillKey": skill_key, "supportName": support_name,
+                "skillKey": skill_key, "supportName": str(support.get("name") or ""),
                 "supportKey": support_key, "reason": str(exc),
-            } for support_name, support_key in resolved_supports)
+                "socketedItemRef": str(support.get("socketedItemRef") or ""),
+            } for support, support_key in resolved_supports)
             continue
-        for support_name, support_key in resolved_supports:
+        for support, support_key in resolved_supports:
             status, rows = _support_outcome(outcomes, support_key)
             endpoint, result = rows[0] if rows else (skill_key, None)
             facts = result.facts if result else {}
             detail = {
                 "groupRef": str(group.get("groupRef") or ""), "skillName": name,
-                "skillKey": skill_key, "supportName": support_name, "supportKey": support_key,
+                "rootSkillRef": str(group.get("rootSkillRef") or ""),
+                "skillKey": skill_key, "supportName": str(support.get("name") or ""), "supportKey": support_key,
+                "socketedItemRef": str(support.get("socketedItemRef") or ""),
                 "evaluatedSkillKeys": sorted(outcomes), "matchedSkillKey": endpoint,
                 "sourceRefs": list(result.source_refs) if result else [],
                 "evaluationMode": "support_group_fixed_point",
@@ -2902,6 +2950,142 @@ def _source_support_compatibility_diagnostics(
         "multiActiveSkillSupportGroupCount": multi_active_count,
         "sourceSupportCompatibilityBlocked": bool(unsupported),
     }
+
+
+def _confirmed_source_support_exclusions(
+    *, source_skill_manifest: dict[str, Any] | None,
+    source_group_reviews: list[dict[str, Any]] | None,
+    graph_service: graph_tools.GraphQueryService | None,
+    diagnostics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Exclude only reviewed physical instances rejected at every reachable endpoint.
+
+    This is a coverage/audit decision, not knowledge. The record filters still reject
+    incompatible claims, including records that try to describe the rejected pairing.
+    Unknown identity, model coverage or endpoint reachability never authorizes exclusion.
+    """
+    if not source_skill_manifest or graph_service is None:
+        return []
+    reviewed = {str(item.get("groupRef") or "") for item in source_group_reviews or []
+                if isinstance(item, dict)
+                and item.get("researchDisposition") in {"represented", "not_relevant"}
+                and item.get("supportDisposition") in {"packaged", "excluded_incompatible"}}
+    if not reviewed:
+        return []
+    if diagnostics is None:
+        diagnostics = _source_support_compatibility_diagnostics(
+            graph_service=graph_service, source_skill_manifest=source_skill_manifest,
+            source_skill_resolutions=_source_skill_id_resolutions(
+                graph_service=graph_service, source_skill_manifest=source_skill_manifest),
+        )
+    nodes = {node.stable_key: node for node in graph_service.snapshot.nodes}
+    metadata_keys: dict[str, set[str]] = {}
+    for mapping in graph_service.snapshot.id_mappings:
+        if mapping.system == "repoe:gem_metadata" and mapping.target_key in nodes:
+            metadata_keys.setdefault(mapping.external_id, set()).add(mapping.target_key)
+    observed: dict[tuple[str, str], tuple[str, str]] = {}
+    pair_counts: dict[tuple[str, str], int] = {}
+    identities_complete = True
+    for group in source_skill_manifest.get("activeSkillGroups") or []:
+        root = group.get("rootSkill") or next(iter(group.get("activeSkills") or []), {})
+        skill_id = str(root.get("skillId") or "")
+        skill_key = skill_id if skill_id.startswith("skill:") else f"skill:{skill_id}"
+        for support in group.get("supports") or []:
+            gem_id = str(support.get("gemId") or "")
+            keys = {key for key in metadata_keys.get(gem_id, set()) | {f"support:{gem_id}"}
+                    if key in nodes and nodes[key].node_type == "support_gem"}
+            ref = str(support.get("socketedItemRef") or "")
+            if not gem_id or len(keys) != 1 or not ref or skill_key not in nodes:
+                identities_complete = False
+                continue
+            identity = (skill_key, next(iter(keys)))
+            observed[str(group.get("groupRef") or ""), ref] = identity
+            pair_counts[identity] = pair_counts.get(identity, 0) + 1
+    unknown = {(str(item.get("groupRef") or ""), str(item.get("socketedItemRef") or ""))
+               for item in diagnostics.get("unverifiedSourceSupportPairs") or []}
+    return [{**item, "compatibilityStatus": "unsupported", "decision": "exclude_incompatible",
+             "sourcePairInstanceCount": pair_counts.get((item.get("skillKey"), item.get("supportKey")))
+             if identities_complete else None}
+            for item in diagnostics.get("unsupportedSourceSupportPairs") or []
+            if item.get("groupRef") in reviewed
+            and (item.get("groupRef"), item.get("socketedItemRef")) not in unknown
+            and observed.get((item.get("groupRef"), item.get("socketedItemRef")))
+                == (item.get("skillKey"), item.get("supportKey"))
+            and item.get("evaluationMode") == "support_group_fixed_point"
+            and item.get("evaluatedSkillKeys") and item.get("sourceRefs")]
+
+
+def _unretained_excluded_support_pairs(
+    exclusions: list[dict[str, Any]], accepted_records: list[dict[str, Any]],
+) -> set[tuple[str, str]]:
+    """Block alternative write paths unless another exact source group validates the pair."""
+    retained = {(package["skillKey"], support)
+                for record in accepted_records
+                for package in record.get("_supportCompatibility") or []
+                for support in package.get("supportKeys") or []}
+    return {(item["skillKey"], item["supportKey"]) for item in exclusions} - retained
+
+
+def _contains_excluded_support_pair(keys: set[str], pairs: set[tuple[str, str]]) -> bool:
+    return any(skill in keys and support in keys for skill, support in pairs)
+
+
+def _unretained_excluded_support_keys(
+    exclusions: list[dict[str, Any]], accepted_records: list[dict[str, Any]],
+) -> set[str]:
+    """Only an accepted compatible package authorizes reuse of an excluded gem elsewhere."""
+    retained = {support for record in accepted_records
+                for package in record.get("_supportCompatibility") or []
+                for support in package.get("supportKeys") or []}
+    return {item["supportKey"] for item in exclusions} - retained
+
+
+def _excluded_support_claim_issues(
+    *, deep_payload: dict[str, Any], pattern_payload: dict[str, Any], edge_payload: dict[str, Any],
+    excluded_support_keys: set[str], exclusions: list[dict[str, Any]],
+    graph_service: graph_tools.GraphQueryService,
+    excluded_support_pairs: set[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Do not preserve excluded identities through prose or an alternative knowledge lane.
+
+    Exact resolved names/keys identify the component; no polarity keywords decide
+    whether a sentence recommends it or describes failure. The Agent removes the
+    claim and resubmits; the program never rewrites authored knowledge.
+    """
+    if excluded_support_pairs is None:
+        excluded_support_pairs = {(item["skillKey"], item["supportKey"]) for item in exclusions}
+    if not excluded_support_keys and not excluded_support_pairs:
+        return []
+    identities = excluded_support_keys | {key for pair in excluded_support_pairs for key in pair}
+    names = {key: {key} for key in identities}
+    for node in graph_service.snapshot.nodes:
+        if node.stable_key in names:
+            names[node.stable_key].add(node.display_name)
+    for item in exclusions:
+        if item["supportKey"] in names and item.get("supportName"):
+            names[item["supportKey"]].add(item["supportName"])
+        if item["skillKey"] in names and item.get("skillName"):
+            names[item["skillKey"]].add(item["skillName"])
+    issues = []
+    for kind, records in (
+        ("deep_research_record", deep_payload.get("deep_research_records") or []),
+        ("build_pattern", pattern_payload.get("patterns") or []),
+        ("build_pattern", pattern_payload.get("build_design_observations") or []),
+        ("semantic_edge", edge_payload.get("semantic_edges") or []),
+    ):
+        for index, record in enumerate(records):
+            texts = copy_safety.all_text(record)
+            present = {key for key, aliases in names.items()
+                       if any(_text_mentions_exact_name(text, alias)
+                              for text in texts for alias in aliases)}
+            mentioned = sorted((present & excluded_support_keys) | {
+                support for skill, support in excluded_support_pairs
+                if skill in present and support in present
+            })
+            if mentioned:
+                issues.append({"reason": "excluded_incompatible_source_support", "candidateKind": kind,
+                               "diagnosticIndex": index, "componentKeys": mentioned})
+    return issues
 
 
 def _is_support_effect(snapshot: physical_graph.GraphSnapshot, skill_key: str) -> bool:
@@ -4322,7 +4506,7 @@ def _structural_schema_issues(
                     _container_issue(
                         ["sourceSkillGroupReviews", index, "supportDisposition"],
                         "supportDisposition must be packaged, not_applicable, "
-                        "source_has_no_supports, or source_coverage_gap",
+                        "source_has_no_supports, source_coverage_gap, or excluded_incompatible",
                     )
                 )
             if not reason or len(reason) > 320:
@@ -5007,6 +5191,7 @@ def _source_skill_evidence_diagnostics(
     accepted_records: list[dict[str, Any]] | None = None,
     graph_service: graph_tools.GraphQueryService | None = None,
     source_skill_resolutions: dict[str, dict[str, Any]] | None = None,
+    support_compatibility_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     empty = {
         "available": False,
@@ -5022,6 +5207,8 @@ def _source_skill_evidence_diagnostics(
         "skillGroupDispositions": [],
         "undisposedSkillGroupCount": 0,
         "coreSkillGroupSupportGaps": [],
+        "excludedIncompatibleSupportCount": 0,
+        "excludedIncompatibleSupportPairs": [],
     }
     if not isinstance(source_skill_manifest, dict):
         return empty
@@ -5042,6 +5229,14 @@ def _source_skill_evidence_diagnostics(
         for item in review.get("sourceSkillGroupReviews") or []
         if isinstance(item, dict) and str(item.get("groupRef") or "")
     }
+    excluded_pairs = _confirmed_source_support_exclusions(
+        source_skill_manifest=source_skill_manifest,
+        source_group_reviews=list(declared_group_reviews.values()) if v3_group_reviews_required else None,
+        graph_service=graph_service, diagnostics=support_compatibility_diagnostics,
+    )
+    excluded_refs: dict[str, set[str]] = {}
+    for pair in excluded_pairs:
+        excluded_refs.setdefault(pair["groupRef"], set()).add(pair["socketedItemRef"])
 
     records = _deep_record_reviews(review)
     ownership_records = list(accepted_records) if accepted_records is not None else records
@@ -5172,6 +5367,10 @@ def _source_skill_evidence_diagnostics(
             for item in group.get("supports") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+        source_support_count = len(support_items)
+        group_excluded_refs = excluded_refs.get(group_ref, set())
+        support_items = [item for item in support_items
+                         if item.get("socketedItemRef") not in group_excluded_refs]
         support_names = [str(item.get("name") or "").strip() for item in support_items]
         group_skill_keys = _source_group_skill_keys(
             active_skills=active_skills,
@@ -5249,6 +5448,10 @@ def _source_skill_evidence_diagnostics(
             disposition = "unrepresented"
         elif declared_support_disposition == "source_coverage_gap":
             disposition = "source_coverage_gap"
+        elif declared_support_disposition == "excluded_incompatible":
+            disposition = ("excluded_incompatible" if source_support_count > 0
+                           and len(group_excluded_refs) == source_support_count
+                           else "invalid_incompatible_exclusion")
         elif (
             declared_support_disposition == "not_applicable"
             and "not_applicable" in group_exception_reasons
@@ -5259,6 +5462,7 @@ def _source_skill_evidence_diagnostics(
         elif (
             v3_group_reviews_required
             and not support_items
+            and not group_excluded_refs
             and declared_support_disposition == "source_has_no_supports"
         ):
             disposition = "source_has_no_supports"
@@ -5305,7 +5509,8 @@ def _source_skill_evidence_diagnostics(
                 "groupRef": group_ref,
                 "slot": str(group.get("slot") or ""),
                 "activeSkillNames": active_names,
-                "supportCount": len(support_names),
+                "supportCount": source_support_count,
+                "excludedSupportCount": len(group_excluded_refs),
                 "represented": represented,
                 "exemptInternalId": exempt_internal_id,
                 "disposition": disposition,
@@ -5377,6 +5582,7 @@ def _source_skill_evidence_diagnostics(
         if item["disposition"] not in DISPOSED_SKILL_GROUP_STATES
     ]
     return {
+        **(support_compatibility_diagnostics or {}),
         "available": True,
         "unstructuredSourceSkillMentionCount": len(active_mentions),
         "unstructuredSourceSkillMentions": active_mentions,
@@ -5391,6 +5597,12 @@ def _source_skill_evidence_diagnostics(
         "skillGroupDispositions": skill_group_dispositions,
         "undisposedSkillGroupCount": len(undisposed_groups),
         "coreSkillGroupSupportGaps": [],
+        "excludedIncompatibleSupportCount": len(excluded_pairs),
+        "excludedIncompatibleSupportPairs": excluded_pairs,
+        "sourceSupportCompatibilityBlocked": any(
+            (item.get("socketedItemRef") not in excluded_refs.get(item.get("groupRef"), set()))
+            for item in (support_compatibility_diagnostics or {}).get("unsupportedSourceSupportPairs") or []
+        ),
     }
 
 
@@ -5427,7 +5639,8 @@ def _evaluate_case_coverage(
     )
     source_evidence_diagnostics = source_evidence_diagnostics or {}
     core_gaps = _core_skill_group_support_gaps(accepted_records, source_skill_manifest=source_skill_manifest,
-        source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service)
+        source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service,
+        confirmed_excluded_pairs=source_evidence_diagnostics.get("excludedIncompatibleSupportPairs", []))
     source_evidence_diagnostics["coreSkillGroupSupportGaps"] = core_gaps
     undisposed_group_items = [
         item
@@ -5436,7 +5649,8 @@ def _evaluate_case_coverage(
     ]
     inferred = {
         "supports": _support_packages_cover_core_skill_groups(accepted_records, source_skill_manifest=source_skill_manifest,
-            source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service)
+            source_group_reviews=review.get("sourceSkillGroupReviews"), graph_service=graph_service,
+            confirmed_excluded_pairs=source_evidence_diagnostics.get("excludedIncompatibleSupportPairs", []))
         and not source_evidence_diagnostics.get("supportCoverageBlockedByStructuredOmission", False)
         and not undisposed_group_items,
         "rotation": "rotation" in record_kinds,
@@ -5499,6 +5713,8 @@ def _evaluate_case_coverage(
             "establish source-group ownership; only a matching supportPackages entry or a declared "
             "coverage exception closes the group."
         )
+    excluded_pairs = {(item.get("groupRef"), item.get("socketedItemRef"))
+                      for item in source_evidence_diagnostics.get("excludedIncompatibleSupportPairs") or []}
     unsupported_pairs = [
         (
             f"{item.get('skillName')} [{item.get('skillKey')}] + "
@@ -5509,6 +5725,7 @@ def _evaluate_case_coverage(
         and item.get("skillKey")
         and item.get("supportName")
         and item.get("supportKey")
+        and (item.get("groupRef"), item.get("socketedItemRef")) not in excluded_pairs
     ]
     if unsupported_pairs:
         advisories.append(
@@ -5636,20 +5853,44 @@ def _support_packages_cover_core_skill_groups(
     accepted_records: list[dict[str, Any]], *, source_skill_manifest: dict[str, Any] | None = None,
     source_group_reviews: list[dict[str, Any]] | None = None,
     graph_service: graph_tools.GraphQueryService | None = None,
+    confirmed_excluded_pairs: list[dict[str, Any]] | None = None,
 ) -> bool:
     identities = _core_skill_identity_keys(accepted_records)
     return bool(identities) and all(identities.values()) and not _core_skill_group_support_gaps(
         accepted_records, source_skill_manifest=source_skill_manifest,
-        source_group_reviews=source_group_reviews, graph_service=graph_service)
+        source_group_reviews=source_group_reviews, graph_service=graph_service,
+        confirmed_excluded_pairs=confirmed_excluded_pairs)
 
 
 def _core_skill_group_support_gaps(
     accepted_records: list[dict[str, Any]], *, source_skill_manifest: dict[str, Any] | None = None,
     source_group_reviews: list[dict[str, Any]] | None = None,
     graph_service: graph_tools.GraphQueryService | None = None,
+    confirmed_excluded_pairs: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Core payloads use their observed physical host package, never a fabricated child package."""
     core_by_research_group = _core_skill_identity_keys(accepted_records)
+    if confirmed_excluded_pairs is None:
+        confirmed_excluded_pairs = _confirmed_source_support_exclusions(
+            source_skill_manifest=source_skill_manifest, source_group_reviews=source_group_reviews,
+            graph_service=graph_service,
+        )
+    excluded_refs: dict[str, set[str]] = {}
+    for pair in confirmed_excluded_pairs:
+        excluded_refs.setdefault(pair["groupRef"], set()).add(pair["socketedItemRef"])
+    # Never invent replacement supports to satisfy a numeric coverage floor. For a
+    # source with verified exclusions, cover the remaining applicable instances.
+    support_targets: dict[str, int] = {}
+    source_groups_by_skill: dict[str, set[str]] = {}
+    for source in (source_skill_manifest or {}).get("activeSkillGroups") or []:
+        ref = str(source.get("groupRef") or "")
+        for key in _source_group_skill_keys(active_skills=source.get("activeSkills") or [],
+            graph_service=graph_service, source_skill_resolutions={}):
+            source_groups_by_skill.setdefault(key, set()).add(ref)
+        if ref in excluded_refs:
+            remaining = [item for item in source.get("supports") or []
+                         if item.get("socketedItemRef") not in excluded_refs[ref]]
+            support_targets[ref] = min(2, len(remaining))
     records_by_group: dict[str, list[dict[str, Any]]] = {}
     for record in accepted_records:
         records_by_group.setdefault(str(record.get("researchGroupId") or ""), []).append(record)
@@ -5692,11 +5933,15 @@ def _core_skill_group_support_gaps(
                             source_group_reviews=source_group_reviews, graph_service=graph_service))
         for core in core_by_research_group.get(research_group, set()):
             source_groups = source_packages_by_skill.get(core, {})
-            undercovered = any(len(keys) < 2 and ref not in source_exceptions.get(core, set())
+            undercovered = any(len(keys) < support_targets.get(ref, 2)
+                               and ref not in source_exceptions.get(core, set())
                                for ref, keys in source_groups.items()) if source_groups else (
                 len(supports_by_skill.get(core, set())) < 2)
             waived = bool(source_exceptions.get(core)) if isinstance(source_skill_manifest, dict) and not source_groups else (
                 core in exceptions if not isinstance(source_skill_manifest, dict) else False)
+            if not source_groups and source_groups_by_skill.get(core):
+                waived = waived or all(support_targets.get(ref) == 0
+                                       for ref in source_groups_by_skill[core])
             if undercovered and not waived:
                 gaps.append(core)
     return sorted(set(gaps))

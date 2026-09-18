@@ -528,6 +528,65 @@ def _verify_located_gap(gap: dict[str, Any], decision: dict[str, Any],
         raise FollowupError("followup_complete_acceptance_required")
 
 
+def _verify_source_support_exclusion(gap: dict[str, Any], decision: dict[str, Any],
+                                     support: dict[str, Any]) -> None:
+    """Retire this rejected claim only from exact server-confirmed source instances.
+
+    Older deferred diagnostics omitted socket references. Their component set is
+    not authority to select one of several physical instances of the same pair.
+    The managed validator must certify source-wide uniqueness for every pair;
+    incomplete identities and other deferred reasons gain no exclusion authority.
+    """
+    if decision["disposition"] != "not_applicable":
+        raise FollowupError("followup_support_exclusion_requires_not_applicable")
+    completion = support["completion"]
+    context = support["summary"].get("sourceContext") or {}
+    if (completion["researchCompletion"] != "complete"
+            or completion["completionScope"] != "case"
+            or context.get("reResearchScope") != "full_case"):
+        raise FollowupError("followup_complete_acceptance_required")
+    subject = gap.get("recordSubjectHash")
+    keys = gap.get("componentKeys") or []
+    skills = {key for key in keys if isinstance(key, str) and key.startswith("skill:")}
+    supports = {key for key in keys if isinstance(key, str) and key.startswith("support:")}
+    if not isinstance(subject, str) or not re.fullmatch(r"[0-9a-f]{64}", subject) or not skills or not supports:
+        raise FollowupError("followup_support_exclusion_unproven")
+    compatibility = support["summary"].get("supportCompatibility")
+    if (not isinstance(compatibility, dict)
+            or compatibility.get("scope") != "static_type_compatibility"
+            or not compatibility.get("contractVersion") or not compatibility.get("graphSnapshotId")):
+        raise FollowupError("followup_support_exclusion_unproven")
+    exclusions = compatibility.get("excludedSourceSupportPairs")
+    if not isinstance(exclusions, list):
+        raise FollowupError("followup_support_exclusion_unproven")
+    # Without the old package mapping, every possible declared pair must be
+    # proven. Do not infer which skill hosted a support from a partial match.
+    for skill in skills:
+        for support_key in supports:
+            matches = [item for item in exclusions if isinstance(item, dict)
+                       and item.get("skillKey") == skill and item.get("supportKey") == support_key]
+            if len(matches) != 1:
+                raise FollowupError("followup_support_exclusion_unproven")
+            item = matches[0]
+            group = item.get("groupRef")
+            socket = item.get("socketedItemRef")
+            endpoints = item.get("evaluatedSkillKeys")
+            refs = item.get("sourceRefs")
+            if (item.get("compatibilityStatus") != "unsupported"
+                    or item.get("decision") != "exclude_incompatible"
+                    or item.get("evaluationMode") != "support_group_fixed_point"
+                    or type(item.get("sourcePairInstanceCount")) is not int
+                    or item["sourcePairInstanceCount"] != 1
+                    or not isinstance(group, str) or not group
+                    or not isinstance(socket, str) or not socket.startswith(group + ":socketed:")
+                    or not socket.removeprefix(group + ":socketed:")
+                    or not isinstance(endpoints, list) or skill not in endpoints
+                    or any(not isinstance(key, str) or not key.startswith("skill:") for key in endpoints)
+                    or not isinstance(refs, list) or not refs
+                    or any(not isinstance(ref, str) or not ref for ref in refs)):
+                raise FollowupError("followup_support_exclusion_unproven")
+
+
 def _verify_support(memory: sqlite3.Connection, origin: dict[str, Any], gap: dict[str, Any],
                     decision: dict[str, Any]) -> dict[str, Any]:
     support = _receipt(memory, decision["supportingWriteReceiptRef"])
@@ -557,6 +616,11 @@ def _verify_support(memory: sqlite3.Connection, origin: dict[str, Any], gap: dic
         summary["researchCompletion"] != "complete" or summary["completionScope"] != "case"
     ):
         raise FollowupError("followup_complete_acceptance_required")
+    if (gap["kind"] == "deferred"
+            and gap.get("reason") in {
+                "unsupported_structured_skill_support_pair", "unsupported_source_skill_support_pair",
+            }):
+        _verify_source_support_exclusion(gap, decision, support)
     if gap["kind"] in {"unresolved_component", "deferred"}:
         _verify_located_gap(gap, decision, summary, records)
     return support

@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from server.compute.engine import PobEngine  # noqa: E402
 from server.knowledge import research_packet, research_readback  # noqa: E402
+from scripts.research_mature_builds import _assert_transient_view_payload  # noqa: E402
 
 
 def main() -> int:
@@ -66,6 +67,20 @@ def main() -> int:
         raise RuntimeError("Research structural evidence lost the canonical active skill set")
     if research_packet.validated_pob_readback(packet).get("status") != "available":
         raise RuntimeError("Research canonical source readback lost its valid binding")
+    # Include the product safety gate: a valid internal readback is insufficient if
+    # its lossless JSON fragments cannot cross the Worker-facing transport boundary.
+    for limit in (1, 24):
+        cursor = 0
+        while True:
+            page = research_packet.read_packet_section(
+                packet, section="pob-readback", cursor=cursor, limit=limit,
+            )
+            _assert_transient_view_payload(page, enforce_size=True)
+            if page["complete"]:
+                break
+            if page["nextCursor"] <= cursor:
+                raise RuntimeError("Research readback pagination did not advance")
+            cursor = page["nextCursor"]
     print("RESEARCH READBACK SMOKE OK")
     return 0
 

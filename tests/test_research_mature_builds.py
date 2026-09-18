@@ -1077,7 +1077,7 @@ def test_worker_brief_is_safe_inline_and_explains_tool_fallback(tmp_path, monkey
     assert "partial_with_deferred" in prompt
     assert "DeepResearchRecord" in prompt
     assert "完整保留该机制包" in prompt
-    assert "以下 16 项是提交前的强制自检" in prompt
+    assert f"以下 {len(research_mature_builds.RESEARCH_MANDATORY_CHECKS)} 项是提交前的强制自检" in prompt
     for index, check in enumerate(research_mature_builds.RESEARCH_MANDATORY_CHECKS, start=1):
         assert f"{index}. {check}" in prompt
     assert "以下十五项" not in prompt
@@ -1170,10 +1170,11 @@ def test_review_contract_discloses_exact_enums_just_before_writing(tmp_path):
     ]
     assert contract["candidateTemplate"]["transferScope"] == "family"
     assert contract["mandatoryChecks"] == list(research_mature_builds.RESEARCH_MANDATORY_CHECKS)
-    assert len(contract["mandatoryChecks"]) == 16
-    assert "wiki 缺页强制新增" in contract["mandatoryChecks"][9]
-    assert "semantic edge" in contract["mandatoryChecks"][14]
-    assert "memoryUse" in contract["mandatoryChecks"][15]
+    assert any("wiki 缺页强制新增" in check for check in contract["mandatoryChecks"])
+    assert any("semantic edge" in check for check in contract["mandatoryChecks"])
+    assert any("memoryUse" in check for check in contract["mandatoryChecks"])
+    assert any("不另写不兼容说明" in check for check in contract["mandatoryChecks"])
+    assert "excluded_incompatible" in contract["sourceSkillGroupReviewTemplate"]["supportDisposition"]
     assert "skill:..." in contract["memoryUseQuerySchema"]["primarySkillKey"]
     assert "gem:..." in contract["memoryUseQuerySchema"]["primarySkillKey"]
     assert "bf-..." in contract["memoryUseQuerySchema"]["buildFamilyKeys"]

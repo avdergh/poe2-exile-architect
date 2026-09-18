@@ -75,6 +75,9 @@ RESEARCH_MANDATORY_CHECKS = (
     "supportCoverageExceptions，其他组也不得静默丢弃。",
     "辅助适用性须通过验收工具内置的整组静态兼容校验；单对查询只用于候选发现，"
     "机制语义不得按名称猜测。",
+    "来源 BD 不是正确性权威。确认不兼容的辅助排除出知识正文、组件、supportPackages 与语义边，"
+    "不另写不兼容说明；整组均被确认排除时用 excluded_incompatible，混合组只打包有效辅助。"
+    "未知或身份未解析不能当作已确认不兼容。",
     "Memory 对照前先用 search_graph_components + resolve_graph_component 解析身份 stable key，"
     "再检查 familyRecordCoverage、familyRecordIndex 与 familyPremiseCatalog。",
     "把 packet 中每个 condition* 写成 条件→来源组件→验证状态；无来源假设必须进入 modelability caveat。",
@@ -94,21 +97,7 @@ RESEARCH_MANDATORY_CHECKS = (
     "并说明原因。",
 )
 
-RAW_MARKERS = (
-    "eNrt",
-    "rawXml",
-    "rawImportCode",
-    "PathOfBuilding",
-    "<Build",
-    "<Skills",
-    "nameSpec",
-    "transientPacketPath",
-    "transientPromptPath",
-    "packet.json",
-    "researcher_prompt.txt",
-    "pobb.in/",
-    "poe.ninja/",
-)
+RAW_MARKERS = copy_safety.TRANSIENT_RAW_MARKERS
 
 
 def _effective_worker_count(value: Any) -> int:
@@ -1088,10 +1077,10 @@ def render_review_contract(
             "groupRef": "read_research_case(section=skill-groups) 返回的精确 groupRef",
             "researchDisposition": "represented | not_relevant | needs_followup",
             "supportDisposition": (
-                "packaged | source_has_no_supports | not_applicable | source_coverage_gap"
+                "packaged | source_has_no_supports | not_applicable | source_coverage_gap | excluded_incompatible"
             ),
             "affectedRecords": ["与 deepResearchRecords.title 完全一致的标题"],
-            "reason": "一句话说明该启用组如何处理；gap 会使验收保持 partial",
+            "reason": "仅用于审核该启用组的处置，不进入知识正文；excluded_incompatible 必须由工具确认整组辅助不适用，unknown/gap 仍保持 partial",
         },
         "pobReadbackAuditTemplate": {
             "disposition": "reviewed | unavailable | unmodelled",
@@ -1225,7 +1214,7 @@ def render_review_contract(
             "clear/boss/triggered/trigger_host 的纯副技能包不需要自己的 primary_damage 声明，"
             "support_modifier 等非主动技能组件不改变该豁免；标错集合会产生 sibling Family。",
             "只有 skill_package 和已确认 mechanic_chain 能授权 BuildFamily 归档。Family identity key 只由升华与 primary_damage 技能集合决定；clear_skill、boss_skill、triggered_payload 自动进入 Family 核心副技能元数据但不改变 key。trigger_host 不自动进入该元数据（换宿主视为变体），需要保留为 Family-core 时必须显式声明进 familyCoreSkillKeys；modelability_caveat、failure_mode 或 open_question 中的未证实组件不会授权 Family，也不得在这些记录里填写 familyCoreSkillKeys。",
-            "必须为整个 researchGroup 的每个 Family 核心技能组提供 typedPayload.supportPackages，且每组至少两个已解析辅助；若来源确实缺失或技能不接受普通辅助，使用 supportCoverageExceptions 明确 source_coverage_gap 或 not_applicable，不能只在正文提辅助。",
+            "每个 Family 核心技能组提供 typedPayload.supportPackages，通常至少两个已解析辅助；确认不兼容的源辅助不入库，只覆盖排除后实际剩余的有效辅助，不为凑数量补造辅助。全组辅助均确认不兼容时在 sourceSkillGroupReviews 用 excluded_incompatible，不要求负面知识记录。未知、未解析或未核验的真实缺口仍用 source_coverage_gap。",
             "来源组静态校验会对不兼容的技能-辅助对（unsupportedSourceSupportPairs）整条 defer 声明它们的记录：结构化组件同时含该技能与该辅助 key、或同一句正文精确提到两者，都会触发；被拒的 unsupportedPairs 会带 triggeringSegment 引用触发句，先改句再重验。声明某技能时，正文不要在同一句提及静态不兼容的辅助（如把玩家攻击类辅助写在召唤/野兽技能句子里）。",
             "正文使用来源中的具体主动技能或辅助名称时，也应把它写入 components；validate-only 会报告来源名称与结构化组件之间的缺口。仅正文提及不会阻塞，但某证据记录（skill_package/mechanic_chain/rotation）已结构化其 active skill 而该组仍有 ≥2 个辅助完全未打包时，support 覆盖会判定为 evidence_missing；不要只把辅助名称写进正文而省略 components/supportPackages。",
             "passiveAscendancy covered 必须有 ascendancy_shell，并在 typedPayload.ascendancyResponsibilities 写具体升华节点/职责；验收会核验该节点在物理图中确实 belongs_to 当前升华。",
@@ -6165,6 +6154,9 @@ def _worker_brief_text(row: sqlite3.Row, *, lease_token: str, review_file: str) 
 主技能、核心副技能以及研究结论实际依赖的高影响组应使用 supportPackages 或
 supportCoverageExceptions 保存根技能与 socketed items；低影响、内部 id 或无法唯一解析的组可以保留
 为明确 caveat / verification task，不得静默丢弃，也不因其自身缺口机械否定整个案例。
+来源 BD 不是正确性权威；工具确认不兼容的源辅助从知识正文、组件、辅助包和边中排除，不额外
+写不兼容说明。整组均确认不兼容时 supportDisposition=excluded_incompatible；混合组用 packaged，
+只保留有效辅助。排除只保留审核诊断，未知、身份未解析或未核验不能借此关闭缺口。
 批量 resolve 与精简视图用于降低上下文成本；优先把精力用于构筑身份、因果链和失败条件。
 
 ## Evidence First
@@ -6473,16 +6465,9 @@ def _assert_transient_view_payload(payload: dict[str, Any], *, enforce_size: boo
     leaks = [marker for marker in RAW_MARKERS if marker in serialized]
     if leaks:
         raise ValueError(f"unsafe transient research markers detected: {', '.join(leaks)}")
-    flags = set(copy_safety.copyability_flags(payload))
-    forbidden_flags = {
-        "raw_pob_xml_marker",
-        "pob_code_like_blob",
-        "copyable_build_link",
-        "raw_account_or_character_url",
-        "long_guide_prose_like",
-    }
-    if flags & forbidden_flags:
-        raise ValueError(f"unsafe transient research payload: {sorted(flags & forbidden_flags)}")
+    flags = copy_safety.transient_evidence_flags(payload)
+    if flags:
+        raise ValueError(f"unsafe transient research payload: {flags}")
     if enforce_size and len(serialized) > research_packet.MAX_RESPONSE_CHARS:
         raise ValueError("transient research response exceeds the bounded output limit")
 

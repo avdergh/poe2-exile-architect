@@ -28,6 +28,7 @@ from ..compute.pob_config import (
     active_custom_modifier_hash,
     custom_modifier_projection,
 )
+from .copy_safety import MAX_COPY_SAFE_TEXT_CHARS, transient_evidence_flags
 
 PACKET_PREFIX = "poe-bd-creator-research-packet-"
 MAX_TTL_SECONDS = 24 * 60 * 60
@@ -55,6 +56,8 @@ RESEARCH_READ_ORDER = (
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 MAX_RESPONSE_CHARS = 12_000
+# The transport guard scans both the value and its "key: value" text projection.
+JSON_FRAGMENT_CHARS = MAX_COPY_SAFE_TEXT_CHARS - len("jsonFragment: ")
 SAFE_METADATA_KEYS = (
     "case_id",
     "sourceType",
@@ -813,11 +816,19 @@ def _fragment_configuration_items(items: list[dict[str, Any]]) -> list[dict[str,
     """Losslessly page oversized structured evidence without limiting source item count."""
     result: list[dict[str, Any]] = []
     for index, item in enumerate(items):
+        # Check the source before splitting: pagination must not hide long copied prose
+        # or split a raw marker, share code or private URL across otherwise safe pages.
+        flags = transient_evidence_flags(item)
+        if flags:
+            raise ValueError(f"unsafe transient research payload: {flags}")
         if _response_chars(item) <= 4_000:
             result.append(item)
             continue
         serialized = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        fragments = [serialized[offset:offset + 1_200] for offset in range(0, len(serialized), 1_200)]
+        fragments = [
+            serialized[offset:offset + JSON_FRAGMENT_CHARS]
+            for offset in range(0, len(serialized), JSON_FRAGMENT_CHARS)
+        ]
         result.extend({
             "kind": "evidence_fragment", "sourceItemIndex": index,
             "fragmentIndex": fragment_index, "fragmentCount": len(fragments),
