@@ -2,11 +2,22 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab.svg)](pyproject.toml)
+[![Hosts: Codex, Claude Code, Cursor, OpenCode, DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20Claude%20Code%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#install)
+
 **Research, create, and understand Path of Exile 2 builds with your AI agent.**
 
-Exile Architect connects Codex, Claude Code, Cursor, and OpenCode to game data, a reusable build knowledge base, and Headless Path of Building. Your agent makes the design decisions; PoB supplies the calculations and build checks.
+Exile Architect connects Codex, Claude Code, Cursor, OpenCode, and DeepSeek Harness to Path of Exile 2 game data, a local build knowledge base, and Headless Path of Building (PoB). Your agent makes the design decisions; PoB supplies the calculations and the build checks.
 
-[Install](#install) · [Use it](#use-it) · [Examples](#real-output-examples) · [FAQ](#common-questions)
+[Install](#install) · [Usage](#usage) · [Showcase](#showcase) · [FAQ](#common-questions) · [Contributing](#contributing)
+
+## Why Exile Architect
+
+- **Numbers come from PoB, not from the model.** Every calculation runs through a pinned headless Path of Building. What the engine cannot model is reported as an estimate or an unknown — never presented as engine output.
+- **The knowledge base is yours, and it grows.** Research findings you accept are stored on your own machine and stay available to later conversations, so Create designs from evidence you collected instead of model memory alone.
+- **It runs locally.** There is no hosted service to sign up for and no separate model account: the tools run from your checkout and use the model access your agent host already has.
+- **Three workflows, one toolchain.** Research, Create, and Learning share the same game data, knowledge base, and calculation engine, and each one works on its own.
 
 ## Three workflows
 
@@ -18,9 +29,17 @@ Exile Architect connects Codex, Claude Code, Cursor, and OpenCode to game data, 
 
 **Research builds the knowledge base. Create uses it to design builds. Learning teaches you a build without adding it to the knowledge base.** You can use each workflow on its own.
 
+## Build your own local knowledge base
+
+Study builds you are interested in with Research and keep the findings for later use. Research saves explanations of skill interactions, equipment roles, passive choices, resource recovery, and defenses, along with their requirements, failure conditions, and game versions. Accepted findings stay on your machine and remain available in future conversations.
+
+When you ask for a new build, Create searches this knowledge base for research relevant to the class, skills, and target version. Your agent uses those findings to make design decisions, assembles a build at the requested level, and checks it with PoB. Studying builds in a playstyle you enjoy can give future Create requests more mechanics and alternatives to consider.
+
+For example, research a few Spark builds, then ask Create for a level 90 Spark build using the related local research. The saved knowledge informs the new design; its equipment, resource requirements, and calculated performance are checked again for the new build. Missing evidence and unmodelled mechanics remain explicit in the result.
+
 ## Install
 
-The current installation uses a source checkout. Keep this folder after installation: the agent runs its tools from here.
+Exile Architect installs from a source checkout, and your agent starts its tools from that folder — keep it in place after installation.
 
 ### 1. Install the prerequisites
 
@@ -100,11 +119,9 @@ Check that the Exile Architect tools are available. Call engine_health,
 then confirm that poe-bd-research, poe-bd-create, and poe-bd-learn are available.
 ```
 
-If tools are missing, check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration. In DeepSeek Harness the tools appear only in a session that uses the `poe-bd` preset. If the engine cannot start, check LuaJIT and the pinned PoB checkout above.
+`engine_health` observes process and tool activity without starting or resetting PoB. `not_started` is normal before the first calculation, and `busy` means work is still running; neither certifies the build or calls for `new_build`. If the tools or the engine are missing, see [Troubleshooting](#troubleshooting).
 
-`engine_health` observes process and tool activity without starting or resetting PoB. `not_started` is normal before the first calculation, and `busy` means work is still running; neither certifies the build or calls for `new_build`.
-
-## Use it
+## Usage
 
 Send these requests **in your agent conversation**, with the relevant file attached. These are example prompts, not terminal commands. You can also select the named skill through your host's skill menu.
 
@@ -125,6 +142,7 @@ Research analyzes the build, checks the evidence, and stores accepted findings. 
 
 ```text
 Use /poe-bd-create to make a level 90 Sorceress build centered on Spark.
+Use relevant research from the local knowledge base to guide the design.
 Focus on endgame mapping and bosses. Explain the skill setup, equipment,
 passives, and combat loop, and export the local PoB files.
 ```
@@ -143,10 +161,21 @@ Open the generated HTML file in a browser. The guide includes component explanat
 
 Outputs follow the language of your request unless you specify another language.
 
-## Real output examples
+## Showcase
 
-- [Twister learning guide](examples/learning-twister.en.md): a 14-chapter Chinese guide to a level 100 Gemling Legionnaire, with an English introduction. Learn the combat loop, skill interactions, equipment, and passive choices. Read it online or download the HTML reader with icons, search, and interactive explanations.
-- [Level 99 Deadeye Ice Shot candidate](examples/create-latest.en.md): Ice Shot and two Mirage setups, supported by Freezing Mark, Snipe, and Tornado Shot, using endgame trade gear with Headhunter and Lineage supports.
+Real output from the workflows above. Each example links to notes that separate what PoB verified from what still needs verification.
+
+### A Learning guide: level 100 Twister Gemling Legionnaire
+
+[English introduction](examples/learning-twister.en.md) · [Complete 14-chapter guide (Chinese)](examples/learning-twister.zh-CN.md) · [HTML reader (ZIP)](examples/learning-twister.zh-CN.zip)
+
+The guide walks through a level 100 Gemling Legionnaire chapter by chapter: the combat loop, skill interactions, equipment, and passive choices. Read it in full on GitHub, or download the archive, extract it, and open `Twister-learning-guide.html` in a browser for embedded icons, search, and interactive component explanations.
+
+### A Create build: level 99 Deadeye Ice Shot
+
+[Example notes](examples/create-latest.en.md) · [Build on poe.ninja](https://poe.ninja/poe2/pob/29726)
+
+Ice Shot and two Mirage setups, supported by Freezing Mark, Snipe, and Tornado Shot, using endgame trade gear with Headhunter and Lineage supports.
 
 [![Equipment and stats for the level 99 Deadeye Ice Shot build](examples/assets/deadeye-ice-shot-99.jpg)](https://poe.ninja/poe2/pob/29726)
 
@@ -161,7 +190,21 @@ This example includes all four Create deliverables:
 
 The main Ice Shot reads approximately 126.2k DPS in PoB's Pinnacle boss configuration. Complete damage from the Mirage setups and some recovery mechanics still require verification. Parts of the `.build` export are represented as descriptive text; use PoB for the full configuration. See the [example](examples/create-latest.en.md) for details.
 
+### A Create build without memory: level 99 Infernalist
+
+[Build on poe.ninja](https://poe.ninja/poe2/pob/29996)
+
+This build was generated in **without-memory** (`--no-memory`) mode, without retrieving Research knowledge or Learning Memory. The agent used game data and PoB tools to design a minion build centered on Skeletal Arsonist, with Summon Infernal Hound and Skeletal Cleric.
+
+The full screenshot below includes equipment, stats, the passive tree, ascendancy choices, and all skill groups. Click it to open the build on poe.ninja.
+
+[![Full level 99 Infernalist build generated without memory, including equipment, stats, passives, ascendancy, and skills](examples/assets/infernalist-99-without-memory.jpg)](https://poe.ninja/poe2/pob/29996)
+
 ## Common questions
+
+**Which agent hosts are supported?**
+
+Codex, Claude Code, Cursor, and OpenCode are configured by the installer. DeepSeek Harness installs as an agent preset. Research additionally needs a host that lets subagents call MCP tools.
 
 **Do I need my own model API key?**
 
@@ -169,7 +212,7 @@ Use the model access already configured in your agent host. Exile Architect does
 
 **Where are my builds and research stored?**
 
-In the operating system's local user-data directory under `poe2-build-mcp`. Set `POE2_MCP_DATA` to use another location. Your agent returns the paths to generated files.
+In the operating system's local user-data directory under `poe2-build-mcp`. Research knowledge persists outside the conversation, so new conversations using the same data directory can retrieve it. Set `POE2_MCP_DATA` to use another location. Your agent returns the paths to generated files.
 
 **Can it make a complete leveling guide?**
 
@@ -186,6 +229,12 @@ It is a separate experimental workflow that compares reference builds with indep
 **How do I update?**
 
 Run `git pull --ff-only` and `uv sync` in the project folder, rerun the installer for your host, and restart it. If the pinned PoB revision changes, also update the headless runtime following [pob/PINNED.md](pob/PINNED.md). Reinstalling the DeepSeek Harness preset keeps the previous version as a `poe-bd.bak` recovery point; the install after that reports a conflict until you pass `-Force` / `--force`, which rotates that recovery point to a timestamped name instead of deleting it.
+
+## Troubleshooting
+
+**The tools do not appear.** Check for `poe_knowledge_mcp`, `poe_build_mcp`, `poe_research_mcp`, and `poe_learning_mcp` in the host's MCP configuration, then restart the host and open a new conversation. In DeepSeek Harness the tools appear only in a session that uses the `poe-bd` preset; `.\install.ps1 -Doctor dsh` (`bash install.sh --doctor dsh`) reports whether the placed preset is complete.
+
+**The engine cannot start.** Check LuaJIT and the pinned PoB checkout from steps 1 and 2, including the applied patches. `engine_health` reports what the engine process is doing; `POB_LUAJIT` selects a nonstandard LuaJIT installation.
 
 ## Contributing
 

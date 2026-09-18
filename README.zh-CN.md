@@ -2,11 +2,22 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab.svg)](pyproject.toml)
+[![宿主：Codex、Claude Code、Cursor、OpenCode、DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20Claude%20Code%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#安装)
+
 **让 AI Agent 帮你研究、创建和理解 Path of Exile 2 构筑（BD）。**
 
-Exile Architect 为 Codex、Claude Code、Cursor 和 OpenCode 接入游戏资料、可复用的构筑知识库与 Headless Path of Building。Agent 负责分析和设计，PoB 负责数值计算与构筑检查。
+Exile Architect 为 Codex、Claude Code、Cursor、OpenCode 和 DeepSeek Harness 接入《流放之路 2》游戏资料、本地构筑知识库与 Headless Path of Building（PoB）。Agent 负责分析和设计，PoB 负责数值计算与构筑检查。
 
-[安装](#安装) · [使用方式](#使用方式) · [案例](#真实产物案例) · [常见问题](#常见问题)
+[安装](#安装) · [使用方式](#使用方式) · [案例展示](#案例展示) · [常见问题](#常见问题) · [反馈与贡献](#反馈与贡献)
+
+## 为什么选择 Exile Architect
+
+- **数值来自 PoB，而不是来自模型。** 所有计算都通过固定版本的 headless Path of Building 执行；引擎无法建模的部分会标注为粗估或未知项，不会冒充引擎结果。
+- **知识库属于你，并且会持续积累。** 通过验收的研究结论保存在本机，后续会话仍可检索，Create 依据你收集到的证据设计，而不是只靠模型记忆。
+- **完全本地运行。** 不需要注册托管服务，也不需要额外的模型账号：工具从你自己的项目目录运行，使用 Agent 宿主已经配置好的模型。
+- **三种工作流，同一套工具链。** Research、Create、Learning 共享同一份游戏资料、知识库与计算引擎，并且都可以独立使用。
 
 ## 三种工作流
 
@@ -18,9 +29,17 @@ Exile Architect 为 Codex、Claude Code、Cursor 和 OpenCode 接入游戏资料
 
 **Research 积累知识，Create 利用知识设计构筑，Learning 帮玩家读懂构筑而不写入知识库。** 三种功能可以独立使用。
 
+## 积累自己的构筑知识库
+
+把感兴趣的 BD 交给 Research，逐步建立自己的本地知识库。研究会保存技能配合、装备职责、天赋选择、资源恢复与防御机制，以及它们的成立条件、失效场景和适用版本。通过验收的结论保留在本机，后续会话可以继续检索。
+
+创建新 BD 时，Create 会查找与职业、技能和目标版本相关的研究，由 Agent 据此选择方案、按目标等级搭建构筑，再用 PoB 检查。研究自己常玩的流派，可以为后续创建积累机制依据和搭配选择。
+
+例如，先研究几套 Spark BD，再让 Create 参考本地研究设计一个 90 级 Spark BD。已有知识用于指导新方案，装备、资源需求和计算结果会针对新构筑重新检查；缺少证据或尚未建模的部分会在结果中说明。
+
 ## 安装
 
-当前通过源码安装。安装后请保留项目文件夹，Agent 会从这里启动工具。
+Exile Architect 通过源码目录安装，Agent 会从这个目录启动工具，安装后请保留该目录。
 
 ### 1. 准备环境
 
@@ -100,9 +119,7 @@ bash install.sh --from-checkout dsh
 然后确认可以使用 poe-bd-research、poe-bd-create 和 poe-bd-learn。
 ```
 
-没有找到工具时，检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`。DeepSeek Harness 中只有在使用 `poe-bd` preset 的会话里才会出现这些工具。计算引擎无法启动时，检查上面的 LuaJIT 安装路径与固定 PoB 源码。
-
-`engine_health` 只观察进程和工具活动，不启动或重置 PoB。首次计算前的 `not_started` 属于正常状态，`busy` 表示任务仍在运行；两者都不认证构筑，也不要求执行 `new_build`。
+`engine_health` 只观察进程和工具活动，不启动或重置 PoB。首次计算前的 `not_started` 属于正常状态，`busy` 表示任务仍在运行；两者都不认证构筑，也不要求执行 `new_build`。工具或引擎缺失时，见[疑难排查](#疑难排查)。
 
 ## 使用方式
 
@@ -125,6 +142,7 @@ Research 会分析构筑、核对证据，再保存通过验收的知识。后�
 
 ```text
 使用 /poe-bd-create，以 Spark 为核心创建一个 90 级 Sorceress BD。
+参考本地知识库中的相关研究来设计。
 目标是终局刷图和 Boss。讲清技能组合、装备、天赋与战斗循环，
 并导出本地 PoB 文件。
 ```
@@ -143,10 +161,21 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 
 输出语言默认跟随你的请求，也可以明确指定其他语言。
 
-## 真实产物案例
+## 案例展示
 
-- [Twister 学习指南](examples/learning-twister.zh-CN.md)：以 100 级 Gemling Legionnaire 为例，通过 14 章内容讲解战斗循环、技能配合、装备与天赋选择。支持在线阅读全文，或下载带图标、搜索与交互说明的 HTML 指南。
-- [99 级锐眼冰箭 BD（待验证版）](examples/create-latest.zh-CN.md)：冰箭与双幻影配合冻结印记、狙击和龙卷风，使用包含猎首与 Lineage 辅助的成型交易装备。
+下面是上述工作流的真实产物。每个案例都附有说明，区分 PoB 已验证的部分与仍需验证的部分。
+
+### Learning 案例：100 级 Gemling Legionnaire Twister 学习指南
+
+[英文介绍](examples/learning-twister.en.md) · [完整 14 章正文](examples/learning-twister.zh-CN.md) · [HTML 阅读版（ZIP）](examples/learning-twister.zh-CN.zip)
+
+指南以 100 级 Gemling Legionnaire 为例，逐章讲解战斗循环、技能配合、装备与天赋选择。可以直接在 GitHub 上通读全文，也可以下载压缩包，解压后用浏览器打开 `Twister-learning-guide.html`，使用内嵌图标、搜索与交互式组件说明。
+
+### Create 案例：99 级锐眼冰箭
+
+[案例说明](examples/create-latest.zh-CN.md) · [poe.ninja 构筑页](https://poe.ninja/poe2/pob/29726)
+
+冰箭与双幻影配合冻结印记、狙击和龙卷风，使用包含猎首与 Lineage 辅助的成型交易装备。
 
 [![99 级锐眼冰箭的装备与属性展示](examples/assets/deadeye-ice-shot-99.jpg)](https://poe.ninja/poe2/pob/29726)
 
@@ -161,7 +190,21 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 
 主冰箭在 PoB 巅峰首领配置下约 12.62 万 DPS；双幻影等完整输出及部分恢复机制仍待验证。`.build` 的部分内容以说明文本呈现，完整配置以 PoB 为准，具体边界见[案例说明](examples/create-latest.zh-CN.md)。
 
+### Create 案例（without-memory）：99 级 Infernalist
+
+[poe.ninja 构筑页](https://poe.ninja/poe2/pob/29996)
+
+这个 BD 以 **without-memory**（`--no-memory`）模式生成，未检索 Research 知识库或 Learning Memory。Agent 使用游戏资料与 PoB 工具设计，以 Skeletal Arsonist 为核心，搭配 Summon Infernal Hound 和 Skeletal Cleric。
+
+下面的完整截图包含装备、属性、天赋树、升华与全部技能组，点击图片可在 poe.ninja 查看构筑。
+
+[![99 级 Infernalist without-memory 构筑完整截图，包含装备、属性、天赋、升华与技能](examples/assets/infernalist-99-without-memory.jpg)](https://poe.ninja/poe2/pob/29996)
+
 ## 常见问题
+
+**支持哪些 Agent 宿主？**
+
+Codex、Claude Code、Cursor 和 OpenCode 由安装器直接配置；DeepSeek Harness 以 Agent preset 形式安装。Research 还要求宿主允许子代理调用 MCP 工具。
 
 **需要额外配置模型 API Key 吗？**
 
@@ -169,7 +212,7 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 
 **构筑和研究知识保存在哪里？**
 
-默认保存在操作系统的本地用户数据目录 `poe2-build-mcp` 下，可通过 `POE2_MCP_DATA` 指定其他位置。Agent 会返回生成文件的路径。
+默认保存在操作系统的本地用户数据目录 `poe2-build-mcp` 下。研究知识独立于对话保存，使用同一数据目录的新会话可以继续检索。可通过 `POE2_MCP_DATA` 指定其他位置，Agent 会返回生成文件的路径。
 
 **能生成从开荒到终局的完整升级路线吗？**
 
@@ -186,6 +229,12 @@ Create 当前交付目标等级的构筑，不提供完整升级路线。Learnin
 **怎样更新？**
 
 在项目目录运行 `git pull --ff-only` 和 `uv sync`，重新运行对应宿主的安装命令并重启宿主。如果固定 PoB 版本发生变化，还需按 [pob/PINNED.md](pob/PINNED.md) 更新 headless 运行时。重新安装 DeepSeek Harness preset 时会把上一版保留为 `poe-bd.bak` 恢复点；再下一次安装会因此报冲突，需要加 `-Force` / `--force`，它会把该恢复点改名为带时间戳的目录而不是删除。
+
+## 疑难排查
+
+**找不到工具。** 检查宿主 MCP 配置中是否有 `poe_knowledge_mcp`、`poe_build_mcp`、`poe_research_mcp` 和 `poe_learning_mcp`，然后重启宿主并新建会话。DeepSeek Harness 中只有在使用 `poe-bd` preset 的会话里才会出现这些工具；`.\install.ps1 -Doctor dsh`（`bash install.sh --doctor dsh`）会报告已放置的 preset 是否完整。
+
+**计算引擎无法启动。** 检查第 1、2 步的 LuaJIT 安装路径与固定版 PoB 源码（包括已应用的补丁）。`engine_health` 会报告引擎进程的当前状态；`POB_LUAJIT` 用于指定非标准位置的 LuaJIT。
 
 ## 反馈与贡献
 

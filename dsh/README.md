@@ -160,6 +160,9 @@ skill 正文已按此命名改写；`search_graph_components` / `resolve_graph_c
    各自拉起 headless PoB 引擎，日志中不应有启动错误。
 5. 在会话里让它调用 `engine_health`，再加载 `poe-bd-create` skill 提一个 BD 需求，
    确认走完 `get_freshness_report → 渐进 Research 查询 → start_generation_run → …` 主链路。
+   `engine_health` 只观察进程与工具活动，不启动也不重置 PoB：首次计算前返回
+   `not_started` 属于正常结果，`busy` 表示任务仍在运行；两者都不认证构筑，也不需要
+   先执行 `new_build`。引擎真的起不来时才会报 `exited` 或错误详情。
 6. 改过 skill 或适配器时：`uv run python scripts\adapt_skills_for_dsh.py --check`
    校验生成树无缺失/陈旧文件、裸工具名、旧前缀、重复前缀，并且每条宿主改写规则仍匹配
    源 skill；`python -m pytest tests/test_dsh_adapter.py -q` 覆盖安装器与生成器。
@@ -184,7 +187,7 @@ skill 正文已按此命名改写；`search_graph_components` / `resolve_graph_c
   已在行内显式声明。
 - 动态 Cordis 插件（`cordis_define`/`cordis_run`）不是本适配的交付形态，仅适合
   运行时调试；正式能力来自 patch / preset 两层的静态组合。
-- **bundle 转换注意点**：将来把第一层 MCP 行打包为 DSH bundle
-  （`cordis.patch.yml` 插件包，`dsh bundle install`）时，必须从本 preset 移除 4 个
-  MCP 行——同一 `serverName` 在 preset 与 bundle 两处注册会让后加载实例失败。
-  届时 preset 只保留人设/skills，MCP 注册全局由 bundle 承担，二选一，不能并存。
+- **bundle 与 preset 不能同时注册同一批 server**：`dsh/bundle/` 只携带 layer-1 MCP 行，
+   preset 也含同样四行。同一个 `serverName` 在两处注册时，后加载的实例会失败（并且
+   各自拉起一份 PoB 引擎）。因此装 bundle 的 profile 不要再叠加本 preset 的 MCP 行；
+   需要会话隔离时用 preset，需要全 profile 可见时用 bundle。
