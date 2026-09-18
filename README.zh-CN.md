@@ -4,20 +4,27 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab.svg)](pyproject.toml)
-[![宿主：Codex、Claude Code、Cursor、OpenCode、DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20Claude%20Code%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#安装)
+[![宿主：Codex、OpenCode、DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#安装)
 
 **让 AI Agent 帮你研究、创建和理解 Path of Exile 2 构筑（BD）。**
 
-Exile Architect 为 Codex、Claude Code、Cursor、OpenCode 和 DeepSeek Harness 接入《流放之路 2》游戏资料、本地构筑知识库与 Headless Path of Building（PoB）。Agent 负责分析和设计，PoB 负责数值计算与构筑检查。
+Exile Architect 为 Codex、OpenCode 和 DeepSeek Harness 接入《流放之路 2》游戏资料、本地构筑知识库与 Headless Path of Building（PoB）。Agent 负责分析和设计，PoB 负责数值计算与构筑检查。
 
 [安装](#安装) · [使用方式](#使用方式) · [案例展示](#案例展示) · [常见问题](#常见问题) · [反馈与贡献](#反馈与贡献)
 
-## 为什么选择 Exile Architect
+## 本地知识库与 PoB 验证
 
-- **数值来自 PoB，而不是来自模型。** 所有计算都通过固定版本的 headless Path of Building 执行；引擎无法建模的部分会标注为粗估或未知项，不会冒充引擎结果。
-- **知识库属于你，并且会持续积累。** 通过验收的研究结论保存在本机，后续会话仍可检索，Create 依据你收集到的证据设计，而不是只靠模型记忆。
-- **完全本地运行。** 不需要注册托管服务，也不需要额外的模型账号：工具从你自己的项目目录运行，使用 Agent 宿主已经配置好的模型。
-- **三种工作流，同一套工具链。** Research、Create、Learning 共享同一份游戏资料、知识库与计算引擎，并且都可以独立使用。
+- **本地知识库**
+
+  Research 把已有 BD 的机制、组件配合和使用条件整理成研究记录，保存在你的电脑上。知识可以跨会话积累，Create 在设计新构筑时按需检索，复用之前的研究成果。
+
+- **本地运行**
+
+  游戏资料查询、知识库存储和 PoB 计算都在本机完成，构筑文件也保存在本地。模型沿用 Agent 宿主的配置；联网研究和模型调用是否使用远程服务，取决于任务与宿主设置。
+
+- **PoB 数值验证**
+
+  Agent 设计的装备、技能和天赋会实际写入 PoB，再读取伤害、防御和资源数据。数值对应具体构筑与战斗配置，可以复核；PoB 未覆盖的机制会单独说明，粗估与计算结果分开展示。
 
 ## 三种工作流
 
@@ -44,7 +51,7 @@ Exile Architect 通过源码目录安装，Agent 会从这个目录启动工具�
 ### 1. 准备环境
 
 - 安装 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。uv 可以自动安装所需的 Python 版本。
-- 准备一个已经配置好模型的宿主：**Codex、Claude Code、Cursor、OpenCode 或 DeepSeek Harness**。Research 还需要宿主允许子代理访问 MCP 工具。
+- 准备一个已经配置好模型的宿主：**Codex、OpenCode 或 DeepSeek Harness**。Research 还需要宿主允许子代理访问 MCP 工具。
 - 安装运行 PoB 计算引擎所需的 **LuaJIT 2.1**：
 
 | 系统 | LuaJIT 安装方式 |
@@ -73,7 +80,7 @@ git -C pob/PathOfBuilding-PoE2 checkout ce566eac45ea8a86477f513c7ee65a1ebe60014e
 
 ### 3. 应用补丁并接入 Agent
 
-选择对应系统的命令。以下以 Codex 为例；使用其他宿主时，将 `codex` 替换为 `claude`、`cursor` 或 `opencode`。DeepSeek Harness 通过独立的 preset 安装，见本步骤末尾。
+选择对应系统的命令。以下以 Codex 为例；使用 OpenCode 时，将 `codex` 替换为 `opencode`。DeepSeek Harness 通过独立的 preset 安装，见本步骤末尾。
 
 **Windows PowerShell**
 
@@ -206,7 +213,7 @@ Create 直接设计**一个目标等级的 BD**，使用 PoB 检查并解释结�
 
 **支持哪些 Agent 宿主？**
 
-Codex、Claude Code、Cursor 和 OpenCode 由安装器直接配置；DeepSeek Harness 以 Agent preset 形式安装。Research 还要求宿主允许子代理调用 MCP 工具。
+Codex 和 OpenCode 由安装器直接配置；DeepSeek Harness 以 Agent preset 形式安装。Research 还要求宿主允许子代理调用 MCP 工具。
 
 **需要额外配置模型 API Key 吗？**
 

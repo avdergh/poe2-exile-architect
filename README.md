@@ -4,20 +4,27 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab.svg)](pyproject.toml)
-[![Hosts: Codex, Claude Code, Cursor, OpenCode, DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20Claude%20Code%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#install)
+[![Hosts: Codex, OpenCode, DeepSeek Harness](https://img.shields.io/badge/hosts-Codex%20%7C%20OpenCode%20%7C%20DeepSeek%20Harness-6f42c1.svg)](#install)
 
 **Research, create, and understand Path of Exile 2 builds with your AI agent.**
 
-Exile Architect connects Codex, Claude Code, Cursor, OpenCode, and DeepSeek Harness to Path of Exile 2 game data, a local build knowledge base, and Headless Path of Building (PoB). Your agent makes the design decisions; PoB supplies the calculations and the build checks.
+Exile Architect connects Codex, OpenCode, and DeepSeek Harness to Path of Exile 2 game data, a local build knowledge base, and Headless Path of Building (PoB). Your agent makes the design decisions; PoB supplies the calculations and the build checks.
 
 [Install](#install) · [Usage](#usage) · [Showcase](#showcase) · [FAQ](#common-questions) · [Contributing](#contributing)
 
-## Why Exile Architect
+## Local knowledge base and PoB validation
 
-- **Numbers come from PoB, not from the model.** Every calculation runs through a pinned headless Path of Building. What the engine cannot model is reported as an estimate or an unknown — never presented as engine output.
-- **The knowledge base is yours, and it grows.** Research findings you accept are stored on your own machine and stay available to later conversations, so Create designs from evidence you collected instead of model memory alone.
-- **It runs locally.** There is no hosted service to sign up for and no separate model account: the tools run from your checkout and use the model access your agent host already has.
-- **Three workflows, one toolchain.** Research, Create, and Learning share the same game data, knowledge base, and calculation engine, and each one works on its own.
+- **Local knowledge base**
+
+  Research turns mechanics, component interactions, and usage conditions from existing builds into research records stored on your computer. The knowledge carries across conversations, and Create retrieves relevant records when designing a new build, reusing earlier research.
+
+- **Local execution**
+
+  Game data queries, knowledge storage, and PoB calculations run on your machine, and build files are saved locally. The model uses your agent host's existing configuration; whether online research and model calls use remote services depends on the task and host settings.
+
+- **PoB validation**
+
+  The equipment, skills, and passives designed by the agent are written into PoB before damage, defense, and resource data are read back. The numbers correspond to a specific build and combat configuration and can be checked. Mechanics that PoB does not cover are documented separately, and estimates are shown separately from calculated results.
 
 ## Three workflows
 
@@ -44,7 +51,7 @@ Exile Architect installs from a source checkout, and your agent starts its tools
 ### 1. Install the prerequisites
 
 - [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv can install the required Python version for you.
-- An agent host: **Codex**, **Claude Code**, **Cursor**, **OpenCode**, or **DeepSeek Harness**, with model access already configured. Research requires a host that gives subagents access to MCP tools.
+- An agent host: **Codex**, **OpenCode**, or **DeepSeek Harness**, with model access already configured. Research requires a host that gives subagents access to MCP tools.
 - **LuaJIT 2.1**, used to run the PoB calculation engine:
 
 | System | LuaJIT installation |
@@ -73,7 +80,7 @@ Use this pinned PoB revision with the patches below. Installing the PoB desktop 
 
 ### 3. Apply the patches and connect your agent
 
-Choose your system. The examples install for Codex; replace `codex` with `claude`, `cursor`, or `opencode` for your host. DeepSeek Harness installs through its own preset — see the end of this step.
+Choose your system. The examples install for Codex; replace `codex` with `opencode` if you use OpenCode. DeepSeek Harness installs through its own preset — see the end of this step.
 
 **Windows PowerShell**
 
@@ -206,7 +213,7 @@ The full screenshot below includes equipment, stats, the passive tree, ascendanc
 
 **Which agent hosts are supported?**
 
-Codex, Claude Code, Cursor, and OpenCode are configured by the installer. DeepSeek Harness installs as an agent preset. Research additionally needs a host that lets subagents call MCP tools.
+Codex and OpenCode are configured by the installer. DeepSeek Harness installs as an agent preset. Research additionally needs a host that lets subagents call MCP tools.
 
 **Do I need my own model API key?**
 
